@@ -283,7 +283,7 @@ class TestCookieJsGuards:
 
     def test_js_returns_click_and_removal_counts(self):
         js = WebAccess._COOKIE_REMOVAL_JS
-        assert 'return { clicked: clicked, removed: removed }' in js
+        assert 'return { clicked: clicked, removed: removed, kept: kept }' in js
 
     def test_dom_monitor_js_installs_mutation_observer(self):
         js = WebAccess._DOM_MONITOR_JS

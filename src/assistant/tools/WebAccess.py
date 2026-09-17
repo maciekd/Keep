@@ -1016,6 +1016,42 @@ class WebAccess(Integration):
 (function() {
     let clicked = 0;
     let removed = 0;
+    let kept = 0;
+
+    // Nothing below may ever delete the document or the page's content: feature
+    // classes land on <html> itself (Apple: "supports-backdrop-filter"), and layout
+    // wrappers are routinely classed "has-banner" / "overlay-host".
+    const bodyTextLen = () => ((document.body && document.body.textContent) || '').length;
+    const isProtected = (el) => {
+        if (!el || el === document.documentElement || el === document.body || el === document.head) return true;
+        const tag = (el.tagName || '').toLowerCase();
+        if (tag === 'html' || tag === 'body' || tag === 'head' || tag === 'main') return true;
+        try {
+            if (document.body && el.contains(document.body)) return true;
+            if (el.querySelector('main, [role="main"], article')) return true;
+        } catch (e) {}
+        const total = bodyTextLen();
+        return total > 0 && (el.textContent || '').length / total > 0.5;
+    };
+    const safeRemove = (el) => {
+        if (isProtected(el)) { kept++; return false; }
+        el.remove();
+        removed++;
+        return true;
+    };
+    // An overlay is positioned out of the flow AND covers the viewport, sits on a
+    // raised layer or is a dialog — a class name alone proves nothing.
+    const looksLikeOverlay = (el) => {
+        const style = window.getComputedStyle(el);
+        if (!['fixed', 'absolute', 'sticky'].includes(style.position)) return false;
+        const role = (el.getAttribute && el.getAttribute('role')) || '';
+        if (role === 'dialog' || role === 'alertdialog' ||
+            (el.getAttribute && el.getAttribute('aria-modal') === 'true')) return true;
+        if ((parseInt(style.zIndex) || 0) >= 100) return true;
+        const rect = el.getBoundingClientRect();
+        const viewport = (window.innerWidth || 0) * (window.innerHeight || 0);
+        return viewport > 0 && (rect.width * rect.height) / viewport >= 0.5;
+    };
 
     // Pass 0 — platform-specific accept buttons (accept-first: clicking persists
     // consent in cookies/localStorage so subsequent pages in the session are clean).
@@ -1114,8 +1150,7 @@ class WebAccess(Integration):
             const text = (el.innerText || '').toLowerCase();
             if (text.includes('cookie') || text.includes('consent') || text.includes('privacy') ||
                 text.includes('gdpr') || text.includes('accept') || text.includes('agree')) {
-                el.remove();
-                removed++;
+                safeRemove(el);
             }
         });
     });
@@ -1134,8 +1169,7 @@ class WebAccess(Integration):
             const text = (el.innerText || '').toLowerCase();
             if (text.includes('cookie') || text.includes('consent') || text.includes('accept') ||
                 text.includes('privacy') || text.includes('gdpr') || el.offsetHeight > 100) {
-                el.remove();
-                removed++;
+                safeRemove(el);
             }
         }
     });
@@ -1149,12 +1183,15 @@ class WebAccess(Integration):
         document.documentElement.style.overflow = 'auto';
         document.documentElement.style.position = 'static';
     }
-    document.querySelectorAll('[class*="backdrop"], [class*="overlay"], [class*="modal-backdrop"]').forEach(el => {
-        el.remove();
-        removed++;
+    // Leftover backdrops — whole class names only ('supports-backdrop-filter' is not
+    // a backdrop), and only when the element really is an overlay.
+    document.querySelectorAll('.backdrop, .overlay, .modal-backdrop').forEach(el => {
+        try {
+            if (looksLikeOverlay(el)) safeRemove(el);
+        } catch (e) {}
     });
 
-    return { clicked: clicked, removed: removed };
+    return { clicked: clicked, removed: removed, kept: kept };
 })();
 """
 
@@ -1187,6 +1224,7 @@ class WebAccess(Integration):
         if result.get('clicked', 0) or result.get('removed', 0):
             info(f"cookie consent: clicked={result.get('clicked', 0)} "
                  f"removed={result.get('removed', 0)} on {url}")
+            self._trace_kept_consent_matches(result, url)
             return
         trace(f"cookie consent: nothing matched on {url} — "
               f"re-checking once in {self._COOKIE_RETRY_DELAY}s (SDK may mount late)")
@@ -1197,6 +1235,13 @@ class WebAccess(Integration):
                  f"clicked={result.get('clicked', 0)} removed={result.get('removed', 0)} on {url}")
         else:
             trace(f"cookie consent: nothing to accept or remove on {url}")
+        self._trace_kept_consent_matches(result, url)
+
+    @staticmethod
+    def _trace_kept_consent_matches(result: dict, url: str):
+        if result.get('kept', 0):
+            trace(f"cookie consent: kept {result['kept']} matched element(s) on {url} — "
+                  f"<html>/<body> or a wrapper of the page content, not a banner")
 
     @staticmethod
     def extract_text_with_links(html_content: str, base_url: str) -> str:
@@ -1207,6 +1252,8 @@ class WebAccess(Integration):
         # product/variant/stock data here that's invisible to the visible-text
         # extraction below.
         next_data_text = WebAccess._extract_next_data_summary(soup)
+        embedded_json = [script.string for script in soup.find_all('script', type='application/json')
+                         if script.string and script.get('id') != '__NEXT_DATA__']
 
         # Remove script, style, nav, footer, header, and sidebar elements. <template>
         # holds inert markup browsers never render (Reddit ships its cookie dialog
@@ -1318,7 +1365,59 @@ class WebAccess(Integration):
         if next_data_text:
             text = f"{text}\n\n{next_data_text}" if text else next_data_text
 
+        # A page that renders client-side ships its content as JSON (Apple's order
+        # status lives in <script id="init_data">) — read it when the markup says little.
+        if embedded_json and len(text) < WebAccess._EMBEDDED_JSON_THIN_TEXT:
+            json_text = WebAccess._summarise_embedded_json(embedded_json)
+            if json_text:
+                trace(f"extract_text: only {len(text)} chars of visible text on {base_url} — "
+                      f"appending {len(json_text)} chars summarised from embedded JSON")
+                text = f"{text}\n\n{json_text}" if text else json_text
+
         return text
+
+    _EMBEDDED_JSON_THIN_TEXT = 600
+    _EMBEDDED_JSON_MAX_CHARS = 3000
+    _EMBEDDED_JSON_MAX_VALUE = 200
+
+    @staticmethod
+    def _summarise_embedded_json(blocks: list) -> str:
+        """Flatten the readable leaves (short strings, numbers) of JSON script blocks
+        into 'key.path: value' lines, capped at _EMBEDDED_JSON_MAX_CHARS."""
+        lines, seen, size = [], set(), 0
+
+        def walk(node, path):
+            nonlocal size
+            if size >= WebAccess._EMBEDDED_JSON_MAX_CHARS:
+                return
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    walk(value, path + [str(key)])
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item, path)
+            elif isinstance(node, bool) or node is None:
+                return
+            else:
+                value = str(node).strip()
+                if isinstance(node, str) and (
+                        not value or len(value) > WebAccess._EMBEDDED_JSON_MAX_VALUE
+                        or value.startswith(('http://', 'https://', '/', '<', '{'))):
+                    return
+                line = f"{'.'.join(path[-2:])}: {value}"
+                if line not in seen:
+                    seen.add(line)
+                    lines.append(line)
+                    size += len(line) + 1
+
+        for block in blocks:
+            try:
+                walk(json.loads(block), [])
+            except (ValueError, TypeError) as e:
+                trace(f"embedded JSON parse failed: {e}")
+        if not lines:
+            return ""
+        return "[Data from embedded JSON]\n" + "\n".join(lines)
 
     _NEXT_DATA_PRODUCT_PATHS = (
         ('props', 'pageProps', 'product', 'product'),
@@ -2226,11 +2325,23 @@ class WebAccess(Integration):
             trace(f"Tab content collection failed: {e}")
             return None
 
+    @staticmethod
+    def _eval_number(result) -> Optional[float]:
+        """A numeric evaluate result, else None — nodriver hands back an ExceptionDetails
+        object (not an exception) when the expression throws in the page."""
+        if isinstance(result, (int, float)) and not isinstance(result, bool):
+            return result
+        return None
+
     async def _async_scroll_to_load_content(self, tab: 'nodriver.Tab'):
         """Scroll through the page to trigger lazy-loaded content."""
         try:
-            page_height = await self._evaluate(tab, 'document.body.scrollHeight') or 0
-            viewport_height = await self._evaluate(tab, 'window.innerHeight') or 800
+            page_height = self._eval_number(await self._evaluate(tab, 'document.body.scrollHeight'))
+            if page_height is None:
+                trace("Scroll-to-load skipped: document.body.scrollHeight did not evaluate "
+                      "to a number (no <body>?)")
+                return
+            viewport_height = self._eval_number(await self._evaluate(tab, 'window.innerHeight')) or 800
             position = 0
             max_scrolls = 15
             scrolls = 0
@@ -2238,7 +2349,8 @@ class WebAccess(Integration):
                 position += viewport_height
                 await tab.evaluate(f'window.scrollTo(0, {position});')
                 await asyncio.sleep(0.3)
-                new_height = await self._evaluate(tab, 'document.body.scrollHeight') or 0
+                new_height = self._eval_number(
+                    await self._evaluate(tab, 'document.body.scrollHeight')) or 0
                 if new_height > page_height:
                     page_height = new_height
                 scrolls += 1
