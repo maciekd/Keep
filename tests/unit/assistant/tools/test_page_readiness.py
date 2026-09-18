@@ -226,6 +226,18 @@ class TestCookieOrchestration:
             run(wa._async_settle_cookie_banner(wa._tab, "https://shop.example"))
         assert remove.await_count == 2
 
+    def test_kept_only_result_is_nothing_matched_and_is_traced(self):
+        # Matches the guard refused (<html>, a content wrapper) are not a handled banner:
+        # the pass still retries, and the kept count is left in the trace for debugging.
+        wa = make_wa(_COOKIE_RETRY_DELAY=0)
+        remove = AsyncMock(return_value={'clicked': 0, 'removed': 0, 'kept': 2})
+        with patch.object(WebAccess, '_async_remove_cookies_banner', new=remove), \
+                patch('assistant.tools.WebAccess.trace') as trace:
+            run(wa._async_settle_cookie_banner(wa._tab, "https://shop.example"))
+        assert remove.await_count == 2
+        kept_lines = [c.args[0] for c in trace.call_args_list if 'kept 2' in c.args[0]]
+        assert len(kept_lines) == 1
+
     def test_remove_returns_js_result_dict(self):
         wa = make_wa()
         with patch.object(WebAccess, '_evaluate',

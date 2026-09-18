@@ -247,3 +247,40 @@ class TestEmbeddedJsonSummary:
         block = json.dumps({f'k{i}': f'value number {i}' for i in range(1000)})
         summary = WebAccess._summarise_embedded_json([block])
         assert len(summary) < WebAccess._EMBEDDED_JSON_MAX_CHARS + 100
+
+    def test_next_data_is_left_to_the_product_reader(self):
+        # A thin Next.js page: __NEXT_DATA__ goes through the product summary only, never
+        # dumped a second time as key/value lines (and its session data stays out).
+        next_data = json.dumps({'props': {'pageProps': {'product': {
+            'name': 'Cotton Tee', 'code': 'CT001', 'skus': [{'size': 'M', 'inStock': True}]},
+            'session': {'token': 'sess-1234'}}}})
+        html = (f'<html><body><main>Cotton Tee</main>'
+                f'<script id="__NEXT_DATA__" type="application/json">{next_data}</script></body></html>')
+        text = WebAccess.extract_text_with_links(html, 'https://shop.example/tee')
+        assert '[Structured product data from __NEXT_DATA__]' in text
+        assert '[Data from embedded JSON]' not in text
+        assert 'sess-1234' not in text
+
+    def test_only_readable_leaves_are_kept(self):
+        block = json.dumps({
+            'order': {'shipping': {'address': {'city': 'Uppsala', 'zip': 75236}}},
+            'template': '<div>x</div>', 'route': '/orders/1', 'blob': '{"a":1}',
+            'note': 'x' * (WebAccess._EMBEDDED_JSON_MAX_VALUE + 1), 'empty': '', 'missing': None,
+            'count': 0,
+        })
+        summary = WebAccess._summarise_embedded_json([block])
+        assert summary.splitlines() == ['[Data from embedded JSON]',
+                                        'address.city: Uppsala', 'address.zip: 75236', 'count: 0']
+
+    def test_every_parseable_block_contributes_once(self):
+        items = [{'name': 'Desk lamp', 'status': 'Shipped'}] * 3
+        blocks = ['{oops', json.dumps({'items': items}), json.dumps({'store': 'Downtown'})]
+        summary = WebAccess._summarise_embedded_json(blocks)
+        assert summary.splitlines() == ['[Data from embedded JSON]',
+                                        'items.name: Desk lamp', 'items.status: Shipped', 'store: Downtown']
+
+    def test_json_without_readable_leaves_adds_no_header(self):
+        payload = json.dumps({'image': 'https://shop.example/lamp.png', 'gift': False, 'meta': None})
+        assert WebAccess._summarise_embedded_json([payload]) == ""
+        text = WebAccess.extract_text_with_links(self.SHELL.format(payload=payload), 'https://shop.example/o')
+        assert text == 'Order status'
