@@ -454,6 +454,32 @@ def test_get_messages_with_extended_thinking(prompt_test_environment, monkeypatc
 
 
 @pytest.mark.unit
+def test_get_messages_without_extended_thinking_never_mentions_the_tag(prompt_test_environment, monkeypatch):
+    # What a model that thinks on its own receives (RequestProcessor passes False for it):
+    # Claude refuses the whole request as reasoning extraction if the tag shows up anywhere.
+    manager = PromptManager(test_suite=True)
+    manager._messages = [{"role": "system", "content": "Before [THINKING] after"}]
+
+    from assistant.prompt.TimeOfDay import TimeOfDay
+    monkeypatch.setattr('assistant.prompt.PromptManager.TimeOfDay.get_current', lambda: TimeOfDay.DAY)
+
+    messages = manager.get_messages(extended_thinking=False)
+
+    assert "[THINKING]" not in messages[0]["content"]
+    assert not [m for m in messages if "<thinking" in str(m.get("content")).lower()]
+
+
+@pytest.mark.unit
+def test_static_prompts_never_ask_for_a_thinking_tag():
+    # The templates and toolkits reach every model unconditionally, Claude included, so the
+    # tag instruction may only ever be added per model in code (handles_thinking_internally).
+    from common.Paths import RES_DIR
+    prompts = list(RES_DIR.rglob("*.md"))
+    assert prompts
+    assert [p.name for p in prompts if "<thinking" in p.read_text(encoding="utf-8").lower()] == []
+
+
+@pytest.mark.unit
 def test_get_messages_night_whisper(prompt_test_environment, monkeypatch):
     monkeypatch.setattr("assistant.prompt.PromptManager.uuid.uuid4", lambda: uuid.uuid4())
     manager = PromptManager(test_suite=True)

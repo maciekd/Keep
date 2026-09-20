@@ -1174,3 +1174,18 @@ class TestThinkingTagInstruction:
         """Mock().handles_thinking_internally() is a truthy Mock, not True: the paragraph stays."""
         assert "<thinking>" in AutonomousActionManager._action_prompt(Mock())
 
+
+    @pytest.mark.parametrize("internal", [True, False])
+    def test_activity_check_sends_the_prompt_built_for_its_llm(self, internal):
+        """The refusals came from the check itself, not the helper: what reaches a model that
+        thinks on its own must carry no <thinking> tag anywhere."""
+        mgr, llm = make_manager()
+        llm.handles_thinking_internally.return_value = internal
+        sent = []
+        # Snapshot at call time: the check appends the reply to the same list afterwards.
+        llm.think_with_messages.side_effect = lambda messages: sent.extend(messages) or "NO"
+
+        mgr.activity_check(prompt="test prompt")
+
+        assert sent[-1] == {"role": "user", "content": AutonomousActionManager._action_prompt(llm)}
+        assert any("<thinking>" in m["content"] for m in sent) is not internal
