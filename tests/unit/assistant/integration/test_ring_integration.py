@@ -176,6 +176,53 @@ class TestRingIntegrationConnect:
         auth.async_fetch_token.assert_not_awaited()
         assert token_file.exists()
 
+    def test_token_is_dropped_even_when_closing_the_rejected_session_fails(self, tmp_path):
+        # A close() that raises must not leave the stale cache behind — that is the lock-out again.
+        from ring_doorbell import AuthenticationError
+        cam, token_file = self._cam(tmp_path, {"access_token": "stale"})
+        stale_auth = Mock(async_close=AsyncMock(side_effect=OSError("session already closed")))
+        fresh_auth = Mock(async_fetch_token=AsyncMock())
+        ring = self._ring(AuthenticationError("invalid_grant"), None)
+        with patch.object(cam, "_new_auth", side_effect=[stale_auth, fresh_auth]), \
+                patch("ring_doorbell.Ring", return_value=ring), \
+                patch.object(cam._tfa_handler, "start"):
+            cam._ensure_connected()
+        assert not token_file.exists()
+        assert cam._ring is ring
+
+    def test_login_retries_with_the_2fa_code(self, tmp_path):
+        from ring_doorbell import Requires2FAError
+        cam, _ = self._cam(tmp_path)
+        auth = Mock(async_fetch_token=AsyncMock(side_effect=[Requires2FAError(), None]))
+        ring = self._ring(None)
+        with patch.object(cam, "_new_auth", return_value=auth), \
+                patch("ring_doorbell.Ring", return_value=ring), \
+                patch.object(cam._tfa_handler, "start"), \
+                patch.object(cam._tfa_handler, "get", return_value="654321"):
+            cam._ensure_connected()
+        assert [c.args for c in auth.async_fetch_token.await_args_list] == [
+            ("test@example.com", "secret"), ("test@example.com", "secret", "654321")]
+        assert cam._ring is ring
+
+    def test_rejected_token_without_a_2fa_code_ends_in_needs_2fa(self, tmp_path):
+        # The re-login after a rejected token is a full login: no code in time leaves the
+        # integration asking for one, with no session and no stale cache.
+        from ring_doorbell import AuthenticationError, Requires2FAError
+        from assistant.integration.Integration import IntegrationState
+        cam, token_file = self._cam(tmp_path, {"access_token": "stale"})
+        stale_auth = Mock(async_close=AsyncMock())
+        fresh_auth = Mock(async_fetch_token=AsyncMock(side_effect=Requires2FAError()))
+        with patch.object(cam, "_new_auth", side_effect=[stale_auth, fresh_auth]), \
+                patch("ring_doorbell.Ring", return_value=self._ring(AuthenticationError("invalid_grant"))), \
+                patch.object(cam._tfa_handler, "start"), \
+                patch.object(cam._tfa_handler, "get", return_value=None):
+            with pytest.raises(RingAuthenticationError, match="No 2FA code"):
+                cam._ensure_connected()
+        assert cam.state == IntegrationState.NEEDS_2FA
+        assert not token_file.exists()
+        assert cam._ring is None
+        assert cam.get_auth_status()["status"] == "error"
+
 
 class TestRingIntegrationFetchSnapshot:
     def test_fetch_snapshot_not_connected_raises(self):
