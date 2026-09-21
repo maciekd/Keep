@@ -61,6 +61,21 @@ class TestRefusalFallback:
         assert llm.refusal_fallback() is None
 
 
+    @pytest.mark.parametrize("model", [
+        "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5", "claude-sonnet-5",
+        "claude-opus-4-8", "claude-sonnet-4-5", "claude-haiku-4-5",
+    ])
+    def test_a_fallback_thinks_the_way_its_primary_does(self, mock_config, model):
+        """The fallback is sent the very messages built for the primary, <thinking>-tag
+        instruction or not. refusal_fallback() and handles_thinking_internally() gate on model
+        prefixes separately: if they drift apart, a self-thinking fallback gets the tag and
+        refuses as well (the Sep 18 outage), or a tag-dependent one loses its reasoning."""
+        llm = ClaudeLLM(model)
+        fallback = llm.refusal_fallback()
+        if fallback is not None:
+            assert fallback.handles_thinking_internally() is llm.handles_thinking_internally()
+
+
 class TestIsRetryable:
     def test_529_is_retryable(self):
         assert ClaudeLLM._is_retryable(_make_overloaded_error()) is True

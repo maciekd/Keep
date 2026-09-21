@@ -1330,6 +1330,25 @@ class TestPrepareContext:
         prompt_manager.get_messages.assert_called_once_with(extended_thinking=False)
         assert full_handler.dialog_manager.thinking is False
 
+    @pytest.mark.parametrize("picked_thinks_internally", [True, False])
+    def test_thinking_tag_decision_is_for_the_model_select_ai_picks(self, full_handler, picked_thinks_internally):
+        """A DialogManager starts on the fast tier and select_ai moves the request to its own
+        (a chat request: Gemini -> Claude). The instruction must be decided for the model that
+        will answer, not the one the DialogManager happened to hold before the pick."""
+        dm = full_handler.dialog_manager
+        dm.ai.handles_thinking_internally.return_value = not picked_thinks_internally
+        picked = Mock()
+        picked.handles_thinking_internally.return_value = picked_thinks_internally
+        dm.select_ai.side_effect = lambda ctx: setattr(dm, "ai", picked)
+        prompt_manager = Mock()
+        prompt_manager.get_messages.return_value = []
+
+        with patch("assistant.RequestProcessor.MessageFormatter") as mock_mf:
+            mock_mf.format_message.return_value = "User: hello"
+            full_handler._prepare_llm_context(prompt_manager)
+
+        prompt_manager.get_messages.assert_called_once_with(extended_thinking=not picked_thinks_internally)
+
     def test_formats_message_with_context(self, full_handler):
         prompt_manager = Mock()
         prompt_manager.get_messages.return_value = []
