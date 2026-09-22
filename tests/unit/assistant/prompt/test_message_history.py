@@ -1144,6 +1144,34 @@ class TestToolkitEvictionStubs:
         assert self.STUB in section.render_for_display()
 
 
+class TestRemoveFromUserTurns:
+    """The generic helper under strip_thinking_instruction: every user turn with string content
+    is a candidate, the texts go in the given order, and the count is the number of turns that
+    changed — a turn dropped on the way must not hide the one before it from the walk."""
+
+    def test_counts_every_changed_turn_and_removes_the_texts_in_order(self):
+        from assistant.prompt.MessageHistory import MessageHistory
+        messages = [{"role": "system", "content": "prompt TAG"},
+                    {"role": "user", "content": "TAG"},
+                    {"role": "user", "content": "\n\nTAG"},
+                    {"role": "user", "content": [{"type": "text", "text": "TAG"}]},
+                    {"role": "assistant", "content": "TAG"},
+                    {"role": "user", "content": "User [Marcus]: hello\n\nTAG"},
+                    {"role": "user", "content": "User [Marcus]: bye"}]
+        shared_turn = messages[5]
+        untouched = [messages[0], messages[3], messages[4], messages[6]]
+
+        assert MessageHistory.remove_from_user_turns(messages, "\n\nTAG", "TAG") == 3
+
+        assert messages == [{"role": "system", "content": "prompt TAG"},
+                            {"role": "user", "content": [{"type": "text", "text": "TAG"}]},
+                            {"role": "assistant", "content": "TAG"},
+                            {"role": "user", "content": "User [Marcus]: hello"},
+                            {"role": "user", "content": "User [Marcus]: bye"}]
+        assert all(kept is before for kept, before in zip([messages[0], messages[1], messages[2], messages[4]], untouched))
+        assert shared_turn["content"] == "User [Marcus]: hello\n\nTAG"  # replaced in the list, not mutated
+
+
 class TestStripThinkingInstruction:
     """strip_thinking_instruction undoes get_messages(extended_thinking=True) on a built
     message list, wherever append_user_turn put the instruction inside the turn."""

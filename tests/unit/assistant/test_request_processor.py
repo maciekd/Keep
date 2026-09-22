@@ -362,6 +362,27 @@ class TestHandleBackgroundCommands:
         assert "already spoken to the user" in reply[0]["text"]
         assert reply[1:] == blocks
 
+    def test_follow_up_round_switches_to_vision_after_the_reply_is_set_and_before_streaming(self, handler):
+        """use_vision_for_image_reply reads reply_to_llm to pick the tier and strips the
+        <thinking>-tag instruction from the carried messages; it is only worth anything between
+        the reply landing and the follow-up stream. The unit tests of the switch itself call it
+        directly, so this ordering was pinned by nothing."""
+        blocks = [{"type": "image", "source": {"type": "base64", "data": "abc"}}]
+        dm = self._make_mock_dm(command_reply=blocks)
+        follow_up_dm = self._make_mock_dm()
+        order = []
+        follow_up_dm.use_vision_for_image_reply.side_effect = lambda: order.append(("vision", follow_up_dm.reply_to_llm))
+
+        handler.dialog_manager = dm
+        with patch.object(handler, 'stream_response', side_effect=lambda: order.append(("stream", None)) or iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch('assistant.RequestProcessor.DialogManager', return_value=follow_up_dm):
+            self._exhaust_generator(handler._handle_background_commands(Mock()))
+
+        assert order == [("vision", blocks), ("stream", None)]
+
     def test_background_reply_keeps_result_framing(self, handler):
         """Non-error background replies (google/web results) keep the plain framing so
         the model still produces a full spoken reply."""
