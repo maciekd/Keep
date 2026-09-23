@@ -60,13 +60,18 @@ class StartShHarness:
         self.script = tmp_path / 'start.sh'
         self.script.write_text(START_SH.read_text())
         self.open_calls = tmp_path / 'open_calls'
+        self.osascript_calls = tmp_path / 'osascript_calls'
+        self.tty_report = tmp_path / 'tty_report'
         self.env_file = tmp_path / 'stubs.bash'
+        # `open` plays the launched window: if a tty was staged, it reports it the way
+        # cli_start.sh does. `osascript` records its arguments and swallows the script.
         self.env_file.write_text(
             'sleep() { :; }\n'
             f'lsof() {{ cat "{tmp_path}/lsof_out" 2>/dev/null; return 0; }}\n'
             f'pgrep() {{ cat "{tmp_path}/pgrep_out" 2>/dev/null; return 0; }}\n'
-            f'open() {{ echo "$@" >> "{self.open_calls}"; }}\n'
-            'osascript() { :; }\n'
+            f'open() {{ echo "$@" >> "{self.open_calls}"; '
+            f'[ -f "{self.tty_report}" ] && cp "{self.tty_report}" "{tmp_path}/log/cli_start.tty"; :; }}\n'
+            f'osascript() {{ echo "$@" >> "{self.osascript_calls}"; cat >/dev/null; }}\n'
             'tail() { :; }\n')
 
     def set_lsof_output(self, text: str):
@@ -74,6 +79,15 @@ class StartShHarness:
 
     def set_pgrep_output(self, text: str):
         (self.dir / 'pgrep_out').write_text(text + '\n')
+
+    def set_reported_tty(self, tty: str):
+        self.tty_report.write_text(tty + '\n')
+
+    @property
+    def closed_ttys(self) -> list[str]:
+        if not self.osascript_calls.exists():
+            return []
+        return [line.split()[-1] for line in self.osascript_calls.read_text().splitlines()]
 
     def run(self, *args) -> subprocess.CompletedProcess:
         env = dict(os.environ, BASH_ENV=str(self.env_file))
@@ -158,3 +172,53 @@ class TestStartSh:
         assert result.returncode == 0
         assert 'no old server process found' in harness.restart_log
         assert harness.launched
+
+
+class TestLaunchWindow:
+    """start.sh closes the Terminal window it opened and nothing else of the user's: the
+    window is identified by the tty cli_start.sh reports, never guessed."""
+
+    def test_closes_exactly_the_window_cli_start_reported(self, harness):
+        harness.set_reported_tty('/dev/ttys007')
+        result = harness.run()
+        assert result.returncode == 0
+        assert harness.closed_ttys == ['/dev/ttys007']
+        assert 'closing the launch window on /dev/ttys007' in harness.restart_log
+
+    def test_stale_report_from_an_earlier_run_closes_nothing(self, harness):
+        # Left behind by a previous start; that window may be the user's own by now.
+        (harness.dir / 'log' / 'cli_start.tty').write_text('/dev/ttys003\n')
+        result = harness.run()
+        assert result.returncode == 0
+        assert harness.launched
+        assert harness.closed_ttys == []
+        assert 'did not report its tty' in harness.restart_log
+
+
+CLI_START_SH = START_SH.with_name('cli_start.sh')
+
+
+class TestCliStartSh:
+    def test_server_leaves_the_window_session_before_the_tty_is_reported(self, tmp_path):
+        """Closing the window sends SIGHUP to its session; the server must have started a
+        session of its own (be its leader) by the time start.sh learns the tty."""
+        (tmp_path / '.venv' / 'bin').mkdir(parents=True)
+        (tmp_path / '.venv' / 'bin' / 'activate').write_text('')
+        (tmp_path / 'log').mkdir()
+        report = tmp_path / 'server_report'
+        (tmp_path / 'floxy_ai_server.py').write_text(
+            'import os, pathlib\n'
+            f'pathlib.Path({str(report)!r}).write_text('
+            '  f"{os.getsid(0)} {os.getpid()} {os.path.exists(\'log/cli_start.tty\')}")\n')
+        script = tmp_path / 'cli_start.sh'
+        script.write_text(CLI_START_SH.read_text())
+        subprocess.run(['bash', str(script)], capture_output=True, text=True, timeout=30, check=True)
+        deadline = time.time() + 5.0
+        while not report.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        assert report.exists(), "the fake server never ran"
+        sid, pid, tty_seen_at_start = report.read_text().split()
+        assert sid == pid, "the server is not a session leader of its own"
+        assert sid != str(os.getsid(0))
+        assert tty_seen_at_start == 'True', "the tty was reported after the server started"
+        assert (tmp_path / 'log' / 'cli_start.tty').read_text().strip()
