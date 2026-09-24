@@ -193,6 +193,16 @@ class TestWriteConfig:
         assert config['api_keys']['anthropic'] == 'sk-ant-typed-47L'
         assert re.fullmatch(r'[A-Za-z0-9]{32}', str(config['vault']['key']))
 
+    def test_developer_release_follows_the_installed_branch(self, harness):
+        """restart_server picks the branch it pulls from this key, so a checkout made from
+        master must keep following master and a release install the release branch."""
+        harness.keep_dir.mkdir()
+        for branch, developer in (('release', False), ('master', True)):
+            result = harness.run(f'API_KEY=sk-ant-typed-47L; BRANCH={branch}; write_config')
+            assert result.returncode == 0, result.stdout
+            config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
+            assert config['developer_release'] is developer, branch
+
 
 def make_origin(path: Path) -> None:
     """A throwaway upstream on `master`, ignoring log/ like the real repository does — the

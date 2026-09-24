@@ -222,3 +222,57 @@ class TestCliStartSh:
         assert sid != str(os.getsid(0))
         assert tty_seen_at_start == 'True', "the tty was reported after the server started"
         assert (tmp_path / 'log' / 'cli_start.tty').read_text().strip()
+
+
+class TestStartupTailHandoff:
+    """Interactively, start.sh shows the startup log only while the server comes up and then
+    hands the terminal to the TUI: the tail must be gone by then (it used to be endless, and a
+    backgrounded tail survives Ctrl-C), and the handoff must come even if the TUI port never
+    listens. Stdout is a pty here, so the `[ -t 1 ]` branch runs; `tail` is a sleeper whose
+    pid is recorded and the TUI is a shim that records its arguments."""
+
+    def prepare(self, harness, port_listens: bool):
+        tui = harness.dir / '.venv' / 'bin' / 'python3'
+        tui.parent.mkdir(parents=True)
+        tui.write_text(f'#!/bin/bash\necho "$@" > "{harness.dir}/tui_calls"\n')
+        tui.chmod(0o755)
+        port_check = 'return 0' if port_listens else 'case "$*" in *5151*) return 1;; esac'
+        with harness.env_file.open('a') as stubs:
+            stubs.write(f'tail() {{ touch "{harness.dir}/tail_started"; exec /usr/bin/tail -f "{harness.dir}/tail_started"; }}\n'
+                        f'lsof() {{ {port_check}; cat "{harness.dir}/lsof_out" 2>/dev/null; return 0; }}\n')
+
+    def run_on_a_tty(self, harness):
+        import pty
+        master, slave = pty.openpty()
+        try:
+            subprocess.run(['bash', str(harness.script)], stdin=slave, stdout=slave, stderr=slave,
+                           env=dict(os.environ, BASH_ENV=str(harness.env_file)), timeout=30)
+        finally:
+            os.close(slave)
+            os.close(master)
+
+    def tail_gone(self, harness, timeout: float = 5.0) -> bool:
+        """The stub is a real tail on a path unique to this test, so its argv identifies it."""
+        assert (harness.dir / 'tail_started').exists(), "the startup tail never ran"
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            found = subprocess.run(['pgrep', '-f', f'tail -f {harness.dir}/tail_started'], capture_output=True)
+            if found.returncode != 0:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_hands_the_terminal_to_the_tui_once_the_port_listens(self, harness):
+        self.prepare(harness, port_listens=True)
+        self.run_on_a_tty(harness)
+        assert (harness.dir / 'tui_calls').read_text().split() == ['tui.py', 'localhost']
+        assert self.tail_gone(harness), "the startup tail outlived the handoff"
+        # The port check starts after the 5 s floor (10 half-second ticks), never before.
+        assert 'after 11x0.5s of tail' in harness.restart_log
+
+    def test_hands_over_anyway_when_the_port_never_listens(self, harness):
+        self.prepare(harness, port_listens=False)
+        self.run_on_a_tty(harness)
+        assert (harness.dir / 'tui_calls').read_text().split() == ['tui.py', 'localhost']
+        assert self.tail_gone(harness)
+        assert 'after 120x0.5s of tail' in harness.restart_log
