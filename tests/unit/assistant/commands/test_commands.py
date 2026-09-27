@@ -145,6 +145,20 @@ class TestBrowseSnapshotAndClickAt:
         assert commands_instance.describe("browse_click_at", "412, 583") == "Clicking at 412, 583"
 
 
+class TestBrowseWaitCommand:
+    def test_pattern_split_on_its_comma_parses_back_intact(self, commands_instance):
+        commands_instance.web_access.browse_wait = Mock(return_value="MATCHED")
+        assert commands_instance.run("browse_wait", ["order, complete", " 45"]) == ""
+        commands_instance.wait_for_background(timeout=5)
+        spec = commands_instance.web_access.browse_wait.call_args.args[0]
+        assert WebAccess._parse_wait_spec(spec) == ("order, complete", 45.0)
+
+    def test_description_names_the_pattern_and_the_cap(self, commands_instance):
+        text = commands_instance.describe("browse_wait", "bekraftelse|callback, 45")
+        assert "bekraftelse|callback" in text and "45" in text
+        assert "bekraftelse" not in commands_instance.describe("browse_wait", "")
+
+
 class TestSendScreenshot:
     def test_voice_mode_refuses(self, commands_instance):
         commands_instance._current_profile = profile_for("VoiceToVoice")
