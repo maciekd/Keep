@@ -145,6 +145,29 @@ class TestBrowseSnapshotAndClickAt:
         assert commands_instance.describe("browse_click_at", "412, 583") == "Clicking at 412, 583"
 
 
+class TestBrowseWaitAndNetwork:
+    def test_wait_rejoins_positional_args_so_a_comma_in_the_pattern_survives(self, commands_instance):
+        commands_instance.web_access.browse_wait = Mock(return_value="MATCHED")
+        commands_instance.cmd_browse_wait("pending", " complete", " 45")
+        commands_instance.wait_for_background(timeout=5)
+        spec = commands_instance.web_access.browse_wait.call_args.args[0]
+        assert WebAccess._parse_wait_spec(spec) == ("pending, complete", 45.0)
+        assert "browse_wait" in Commands.MULTI_PARAM_COMMANDS
+
+    def test_wait_description_names_the_pattern_and_the_timeout(self, commands_instance):
+        text = commands_instance.describe("browse_wait", ["callback|thanks", "45"])
+        assert "callback|thanks" in text and "45" in text
+        assert commands_instance.describe("browse_wait", "") is not None
+
+    def test_wait_and_network_run_on_the_browser_lane(self, commands_instance):
+        with patch.object(commands_instance, "background_command") as bg:
+            commands_instance.cmd_browse_wait("done", "10")
+            commands_instance.cmd_browse_network("pay\\.example")
+        targets = [(call.args[0], call.kwargs.get("lane")) for call in bg.call_args_list]
+        assert targets == [(commands_instance.web_access.browse_wait, Commands.BROWSER_LANE),
+                           (commands_instance.web_access.browse_network, Commands.BROWSER_LANE)]
+
+
 class TestSendScreenshot:
     def test_voice_mode_refuses(self, commands_instance):
         commands_instance._current_profile = profile_for("VoiceToVoice")
