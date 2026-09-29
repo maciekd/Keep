@@ -567,6 +567,29 @@ class TestHandleBackgroundCommands:
         for call in calls:
             assert call.kwargs.get("pre_heat") is False
 
+    def test_a_follow_up_round_persists_the_user_row_with_the_request_stamp(self, handler):
+        """A command round persists the exchange mid-request; on a byte-prefix request that
+        row must carry the time and clock note the query was sent with, or the follow-up
+        round re-renders a different tail than the one the runner just cached."""
+        handler.turn_timestamp = 1_700_000_000.0
+        handler.time_note = "(Current time: 14:40, Saturday, 2025-03-15)"
+        dm1 = self._make_mock_dm(command_running=True, command_reply="reply1", queue_empty=True)
+        handler.dialog_manager = dm1
+        dm2 = self._make_mock_dm(command_running=False, command_reply=None, queue_empty=True)
+
+        with patch.object(handler, 'stream_response', return_value=iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch('assistant.RequestProcessor.DialogManager', return_value=dm2):
+            prompt_manager = Mock()
+            self._exhaust_generator(handler._handle_background_commands(prompt_manager))
+
+        first = prompt_manager.update_history.call_args_list[0]
+        assert first.args[1] == handler.request_context.user_input
+        assert first.kwargs["timestamp"] == handler.turn_timestamp
+        assert first.kwargs["time_note"] == handler.time_note
+
     def test_round_end_carries_the_rounds_raw_text(self, handler):
         """RoundEnd(raw) closes each follow-up round (the wire renderer turns it into \\x1e)"""
         handler.request_context.text_only = True
@@ -1143,6 +1166,25 @@ class TestPrepareContext:
         prompt_manager.update_history.assert_called_once_with(
             "TestUser", "what's the plan for today?", "Nothing booked.", "VoiceToVoice", "Kitchen",
             timestamp=full_handler.turn_timestamp, time_note=full_handler.time_note)
+
+    def test_the_byte_prefix_switch_off_restores_the_classic_tail(self, full_handler):
+        """FLOXY_BYTE_PREFIX_TAIL=0 is the A/B lever: an LLM that asks for a byte-prefix tail
+        still gets the classic one — <thinking> instruction, undated query header, nothing
+        persisted with the exchange."""
+        full_handler.dialog_manager.ai.handles_thinking_internally.return_value = False
+        full_handler.dialog_manager.ai.prefers_byte_prefix_tail.return_value = True
+        prompt_manager = Mock()
+        prompt_manager.get_messages.return_value = []
+        full_handler.request_context.user_input = "what's the plan for today?"
+
+        with patch("assistant.RequestProcessor.BYTE_PREFIX_TAIL", False):
+            sent = full_handler._prepare_llm_context(prompt_manager)
+
+        assert full_handler.dialog_manager.byte_prefix_tail is False
+        assert full_handler.turn_timestamp is None and full_handler.time_note is None
+        prompt_manager.get_messages.assert_called_once_with(extended_thinking=True, time_note=None)
+        assert sent == MessageFormatter.format_message("TestUser", None, "VoiceToVoice", "Kitchen",
+                                                       "what's the plan for today?")
 
     def test_formats_message_with_context(self, full_handler):
         prompt_manager = Mock()

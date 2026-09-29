@@ -1045,3 +1045,92 @@ class TestStripThinkingInstruction:
         expected = [m.copy() for m in messages]
         assert MessageHistory.strip_thinking_instruction(messages) == 0
         assert messages == expected
+
+
+# ===========================================================================
+# TestBytePrefixExchange
+# ===========================================================================
+
+class TestBytePrefixExchange:
+    """A byte-prefix request (Ollama's MLX runner) sends its trailing turn exactly as the
+    history renders it afterwards: the clock note first, then the timestamped query. The
+    persisted exchange must re-render those same bytes or the runner's restore point is lost."""
+
+    _note = "(Current time: 14:40, Saturday, 2025-03-15)"
+
+    def _section_writing_to_memory(self):
+        """A history whose rows land in memory the way the database stores them (role lowercased)."""
+        section = _make_history_section()
+        rows = []
+
+        def store(role, content, timestamp, source=None, location=None):
+            rows.append({"role": role.lower(), "content": content, "timestamp": timestamp,
+                         "source": source, "location": location})
+
+        patch.object(section, '_save_history_entry', side_effect=store).start()
+        patch.object(section, '_load_history',
+                     side_effect=lambda: setattr(section, 'history', sorted(rows, key=lambda r: r["timestamp"]))).start()
+        patch.object(section, '_notify_changed').start()
+        return section, rows
+
+    def test_the_persisted_exchange_re_renders_the_request_turn_byte_for_byte(self):
+        from datetime import datetime
+        from assistant.prompt.MessageHistory import MessageHistory
+        from assistant.tools.MessageFormatter import MessageFormatter
+        sent_at = datetime(2025, 3, 15, 14, 40, 0).timestamp()
+        # What RequestProcessor + DialogManager sent: the note appended to the tail, the query
+        # folded onto it (the client spelled the speaker "Marcus").
+        request_tail: list[dict] = []
+        MessageHistory.append_user_turn(request_tail, self._note)
+        MessageHistory.append_user_turn(
+            request_tail, MessageFormatter.format_message("Marcus", sent_at, "Console", None, "what's on today?"))
+        section, _ = self._section_writing_to_memory()
+        try:
+            section.add_exchange("Marcus", "what's on today?", "Nothing booked.", "Console", None,
+                                 timestamp=sent_at, note=self._note)
+            rendered = section.get_history_messages()
+        finally:
+            patch.stopall()
+
+        assert [m["role"] for m in rendered] == ["user", "assistant"]
+        assert rendered[0]["content"] == request_tail[0]["content"]
+        assert rendered[1]["content"] == "Nothing booked."
+
+    def test_the_note_row_precedes_the_user_row_and_both_are_dated_at_the_request(self):
+        sent_at = 1_700_000_000.0
+        section, rows = self._section_writing_to_memory()
+        try:
+            with patch('assistant.prompt.MessageHistory.time.time', return_value=sent_at + 42.0):
+                section.add_exchange("Marcus", "what's on today?", "Nothing booked.", "Console", None,
+                                     timestamp=sent_at, note=self._note)
+        finally:
+            patch.stopall()
+
+        by_role = {r["role"]: r for r in rows}
+        assert by_role["marcus"]["timestamp"] == sent_at, "the header sent carried the request time, so must the row"
+        assert by_role["note"]["timestamp"] < by_role["marcus"]["timestamp"] < by_role["assistant"]["timestamp"]
+        assert by_role["note"]["content"] == self._note
+
+    def test_a_request_time_behind_the_trim_cutoff_is_dated_now_so_the_row_stays_in_the_window(self):
+        sent_at = 1_700_000_000.0
+        section, rows = self._section_writing_to_memory()
+        section._trim_cutoff = sent_at + 10.0          # the window head moved on while the request ran
+        try:
+            with patch('assistant.prompt.MessageHistory.time.time', return_value=sent_at + 42.0):
+                section.add_exchange("Marcus", "what's on today?", "Nothing booked.", "Console", None,
+                                     timestamp=sent_at, note=self._note)
+            rendered = section.get_history_messages()
+        finally:
+            patch.stopall()
+
+        assert all(r["timestamp"] >= section._trim_cutoff for r in rows)
+        assert any("what's on today?" in m["content"] for m in rendered)
+        assert any(self._note in m["content"] for m in rendered), "the note must move with the row it precedes"
+
+    def test_a_classic_exchange_stores_no_note_row(self):
+        section, rows = self._section_writing_to_memory()
+        try:
+            section.add_exchange("Marcus", "what's on today?", "Nothing booked.", "Console", None)
+        finally:
+            patch.stopall()
+        assert {r["role"] for r in rows} == {"marcus", "assistant"}

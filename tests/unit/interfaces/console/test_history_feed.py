@@ -315,3 +315,13 @@ class TestCommandResultRows:
         with patch('interfaces.console.HistoryFeed.SHOW_COMMAND_RESULTS', True):
             land(history, entry("command", "result: \niMessage — disabled", T0 + 30))
         assert shown(pane) == [(KIND_SYSTEM, "Command result", "result: \niMessage — disabled")]
+
+
+class TestClockNoteRows:
+    def test_a_byte_prefix_requests_clock_note_is_hidden_but_its_exchange_shows(self, history, pane, feed):
+        land(history,
+             entry("note", "(Current time: 14:40, Saturday, 2025-03-15)", T0 + 29.999),
+             entry("marcus", "what's on today?", T0 + 30, source="Console"),
+             entry("assistant", "Nothing booked.", T0 + 30.001))
+        assert [(kind, text) for kind, _, text in shown(pane)] == [(KIND_USER, "what's on today?"),
+                                                                    (KIND_ASSISTANT, "Nothing booked.")]

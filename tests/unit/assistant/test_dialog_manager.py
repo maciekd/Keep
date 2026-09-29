@@ -1035,6 +1035,25 @@ def test_brevity_directive_skipped_for_text_chat(monkeypatch):
 
 
 @pytest.mark.unit
+def test_byte_prefix_tail_sends_the_query_with_no_trailing_directives(monkeypatch):
+    """A byte-prefix request (Ollama's MLX runner) must end with exactly the turn the history
+    will re-render: a voice request in Swedish, which would otherwise get both the brevity and
+    the language directive, is sent with neither."""
+    dm, _ = make_dialog_manager(monkeypatch, ["svar"])
+    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([100.0, 100.1]))
+    dm.web_request_handler.ctx.source = "VoiceToVoice"
+    dm.web_request_handler.ctx.lang = "sv-SE"
+    dm.byte_prefix_tail = True
+
+    list(dm.stream_llm_response())
+
+    assert dm.ai.observed_messages[-1]["content"] == "Turn on the kitchen lights"
+    sent = "".join(m["content"] for m in dm.ai.observed_messages)
+    assert DialogManager._BREVITY_DIRECTIVE not in sent
+    assert DialogManager._LANGUAGE_DIRECTIVES["sv"] not in sent
+
+
+@pytest.mark.unit
 def test_stream_llm_response_merges_consecutive_same_role_messages(monkeypatch):
     """When the last message already has the same role as reply_from_role,
     the new content should be merged into it instead of appending a duplicate.

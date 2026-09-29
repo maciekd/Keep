@@ -54,6 +54,19 @@ def prompt_test_environment(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_current_time_note_names_the_given_instant_not_now():
+    """A byte-prefix request persists the note it sent, so the note must be computable for the
+    request's own start time — a Saturday afternoon here, whatever the clock says now."""
+    from datetime import datetime
+    at = datetime(2025, 3, 15, 14, 40, 0).timestamp()
+
+    note = PromptManager.current_time_note(at)
+
+    assert "14:40" in note and "Saturday" in note and "2025-03-15" in note
+    assert PromptManager.current_time_note(at + 60) != note, "a minute later must render a different note"
+
+
+@pytest.mark.unit
 def test_a_checkout_without_the_testsuite_prompt_runs_the_suite_on_the_production_template(prompt_test_environment):
     """testsuite_prompt.md and its history fixture are private; a public checkout has neither."""
     (prompt_test_environment["root"] / "testsuite_prompt.md").unlink()
