@@ -619,6 +619,17 @@ class TestPhotoProcessorParseAnalysis:
         with pytest.raises(ValueError):
             PhotoProcessor._parse_analysis("no json here")
 
+    @pytest.mark.unit
+    def test_unescaped_quote_in_transcribed_text_does_not_fail_the_photo(self):
+        """Photos share the description parser's repair: an inch mark the model forgot to escape."""
+        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
+        response = ('{"short_description": "Fabric label", '
+                    '"detailed_description": "The label reads Width: 140cm (55") on its second line.", '
+                    '"pretty_score": "35", "family_importance_score": 10}')
+        result = PhotoProcessor._parse_analysis(response)
+        assert result["detailed_description"] == 'The label reads Width: 140cm (55") on its second line.'
+        assert (result["pretty_score"], result["family_importance_score"]) == (35, 10)
+
 
 class TestPhotoProcessorDescribeSubtypes:
 

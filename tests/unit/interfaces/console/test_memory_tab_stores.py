@@ -74,3 +74,15 @@ class TestLiveViewShowsAllThreeParts:
         tab.memory_file_path = str(tmp_path / "memory" / "absent.md")
         WatchList.save("Parcel", "ordered")
         assert any("parcel" in line for line in rows(tab))
+
+    def test_a_procedures_own_headings_sit_below_its_name(self, tab):
+        """The curator's "## Notes" must not read as a procedure of its own called Notes."""
+        Procedures.save("shop-checkout", "paying at shop.example",
+                        "open the cart\n\n## Card declined\nuse the other card\n\n### 3-D Secure\napprove in the app")
+        Procedures.note("shop-checkout", "the Pay button moved")
+        Procedures.save("courier", "rebooking a delivery", "call the courier")
+        text = MemoryTab._watchlist_and_procedures()
+        headings = [line for line in text.splitlines() if line.startswith("#")]
+        assert headings[headings.index("# Procedures") + 1:] == [
+            "## courier", "## shop-checkout", "### Card declined", "#### 3-D Secure", "### Notes"]
+        assert "the Pay button moved" in text and "use the other card" in text
