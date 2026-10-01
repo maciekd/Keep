@@ -12,6 +12,10 @@ from common.logging import info, error, trace
 # How far ahead the prompt's calendar section and `load_calendar` look.
 CALENDAR_DAYS_AHEAD = 8
 
+NO_EVENTS = "(No upcoming events)"
+# What the prompt carries when the fetch failed — never NO_EVENTS, which would read as an empty week.
+EVENTS_UNAVAILABLE = "(Calendar events could not be loaded)"
+
 
 class CalDAVIntegration(Integration):
     """Reads and creates calendar events on the iCloud CalDAV server."""
@@ -50,7 +54,8 @@ class CalDAVIntegration(Integration):
     @staticmethod
     def shown_calendar_names() -> list[str]:
         """`calendar.shown_calendars`: the calendars the prompt carries. Empty means all of them."""
-        configured = config.get('calendar.shown_calendars', None)
+        # An empty default, not None: ConfigManager.get raises KeyError for an absent key without one.
+        configured = config.get('calendar.shown_calendars', [])
         if isinstance(configured, str):
             configured = configured.split(",")
         if not isinstance(configured, (list, tuple)):
@@ -111,7 +116,7 @@ class CalDAVIntegration(Integration):
                 else:
                     lines.append(f"{local_start.strftime('%Y-%m-%d %H:%M')} - {local_end.strftime('%Y-%m-%d %H:%M')}: {title}")
 
-        return "\n".join(lines) if lines else "(No upcoming events)"
+        return "\n".join(lines) if lines else NO_EVENTS
 
     @staticmethod
     def fetch_calendar_events(start_date: date, end_date: date) -> str:
@@ -141,8 +146,8 @@ class CalDAVIntegration(Integration):
             return summary
 
         except Exception as e:
-            error(f"Error fetching calendar events: {e}")
-            return "(No upcoming events)"
+            error(f"Error fetching calendar events, the prompt gets '{EVENTS_UNAVAILABLE}': {type(e).__name__}: {e}")
+            return EVENTS_UNAVAILABLE
 
     @staticmethod
     def load_calendars(names: list[str]) -> str:

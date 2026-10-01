@@ -97,6 +97,33 @@ class TestShownCalendars:
         assert "Budget review" in result and "Dinner at Ingeborg's" not in result
 
 
+class TestShownCalendarsKeyAbsent:
+    """Through the real ConfigManager.get: a stub returning None for the absent key hid the KeyError it raises."""
+
+    @pytest.fixture
+    def real_config(self, tmp_path, monkeypatch):
+        from common.ConfigManager import ConfigManager
+        path = tmp_path / "config.yaml"
+        path.write_text("calendar:\n  username: m@mlab.test\n  password: app-password\n"
+                        "location:\n  home:\n    timezone: Europe/Stockholm\n")
+        monkeypatch.setenv("FLOXY_CONFIG", str(path))
+        real = ConfigManager()
+        monkeypatch.setattr("assistant.integration.integrations.CalDAVIntegration.config", real)
+        return real
+
+    def test_no_shown_calendars_key_means_no_names(self, real_config):
+        from assistant.integration.integrations.CalDAVIntegration import CalDAVIntegration
+        assert CalDAVIntegration.shown_calendar_names() == []
+
+    @patch(CALDAV)
+    def test_every_calendar_is_shown_and_none_is_listed(self, mock_caldav, real_config):
+        _serve(mock_caldav, _calendar("Home", ("Dentist Charlotte", 9)), _calendar("Work", ("Budget review", 13)))
+        from assistant.integration.integrations.CalDAVIntegration import fetch_calendar_events
+        result = fetch_calendar_events(date(2025, 6, 15), date(2025, 6, 20))
+        assert "Dentist Charlotte" in result and "Budget review" in result
+        assert "load_calendar" not in result
+
+
 class TestLoadCalendars:
     def _load(self, *names):
         from assistant.integration.integrations.CalDAVIntegration import CalDAVIntegration
@@ -125,12 +152,12 @@ class TestLoadCalendars:
 class TestCalendarHelper:
     @patch('assistant.integration.integrations.CalDAVIntegration.caldav')
     @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())
-    def test_returns_no_events_on_connection_error(self, mock_config, mock_caldav):
+    def test_a_connection_error_is_not_reported_as_an_empty_week(self, mock_config, mock_caldav):
         _configure(mock_config)
         mock_caldav.DAVClient.side_effect = ConnectionError("failed")
-        from assistant.integration.integrations.CalDAVIntegration import fetch_calendar_events
+        from assistant.integration.integrations.CalDAVIntegration import fetch_calendar_events, NO_EVENTS
         result = fetch_calendar_events(date.today(), date.today() + timedelta(days=5))
-        assert result == "(No upcoming events)"
+        assert result != NO_EVENTS and "could not be loaded" in result
 
     @patch('assistant.integration.integrations.CalDAVIntegration.caldav')
     @patch('assistant.integration.integrations.CalDAVIntegration.config', new_callable=lambda: _config_mock())

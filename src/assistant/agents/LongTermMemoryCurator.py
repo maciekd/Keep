@@ -11,7 +11,7 @@ from .. import MemoryFile, Procedures, WatchList
 from ..llm import create_llm, parse_llm_config
 from common.ConfigManager import ConfigManager
 from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
-from ..integration.integrations.CalDAVIntegration import CalDAVIntegration
+from ..integration.integrations.CalDAVIntegration import CalDAVIntegration, EVENTS_UNAVAILABLE, NO_EVENTS
 from common.logging import info, error, trace
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
 
@@ -519,7 +519,7 @@ class LongTermMemoryCurator:
         """
         # Count interactions and calendar events
         interaction_count = len([l for l in interaction_history.splitlines() if l.startswith("[")])
-        calendar_events_count = len(calendar_data.splitlines()) if calendar_data != "(No upcoming events)" else 0
+        calendar_events_count = 0 if calendar_data in (NO_EVENTS, EVENTS_UNAVAILABLE) else len(calendar_data.splitlines())
 
         if period:
             period_text = f"{period[0]:%Y-%m-%d %H:%M} to {period[1]:%Y-%m-%d %H:%M}"
