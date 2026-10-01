@@ -97,6 +97,14 @@ class TestReplyRendering:
         assert draft.texts[0] == "Hi "
         assert draft.finalized == "Hi <b>bold</b>"
 
+    def test_markdown_bold_closing_in_a_later_token_reaches_the_chat_as_html(self, session, hub, transport):
+        """The repair runs on the growing buffer, not per token: a pair opened in one chunk
+        and closed in the next is converted, and no bubble ever carries the closed pair raw."""
+        run_reply(session, hub, [Token("Call **Char"), Token("lotte** with `ls"), Token(" -la`"), RoundEnd(), None])
+        draft = transport.drafts[0]
+        assert draft.finalized == "Call <b>Charlotte</b> with <code>ls -la</code>"
+        assert not any("**Charlotte**" in text for text in draft.texts)
+
     def test_transcript_records_user_facing_reply(self, session, hub, transport):
         run_reply(session, hub, [Token("A"), RoundEnd(), Token("B"), RoundEnd(), None])
         assert hub.transcript[-1][3:] == ("assistant", "A\nB")

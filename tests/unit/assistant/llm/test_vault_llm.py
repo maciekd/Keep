@@ -196,6 +196,33 @@ class TestDelegation:
         with pytest.raises(AttributeError):
             half.model
 
+    def test_byte_prefix_tail_preference_is_the_wrapped_backends(self, stocked):
+        """AbstractLLM answers False itself, so __getattr__ never forwards the question: a
+        backend that wants the tail (Ollama) must still be heard through the wrapper that
+        create_llm puts around every backend, or the feature is inert in production."""
+        class Backend(AbstractLLM):
+            def name(self):
+                return "Backend"
+
+            def create_completion(self, messages, thinking=False):
+                return ""
+
+            def create_completion_with_images(self, messages, images):
+                return ""
+
+            def create_streaming_completion(self, messages, thinking=False):
+                yield ""
+
+            def initialize(self):
+                return True
+
+        class TailBackend(Backend):
+            def prefers_byte_prefix_tail(self):
+                return True
+
+        assert VaultLLM(TailBackend(), stocked).prefers_byte_prefix_tail() is True
+        assert VaultLLM(Backend(), stocked).prefers_byte_prefix_tail() is False
+
     def test_refusal_fallback_is_wrapped_in_the_same_vault(self, wrapped, inner, stocked, messages):
         """__getattr__ never reaches refusal_fallback (AbstractLLM defines it), so the
         wrapper must delegate explicitly — and the fallback answers the request this vault

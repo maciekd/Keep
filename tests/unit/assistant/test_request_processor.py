@@ -643,6 +643,28 @@ class TestHandleBackgroundCommands:
 
         assert new_dm.request_id == "req-abc-123"
 
+    @pytest.mark.parametrize("tail", [True, False])
+    def test_byte_prefix_tail_carried_to_new_dm(self, handler, tail):
+        """The command follow-up round is the same byte-prefix request: a fresh DialogManager
+        starts without the flag, and folding the directives onto the result turn there would
+        diverge from the history before the runner's restore point."""
+        dm = self._make_mock_dm(command_running=False, command_reply="reply", queue_empty=True)
+        dm.byte_prefix_tail = tail
+        handler.dialog_manager = dm
+
+        new_dm = self._make_mock_dm(command_running=False, command_reply=None, queue_empty=True)
+        new_dm.byte_prefix_tail = not tail
+
+        with patch.object(handler, 'stream_response', return_value=iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch('assistant.RequestProcessor.DialogManager', return_value=new_dm):
+            gen = handler._handle_background_commands(Mock())
+            self._exhaust_generator(gen)
+
+        assert new_dm.byte_prefix_tail is tail
+
 # ---------------------------------------------------------------------------
 # Extended handler fixture for new tests
 # ---------------------------------------------------------------------------

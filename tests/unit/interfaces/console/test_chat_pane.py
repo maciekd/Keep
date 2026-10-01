@@ -848,6 +848,25 @@ class TestSecretMasking:
         stocked.add("email", "Work e-mail", "m@mlab.test")
         assert draw(pane, screen)[0] == PROMPT + "mail m•••@mlab.test"
 
+    def test_a_frame_with_nothing_new_masks_nothing_again(self, pane, screen, monkeypatch):
+        """The vault's pattern over a whole transcript costs more than a frame's slot; run
+        every frame it keeps the animation loop from ever sleeping and starves the server.
+        Only the entry that changed is masked again."""
+        pane.add_user("call 070-174 06 05 please")
+        pane.insert(KIND_SYSTEM, "Charlotte → Marcus: ring me on 0701740605", 1000.0, header="iMessage")
+        entry = pane.add_assistant("Your number is +467017")
+        first = draw(pane, screen)
+        masked = []
+        real_mask = pane.redactor.mask
+        monkeypatch.setattr(pane.redactor, "mask", lambda text: masked.append(text) or real_mask(text))
+
+        assert draw(pane, screen) == first
+        assert masked == []
+
+        pane.update_entry(entry, "Your number is +46701740605, right?")
+        assert any(line.endswith("Your number is •••• 0605, right?") for line in draw(pane, screen))
+        assert masked == ["Your number is +46701740605, right?"]
+
     def test_an_empty_vault_masks_nothing(self, tmp_path, screen):
         from common.vault.Redactor import Redactor
         from common.vault.Vault import Vault
