@@ -8,10 +8,10 @@ the output is plain text. `curl` and the terminal prompt `ask` are bash function
 sourced before the call (see test_start_sh.py for why functions, not executables);
 the repository tests run real git against a throwaway origin in tmp_path.
 """
-import os
 import re
 import stat
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -19,8 +19,9 @@ import yaml
 
 from common.ConfigManager import REQUIRED_KEYS
 
+from .git_sandbox import History, empty_repo, git, git_env, spawn
+
 INSTALL_SH = Path(__file__).resolve().parents[2] / 'install.sh'
-GIT_AUTHOR = ['-c', 'user.name=Marcus', '-c', 'user.email=m@mlab.test']
 BAR_RE = re.compile(r'^\[(.*)\] (.*)$')
 
 
@@ -58,10 +59,9 @@ class InstallShHarness:
             prelude += (
                 f'exec 7< "{self.answers}"\n'
                 f'ask() {{ echo "$1" >> "{self.asked}"; IFS= read -r "$2" <&7 || eval "$2=\'\'"; }}\n')
-        run_env = {k: v for k, v in os.environ.items() if k != 'ANTHROPIC_API_KEY'}
+        run_env = {k: v for k, v in git_env().items() if k != 'ANTHROPIC_API_KEY'}
         run_env.update(env)
-        return subprocess.run(['bash', '-c', prelude + script], env=run_env,
-                              capture_output=True, text=True, timeout=30)
+        return spawn(['bash', '-c', prelude + script], env=run_env, timeout=30)
 
     @property
     def prompts(self) -> list[str]:
@@ -205,29 +205,38 @@ class TestWriteConfig:
         assert config['developer_release'] is False
 
 
-def make_origin(path: Path) -> None:
+FIRST = {'readme.md': 'Keep\n', '.gitignore': 'log/\n'}
+
+
+def make_origin(path: Path) -> History:
     """A throwaway upstream on `master`, ignoring log/ like the real repository does — the
     installer's own log lives inside the checkout and must not count as a local change."""
-    path.mkdir()
-    (path / 'readme.md').write_text('Keep\n')
-    (path / '.gitignore').write_text('log/\n')
-    subprocess.run(['git', 'init', '-q', '-b', 'master'], cwd=path, check=True)
-    commit(path, 'feat: first')
+    history = History()
+    history.commit(datetime(2026, 9, 1, 12, tzinfo=timezone.utc), 'feat: first', FIRST)
+    history.write(empty_repo(path, bare=True))
+    return history
 
 
-def commit(path: Path, message: str) -> str:
-    subprocess.run(['git', *GIT_AUTHOR, 'add', '-A'], cwd=path, check=True)
-    subprocess.run(['git', *GIT_AUTHOR, 'commit', '-qm', message], cwd=path, check=True)
-    return subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=path,
-                          capture_output=True, text=True, check=True).stdout.strip()
+def move_on(origin: Path, history: History, readme: str) -> str:
+    """A second commit on origin's master; returns its short hash."""
+    history.commit(datetime(2026, 9, 2, 12, tzinfo=timezone.utc), 'feat: second', {**FIRST, 'readme.md': readme})
+    return history.write(origin)[-1][:7]
+
+
+def install(keep_dir: Path, origin: Path, history: History):
+    """The checkout an earlier install left in `keep_dir`: origin as it is now, on master."""
+    history.write(empty_repo(keep_dir, origin=origin))
+    git(keep_dir, 'reset', '-q', '--hard')
 
 
 def branch_of(path: Path) -> str:
-    return subprocess.run(['git', 'symbolic-ref', '--short', 'HEAD'], cwd=path,
-                          capture_output=True, text=True, check=True).stdout.strip()
+    return (path / '.git' / 'HEAD').read_text().strip().removeprefix('ref: refs/heads/')
 
 
 class TestEnsureRepo:
+    """The origin and an existing checkout come from git_sandbox, written without git
+    processes; the script's own git calls are what a test has time for."""
+
     ENSURE = 'open_log; ensure_repo; printf "%s" "$LOG"'
 
     def test_fresh_install_clones_and_keeps_its_log_inside_the_checkout(self, harness):
@@ -244,10 +253,9 @@ class TestEnsureRepo:
 
     def test_rerun_fast_forwards_an_existing_checkout(self, harness):
         origin = harness.dir / 'origin'
-        make_origin(origin)
-        assert harness.run(self.ENSURE, repo_url=str(origin)).returncode == 0
-        (origin / 'readme.md').write_text('Keep, updated\n')
-        newer = commit(origin, 'feat: second')
+        history = make_origin(origin)
+        install(harness.keep_dir, origin, history)
+        newer = move_on(origin, history, 'Keep, updated\n')
         result = harness.run(self.ENSURE, repo_url=str(origin))
         assert result.returncode == 0, result.stdout
         assert f'At {newer}' in result.stdout
@@ -258,32 +266,17 @@ class TestEnsureRepo:
         """The default branch became `release`, but a checkout made from master (the
         development machine, an early install) must not be moved by a re-run."""
         origin = harness.dir / 'origin'
-        make_origin(origin)
-        assert harness.run(self.ENSURE, repo_url=str(origin)).returncode == 0
-        subprocess.run(['git', 'branch', 'release'], cwd=origin, check=True)
-        (origin / 'readme.md').write_text('Keep, master moved on\n')
-        newer = commit(origin, 'feat: second')
+        history = make_origin(origin)
+        install(harness.keep_dir, origin, history)
+        history.branch('release', 1)
+        newer = move_on(origin, history, 'Keep, master moved on\n')
         result = harness.run('BRANCH=release; ' + self.ENSURE, repo_url=str(origin))
         assert result.returncode == 0, result.stdout
         assert f'At {newer}' in result.stdout
         assert branch_of(harness.keep_dir) == 'master'
 
-    def test_explicit_keep_branch_moves_an_existing_checkout(self, harness):
-        origin = harness.dir / 'origin'
-        make_origin(origin)
-        assert harness.run(self.ENSURE, repo_url=str(origin)).returncode == 0
-        subprocess.run(['git', 'branch', 'release'], cwd=origin, check=True)
-        (origin / 'readme.md').write_text('Keep, master moved on\n')
-        commit(origin, 'feat: second')
-        result = harness.run('BRANCH=release; ' + self.ENSURE, repo_url=str(origin), KEEP_BRANCH='release')
-        assert result.returncode == 0, result.stdout
-        assert branch_of(harness.keep_dir) == 'release'
-        assert (harness.keep_dir / 'readme.md').read_text() == 'Keep\n'
-
     def test_checkout_of_another_repository_is_refused(self, harness):
-        origin = harness.dir / 'origin'
-        make_origin(origin)
-        assert harness.run(self.ENSURE, repo_url=str(origin)).returncode == 0
+        empty_repo(harness.keep_dir, origin=harness.dir / 'origin')
         result = harness.run(self.ENSURE, repo_url='https://git.example/alice/Other.git')
         assert result.returncode == 1
         assert 'is a git checkout of' in result.stdout

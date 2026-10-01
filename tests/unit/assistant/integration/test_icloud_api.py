@@ -713,8 +713,30 @@ class TestAutoSmsRequest:
         api._api = mock_service
         api._challenge_from_fresh_signin = True
 
+        both_asking = threading.Event()
+
+        class WatchedLock:
+            """The real lock, telling when the second worker has come for it."""
+
+            def __init__(self, lock):
+                self.lock = lock
+                self.askers = set()
+
+            def __enter__(self):
+                self.askers.add(threading.get_ident())
+                if len(self.askers) == 2:
+                    both_asking.set()
+                return self.lock.__enter__()
+
+            def __exit__(self, *exc):
+                return self.lock.__exit__(*exc)
+
+        api._auto_sms_lock = WatchedLock(api._auto_sms_lock)
+
         def slow_request():
-            time.sleep(0.1)
+            # Still in flight when the second worker asks: with the lock released before the
+            # request, that worker would find nothing pending and send an SMS of its own.
+            assert both_asking.wait(5)
             api._sms_requested_at = time.time()
             return "•••05"
 

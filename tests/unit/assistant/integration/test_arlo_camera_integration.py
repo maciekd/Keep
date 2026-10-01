@@ -124,9 +124,12 @@ class TestThreadingLock:
 
         original_do_connect = arlo._do_connect
 
+        connecting = threading.Event()
+
         def slow_do_connect():
             call_log.append(("enter", threading.current_thread().name))
-            time.sleep(0.05)
+            connecting.set()
+            time.sleep(0.01)
             call_log.append(("exit", threading.current_thread().name))
 
         arlo._do_connect = slow_do_connect
@@ -134,7 +137,7 @@ class TestThreadingLock:
         t1 = threading.Thread(target=arlo._ensure_connected, name="T1")
         t2 = threading.Thread(target=arlo._ensure_connected, name="T2")
         t1.start()
-        time.sleep(0.01)  # ensure T1 grabs lock first
+        assert connecting.wait(5)  # T1 holds the lock and is mid-connect when T2 arrives
         t2.start()
         t1.join(timeout=5)
         t2.join(timeout=5)

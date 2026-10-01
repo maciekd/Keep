@@ -124,7 +124,7 @@ def wait_for(predicate, timeout=5.0):
     while time.time() < deadline:
         if predicate():
             return True
-        time.sleep(0.02)
+        time.sleep(0.005)
     return False
 
 
@@ -140,7 +140,7 @@ def server():
 @pytest.fixture
 def client(server):
     c = HomeAssistantClient(server.url, TOKEN)
-    c.reconnect_min = 0.05
+    c.reconnect_min = 0.01
     yield c
     c.stop()
 
@@ -163,11 +163,13 @@ class TestHandshake:
 
     def test_a_rejected_token_is_fatal_and_does_not_reconnect(self, server):
         client = HomeAssistantClient(server.url, "bad-token")
-        client.reconnect_min = 0.05
+        client.reconnect_min = 0.01
         client.start()
+        thread = client._thread
         assert wait_for(lambda: client.auth_failed)
         assert "token rejected" in client.last_error and "home_assistant.token" in client.last_error
-        time.sleep(0.15)   # three reconnect delays
+        thread.join(5)     # the connection loop is over, so no reconnect delay is running
+        assert not thread.is_alive()
         assert server.connections == 1
         with pytest.raises(NotConnected):
             client.call("ping")

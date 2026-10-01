@@ -372,7 +372,9 @@ class TestPlaybackStallFailsafe:
         playback.audio_queue.put(b"chunk")
         _live_outposts(playback)
 
-        with patch.object(ServerPlayback, "PLAYBACK_STALL_TIMEOUT", 0.05), \
+        # A timeout already behind the first check: the drain loop polls every 0.1 s, and a
+        # positive one would cost the test a whole poll before the stall is seen.
+        with patch.object(ServerPlayback, "PLAYBACK_STALL_TIMEOUT", -1.0), \
              patch.object(ServerPlayback, "_capture_playback_stall_forensics"):
             playback.finish_reply("Hello")
 

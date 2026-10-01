@@ -151,7 +151,9 @@ class TestGetVehicleInfo:
             "charge_state": {"usable_battery_level": 60},
             "climate_state": {}
         }
-        with patch('assistant.prompt.sections.TeslaSectionGenerator.reverse_geocode', return_value="E6 Highway, Mellanstad"):
+        # Away from home with no route: the ETA lookup would be a real Distance Matrix request.
+        with patch('assistant.prompt.sections.TeslaSectionGenerator.reverse_geocode', return_value="E6 Highway, Mellanstad"), \
+             patch.object(section, '_get_eta_to_home', return_value=None):
             result = section._get_vehicle_info("VIN123", "Model 3", "car1")
         assert "Driving" in result
         assert "80 km/h" in result

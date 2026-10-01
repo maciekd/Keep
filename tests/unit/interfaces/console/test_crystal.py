@@ -482,7 +482,7 @@ def test_interlocking_cube_paints_the_same_picture_as_a_ray_cast():
     # planes, so they agree to rounding everywhere but along edges, where the two decide
     # "inside" with different arithmetic.
     r = Renderer(interlocking_cube(0.08, chamfer=0))
-    fb = Framebuffer(48, 32)
+    fb = Framebuffer(36, 24)
     w, h = fb.width, fb.height
 
     def on_edge(img, x, y):
@@ -842,18 +842,16 @@ def test_crystal_tab_plays_the_intro_on_real_time_and_i_and_o_restart_and_stop_i
     now[0] += 2.0                                              # a late frame counts as a quarter second
     tab.draw(TUIScreen(120, 40), 2)
     assert scene.flight == pytest.approx(first + 0.25)
-    for _ in range(12):                                        # quarter-second frames: the fewest draws that cover the flight
+    for _ in range(12):                                        # quarter-second frames on one row of picture: only the clock matters
         now[0] += 0.25
-        tab.draw(TUIScreen(120, 40), 3)
+        tab.draw(TUIScreen(8, SUB_CONTENT_TOP + 2), 3)
     assert scene.flight == pytest.approx(first + 3.25) and scene.shot.stage == FLY_IN
     tab.handle_input(' ')                                      # paused: the flight stands still
     now[0] += 1.0
     tab.draw(TUIScreen(120, 40), 4)
     assert scene.flight == pytest.approx(first + 3.25)
     tab.handle_input(' ')
-    for _ in range(36):
-        now[0] += 0.25
-        tab.draw(TUIScreen(120, 40), 5)
+    scene.skip_intro()                                         # the rest of the flight is the Intro's own test
     screen = TUIScreen(120, 40)
     tab.draw(screen, 6)
     assert scene.shot.stage == LOGO and scene.landed and math.isclose(scene.renderer.distance, 10.5)
@@ -908,18 +906,19 @@ def test_scene_pushes_the_faded_look_into_the_renderer_and_the_orbit_takes_it_ba
     screen = TUIScreen(80, 30)
     scene.restart_intro()
     end, fade = scene.intro.length(), scene.tuning["fade_seconds"]
-    while scene.flight < end - fade - 0.5:
-        now[0] += 0.25
+
+    def frame_at(flight):
+        """One frame with the flight's clock put at `flight`; the frames in between would only move it there."""
+        scene.flight = flight
         scene.draw(screen, 1, 1, 80, 29)
+
+    frame_at(end - fade - 0.5)
     assert scene.look_fade == 0.0 and scene.renderer.ambient == 0.04
-    while scene.flight < end - fade * 0.4:
-        now[0] += 0.25
-        scene.draw(screen, 1, 1, 80, 29)
+    frame_at(end - fade * 0.4)
     assert 0.0 < scene.look_fade < 1.0 and 0.04 < scene.renderer.ambient < 0.76
     assert 1.5 > scene.renderer.meshes[0].material.gloss > 0.4
-    while not scene.landed:
-        now[0] += 0.25
-        scene.draw(screen, 1, 1, 80, 29)
+    frame_at(end)
+    assert scene.landed
     assert scene.look_fade == 1.0 and scene.renderer.ambient == 0.76 and scene.renderer.ao_radius == 2.2
     assert scene.renderer.meshes[0].material.shininess == 90 and scene.renderer.meshes[-1].material.reflectivity == 0.12
     assert np.allclose(scene.renderer.lights[0][0], (61.5, 67.5, -4.5))

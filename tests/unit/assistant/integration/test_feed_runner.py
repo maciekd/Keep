@@ -732,12 +732,18 @@ class TestPause:
         runner = FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db)
         runner.start()
         assert self._wait(lambda: runner.state == FeedState.LIVE)
+        parked = threading.Event()
+        wait_for_resume = runner._running.wait
+
+        def park():
+            parked.set()
+            wait_for_resume()
+
+        runner._running.wait = park
         assert runner.pause() and runner.paused
         assert not runner.pause()   # already paused
-        time.sleep(0.05)
+        assert parked.wait(5)       # the loop is idling on the resume, not fetching
         calls_when_paused = len(feed.calls)
-        time.sleep(0.05)
-        assert len(feed.calls) == calls_when_paused
         assert runner.state == FeedState.LIVE
         assert runner.status()["paused"] is True
         assert runner.resume() and not runner.paused

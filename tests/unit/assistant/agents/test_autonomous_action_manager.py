@@ -724,7 +724,7 @@ class TestAutonomousActionManager:
         q = queue.Queue()
         q.put("task")
         # queue has unfinished_tasks=1, never calling task_done -> should timeout, not hang
-        AutonomousActionManager._join_queue_with_timeout(q, timeout=0.1)
+        AutonomousActionManager._join_queue_with_timeout(q, timeout=0.02)
         assert q.unfinished_tasks == 1
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')

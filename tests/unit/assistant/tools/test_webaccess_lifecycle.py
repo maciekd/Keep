@@ -463,25 +463,41 @@ class TestCdpWaitFor:
                 await WebAccess._cdp_wait_for(send(), 1.0)
         run(scenario())
 
+    class LateReply:
+        """A CDP call that answers only when the test lets it — after the caller's timeout —
+        and records how it ended."""
+
+        def __init__(self):
+            self.cancelled = self.finished = False
+            self._release = asyncio.Event()
+            self._settled = asyncio.Event()
+
+        async def call(self, *_args):
+            try:
+                await self._release.wait()
+                self.finished = True
+                return "late-reply"
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            finally:
+                self._settled.set()
+
+        async def arrive(self):
+            self._release.set()
+            await asyncio.wait_for(self._settled.wait(), 5)
+
     def test_timeout_abandons_the_call_without_cancelling_it(self):
-        cancelled, finished = [], []
+        reply = self.LateReply()
 
         async def scenario():
-            async def slow_send():
-                try:
-                    await asyncio.sleep(0.05)
-                except asyncio.CancelledError:
-                    cancelled.append(True)
-                    raise
-                finished.append(True)
-                return "late-reply"
             with pytest.raises(asyncio.TimeoutError):
-                await WebAccess._cdp_wait_for(slow_send(), 0.01)
-            await asyncio.sleep(0.1)
+                await WebAccess._cdp_wait_for(reply.call(), 0.01)
+            await reply.arrive()
 
         run(scenario())
-        assert cancelled == []
-        assert finished == [True]
+        assert not reply.cancelled
+        assert reply.finished
 
     def test_late_failure_of_abandoned_call_is_swallowed(self):
         # The abandoned task's eventual error must be retrieved, or asyncio
@@ -506,48 +522,32 @@ class TestCdpWaitFor:
 
     def test_slow_navigate_times_out_softly_without_cancelling_the_send(self):
         wa = make_wa()
-        cancelled = []
-
-        async def slow_send(cdp_obj):
-            try:
-                await asyncio.sleep(0.05)
-            except asyncio.CancelledError:
-                cancelled.append(True)
-                raise
-
+        reply = self.LateReply()
         tab = Mock()
-        tab.send = slow_send
+        tab.send = reply.call
 
         async def scenario():
             with pytest.raises(asyncio.TimeoutError):
                 await wa._async_navigate(tab, "https://x.example")
-            await asyncio.sleep(0.1)
+            await reply.arrive()
 
         with patch.object(WebAccess, '_NAV_COMMIT_TIMEOUT', 0.01):
             run(scenario())
-        assert cancelled == []
+        assert reply.finished and not reply.cancelled
 
     def test_slow_readiness_eval_times_out_softly_without_cancelling_it(self):
         wa = make_wa()
-        cancelled = []
-
-        async def slow_eval(self, tab, expr):
-            try:
-                await asyncio.sleep(0.05)
-            except asyncio.CancelledError:
-                cancelled.append(True)
-                raise
-            return 'complete'
+        reply = self.LateReply()
 
         async def scenario():
             status = await wa._async_wait_for_page_ready(Mock())
             assert status == "soft-timeout:evaluate"
-            await asyncio.sleep(0.1)
+            await reply.arrive()
 
-        with patch.object(WebAccess, '_evaluate', new=slow_eval), \
+        with patch.object(WebAccess, '_evaluate', new=lambda self, tab, expr: reply.call()), \
                 patch.object(WebAccess, '_PAGE_READY_EVAL_TIMEOUT', 0.01):
             run(scenario())
-        assert cancelled == []
+        assert reply.finished and not reply.cancelled
 
 
 @pytest.mark.unit

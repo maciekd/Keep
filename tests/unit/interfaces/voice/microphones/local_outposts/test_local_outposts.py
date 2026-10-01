@@ -2,6 +2,7 @@ import queue
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -3666,6 +3667,25 @@ class TestSileroVADNoGradLeak:
     stalls starved the capture callback, dropping recorded audio. is_speech must run the
     forward under inference_mode so no graph is built however long the VAD runs unreset."""
 
+    class _Torch:
+        """The two things SileroVAD asks of torch, with inference_mode observable — importing
+        the real torch costs half a second, and what matters here is where the forward runs."""
+
+        def __init__(self):
+            self.inferring = False
+
+        @contextmanager
+        def inference_mode(self):
+            self.inferring = True
+            try:
+                yield
+            finally:
+                self.inferring = False
+
+        @staticmethod
+        def from_numpy(chunk):
+            return chunk
+
     def _bare_vad(self, torch, model):
         # Build a SileroVAD without the heavyweight model download; inject a probe model.
         from interfaces.voice.microphones.local_outposts.VAD import SileroVAD
@@ -3675,14 +3695,14 @@ class TestSileroVADNoGradLeak:
         return vad
 
     def test_forward_runs_with_autograd_disabled(self):
-        torch = pytest.importorskip("torch")
         from interfaces.voice.microphones.local_outposts.VAD import SileroVAD
+        torch = self._Torch()
         seen = []
         vad = self._bare_vad(
-            torch, lambda chunk, sr: seen.append(torch.is_grad_enabled()) or torch.tensor(0.0))
+            torch, lambda chunk, sr: seen.append(torch.inferring) or SimpleNamespace(item=lambda: 0.0))
         vad.is_speech(np.zeros(SileroVAD.WINDOW, np.float32))
-        assert seen == [False], \
-            "Silero forward ran with autograd enabled — the unbounded-graph VAD leak is back"
+        assert seen == [True], \
+            "Silero forward ran outside inference_mode — the unbounded-graph VAD leak is back"
 
 
 class TestWhisperDownloadNotes:

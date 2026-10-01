@@ -15,12 +15,41 @@ def atlas():
     return module
 
 
-def test_descriptions_and_tour_match_the_source_tree(atlas):
+MODULE_NODES_KEY = "floxy/atlas-modules"
+
+
+@pytest.fixture
+def unchanged_modules_from_the_cache(atlas, request, monkeypatch):
+    """build_tree parses every source file, 0.2 s of compile() on each run. A module's node depends
+    only on its file, build.py and descriptions.py, so the nodes are kept in the pytest cache
+    and only the files changed since the last run are parsed again."""
+    cache = request.config.cache
+    stamp = [(REPO_DIR / "docs" / "atlas" / name).stat().st_mtime_ns for name in ("build.py", "descriptions.py")]
+    stored = cache.get(MODULE_NODES_KEY, None) or {}
+    known = stored.get("modules", {}) if stored.get("stamp") == stamp else {}
+    seen = {}
+    parse = atlas._module
+
+    def module(path):
+        stat = path.stat()
+        version = [stat.st_mtime_ns, stat.st_size]
+        hit = known.get(str(path))
+        node = hit["node"] if hit and hit["version"] == version else parse(path)
+        seen[str(path)] = {"version": version, "node": node}
+        return node
+
+    monkeypatch.setattr(atlas, "_module", module)
+    yield
+    if seen != known:
+        cache.set(MODULE_NODES_KEY, {"stamp": stamp, "modules": seen})
+
+
+def test_descriptions_and_tour_match_the_source_tree(atlas, unchanged_modules_from_the_cache):
     assert atlas.problems(atlas.build_tree()) == []
 
 
 def test_a_renamed_tour_module_is_reported(atlas, monkeypatch):
-    tree = atlas.build_tree()
+    tree = {"id": "root", "kind": "system", "desc": "A tree without the module the tour names."}
     monkeypatch.setattr(atlas, "TOUR", [("src/assistant/Renamed.py", "Gone.")])
     assert any("TOUR step 1" in p for p in atlas.problems(tree))
 

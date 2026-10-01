@@ -43,11 +43,10 @@ def title_text(screen, logo):
 def test_landing_types_the_title_beside_the_logo_then_hands_over_to_the_tabs():
     intro, scene, clock = make()
     intro.draw(TUIScreen(80, 24), 0)
-    length = scene.intro.length()
-    while scene.flight < length:
-        clock.now += 0.2
-        screen = TUIScreen(80, 24)
-        owned = intro.draw(screen, 0)
+    scene.flight = scene.intro.length() - 0.1   # the flight's frames are test_crystal's; this one starts at its last
+    clock.now += 0.2
+    screen = TUIScreen(80, 24)
+    owned = intro.draw(screen, 0)
     assert owned is True and intro.state == TITLING and intro.playing and scene.shot.stage == LOGO
     logo = intro.logo(screen)
     assert logo is not None and title_text(screen, logo) == "", "nothing typed yet on the landing frame"

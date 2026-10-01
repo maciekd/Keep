@@ -140,7 +140,7 @@ class TestProgress:
         from assistant.llm.OllamaLLM import OllamaLLM
         session.SPINNER_TICK_SECONDS = 0.01
         with patch.object(OllamaLLM, "prefill_progress", return_value=pct):
-            run_reply(session, hub, [(0.05, Thinking("hm", 3)), (0.05, Token("Hi")), RoundEnd(), None])
+            run_reply(session, hub, [(0.03, Thinking("hm", 3)), (0.03, Token("Hi")), RoundEnd(), None])
         phases = [p.phase for p in transport.drafts[0].progress]
         assert phases[0] == PHASE_WAITING and PHASE_THINKING in phases and PHASE_PREFILL not in phases
 
@@ -152,15 +152,35 @@ class TestProgress:
     def test_a_running_command_shows_as_the_command_phase_until_it_completes(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
         handle = hub.send_command_notification("Reading x", source=transport.source, conversation=CONV)
-        threading.Timer(0.06, hub.complete_command_notification, args=(handle, "done after 0.1s")).start()
-        run_reply(session, hub, [(0.15, Token("Hi")), RoundEnd(), None])
+        completed = []
+
+        def shown(phase):
+            return wait_until(lambda: any(p.phase == phase for d in transport.drafts[:1] for p in d.progress),
+                              interval=0.002)
+
+        def events():
+            """The command ends once it has been shown running, the reply starts once the
+            wait for the LLM has been shown: the phases pace the script, not a timer."""
+            shown(PHASE_COMMANDS)
+            time.sleep(0.02)    # the command takes a while, so the two ways of counting the wait differ
+            completed.append(time.time())
+            hub.complete_command_notification(handle, "done")
+            shown(PHASE_WAITING)
+            yield Token("Hi")
+            yield RoundEnd()
+            yield None
+
+        assistant = FakeAssistant()
+        assistant.events = events()
+        run_reply(session, hub, [], assistant=assistant)
+        replied = time.time()
         progress = transport.drafts[0].progress
         phases = [p.phase for p in progress]
         assert phases[0] == PHASE_COMMANDS and progress[0].commands == 1
         assert PHASE_WAITING in phases and phases.index(PHASE_WAITING) > 0
         assert all(p == PHASE_WAITING for p in phases[phases.index(PHASE_WAITING):])
         # The wait for the LLM is counted from the command's end, not from the request's start.
-        assert progress[-1].elapsed < 0.1
+        assert progress[-1].elapsed <= replied - completed[0]
 
     def test_commands_of_another_conversation_do_not_show(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
@@ -450,7 +470,7 @@ class TestAlbums:
         assert len(assistant.requests) == 1
 
     def test_captions_are_concatenated_and_default_to_see_images(self, session, hub, transport):
-        session.ALBUM_DEBOUNCE_SECONDS = 0.02
+        session.ALBUM_DEBOUNCE_SECONDS = session.PHOTO_DEBOUNCE_SECONDS = 0.01
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.submit(self._photo(caption="First caption", group_id="g"))
@@ -486,25 +506,33 @@ class TestAlbums:
         assert wait_until(lambda: not session.busy)
         assert [q for _, q in assistant.requests] == ["[Voice message, transcribed via STT] hi"]
 
+    def _held(self, session):
+        """Wait until the album's debounce has run out once and the batch was held: the
+        dispatch re-arms the timer when it finds a photo still downloading."""
+        timer = session._album.timer
+        return wait_until(lambda: session._album is not None and session._album.timer is not timer, interval=0.002)
+
     def test_superseded_album_never_dispatches_a_second_request(self, session, hub, transport):
-        session.ALBUM_DEBOUNCE_SECONDS = 0.05
+        session.ALBUM_DEBOUNCE_SECONDS = 0.2
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.submit(self._photo(group_id="g"))
+        debounce = session._album.timer
         session.submit(msg(kind=KIND_VIDEO, text="", attachments=[]))  # any non-text kind drops the batch
         assert wait_until(lambda: transport.sent_texts)  # the video path apologised, i.e. it ran
-        time.sleep(0.15)  # past the album debounce: a stale timer would fire here
+        debounce.join(5)  # cancelled, it ends at once; a stale one would fire first
+        assert not debounce.is_alive()
         assert assistant.requests == []
         assert session._album is None
 
     def test_album_waits_for_announced_photos_still_downloading(self, session, hub, transport):
-        session.ALBUM_DEBOUNCE_SECONDS = 0.02
+        session.ALBUM_DEBOUNCE_SECONDS = 0.005
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.expect_photo("Anna", "g")
         session.expect_photo("Anna", "g")
         session.submit(self._photo(b"one", group_id="g"))
-        time.sleep(0.15)  # many debounces later the batch still holds for the slow member
+        assert self._held(session) and self._held(session)  # debounces later the batch still holds for the slow member
         assert assistant.requests == []
         session.submit(self._photo(b"two", group_id="g"))
         assert wait_until(lambda: assistant.requests)
@@ -512,12 +540,12 @@ class TestAlbums:
         assert len(assistant.requests) == 1
 
     def test_text_arriving_during_the_download_becomes_the_caption(self, session, hub, transport):
-        session.PHOTO_DEBOUNCE_SECONDS = 0.02
+        session.PHOTO_DEBOUNCE_SECONDS = session.ALBUM_DEBOUNCE_SECONDS = 0.005
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.expect_photo("Anna")
         session.submit(msg(text="What is this?"))
-        time.sleep(0.1)
+        assert self._held(session)
         assert assistant.requests == []  # not a text request of its own
         session.submit(self._photo(b"one"))
         assert wait_until(lambda: assistant.requests)
@@ -537,8 +565,8 @@ class TestAlbums:
         assert len(assistant.requests[0][0].images) == 1
 
     def test_stuck_download_stops_holding_the_album(self, session, hub, transport):
-        session.ALBUM_DEBOUNCE_SECONDS = 0.02
-        session.ALBUM_DOWNLOAD_TIMEOUT_SECONDS = 0.1
+        session.ALBUM_DEBOUNCE_SECONDS = 0.005
+        session.ALBUM_DOWNLOAD_TIMEOUT_SECONDS = 0.03
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.expect_photo("Anna", "g")

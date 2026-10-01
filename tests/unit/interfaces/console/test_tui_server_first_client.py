@@ -1,6 +1,7 @@
 """The first client after a process start: the curtains play before the setup that clears the
 screen, the client is registered only afterwards, and what it typed meanwhile is dropped
 except for a resize. Later clients get the setup straight away."""
+import select
 import socket
 import threading
 import time
@@ -115,13 +116,13 @@ class TestFirstClient:
         client.close()
 
     def test_a_key_typed_during_the_curtains_is_dropped_but_a_resize_is_honoured(self, server):
-        started, release = threading.Event(), threading.Event()
+        started = threading.Event()
         real = TUIServer._draw_curtains
 
-        def draw(self_, *args):
+        def draw(self_, client_socket, *args):
             started.set()
-            real(self_, *args)
-            release.wait(3)
+            real(self_, client_socket, *args)
+            select.select([client_socket], [], [], 3)   # the curtains last until the type-ahead has arrived
 
         with patch.object(TUIServer, "_draw_curtains", draw):
             client = self.connect(server)
@@ -129,8 +130,6 @@ class TestFirstClient:
             # that same recv and the server would fall back to 80x24.
             assert started.wait(3)
             client.sendall(b"q\nRESIZE 30 100\n")
-            time.sleep(0.1)
-            release.set()
             self.wait_for_clients(server, 1)
         registered = next(iter(server.clients))
         assert server.client_dimensions[registered] == (100, 30)

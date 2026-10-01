@@ -801,12 +801,10 @@ def test_search_history_overfetch_covers_broad_query(floxy_db):
     now = time.time()
     # 250 matching rows — comfortably past the old 200 cap, well under the new
     # 2000 ceiling. Keeps the test fast (<1s) while still pinning the invariant.
-    for i in range(250):
-        floxy_db.add_history_entry(
-            "user",
-            f"Frances did activity number {i} on a regular afternoon today",
-            now - i,
-        )
+    floxy_db.add_history_entries([
+        ("user", f"Frances did activity number {i} on a regular afternoon today", now - i, None)
+        for i in range(250)
+    ])
 
     results = floxy_db.search_history("Frances", limit=250)
 

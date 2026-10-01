@@ -946,11 +946,14 @@ class TestPdfFetching:
         mock_response = Mock()
         mock_response.headers = {}
         mock_response.raise_for_status = Mock()
-        chunk = b'x' * (1024 * 1024)
-        mock_response.iter_content.return_value = [chunk] * 55
+        chunk = b'x' * 1024
+        mock_response.iter_content.return_value = [chunk] * 5
         mock_get.return_value = mock_response
 
-        result = wa._fetch_pdf_content("https://example.com/huge.pdf")
+        # No Content-Length to refuse on, so the cap is met while streaming; a cap of 3 kB
+        # trips it without building the real 50 MB in memory.
+        with patch('assistant.tools.PdfExtractor.MAX_PDF_SIZE', 3 * 1024):
+            result = wa._fetch_pdf_content("https://example.com/huge.pdf")
         assert "too large" in result
 
     @patch('assistant.tools.WebAccess.requests.get')

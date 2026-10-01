@@ -98,10 +98,15 @@ class TestPhotosDatabase:
         works in chunks of 500; the boundary must not lose the tail or its history."""
         from common.FloxyDatabase import PHOTO_HISTORY_SOURCE
         guids = [f"BULK/{i}" for i in range(501)]
-        for guid in guids:
-            self._store_sample(floxy_db, local_id=guid, short_description=f"clip {guid}")
         self._store_sample(floxy_db, local_id="KEEP/1", short_description="a red barn")
+        # The bulk rows are copies of that one, written in a single transaction: 501 calls of
+        # store_photo are 501 commits.
         conn = sqlite3.connect(floxy_db.db_path)
+        copied = ", ".join(row[1] for row in conn.execute("PRAGMA table_info(photos)")
+                           if row[1] not in ("id", "asset_guid"))
+        conn.executemany(f"INSERT INTO photos (asset_guid, {copied}) "
+                         f"SELECT ?, {copied} FROM photos WHERE asset_guid = 'KEEP/1'", [(guid,) for guid in guids])
+        conn.commit()
         last_id = conn.execute("SELECT id FROM photos WHERE asset_guid = 'BULK/500'").fetchone()[0]
         conn.close()
         floxy_db.add_history_entry("system", f"New photo taken: clip [photo_id={last_id}]\n\nThe last one.",
@@ -2240,12 +2245,13 @@ class TestPhotoProcessorBulkVideoThrottle:
         in_flight = []
         peak = [0]
         lock = threading.Lock()
+        both_slots_taken = threading.Barrier(2)
 
         def fake_process(row):
             with lock:
                 in_flight.append(row["uuid"])
                 peak[0] = max(peak[0], len(in_flight))
-            time.sleep(0.05)
+            both_slots_taken.wait(5)    # each clip stays in flight until a second one is, too
             with lock:
                 in_flight.remove(row["uuid"])
             return False
@@ -2260,7 +2266,7 @@ class TestPhotoProcessorBulkVideoThrottle:
             status, _ = processor.process_bulk_unprocessed(count=8)
 
         assert status == "ok"
-        assert peak[0] <= 2
+        assert peak[0] == 2
 
 
 # ---------------------------------------------------------------------------

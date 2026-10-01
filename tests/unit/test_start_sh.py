@@ -132,7 +132,7 @@ class TestStartSh:
             f"""bash -c 'trap "" TERM; touch "{trap_ready}"; while :; do /bin/sleep 1; done'""")
         deadline = time.time() + 5.0
         while not trap_ready.exists() and time.time() < deadline:
-            time.sleep(0.05)
+            time.sleep(0.005)
         assert trap_ready.exists(), "victim never installed its TERM trap"
         result = harness.run(victim)
         assert result.returncode == 0

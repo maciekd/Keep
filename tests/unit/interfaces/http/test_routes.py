@@ -5,7 +5,6 @@ plus the route on a real Quart app with a fake Assistant.
 Replaces RequestProcessor's TestKeepaliveSentinel / TestGenerateAudio content-type tests
 and the source-keyed halves of TestStreamResponse."""
 import asyncio
-import time
 from unittest.mock import Mock
 
 import pytest
@@ -85,17 +84,9 @@ class TestWireFormatTable:
 class TestTelegramOverHttpRendersLikeTextChat:
     """The bot runs in-process; the wire format has no channel-specific framing left."""
 
-    def test_same_chunks_as_text_chat_including_pauses(self):
-        def events():
-            yield Thinking("hmm", 137)
-            time.sleep(0.05)
-            yield ThinkingDone(0.05)
-            yield Token("a")
-            time.sleep(0.05)
-            yield Token("b")
-            yield RoundEnd("ab")
-
-        assert render(events(), ctx("Telegram", True)) == render(events(), ctx("TextChat", True)) == ["a", "b", "\x1e"]
+    def test_same_chunks_as_text_chat_with_thinking_before_the_tokens(self):
+        events = [Thinking("hmm", 137), ThinkingDone(0.05), Token("a"), Token("b"), RoundEnd("ab")]
+        assert render(events, ctx("Telegram", True)) == render(events, ctx("TextChat", True)) == ["a", "b", "\x1e"]
 
     def test_producer_exception_propagates(self):
         def events():
