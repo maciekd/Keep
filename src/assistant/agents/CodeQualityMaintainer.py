@@ -420,21 +420,34 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _pr_title_and_files(number: int) -> tuple[str, list[str]]:
-        """A PR's title and every path it changes; raises when gh fails or hands back fewer paths
-        than the PR changes (gh lists at most 100), since an unseen path cannot be vouched for."""
-        result = subprocess.run(["gh", "pr", "view", str(number), "--json", "title,files,changedFiles"],
-                                cwd=WORKING_DIR, capture_output=True, text=True, timeout=GIT_TIMEOUT)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or f"gh pr view exited {result.returncode}")
-        pr = json.loads(result.stdout)
-        paths = [f["path"] for f in pr.get("files") or []]
-        if len(paths) != pr.get("changedFiles"):
-            raise RuntimeError(f"gh listed {len(paths)} of {pr.get('changedFiles')} changed files")
+        """A PR's title and every path it touches — for a renamed file both the new and the previous
+        path, so moving src/x.py under tests/ still shows as a change outside tests/ (`gh pr view`
+        only knows the new one, hence the REST file list). Raises when gh fails or hands back fewer
+        files than the PR changes, since an unseen path cannot be vouched for."""
+        def gh(*args: str) -> str:
+            result = subprocess.run(["gh", *args], cwd=WORKING_DIR, capture_output=True, text=True,
+                                    timeout=GIT_TIMEOUT)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or f"gh {args[0]} exited {result.returncode}")
+            return result.stdout
+
+        pr = json.loads(gh("pr", "view", str(number), "--json", "title,changedFiles"))
+        files = [json.loads(line) for line in
+                 gh("api", f"repos/{{owner}}/{{repo}}/pulls/{number}/files", "--paginate",
+                    "--jq", ".[] | {filename, previous_filename}").splitlines() if line.strip()]
+        if len(files) != pr.get("changedFiles"):
+            raise RuntimeError(f"gh listed {len(files)} of {pr.get('changedFiles')} changed files")
+        paths = []
+        for f in files:
+            paths.append(f["filename"])
+            if f.get("previous_filename"):
+                trace(f"CodeQualityMaintainer: PR #{number} moves {f['previous_filename']} to {f['filename']}")
+                paths.append(f["previous_filename"])
         return pr.get("title", ""), paths
 
     def _step_auto_merge(self) -> str:
         """Last step of the night, so the test-only PRs the earlier steps opened are merged with it.
-        Plain code, no Claude Code run: a PR qualifies when every path it changes is under tests/."""
+        Plain code, no Claude Code run: a PR qualifies when every path it touches is under tests/."""
         info("CodeQualityMaintainer: auto-merge of test-only PRs...")
         candidates = self._auto_merge_candidates()
         if not candidates:

@@ -223,6 +223,14 @@ class TestStepAutoMerge:
         maintainer._step_auto_merge()
         assert self._merges(gh) == [["gh", "pr", "merge", "7", "--squash", "--delete-branch"]]
 
+    @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7])
+    def test_a_file_moved_into_tests_from_outside_is_not_merged(self, mock_candidates, gh, maintainer):
+        moved = ("test: move the parser", ["tests/unit/Parser.py", "src/common/Parser.py"])
+        with patch.object(CodeQualityMaintainer, '_pr_title_and_files', return_value=moved):
+            report = maintainer._step_auto_merge()
+        assert self._merges(gh) == []
+        assert "src/common/Parser.py" in report.split("Skipped PRs")[1]
+
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7, 9])
     def test_a_refused_merge_is_reported_and_the_next_pr_still_merges(self, mock_candidates, gh, maintainer):
         gh.fail.add(7)
@@ -252,20 +260,33 @@ class TestStepAutoMerge:
 @pytest.mark.unit
 class TestPrTitleAndFiles:
     @staticmethod
-    def _view(files, changed):
-        return Mock(returncode=0, stderr="", stdout=json.dumps(
-            {"title": "test: cover the parser", "files": [{"path": p} for p in files], "changedFiles": changed}))
+    def _gh(files, changed):
+        """subprocess.run as a fake gh: `files` are (filename, previous_filename) pairs."""
+        def run(cmd, **kwargs):
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return Mock(returncode=0, stderr="", stdout=json.dumps(
+                    {"title": "test: cover the parser", "changedFiles": changed}))
+            return Mock(returncode=0, stderr="", stdout="".join(
+                json.dumps({"filename": name, "previous_filename": previous}) + "\n" for name, previous in files))
+        return run
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_returns_the_title_and_every_changed_path(self, mock_run):
-        mock_run.return_value = self._view(["tests/unit/a.py", "tests/unit/b.py"], 2)
+        mock_run.side_effect = self._gh([("tests/unit/a.py", None), ("tests/unit/b.py", None)], 2)
         assert CodeQualityMaintainer._pr_title_and_files(7) == \
             ("test: cover the parser", ["tests/unit/a.py", "tests/unit/b.py"])
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_a_renamed_file_counts_under_its_previous_path_too(self, mock_run):
+        """Only the new path is under tests/; the PR still takes src/common/Parser.py away."""
+        mock_run.side_effect = self._gh([("tests/unit/Parser.py", "src/common/Parser.py")], 1)
+        assert set(CodeQualityMaintainer._pr_title_and_files(7)[1]) == \
+            {"tests/unit/Parser.py", "src/common/Parser.py"}
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_refuses_a_file_list_shorter_than_the_pr(self, mock_run):
-        """gh lists at most 100 files; the paths it left out could be outside tests/."""
-        mock_run.return_value = self._view(["tests/unit/a.py"], 140)
+        """The paths gh left out could be outside tests/."""
+        mock_run.side_effect = self._gh([("tests/unit/a.py", None)], 140)
         with pytest.raises(RuntimeError):
             CodeQualityMaintainer._pr_title_and_files(7)
 
