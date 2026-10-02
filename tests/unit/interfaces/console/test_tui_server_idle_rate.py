@@ -102,3 +102,20 @@ def test_a_key_wakes_the_loop(running):
     assert wait_until(lambda: srv.idle)
     srv._emit_key("x", ("test", 0))
     assert wait_until(lambda: not srv.idle, timeout=0.1)
+
+
+def test_a_wake_landing_while_a_frame_is_being_finished_is_not_lost(running, monkeypatch):
+    """A wake between the loop's read of the event and the end of the frame used to be cleared
+    unseen, and the change it announced waited out a whole idle slot. The widest such window
+    is the log call of the frame that turns idle, so the wake is dropped in right there."""
+    srv, picture = running
+    idle_at_each_log = []
+
+    def log_and_wake_once(_message):
+        idle_at_each_log.append(srv.idle)
+        if len(idle_at_each_log) == 1:
+            srv.wake()
+
+    monkeypatch.setattr(module, "trace", log_and_wake_once)
+    assert wait_until(lambda: len(idle_at_each_log) >= 2), "the wake was erased: the loop stayed idle"
+    assert idle_at_each_log[:2] == [True, False], "the first thing after turning idle is the woken frame"

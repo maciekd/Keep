@@ -340,6 +340,27 @@ class TestCachedVoiceSynthesizer:
         assert synth.request_language == "sv-SE"
         mock_impl.set_request_language.assert_called_once_with("sv-SE")
 
+    def test_night_voice_ban_reaches_the_engine_and_keeps_day_and_night_recordings_apart(self, temp_cache_dir):
+        """The engine every request talks to is behind this wrapper: a phone's reply at night
+        must come out in the day voice, and must not be served from (or saved over) the
+        whispered recording of the same phrase."""
+        from unittest.mock import patch
+        from assistant.prompt.TimeOfDay import TimeOfDay
+        module = 'interfaces.voice.tts.ElevenLabsVoiceSynthesizer'
+        with patch(f'{module}.config') as engine_config, patch(f'{module}.TimeOfDay') as mock_tod:
+            engine_config.get_api_key.return_value = "test-key"
+            mock_tod.get_current.return_value = TimeOfDay.NIGHT
+            mock_tod.DAY = TimeOfDay.DAY
+            from interfaces.voice.tts.ElevenLabsVoiceSynthesizer import ElevenLabsVoiceSynthesizer
+            synth = CachedVoiceSynthesizer(ElevenLabsVoiceSynthesizer())
+            synth.cache_dir = temp_cache_dir
+            whispered = synth._get_cache_filename("Good night, Marcus")
+            synth.set_whisper_allowed(False)
+            spoken = synth._get_cache_filename("Good night, Marcus")
+            synth.set_whisper_allowed(True)
+            assert spoken != whispered
+            assert synth._get_cache_filename("Good night, Marcus") == whispered
+
     # ===== start() refuses an engine whose credentials are not set =====
 
     def test_start_with_unset_credentials_logs_an_error_and_ends_silently(self, synth, mock_impl):

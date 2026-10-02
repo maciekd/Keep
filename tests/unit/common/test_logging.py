@@ -182,3 +182,29 @@ class TestLogMasker:
 
         no_log_masker.set_log_masker(masker)
         assert no_log_masker.masked_for_log("hello") == "hello [log masking failed: RuntimeError: boom]"
+
+
+@pytest.mark.unit
+class TestOnlyTheServerProcessWritesLogFiles:
+    """A probe script run from the repository root once appended its lines to the live
+    server's log; file logging is on only for a process started as floxy_ai_server.py."""
+
+    @staticmethod
+    def _file_logging_disabled(monkeypatch, argv) -> bool:
+        import importlib.util
+        import sys
+        import common.logging as logging_mod
+        monkeypatch.setattr(sys, "argv", argv)
+        spec = importlib.util.spec_from_file_location("logging_fresh_import", logging_mod.__file__)
+        fresh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+        return fresh.disable_file_logging
+
+    def test_the_server_launcher_logs_to_files_wherever_it_is_started_from(self, monkeypatch):
+        assert not self._file_logging_disabled(monkeypatch, ["floxy_ai_server.py", "--port", "8800"])
+        assert not self._file_logging_disabled(monkeypatch, ["/srv/keep.example/floxy_ai_server.py"])
+
+    @pytest.mark.parametrize("argv", [["probe_watch_list.py"], ["-c"], [""], [],
+                                      ["/srv/keep.example/tui.py"], ["not_floxy_ai_server.py.bak"]])
+    def test_any_other_process_importing_the_tree_does_not(self, monkeypatch, argv):
+        assert self._file_logging_disabled(monkeypatch, argv)
