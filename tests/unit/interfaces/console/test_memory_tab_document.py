@@ -219,6 +219,18 @@ class TestScrolling:
         tab.handle_input("home")
         assert self.facts(tab)[0] == 1
 
+    def test_end_before_the_first_draw_lands_on_the_last_page(self, tab):
+        """End used to take the row count of the last drawn frame; before any frame there was none
+        and the key did nothing."""
+        tab.handle_input("end")
+        assert "the last line" in text_of(draw(tab, width=NARROW))
+
+    def test_end_reaches_the_end_of_a_document_that_grew_since_the_last_frame(self, tab):
+        draw(tab, width=NARROW)
+        MemoryFile.write("# First\n" + numbered(3 * self.COUNT) + "# Second\nthe last line\n", tab.memory_file_path)
+        tab.handle_input("end")
+        assert "the last line" in text_of(draw(tab, width=NARROW))
+
     def test_one_step_back_from_far_past_the_end_is_one_step(self, tab):
         draw(tab, width=NARROW)
         tab.handle_input("end")

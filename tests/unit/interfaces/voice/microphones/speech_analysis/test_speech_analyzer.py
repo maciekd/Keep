@@ -462,3 +462,43 @@ class TestSpeechAnalyzer:
         analyzer.add_phrase("what time is it", "kitchen", 0.9, "whisper")
         analyzer.mark_scribe_settled("what time is it")
         assert analyzer.scribe_has_settled(old_gen)
+
+    # ===== Scribe wake-word confirmation (what outweighs another mic's veto) =====
+
+    def test_a_confirmation_covers_only_the_phrase_it_was_heard_on(self, analyzer):
+        """Mics whose Whisper transcripts disagree are each hallucinating over background
+        speech: one Scribe hearing the wake word on its phrase says nothing about the other
+        mic's fire, so the veto on that one must still count"""
+        analyzer.add_phrase("read a bedtime story", "hall", 0.9, "whisper")
+        analyzer.add_phrase("defrost the car", "kitchen", 0.9, "whisper")
+        assert analyzer.mark_wake_word_confirmed("read a bedtime story", "hall")
+        assert analyzer.wake_word_confirmed_by("read a bedtime story") == "hall"
+        assert analyzer.wake_word_confirmed_by("defrost the car") is None
+
+    def test_a_confirmation_is_matched_on_the_normalized_phrase(self, analyzer):
+        """The Scribe job and the vetoing mic each carry their own punctuation and case of the
+        same Whisper phrase; the match is on the words"""
+        analyzer.add_phrase("defrost the car", "kitchen", 0.9, "whisper")
+        assert analyzer.mark_wake_word_confirmed("Defrost the car.", "kitchen")
+        assert analyzer.wake_word_confirmed_by("defrost the car!") == "kitchen"
+
+    def test_a_confirmation_from_an_unlabelled_mic_still_counts(self, analyzer):
+        """The caller tells a confirmation from none by `is not None`, so an outpost that sent
+        no label must not look like no confirmation"""
+        analyzer.add_phrase("defrost the car", "", 0.9, "whisper")
+        assert analyzer.mark_wake_word_confirmed("defrost the car", "")
+        assert analyzer.wake_word_confirmed_by("defrost the car") == ""
+
+    def test_a_confirmation_for_a_phrase_outside_the_window_is_not_recorded(self, analyzer):
+        analyzer.add_phrase("defrost the car", "kitchen", 0.9, "whisper")
+        assert not analyzer.mark_wake_word_confirmed("open the garage", "hall")
+        assert analyzer.wake_word_confirmed_by("open the garage") is None
+
+    def test_clean_forgets_the_confirmations_of_the_previous_utterance(self, analyzer):
+        """The same words said again in the next utterance are a new fire; last time's Scribe
+        verdict says nothing about it"""
+        analyzer.add_phrase("defrost the car", "kitchen", 0.9, "whisper")
+        analyzer.mark_wake_word_confirmed("defrost the car", "kitchen")
+        analyzer.clean()
+        analyzer.add_phrase("defrost the car", "kitchen", 0.9, "whisper")
+        assert analyzer.wake_word_confirmed_by("defrost the car") is None
