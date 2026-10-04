@@ -153,6 +153,19 @@ class TestOutline:
         text = text_of(draw(tab, width=WIDE))
         assert "Outline" not in text and "Marcus likes tea." in text
 
+    def test_the_parts_of_the_sections_are_listed_while_they_fit_and_left_out_when_they_do_not(self, tab):
+        def outline(screen):
+            return [screen.row_text(1, y, 40).strip() for y in range(SUB_CONTENT_TOP, HEIGHT)]
+
+        MemoryFile.write("# A\n## A1\n- one\n# B\n## B1\n- two\n", tab.memory_file_path)
+        shown = outline(draw(tab, width=WIDE))
+        assert "A1" in shown and "B1" in shown
+        parts = "".join(f"## A{n}\ntext {n}\n" for n in range(1, HEIGHT + 1))
+        MemoryFile.write(f"# A\n{parts}# B\n## B1\n- two\n", tab.memory_file_path)
+        shown = outline(draw(tab, width=WIDE))
+        assert any(row.startswith("● A") for row in shown) and any(row.startswith("● B") for row in shown)
+        assert not any(row in ("A1", "B1") for row in shown)
+
     def test_the_section_being_read_is_the_highlighted_one(self, tab):
         MemoryFile.write("# First\n" + numbered(80) + "# Second\n" + numbered(80), tab.memory_file_path)
 
