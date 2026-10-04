@@ -3,14 +3,15 @@ import difflib
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
-from .ScrollableTabView import COLOR_HINT, draw_scrollbar
+from .ScrollableTabView import draw_scrollbar
 from .TabView import SUB_CONTENT_TOP, TabView
 from assistant import FirstRun
 from common.logging import trace
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
 from interfaces.console import Theme
-from interfaces.console.widgets import Markdown, Tile
+from interfaces.console.widgets import Board, Markdown, Tile
+from interfaces.console.widgets.Board import SummaryTile
 from interfaces.console.widgets.DiffText import (COLOR_ADDED_HIGHLIGHT_BG, COLOR_ADDED_LINE_BG, COLOR_GUTTER_ADD,
                                                  COLOR_GUTTER_DEL, COLOR_REMOVED, COLOR_REMOVED_HIGHLIGHT_BG,
                                                  COLOR_REMOVED_LINE_BG, inline_diff)
@@ -22,10 +23,6 @@ from interfaces.console.widgets.SecretMarks import mark_masks
 FIRST_CURATION_LABEL = "Heads up"
 FIRST_CURATION_NOTICE = ("Keep is building its memory for the first time. What you read here is a "
                          "work in progress and may look wrong until that finishes.")
-
-# A summary tile: its label, the value in its title strip, the value's colour, the row under it.
-SummaryTile = Tuple[str, str, Color, List[Tuple[str, Color]]]
-
 
 class Stats(NamedTuple):
     """What the text on show amounts to (a diff's removed lines left out)."""
@@ -74,11 +71,6 @@ class MemoryTab(TabView):
     NOTES_BAND = "New notes"
     SECTIONS_LABEL = "Sections"
 
-    LEFT = 3
-    RIGHT_MARGIN = 2
-    GAP = 2
-    SUMMARY_H = 1 + Tile.CARD_CHROME
-    SUMMARY_TILE_MIN_W = 30              # a narrower screen shows the first tiles only
     BODY_MIN_H = Tile.CARD_CHROME + 6    # the document's height below which the summary tiles give way
     OUTLINE_MIN_SCREEN = 110             # screen columns from which the outline sits beside the text
     OUTLINE_MIN_W = 36
@@ -146,42 +138,38 @@ class MemoryTab(TabView):
         if FirstRun.curation_progress() is not None:
             self._draw_first_curation_notice(screen, y)
             y += self.NOTICE_ROWS + 1
-        available = screen.width - self.LEFT - self.RIGHT_MARGIN
-        with_summary = screen.height - 1 - y - self.SUMMARY_H - 1 >= self.BODY_MIN_H
-        body_y = y + self.SUMMARY_H + 1 if with_summary else y
+        available = screen.width - Board.LEFT - Board.RIGHT_MARGIN
+        with_summary = screen.height - 1 - y - Board.SUMMARY_H - 1 >= self.BODY_MIN_H
+        body_y = y + Board.SUMMARY_H + 1 if with_summary else y
         height = screen.height - 1 - body_y      # the last row is the key hints'
 
         gutter = 2 if self._has_diff else 0
         outline_w = 0
         if screen.width >= self.OUTLINE_MIN_SCREEN:
             outline_w = max(self.OUTLINE_MIN_W, min(self.OUTLINE_MAX_W, available * 26 // 100))
-            doc = self._layout(self._text_width(available - outline_w - self.GAP, gutter))
+            doc = self._layout(self._text_width(available - outline_w - Board.GAP, gutter))
             if len(self._outline_entries(doc)) < 2:
                 outline_w = 0
-        document_w = available - outline_w - self.GAP if outline_w else available
+        document_w = available - outline_w - Board.GAP if outline_w else available
         text_w = self._text_width(document_w, gutter)
         doc = self._doc = self._layout(text_w)
 
         if with_summary:
-            self._draw_summary(screen, y, available, self._summary_tiles(doc))
+            Board.draw_summary(screen, self._cards, y, available, self._summary_tiles(doc))
         if height > Tile.CARD_CHROME:
             self._room = height - Tile.CARD_CHROME
             self._settle(doc)
             if outline_w:
-                self._draw_outline(screen, self.LEFT, body_y, outline_w, height, doc)
-                self._draw_document(screen, self.LEFT + outline_w + self.GAP, body_y, document_w, height, doc, text_w)
+                self._draw_outline(screen, Board.LEFT, body_y, outline_w, height, doc)
+                self._draw_document(screen, Board.LEFT + outline_w + Board.GAP, body_y, document_w, height, doc, text_w)
             else:
-                self._draw_document(screen, self.LEFT, body_y, document_w, height, doc, text_w)
+                self._draw_document(screen, Board.LEFT, body_y, document_w, height, doc, text_w)
         Tile.tint_cards(screen, self._cards)
 
         history = ""
         if self.HAS_HISTORY:
             history = "  ← older  → newer" if self._history_index is not None else "  ←→ history"
-        screen.reset_color()
-        screen.set_color(COLOR_HINT)
-        screen.write_at(self.LEFT, screen.height - 1,
-                        fit(f"↑↓ scroll  PgUp/PgDn page  n/p section{history}", available))
-        screen.reset_color()
+        Board.draw_hints(screen, f"↑↓ scroll  PgUp/PgDn page  n/p section{history}")
 
     def handle_input(self, key: str) -> bool:
         """Scrolling, section jumps and history navigation; `draw` keeps the position in range."""
@@ -262,16 +250,6 @@ class MemoryTab(TabView):
 
     # --- Summary tiles ---
 
-    def _draw_summary(self, screen: TUIScreen, y: int, available: int, tiles: List[SummaryTile]):
-        tiles = tiles[:max(1, available // self.SUMMARY_TILE_MIN_W)]
-        count = len(tiles)
-        width = (available - self.GAP * (count - 1)) // count
-        for i, (label, value, color, segments) in enumerate(tiles):
-            x = self.LEFT + i * (width + self.GAP)
-            tile_w = width if i < count - 1 else available - (width + self.GAP) * (count - 1)
-            Tile.draw_card(screen, self._cards, x, y, tile_w, self.SUMMARY_H, label, value, color)
-            Tile.write_segments(screen, x + 2, y + Tile.CARD_TOP, tile_w - 4, segments)
-
     def _summary_tiles(self, doc: Markdown.Document) -> List[SummaryTile]:
         tiles = [self._size_tile(), self._sections_tile(doc)]
         if self._history_index is not None:
@@ -337,7 +315,7 @@ class MemoryTab(TabView):
                        f"{len(sections)} {self.SECTIONS_LABEL.lower()}" if sections else "")
         focus = self._focus_row(doc)
         chosen = max((k for k, entry in enumerate(entries) if entry.row <= focus), default=-1)
-        self._outline_top = max(0, min(max(min(self._outline_top, chosen), chosen - room + 1), len(entries) - room))
+        self._outline_top = Board.scrolled(self._outline_top, len(entries), room, chosen)
         largest = max((entry.size for entry in sections), default=0) or 1
         has_diff = self._has_diff
         right_edge = x + width - 2

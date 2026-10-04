@@ -2,8 +2,10 @@ from typing import List, Optional, Tuple
 
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import Color
-from interfaces.console.tabs.AuthTab import (AuthTab, BACKSPACE_KEYS, COLOR_GREEN, COLOR_RED, COLOR_YELLOW, ENTER_KEYS,
-                                             Field, PENDING, STANDARD_ENTRY_HINT, SummaryTile, code_display)
+from interfaces.console.tabs.AuthTab import (AuthTab, BACKSPACE_KEYS, ENTER_KEYS, PENDING, STANDARD_ENTRY_HINT,
+                                             code_display)
+from interfaces.console.widgets import Board
+from interfaces.console.widgets.Board import Fact, SummaryTile
 from common.logging import trace
 
 INPUT_PHONE = "phone"
@@ -19,7 +21,7 @@ MASK = "•"
 CURSOR = "▏"
 
 # The Feed tile's value colour per FeedState value; any other state is dim
-FEED_COLORS = {"live": COLOR_GREEN, "catching_up": COLOR_YELLOW, "starting": COLOR_YELLOW, "failed": COLOR_RED}
+FEED_COLORS = {"live": Theme.COLOR_GREEN, "catching_up": Theme.COLOR_YELLOW, "starting": Theme.COLOR_YELLOW, "failed": Theme.COLOR_RED}
 
 
 class TelegramTab(AuthTab):
@@ -29,8 +31,8 @@ class TelegramTab(AuthTab):
     HELP = "Ctrl-R reconnect  Ctrl-P authenticate"
     STATUS_LABELS = {
         **AuthTab.STATUS_LABELS,
-        "needs_auth": ("Not authenticated", COLOR_YELLOW),
-        "connecting": ("Connecting", COLOR_YELLOW),
+        "needs_auth": ("Not authenticated", Theme.COLOR_YELLOW),
+        "connecting": ("Connecting", Theme.COLOR_YELLOW),
     }
 
     def __init__(self):
@@ -59,26 +61,24 @@ class TelegramTab(AuthTab):
         if feed.get("remaining"):
             segments.append((f"{feed['remaining']:,} to go", Theme.COLOR_DIM))
         if feed.get("last_error"):
-            segments = [(str(feed["last_error"]), COLOR_RED)]
+            segments = [(str(feed["last_error"]), Theme.COLOR_RED)]
         return [("Feed", "paused" if feed.get("paused") else state.replace("_", " "),
                  FEED_COLORS.get(state, Theme.COLOR_DIM), segments)]
 
-    def _fields(self) -> List[Field]:
+    def _fields(self) -> List[Fact]:
         """The login's three steps: the one being typed bright under a yellow label, the
         answered ones above it, the ones to come faint. The password is never drawn."""
         mode, text = self._input_mode, self._input_text
         if mode not in STEPS:
             hint = self._entry_hint()
-            return [("Phone", hint[0], hint[1], False) if hint else ("Phone", PENDING, Theme.COLOR_FAINT, False),
-                    ("Code", PENDING, Theme.COLOR_FAINT, False),
-                    ("Password", PENDING, Theme.COLOR_FAINT, False)]
+            return [Fact("Phone", hint[0], hint[1]) if hint else Fact("Phone", PENDING, Theme.COLOR_FAINT),
+                    Fact("Code", PENDING, Theme.COLOR_FAINT),
+                    Fact("Password", PENDING, Theme.COLOR_FAINT)]
         step = STEPS.index(mode)
-        values = [text + CURSOR if step == 0 else self._phone_number,
-                  code_display(text, CODE_LENGTH) if step == 1 else "sent" if step > 1 else PENDING,
-                  MASK * len(text) + CURSOR if step == 2 else PENDING]
-        colors = (Theme.COLOR_TEXT, Theme.COLOR_BRIGHT, Theme.COLOR_FAINT)   # answered, waited on, to come
-        return [(label, value, colors[(i >= step) + (i > step)], i == step)
-                for i, (label, value) in enumerate(zip(("Phone", "Code", "Password"), values))]
+        return Board.steps(step, [
+            ("Phone", text + CURSOR if step == 0 else self._phone_number),
+            ("Code", code_display(text, CODE_LENGTH) if step == 1 else "sent" if step > 1 else PENDING),
+            ("Password", MASK * len(text) + CURSOR if step == 2 else PENDING)])
 
     def _hints(self) -> str:
         if self._input_mode == INPUT_PHONE:
@@ -87,7 +87,7 @@ class TelegramTab(AuthTab):
 
     def _entry_hint(self) -> Optional[Tuple[str, Color]]:
         if self.status == "needs_auth":
-            return "Ctrl-P starts the login", COLOR_YELLOW
+            return "Ctrl-P starts the login", Theme.COLOR_YELLOW
         return None
 
     def _handle_key(self, key: str) -> bool:

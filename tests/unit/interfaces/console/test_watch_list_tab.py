@@ -11,6 +11,7 @@ from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.tabs import WatchListTab as tab_module
 from interfaces.console.tabs.TabView import SUB_CONTENT_TOP
+from interfaces.console.widgets import Board
 from interfaces.console.tabs.WatchListTab import (CHECK_DUE, DUE_SOON_DAYS, ON_TRACK, OPEN, OVERDUE, PAST_DUE, POLLED,
                                                   STALE, WAITING, WatchListTab, assess, span)
 
@@ -117,7 +118,7 @@ class TestBoard:
         assert "note of festival-tickets" in "\n".join(self.rows())
 
     def test_a_wide_screen_puts_the_selected_item_beside_the_table(self):
-        rows = self.rows(WatchListTab.SIDE_BY_SIDE_MIN + 40)
+        rows = self.rows(Board.SIDE_BY_SIDE_MIN + 40)
         reason = assess(item("festival-tickets", every="6h", checked=timedelta(hours=20)), NOW).reason
         assert any("Every" in row and reason in row for row in rows), "the table's titles and the item's state share a row"
         assert not any("Every" in row and reason in row for row in self.rows())
@@ -134,7 +135,7 @@ class TestBoard:
     def test_the_longest_lateness_is_shown_whole(self):
         late = item("router-firmware", every="1d", checked=timedelta(days=1, hours=23, minutes=59))
         (WatchList.WATCHLIST_DIR / "router-firmware.md").write_text(late.text())
-        for width in (WIDTH, WatchListTab.SIDE_BY_SIDE_MIN + 40):
+        for width in (WIDTH, Board.SIDE_BY_SIDE_MIN + 40):
             assert any("router-firmware" in row and "23h 59m late" in row for row in self.rows(width))
 
 

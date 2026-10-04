@@ -9,8 +9,8 @@ from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
 from interfaces.console import Theme, TUIState
 from interfaces.console.framework.TUIScreen import TUIScreen
-from interfaces.console.tabs.VaultTab import (COLOR_PROMPT, FORM_LABEL_W, HELP, HELP_MAX_WIDTH, HELP_TITLE, LEFT,
-                                             SIDE_BY_SIDE_MIN, VaultTab)
+from interfaces.console.tabs.VaultTab import HELP, HELP_MAX_WIDTH, HELP_TITLE, VaultTab
+from interfaces.console.widgets.Board import COLOR_PROMPT, LABEL_W as FORM_LABEL_W, LEFT, SIDE_BY_SIDE_MIN
 from interfaces.console.widgets import Markdown
 
 # 0-based string indexes of what a tile at the left margin draws: its content, and a table cell

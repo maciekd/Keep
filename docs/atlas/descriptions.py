@@ -31,7 +31,7 @@ GROUPS = {
     'src/interfaces/console/crystal': ('crystal', 'A 90s-demo software 3D renderer that draws the console’s logo and startup intro in terminal cells.'),
     'src/interfaces/console/framework': ('framework', 'The TUI engine: a double-buffered cell screen, a frame server over TCP and text-width helpers.'),
     'src/interfaces/console/tabs': ('tabs', 'The console’s tabs: Home chat, Dashboard, Log, Memory, Prompt, Photos, Vault, logins and developer tools.'),
-    'src/interfaces/console/widgets': ('widgets', 'Reusable console widgets: the chat pane, tables, diffs, the CRT cursor and typewriter text.'),
+    'src/interfaces/console/widgets': ('widgets', 'Reusable console widgets: the Dashboard’s tiles and the board the data tabs are laid out as, the chat pane, markdown, diffs, the CRT cursor and typewriter text.'),
     'src/interfaces/voice': ('voice', 'The VoiceToVoice stack: microphones, cross-mic voting, speaker identification, TTS and speaker playback.'),
     'src/interfaces/voice/ios': ('ios', 'Streams reply text to the iOS app while it speaks.'),
     'src/interfaces/voice/microphones': ('microphones', 'Every microphone the server listens through: remote outposts, local mics and the routes they call.'),

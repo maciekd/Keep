@@ -10,22 +10,15 @@ how to verify a code; the key handling for a six-digit code is here too.
 """
 import threading
 import time
-from typing import Callable, List, NamedTuple, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.framework.TextWidth import fit
-from interfaces.console.tabs.ScrollableTabView import COLOR_HINT, ScrollableTabView, draw_scrollbar
+from interfaces.console.framework.TextWidth import wrap
 from interfaces.console.tabs.TabView import TabView, SUB_CONTENT_TOP
-from interfaces.console.widgets import Tile
+from interfaces.console.widgets import Board, Tile
+from interfaces.console.widgets.Board import Fact, SummaryTile, Table
 from common.logging import info, trace
-
-COLOR_GREEN = Theme.COLOR_GREEN
-COLOR_YELLOW = Theme.COLOR_YELLOW
-COLOR_RED = Theme.COLOR_RED
-COLOR_GRAY = Theme.COLOR_LABEL
-COLOR_WHITE = Theme.COLOR_BRIGHT
-COLOR_PROMPT = Theme.COLOR_YELLOW   # the field an entry waits on
 
 # The names TUIFloxyConsole._parse_key gives these keys, plus the raw bytes some paths pass
 ENTER_KEYS = ('\r', '\n', 'enter')
@@ -40,31 +33,8 @@ CODE_LENGTH = 6
 STANDARD_ENTRY_HINT = "Enter submit  Esc cancel"
 PENDING = "–"
 
-LEFT = 3
-RIGHT_MARGIN = 2
-GAP = 2
-SUMMARY_H = 1 + Tile.CARD_CHROME
-SUMMARY_TILE_MIN_W = 30     # a narrower screen shows the first tiles only
-SIDE_BY_SIDE_MIN = 150      # screen columns from which the Sign-in tile sits beside the table
-SIDE_MIN_W = 50
 FORM_MAX_W = 100            # a tab without a table: its Sign-in tile stays readable on a wide screen
-FORM_LABEL_W = 13
 MESSAGE_ROWS = 2            # the integration's message wraps to this many rows
-
-# A summary tile: its label, the value in its title strip, the value's colour, the row under it.
-SummaryTile = Tuple[str, str, Color, List[Tuple[str, Color]]]
-# A row of the Sign-in tile: its label, its value, the value's colour, whether the entry waits on it.
-Field = Tuple[str, str, Color, bool]
-
-
-class Table(NamedTuple):
-    """A tab's own list: the tile's label, the columns as (title, width) with the last width
-    None for what is left, the rows as (dot colour, a (text, colour) per column), and what to
-    say while there are none."""
-    title: str
-    columns: List[Tuple[str, Optional[int]]]
-    rows: List[Tuple[Color, List[Tuple[str, Color]]]]
-    empty: str
 
 
 def code_display(code: str, length: int) -> str:
@@ -79,8 +49,8 @@ class AuthTab(TabView):
     SUBMITTING_MESSAGE = "Submitting 2FA code..."
     # The Connection tile's value per auth status; anything else reads as not initialized
     STATUS_LABELS = {
-        "authenticated": ("Connected", COLOR_GREEN),
-        "error": ("Error", COLOR_RED),
+        "authenticated": ("Connected", Theme.COLOR_GREEN),
+        "error": ("Error", Theme.COLOR_RED),
     }
 
     def __init__(self):
@@ -187,36 +157,31 @@ class AuthTab(TabView):
         self._before_draw()
 
         self._cards = []
-        available = screen.width - LEFT - RIGHT_MARGIN
+        available = screen.width - Board.LEFT - Board.RIGHT_MARGIN
         bottom = screen.height - 1                # the last row is the key hints'
         y = SUB_CONTENT_TOP
         table = self._table()
         fields = self._fields()
         form_h = Tile.CARD_CHROME + MESSAGE_ROWS + len(fields) + 2   # a blank row, then the outcome
 
-        if bottom - y - SUMMARY_H - 1 >= form_h:
-            self._draw_summary(screen, y, available, [self._connection_tile()] + self._tiles())
-            y += SUMMARY_H + 1
+        if bottom - y - Board.SUMMARY_H - 1 >= form_h:
+            Board.draw_summary(screen, self._cards, y, available, [self._connection_tile()] + self._tiles())
+            y += Board.SUMMARY_H + 1
         height = bottom - y
 
         if table is None:
-            self._draw_form(screen, LEFT, y, min(available, FORM_MAX_W), min(form_h, height), fields)
-        elif screen.width >= SIDE_BY_SIDE_MIN:
-            side_w = max(SIDE_MIN_W, available * 36 // 100)
-            table_w = available - GAP - side_w
-            self._draw_table(screen, LEFT, y, table_w, height, table)
-            self._draw_form(screen, LEFT + table_w + GAP, y, side_w, min(form_h, height), fields)
+            self._draw_form(screen, Board.LEFT, y, min(available, FORM_MAX_W), min(form_h, height), fields)
+        elif screen.width >= Board.SIDE_BY_SIDE_MIN:
+            table_w, side_w = Board.split(available)
+            self._top = Board.draw_table(screen, self._cards, Board.LEFT, y, table_w, height, table, self._top)
+            self._draw_form(screen, Board.LEFT + table_w + Board.GAP, y, side_w, min(form_h, height), fields)
         else:
-            self._draw_form(screen, LEFT, y, available, min(form_h, height), fields)
+            self._draw_form(screen, Board.LEFT, y, available, min(form_h, height), fields)
             y += form_h + 1
-            self._draw_table(screen, LEFT, y, available,
-                             min(max(1, len(table.rows)) + Tile.CARD_CHROME + 1, bottom - y), table)
+            self._top = Board.draw_table(screen, self._cards, Board.LEFT, y, available,
+                                         min(max(1, len(table.rows)) + Tile.CARD_CHROME + 1, bottom - y), table, self._top)
         Tile.tint_cards(screen, self._cards)
-
-        screen.reset_color()
-        screen.set_color(COLOR_HINT)
-        screen.write_at(LEFT, screen.height - 1, fit(self._hints(), max(0, available)))
-        screen.reset_color()
+        Board.draw_hints(screen, self._hints())
 
     def _hints(self) -> str:
         """The key hints on the bottom row: the entry's keys while one is open."""
@@ -224,19 +189,9 @@ class AuthTab(TabView):
 
     # --- summary tiles -----------------------------------------------------------------------
 
-    def _draw_summary(self, screen: TUIScreen, y: int, available: int, tiles: List[SummaryTile]):
-        tiles = tiles[:max(1, available // SUMMARY_TILE_MIN_W)]
-        count = len(tiles)
-        width = (available - GAP * (count - 1)) // count
-        for i, (label, value, color, segments) in enumerate(tiles):
-            x = LEFT + i * (width + GAP)
-            tile_w = width if i < count - 1 else available - (width + GAP) * (count - 1)
-            Tile.draw_card(screen, self._cards, x, y, tile_w, SUMMARY_H, label, value, color)
-            Tile.write_segments(screen, x + 2, y + Tile.CARD_TOP, tile_w - 4, segments)
-
     def _status_label(self) -> Tuple[str, Color]:
         if self._checking:
-            return "Checking...", COLOR_YELLOW
+            return "Checking...", Theme.COLOR_YELLOW
         return self.STATUS_LABELS.get(self.status, ("Not initialized", Theme.COLOR_DIM))
 
     def _connection_tile(self) -> SummaryTile:
@@ -247,97 +202,37 @@ class AuthTab(TabView):
         return ("Connection", label, color,
                 [(f"checked {age}s ago", Theme.COLOR_LABEL), (f"every {self.CHECK_INTERVAL:.0f}s", Theme.COLOR_DIM)])
 
-    # --- the table ---------------------------------------------------------------------------
-
-    def _draw_table(self, screen: TUIScreen, x: int, y: int, width: int, height: int, table: Table):
-        """The tab's list, one row each under a state dot; ↑↓ scroll a list longer than its tile."""
-        if height <= Tile.CARD_CHROME:
-            return
-        count = len(table.rows)
-        Tile.draw_card(screen, self._cards, x, y, width, height, table.title, str(count) if count else "")
-        inner_w = width - 4
-        header_y = y + Tile.CARD_TOP
-        if not table.rows:
-            screen.set_color(Theme.COLOR_DIM)
-            screen.write_at(x + 2, header_y, fit(table.empty, max(0, inner_w)))
-            screen.reset_color()
-            return
-        room = height - Tile.CARD_CHROME - 1    # a row goes to the column titles
-        if room <= 0:
-            return
-        self._top = max(0, min(self._top, count - room))
-        widths = [column_w for _, column_w in table.columns]
-        Tile.write_cells(screen, x + 4, header_y, inner_w - 2,
-                         [(title, column_w, Theme.COLOR_DIM, False) for title, column_w in table.columns])
-        for i, (dot, cells) in enumerate(table.rows[self._top:self._top + room]):
-            row_y = header_y + 1 + i
-            screen.reset_color()
-            screen.set_color(dot)
-            screen.write_at(x + 2, row_y, "●")
-            Tile.write_cells(screen, x + 4, row_y, inner_w - 2,
-                             [(text, column_w, color, False) for (text, color), column_w in zip(cells, widths)])
-        draw_scrollbar(screen, x + width - 1, header_y + 1, count, room, count - room - self._top)
-        screen.reset_color()
-
     # --- the Sign-in tile --------------------------------------------------------------------
 
-    def _fields(self) -> List[Field]:
+    def _fields(self) -> List[Fact]:
         """The Sign-in tile's rows under the message: the code while it is typed, else the
         hint on how to start the entry."""
         if self._input_mode:
-            return [("2FA code", code_display(self._input_text, CODE_LENGTH), Theme.COLOR_BRIGHT, True)]
+            return [Fact("2FA code", code_display(self._input_text, CODE_LENGTH), Theme.COLOR_BRIGHT, waiting=True)]
         hint = self._entry_hint()
         if hint:
-            return [("2FA code", hint[0], hint[1], False)]
-        return [("2FA code", "not asked for", Theme.COLOR_FAINT, False)]
+            return [Fact("2FA code", hint[0], hint[1])]
+        return [Fact("2FA code", "not asked for", Theme.COLOR_FAINT)]
 
     def _message_color(self) -> Color:
         if self.status == "error":
-            return COLOR_RED
+            return Theme.COLOR_RED
         return Theme.COLOR_TEXT if self.status in self.STATUS_LABELS else Theme.COLOR_LABEL
 
-    def _draw_form(self, screen: TUIScreen, x: int, y: int, width: int, height: int, fields: List[Field]):
+    def _draw_form(self, screen: TUIScreen, x: int, y: int, width: int, height: int, fields: List[Fact]):
         """What the integration says about its session, the entry's fields — the one it waits
         on with a yellow label — and on the last row the outcome of the last action."""
         if height <= Tile.CARD_CHROME:
             return
-        waiting = any(field[3] for field in fields)
+        waiting = any(field.waiting for field in fields)
         Tile.draw_card(screen, self._cards, x, y, width, height, "Sign-in",
-                       "waiting for you" if waiting else "", COLOR_PROMPT)
-        value_x = x + 2 + FORM_LABEL_W
-        value_w = max(1, width - 4 - FORM_LABEL_W)
-        last = y + height - 2
-        row_y = y + Tile.CARD_TOP
-
-        message = self._auth_status.get("message", "") or PENDING
-        lines = ScrollableTabView.word_wrap(message, value_w)
-        if len(lines) > MESSAGE_ROWS:
-            lines = lines[:MESSAGE_ROWS - 1] + [fit(" ".join(lines[MESSAGE_ROWS - 1:]), value_w)]
-        screen.set_color(Theme.COLOR_DIM)
-        screen.write_at(x + 2, row_y, "Status")
-        screen.set_color(self._message_color())
-        for i, line in enumerate(lines):
-            if row_y + i <= last:
-                screen.write_at(value_x, row_y + i, line)
-        row_y += MESSAGE_ROWS
-
-        for i, (name, text, text_color, is_waiting) in enumerate(fields):
-            if row_y + i > last:
-                break
-            screen.reset_color()
-            screen.set_color(COLOR_PROMPT if is_waiting else Theme.COLOR_DIM)
-            screen.write_at(x + 2, row_y + i, name)
-            screen.set_color(text_color)
-            if is_waiting:
-                screen.bold()
-            screen.write_at(value_x, row_y + i, fit(text, value_w))
-        screen.reset_color()
-
+                       "waiting for you" if waiting else "", Board.COLOR_PROMPT)
+        lines = wrap(self._auth_status.get("message", "") or PENDING, max(1, width - 4 - Board.LABEL_W), MESSAGE_ROWS)
+        lines += [""] * (MESSAGE_ROWS - len(lines))     # the fields start under the message's rows whatever it took
+        message = [Fact("Status" if i == 0 else "", line, self._message_color()) for i, line in enumerate(lines)]
+        after = Board.draw_facts(screen, x, y, width, height, message + fields)
         outcome = self._outcome()
-        if outcome and last >= row_y + len(fields):
-            screen.set_color(self._outcome_color(outcome))
-            screen.write_at(x + 2, last, fit(outcome, max(0, width - 4)))
-            screen.reset_color()
+        Board.draw_footer(screen, x, y, width, height, outcome, self._outcome_color(outcome), after)
 
     def _outcome(self) -> str:
         """The outcome line to show (the Arlo tab swaps in its rate-limit countdown)."""
@@ -347,10 +242,10 @@ class AuthTab(TabView):
     def _outcome_color(outcome: str) -> Color:
         lowered = outcome.lower()
         if any(w in lowered for w in DONE_WORDS):
-            return COLOR_GREEN
+            return Theme.COLOR_GREEN
         if any(w in lowered for w in BUSY_WORDS):
-            return COLOR_YELLOW
-        return COLOR_RED
+            return Theme.COLOR_YELLOW
+        return Theme.COLOR_RED
 
     # --- keys --------------------------------------------------------------------------------
 

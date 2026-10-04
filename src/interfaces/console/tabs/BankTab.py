@@ -1,11 +1,12 @@
 import os
 from typing import List, Optional
 
-from .MemoryTab import MemoryTab, SummaryTile, counted
+from .MemoryTab import MemoryTab, counted
 from .WatchListTab import span, when
 from assistant import MemoryFile
 from common.vault.Redactor import Redactor
 from interfaces.console import Theme
+from interfaces.console.widgets.Board import SummaryTile
 
 
 class BankTab(MemoryTab):

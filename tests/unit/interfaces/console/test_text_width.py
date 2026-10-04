@@ -1,6 +1,6 @@
 """TextWidth: cells, not characters — what every console view measures and cuts with."""
 from interfaces.console.framework.TextWidth import (cells, char_at, char_width, chunks, clip, column,
-                                                    display_width, drawable, fit, ljust, normalize, rjust)
+                                                    display_width, drawable, fit, ljust, normalize, rjust, wrap)
 
 
 class TestNormalize:
@@ -78,3 +78,21 @@ class TestCutting:
 
     def test_column_is_the_cell_offset_of_a_character_index(self):
         assert column("a\U0001F600b", 2) == 3
+
+
+class TestWrap:
+    def test_lines_break_at_spaces_and_a_long_word_is_broken_at_the_width(self):
+        assert wrap("hello world foo bar", 12) == ["hello world", "foo bar"]
+        assert wrap("abcdefgh ij", 3) == ["abc", "def", "gh", "ij"]
+
+    def test_a_wide_glyph_counts_two_cells(self):
+        assert wrap("\U0001F600\U0001F600 ab", 4) == ["\U0001F600\U0001F600", "ab"]
+
+    def test_the_overflow_past_the_last_allowed_row_is_joined_into_it_and_fitted(self):
+        lines = wrap("one two three four five six", 9, rows=2)
+        assert len(lines) == 2 and lines[0] == "one two"
+        assert lines[1].startswith("three") and lines[1].endswith("...") and display_width(lines[1]) == 9
+
+    def test_text_that_fits_the_rows_is_left_alone(self):
+        assert wrap("one two three", 9, rows=2) == ["one two", "three"]
+        assert wrap("short", 9, rows=1) == ["short"]

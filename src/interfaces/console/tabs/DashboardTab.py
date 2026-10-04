@@ -8,7 +8,8 @@ from .TabView import TabView, CONTENT_TOP
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
 from interfaces.console.framework.TextWidth import display_width, fit
-from interfaces.console.widgets import Tile
+from interfaces.console.widgets import Board, Tile
+from interfaces.console.widgets.Board import MeterRow
 from interfaces.console.widgets.FeedStrip import SHORT_NAMES, SYMBOL_FAILED, SYMBOL_PAUSED, SYMBOL_RUNNING, format_eta
 from common.GpuMonitor import GpuMonitor
 from common.AnthropicCostMonitor import AnthropicCostMonitor
@@ -35,54 +36,14 @@ class FeedRow(NamedTuple):
     text: str                   # "1234 / 23356 photos ETA: 13h" through a catch-up, "23436 photos" live, else the state
 
 
-class MeterRow(NamedTuple):
-    """One line of a meter tile: a label, a meter and the value it shows."""
-    label: str
-    value: str
-    fraction: float             # 0..1 of the meter filled
-    color: Color
-    start: float = 0.0          # 0..1 where the fill begins: the offset of a waterfall stage
-    note: str = ""              # dim text after the value
-    idle: bool = False          # nothing measured yet: the label dims with the rest of the row
-
-
 class DashboardTab(TabView):
     """Tab charting GPU, CPU, temperature, memory, TTFT and API cost over time, with a row of
     status tiles underneath: integration health, last-request timing, resource meters and
     prompt sections. Everything sits in flat tiles — a title strip over a tinted body — on a
     three-column grid (four for the status row)."""
 
-    # The Theme's colours under the names the tab draws with.
-    COLOR_PANEL_BG = Theme.COLOR_PANEL_BG
-    COLOR_TITLE_BG = Theme.COLOR_TITLE_BG
-    COLOR_GRID = Theme.COLOR_GRID
-    COLOR_BORDER = Theme.COLOR_GRID
-    COLOR_BRIGHT = Theme.COLOR_BRIGHT
-    COLOR_TITLE = Theme.COLOR_TITLE
-    COLOR_DIM = Theme.COLOR_DIM
-    COLOR_LABEL = Theme.COLOR_LABEL
-
-    COLOR_CYAN = Theme.COLOR_CYAN
-    COLOR_CYAN_DIM = Theme.COLOR_CYAN_DIM
-    COLOR_GREEN = Theme.COLOR_GREEN
-    COLOR_GREEN_DIM = Theme.COLOR_GREEN_DIM
-    COLOR_YELLOW = Theme.COLOR_YELLOW
-    COLOR_YELLOW_DIM = Theme.COLOR_YELLOW_DIM
-    COLOR_PINK = Theme.COLOR_PINK
-    COLOR_PINK_DIM = Theme.COLOR_PINK_DIM
-    COLOR_PURPLE = Theme.COLOR_PURPLE
-    COLOR_BLUE = Theme.COLOR_BLUE
-    COLOR_ORANGE = Theme.COLOR_ORANGE
-    COLOR_RED = Theme.COLOR_RED
-    COLOR_RED_DIM = Theme.COLOR_RED_DIM
-
-    LEFT = 3                    # the first tile's column
-    RIGHT_MARGIN = 2
-    GAP = 2                     # columns between tiles; one row between tile rows
-    CARD_TOP = Tile.CARD_TOP
-    CARD_CHROME = Tile.CARD_CHROME
     SUMMARY_ROWS = 4
-    SUMMARY_H = SUMMARY_ROWS + CARD_CHROME
+    SUMMARY_H = SUMMARY_ROWS + Tile.CARD_CHROME
 
     HISTORY_SIZE = 120
     BLOCK_CHARS = [' ', '\u2581', '\u2582', '\u2583', '\u2584', '\u2585', '\u2586', '\u2587', '\u2588']
@@ -146,7 +107,7 @@ class DashboardTab(TabView):
         self._frame = frame
         self._cards = []
         self._sample_cpu()
-        y = self._draw_header(screen, self.LEFT, CONTENT_TOP) + 1
+        y = self._draw_header(screen, Board.LEFT, CONTENT_TOP) + 1
 
         thirds = self._columns(screen, 3)
         self._draw_summary_panel(screen, thirds, y)
@@ -156,23 +117,19 @@ class DashboardTab(TabView):
         # so the three chart rows (tile = chart_height + CARD_CHROME, plus a gap row) take whatever
         # height is left after reserving them.
         panel_h = self._status_panel_height(screen)
-        chart_height = max(5, (screen.height - y - 1 - panel_h) // 3 - self.CARD_CHROME - 1)
+        chart_height = max(5, (screen.height - y - 1 - panel_h) // 3 - Tile.CARD_CHROME - 1)
         for draw_row in (self._draw_charts_row, self._draw_ttft_charts_row, self._draw_bottom_charts_row):
             draw_row(screen, thirds, y, chart_height)
-            y += chart_height + self.CARD_CHROME + 1
+            y += chart_height + Tile.CARD_CHROME + 1
         # On a screen too short for it the tiles end at the last row and clip their rows:
         # a write past the screen lands on its last row, on top of whatever is there.
         self._draw_status_panel(screen, y, min(panel_h, screen.height - y + 1))
-        self._tint_cards(screen)
+        Tile.tint_cards(screen, self._cards)
 
-    @classmethod
-    def _columns(cls, screen: TUIScreen, count: int) -> List[Tuple[int, int]]:
-        """(x, width) of `count` equal tiles across the screen; the last takes the rounding remainder."""
-        available = screen.width - cls.LEFT - cls.RIGHT_MARGIN
-        width = (available - cls.GAP * (count - 1)) // count
-        columns = [(cls.LEFT + i * (width + cls.GAP), width) for i in range(count)]
-        columns[-1] = (columns[-1][0], available - (width + cls.GAP) * (count - 1))
-        return columns
+    @staticmethod
+    def _columns(screen: TUIScreen, count: int) -> List[Tuple[int, int]]:
+        """(x, width) of `count` equal tiles across the screen."""
+        return Board.columns(screen.width - Board.LEFT - Board.RIGHT_MARGIN, count)
 
     def handle_input(self, key: str) -> bool:
         return False
@@ -199,24 +156,24 @@ class DashboardTab(TabView):
         (ltm_x, ltm_w), (temp_x, temp_w), (cost_x, cost_w) = columns
         self._draw_long_term_memory_chart(screen, ltm_x, y, ltm_w, chart_h)
         self._draw_temp_chart(screen, temp_x, y, temp_w, chart_h)
-        self._draw_cost_chart(screen, cost_x, y, cost_w, chart_h + self.CARD_CHROME)
+        self._draw_cost_chart(screen, cost_x, y, cost_w, chart_h + Tile.CARD_CHROME)
 
     def _draw_header(self, screen: TUIScreen, x: int, y: int) -> int:
         if not self.model:
-            screen.set_color(self.COLOR_DIM)
+            screen.set_color(Theme.COLOR_DIM)
             screen.write_at(x, y, "Loading GPU data...")
             screen.reset_color()
             return y + 1
 
-        screen.set_color(self.COLOR_CYAN)
+        screen.set_color(Theme.COLOR_CYAN)
         screen.write_at(x, y, "\u25cf")
-        screen.set_color(self.COLOR_BRIGHT)
+        screen.set_color(Theme.COLOR_BRIGHT)
         screen.bold()
         screen.write_at(x + 2, y, self.model)
         screen.reset_color()
 
         mem = f"{self.total_memory_gb}GB Unified Memory" if self.total_memory_gb else "Unified Memory Architecture"
-        screen.set_color(self.COLOR_DIM)
+        screen.set_color(Theme.COLOR_DIM)
         screen.write_at(x + 2 + display_width(self.model) + 3, y,
                         f"{self.gpu_core_count}-core GPU \u00b7 {self.p_cores + self.e_cores}-core CPU \u00b7 {mem}")
         screen.reset_color()
@@ -230,13 +187,13 @@ class DashboardTab(TabView):
         self._draw_feeds_panel(screen, feeds_x, y, feeds_w, self.SUMMARY_H)
 
     def _draw_utilization_panel(self, screen: TUIScreen, x: int, y: int, panel_w: int, panel_h: int):
-        self._draw_card(screen, x, y, panel_w, panel_h, "Utilization")
+        Tile.draw_card(screen, self._cards, x, y, panel_w, panel_h, "Utilization")
         cpu = int(self.console.system_cpu_percent)
-        self._draw_meter_rows(screen, x, y, panel_w, panel_h, [
-            MeterRow("Device", f"{self.device_util:>3}%", self.device_util / 100.0, self.COLOR_CYAN),
-            MeterRow("Tiler", f"{self.tiler_util:>3}%", self.tiler_util / 100.0, self.COLOR_GREEN),
-            MeterRow("Renderer", f"{self.renderer_util:>3}%", self.renderer_util / 100.0, self.COLOR_YELLOW),
-            MeterRow("CPU", f"{cpu:>3}%", cpu / 100.0, self.COLOR_PINK),
+        Board.draw_meter_rows(screen, x, y, panel_w, panel_h, [
+            MeterRow("Device", f"{self.device_util:>3}%", self.device_util / 100.0, Theme.COLOR_CYAN),
+            MeterRow("Tiler", f"{self.tiler_util:>3}%", self.tiler_util / 100.0, Theme.COLOR_GREEN),
+            MeterRow("Renderer", f"{self.renderer_util:>3}%", self.renderer_util / 100.0, Theme.COLOR_YELLOW),
+            MeterRow("CPU", f"{cpu:>3}%", cpu / 100.0, Theme.COLOR_PINK),
         ])
 
     # Fixed full-scale for the noise panel bar (raw frame RMS). Both values render on
@@ -249,12 +206,12 @@ class DashboardTab(TabView):
         the bar fill, the floor as a marker notch, both on a fixed 0..NOISE_BAR_MAX_RMS
         scale. Fill red when the level sits at/above the floor (the raise rule is
         lifting it), green otherwise. Values are raw RMS matching the log lines."""
-        self._draw_card(screen, x, y, panel_w, panel_h, "Mic noise floor")
+        Tile.draw_card(screen, self._cards, x, y, panel_w, panel_h, "Mic noise floor")
 
         floors = self._mic_noise_floors()
         if not floors:
-            screen.set_color(self.COLOR_DIM)
-            screen.write_at(x + 2, y + self.CARD_TOP, "no local outposts")
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(x + 2, y + Tile.CARD_TOP, "no local outposts")
             screen.reset_color()
             return
 
@@ -263,25 +220,25 @@ class DashboardTab(TabView):
         # value area: " 0.0004 (floor 0.0008)" ≈ 22 cols
         bar_len = panel_w - (bar_x - x) - 24
 
-        for i, (label, floor, _threshold, live_min) in enumerate(floors[:panel_h - self.CARD_CHROME]):
-            row_y = y + self.CARD_TOP + i
-            screen.set_color(self.COLOR_LABEL)
+        for i, (label, floor, _threshold, live_min) in enumerate(floors[:panel_h - Tile.CARD_CHROME]):
+            row_y = y + Tile.CARD_TOP + i
+            screen.set_color(Theme.COLOR_LABEL)
             screen.write_at(x + 2, row_y, fit(label, label_w))
             if floor is None or live_min is None:
-                screen.set_color(self.COLOR_DIM)
+                screen.set_color(Theme.COLOR_DIM)
                 screen.write_at(bar_x, row_y, "calibrating…")
                 continue
             rising = live_min >= floor
-            fg, bg = (self.COLOR_RED, self.COLOR_RED_DIM) if rising \
-                else (self.COLOR_GREEN, self.COLOR_GREEN_DIM)
-            self._draw_meter(screen, bar_x, row_y, bar_len, live_min / self.NOISE_BAR_MAX_RMS, fg,
+            fg, bg = (Theme.COLOR_RED, Theme.COLOR_RED_DIM) if rising \
+                else (Theme.COLOR_GREEN, Theme.COLOR_GREEN_DIM)
+            Tile.draw_meter(screen, bar_x, row_y, bar_len, live_min / self.NOISE_BAR_MAX_RMS, fg,
                              track=bg, marker=floor / self.NOISE_BAR_MAX_RMS)
             screen.set_color(fg)
             screen.bold()
             value = f"{live_min:.4f}"
             screen.write_at(bar_x + bar_len + 2, row_y, value)
             screen.reset_color()
-            screen.set_color(self.COLOR_DIM)
+            screen.set_color(Theme.COLOR_DIM)
             screen.write_at(bar_x + bar_len + 2 + len(value) + 1, row_y,
                             f"(floor {floor:.4f})")
             screen.reset_color()
@@ -311,16 +268,16 @@ class DashboardTab(TabView):
         "1234 / 23356 photos ETA: 13h" through a catch-up (the total is what it will hold once
         caught up), "23436 messages" once live — or the state word when paused, stopped or
         failed. A feed catching up without a count gets a notch sweeping the empty bar instead."""
-        self._draw_card(screen, x, y, panel_w, panel_h, "Feeds")
+        Tile.draw_card(screen, self._cards, x, y, panel_w, panel_h, "Feeds")
 
         rows = [self._feed_row(name, status) for name, status in self._feed_statuses()]
         if not rows:
-            screen.set_color(self.COLOR_DIM)
-            screen.write_at(x + 2, y + self.CARD_TOP, "no feeds running")
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(x + 2, y + Tile.CARD_TOP, "no feeds running")
             screen.reset_color()
             return
 
-        rows = rows[:panel_h - self.CARD_CHROME]
+        rows = rows[:panel_h - Tile.CARD_CHROME]
         label_w = max(len(row.name) for row in rows)
         symbol_x = x + 2 + label_w + 1
         bar_x = symbol_x + 2
@@ -331,16 +288,16 @@ class DashboardTab(TabView):
         text_w = x + panel_w - 2 - text_x     # one cell of air before the right border
 
         for i, row in enumerate(rows):
-            row_y = y + self.CARD_TOP + i
-            screen.set_color(self.COLOR_LABEL)
+            row_y = y + Tile.CARD_TOP + i
+            screen.set_color(Theme.COLOR_LABEL)
             screen.write_at(x + 2, row_y, f"{row.name:<{label_w}}")
             screen.set_color(row.fg)
             screen.write_at(symbol_x, row_y, row.symbol)
             if row.progress is None:
-                self._draw_meter(screen, bar_x, row_y, bar_len, 0.0, row.fg, track=row.bg,
+                Tile.draw_meter(screen, bar_x, row_y, bar_len, 0.0, row.fg, track=row.bg,
                                  marker=self._sweep_position(), marker_color=row.fg)
             else:
-                self._draw_meter(screen, bar_x, row_y, bar_len, row.progress, row.fg, track=row.bg)
+                Tile.draw_meter(screen, bar_x, row_y, bar_len, row.progress, row.fg, track=row.bg)
             if text_w > 0:
                 screen.set_color(row.fg)
                 screen.bold()
@@ -368,35 +325,35 @@ class DashboardTab(TabView):
         items = status.get("items", "items")
         progress: Optional[float] = 0.0
         if state == FeedState.LIVE.value:
-            symbol, fg, bg = SYMBOL_RUNNING, cls.COLOR_GREEN, cls.COLOR_GREEN_DIM
+            symbol, fg, bg = SYMBOL_RUNNING, Theme.COLOR_GREEN, Theme.COLOR_GREEN_DIM
             progress = 1.0
             text = f"{status['stored']} {items}"
         elif state == FeedState.CATCHING_UP.value:
-            symbol, fg, bg = cls.SYMBOL_CATCHING_UP, cls.COLOR_YELLOW, cls.COLOR_YELLOW_DIM
+            symbol, fg, bg = cls.SYMBOL_CATCHING_UP, Theme.COLOR_YELLOW, Theme.COLOR_YELLOW_DIM
             progress = status.get("progress")
             stored, total = status["stored"], status.get("total")
             text = f"{stored} {items}" if total in (None, stored) else f"{stored} / {total} {items}"
             if status.get("eta_seconds") is not None:
                 text += f" ETA: {format_eta(status['eta_seconds'])}"
         elif state in (FeedState.STOPPED.value, FeedState.FAILED.value):
-            symbol, fg, bg = SYMBOL_FAILED, cls.COLOR_RED, cls.COLOR_RED_DIM
+            symbol, fg, bg = SYMBOL_FAILED, Theme.COLOR_RED, Theme.COLOR_RED_DIM
             text = state
         else:
-            symbol, fg, bg = SYMBOL_RUNNING, cls.COLOR_DIM, cls.COLOR_BORDER
+            symbol, fg, bg = SYMBOL_RUNNING, Theme.COLOR_DIM, Theme.COLOR_GRID
             text = state
         if status.get("paused") and symbol != SYMBOL_FAILED:
             symbol = SYMBOL_PAUSED
-            fg = cls._lerp_color(cls.COLOR_PANEL_BG, fg, 0.5)
+            fg = Theme.mix(Theme.COLOR_PANEL_BG, fg, 0.5)
             text = "paused"
         return FeedRow(symbol, SHORT_NAMES.get(name, name), fg, bg, progress, text)
 
     def _draw_charts_row(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, chart_h: int):
         (gpu_x, gpu_w), (mem_x, mem_w), (cpu_x, cpu_w) = columns
-        self._draw_bar_chart(screen, gpu_x, y, gpu_w, chart_h, self.device_history, self.COLOR_GREEN,
+        self._draw_bar_chart(screen, gpu_x, y, gpu_w, chart_h, self.device_history, Theme.COLOR_GREEN,
                              "GPU Usage", f"{self.device_util}%")
-        self._draw_bar_chart(screen, mem_x, y, mem_w, chart_h, self.memory_history, self.COLOR_BLUE,
+        self._draw_bar_chart(screen, mem_x, y, mem_w, chart_h, self.memory_history, Theme.COLOR_BLUE,
                              "GPU Memory", self._format_bytes(self.in_use_memory))
-        self._draw_bar_chart(screen, cpu_x, y, cpu_w, chart_h, self.cpu_history, self.COLOR_YELLOW,
+        self._draw_bar_chart(screen, cpu_x, y, cpu_w, chart_h, self.cpu_history, Theme.COLOR_YELLOW,
                              "CPU Usage", f"{self.console.system_cpu_percent:.0f}%")
 
     LTM_MIN_MAX_KB = 10.0
@@ -408,7 +365,7 @@ class DashboardTab(TabView):
         max_kb = self._nice_ceil(peak) if peak > self.LTM_MIN_MAX_KB else self.LTM_MIN_MAX_KB
 
         self._draw_bar_chart(screen, x, y, width, chart_h,
-                             sizes, self.COLOR_PINK,
+                             sizes, Theme.COLOR_PINK,
                              "Long Term Memory", latest_str,
                              max_value=max_kb, y_axis_format=self._format_kb)
 
@@ -424,25 +381,25 @@ class DashboardTab(TabView):
 
     def _temp_zone(self, temp_c: float):
         if temp_c >= self.TEMP_BAD_C:
-            return self.COLOR_RED, self.COLOR_RED_DIM, "BAD"
+            return Theme.COLOR_RED, Theme.COLOR_RED_DIM, "BAD"
         if temp_c >= self.TEMP_WARN_C:
-            return self.COLOR_YELLOW, self.COLOR_YELLOW_DIM, "WARM"
-        return self.COLOR_GREEN, self.COLOR_GREEN_DIM, "OK"
+            return Theme.COLOR_YELLOW, Theme.COLOR_YELLOW_DIM, "WARM"
+        return Theme.COLOR_GREEN, Theme.COLOR_GREEN_DIM, "OK"
 
     def _draw_temp_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int):
         """The bar chart with a colour per temperature zone and dashed guides at the zone thresholds."""
         fg, _, status = self._temp_zone(self.cpu_temp)
         value = "" if self.cpu_temp <= 0 else (f"{self.cpu_temp:.0f}°C" if status == "OK" else f"{self.cpu_temp:.0f}°C {status}")
-        self._draw_card(screen, x, y, width, chart_h + self.CARD_CHROME, "CPU Temp", value, fg)
+        Tile.draw_card(screen, self._cards, x, y, width, chart_h + Tile.CARD_CHROME, "CPU Temp", value, fg)
 
-        chart_y = y + self.CARD_TOP
+        chart_y = y + Tile.CARD_TOP
         chart_x = x + 2 + self.Y_AXIS_W
         chart_w = width - 4 - self.Y_AXIS_W
         if chart_w <= 0 or chart_h <= 0:
             return
 
         if self.temp_error and not self.temp_history:
-            screen.set_color(self.COLOR_DIM)
+            screen.set_color(Theme.COLOR_DIM)
             screen.write_at(x + 2, chart_y + 1, self.temp_error[:width - 4])
             screen.reset_color()
             return
@@ -450,8 +407,8 @@ class DashboardTab(TabView):
         max_value = self.TEMP_SCALE_MAX_C
         warn_row = min(chart_h - 1, int((self.TEMP_WARN_C / max_value) * chart_h))
         bad_row = min(chart_h - 1, int((self.TEMP_BAD_C / max_value) * chart_h))
-        warn_guide = self._lerp_color(self.COLOR_PANEL_BG, self.COLOR_YELLOW, 0.45)
-        bad_guide = self._lerp_color(self.COLOR_PANEL_BG, self.COLOR_RED, 0.45)
+        warn_guide = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_YELLOW, 0.45)
+        bad_guide = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_RED, 0.45)
 
         # Y-axis: label the warning/bad thresholds in their zone colors
         for label_val, label_color, label_row in (
@@ -464,64 +421,9 @@ class DashboardTab(TabView):
         # The bad guide wins the row when both thresholds land on it
         self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, self.temp_history, max_value,
                            lambda v: self._temp_zone(v)[0],
-                           guides={0: self.COLOR_GRID, warn_row: warn_guide, bad_row: bad_guide})
+                           guides={0: Theme.COLOR_GRID, warn_row: warn_guide, bad_row: bad_guide})
 
     Y_AXIS_W = 5
-
-    def _draw_card(self, screen: TUIScreen, x: int, y: int, width: int, height: int, label: str,
-                   value: str = "", value_color: Optional[Color] = None):
-        Tile.draw_card(screen, self._cards, x, y, width, height, label, value, value_color)
-
-    def _tint_cards(self, screen: TUIScreen):
-        Tile.tint_cards(screen, self._cards)
-
-    @classmethod
-    def _deep(cls, fg: Color) -> Color:
-        return Theme.deep(fg)
-
-    METER_BLOCKS = Tile.METER_BLOCKS
-    METER_MARKER = Tile.METER_MARKER
-    METER_MIN = 4
-
-    def _draw_meter(self, screen: TUIScreen, x: int, y: int, length: int, fraction: float, fg: Color,
-                    start: float = 0.0, track: Optional[Color] = None,
-                    marker: Optional[float] = None, marker_color: Optional[Color] = None):
-        Tile.draw_meter(screen, x, y, length, fraction, fg, start, track, marker, marker_color)
-
-    def _draw_meter_rows(self, screen: TUIScreen, x: int, y: int, width: int, height: int, rows: List[MeterRow]):
-        """A tile's body as aligned rows of label, meter, value and note. The meter takes
-        every cell the longest label and value leave it, and goes when that is too few.
-        Rows the tile's `height` has no room for are not drawn."""
-        rows = rows[:max(0, height - self.CARD_CHROME)]
-        if not rows:
-            return
-        label_w = max(display_width(row.label) for row in rows)
-        value_w = max(display_width(row.value) for row in rows)
-        note_w = max(display_width(row.note) for row in rows)
-        tail_w = value_w + (note_w + 1 if note_w else 0)
-        meter_len = width - 4 - label_w - 2 - tail_w
-        if meter_len < self.METER_MIN:
-            meter_len = 0
-            if label_w + 1 + tail_w > width - 4:    # too narrow for the notes as well, then for the whole label
-                note_w = 0
-                label_w = max(4, min(label_w, width - 4 - 1 - value_w))
-        meter_x = x + 2 + label_w + 1
-        value_x = meter_x + (meter_len + 1 if meter_len else 0)
-        value_room = max(0, x + width - 2 - value_x)
-
-        for i, row in enumerate(rows):
-            row_y = y + self.CARD_TOP + i
-            screen.set_color(self.COLOR_DIM if row.idle else self.COLOR_LABEL)
-            screen.write_at(x + 2, row_y, fit(row.label, label_w))
-            self._draw_meter(screen, meter_x, row_y, meter_len, row.fraction, row.color, start=row.start)
-            screen.set_color(row.color)
-            screen.bold()
-            screen.write_at(value_x, row_y, fit(row.value, value_room))
-            screen.reset_color()
-            if row.note and note_w:
-                screen.set_color(self.COLOR_DIM)
-                screen.write_at(value_x + value_w + 1, row_y, row.note)
-        screen.reset_color()
 
     SHADE_MIN_ROWS = 6
 
@@ -554,13 +456,13 @@ class DashboardTab(TabView):
             cx = chart_x + col_idx
             fg = color_for(value)
             if fg not in base:
-                base[fg] = self._lerp_color(self.COLOR_PANEL_BG, self._deep(fg), 0.8)
+                base[fg] = Theme.mix(Theme.COLOR_PANEL_BG, Theme.deep(fg), 0.8)
             filled_rows = (value / max_value) * chart_h if max_value > 0 else 0
             full_rows = int(filled_rows)
             partial = filled_rows - full_rows
 
             def shade(half: int) -> Color:
-                return self._lerp_color(base[fg], fg, max(0.0, min(1.0, 1 - (peak_half - half) / shade_halves)))
+                return Theme.mix(base[fg], fg, max(0.0, min(1.0, 1 - (peak_half - half) / shade_halves)))
 
             for row in range(chart_h):
                 cell_y = chart_y + chart_h - 1 - row
@@ -570,15 +472,15 @@ class DashboardTab(TabView):
                     screen.write_at(cx, cell_y, '▄')
                 elif row == full_rows and partial > 0:
                     screen.set_color(shade(row * 2 + (1 if partial > 0.5 else 0)))
-                    screen.set_bg_color(self.COLOR_PANEL_BG)
+                    screen.set_bg_color(Theme.COLOR_PANEL_BG)
                     screen.write_at(cx, cell_y, self.BLOCK_CHARS[max(1, int(partial * 8))])
                 elif row in guides:
                     screen.set_color(guides[row])
-                    screen.set_bg_color(self.COLOR_PANEL_BG)
+                    screen.set_bg_color(Theme.COLOR_PANEL_BG)
                     screen.write_at(cx, cell_y, '┄')
                 else:
-                    screen.set_bg_color(self.COLOR_PANEL_BG)
-                    screen.set_color(self.COLOR_PANEL_BG)
+                    screen.set_bg_color(Theme.COLOR_PANEL_BG)
+                    screen.set_color(Theme.COLOR_PANEL_BG)
                     screen.write_at(cx, cell_y, ' ')
 
         screen.reset_color()
@@ -595,9 +497,9 @@ class DashboardTab(TabView):
                         max_value: float = 100.0, y_axis_format=None):
         """A chart tile: the title strip with the latest value, a labelled y-axis (percent
         unless `y_axis_format` says otherwise) and the columns over dashed rules at the labels."""
-        self._draw_card(screen, x, y, width, chart_h + self.CARD_CHROME, label, value_str, fg)
+        Tile.draw_card(screen, self._cards, x, y, width, chart_h + Tile.CARD_CHROME, label, value_str, fg)
 
-        chart_y = y + self.CARD_TOP
+        chart_y = y + Tile.CARD_TOP
         chart_x = x + 2 + self.Y_AXIS_W
         chart_w = width - 4 - self.Y_AXIS_W
         if chart_w <= 0 or chart_h <= 0:
@@ -605,18 +507,18 @@ class DashboardTab(TabView):
 
         y_axis_format = y_axis_format or self._format_pct
         rows = self._tick_rows(chart_h, self.Y_TICKS)
-        screen.set_color(self.COLOR_DIM)
+        screen.set_color(Theme.COLOR_DIM)
         for i, row in enumerate(rows):
             screen.write_at(x + 2, chart_y + chart_h - 1 - row,
                             y_axis_format(max_value * i / self.Y_TICKS).rjust(self.Y_AXIS_W - 1))
         screen.reset_color()
 
         self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, history, max_value, lambda _: fg,
-                           guides={row: self.COLOR_GRID for row in rows})
+                           guides={row: Theme.COLOR_GRID for row in rows})
         if not history:
             note = "no samples yet"
-            screen.set_color(self.COLOR_DIM)
-            screen.set_bg_color(self.COLOR_PANEL_BG)
+            screen.set_color(Theme.COLOR_DIM)
+            screen.set_bg_color(Theme.COLOR_PANEL_BG)
             screen.write_at(chart_x + max(0, (chart_w - len(note)) // 2), chart_y + chart_h // 2, note[:chart_w])
             screen.reset_color()
 
@@ -653,7 +555,7 @@ class DashboardTab(TabView):
         smart_value = f"{smart_data[-1]:.2f}s" if smart_data else ""
         smart_max = self._ttft_max(smart_data)
         self._draw_bar_chart(screen, x, y, chart_w, chart_height,
-                             smart_data, self.COLOR_CYAN,
+                             smart_data, Theme.COLOR_CYAN,
                              smart_label, smart_value,
                              max_value=smart_max, y_axis_format=self._format_seconds)
 
@@ -662,14 +564,14 @@ class DashboardTab(TabView):
         fast_value = f"{fast_data[-1]:.2f}s" if fast_data else ""
         fast_max = self._ttft_max(fast_data)
         self._draw_bar_chart(screen, fast_x, y, fast_w, chart_height,
-                             fast_data, self.COLOR_PURPLE,
+                             fast_data, Theme.COLOR_PURPLE,
                              fast_label, fast_value,
                              max_value=fast_max, y_axis_format=self._format_seconds)
 
         cache_data = monitor.cache_pct
         cache_value = f"{cache_data[-1]}%" if cache_data else ""
         self._draw_bar_chart(screen, cache_x, y, cache_w, chart_height,
-                             cache_data, self.COLOR_GREEN,
+                             cache_data, Theme.COLOR_GREEN,
                              "KV-Cache Hit %", cache_value,
                              max_value=100.0, y_axis_format=self._format_pct)
 
@@ -719,41 +621,41 @@ class DashboardTab(TabView):
         integrations = self._integration_grid(len(enabled), inner_w)[1] + (1 + len(disabled_lines) if disabled_lines else 0)
         pm = self.console.prompt_manager
         prompt_sections = len(pm.get_section_stats()) if pm else 0
-        return max(integrations, self.TIMING_ROWS, len(self._resource_rows()), prompt_sections) + self.CARD_CHROME
+        return max(integrations, self.TIMING_ROWS, len(self._resource_rows()), prompt_sections) + Tile.CARD_CHROME
 
     def _draw_status_panel(self, screen: TUIScreen, y: int, height: int):
         (ix, iw), (tx, tw), (rx, rw), (px, pw) = self._columns(screen, 4)
         self._draw_integrations(screen, ix, y, iw, height)
         self._draw_timing(screen, tx, y, tw, height)
-        self._draw_card(screen, rx, y, rw, height, "Resources")
-        self._draw_meter_rows(screen, rx, y, rw, height, self._resource_rows())
+        Tile.draw_card(screen, self._cards, rx, y, rw, height, "Resources")
+        Board.draw_meter_rows(screen, rx, y, rw, height, self._resource_rows())
         self._draw_prompt_sections(screen, px, y, pw, height)
 
     def _draw_integrations(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
         inner_w = width - 4
         enabled, disabled_lines = self._integration_rows(IntegrationMonitor.get_instance().get_all_statuses(), inner_w)
         ok = sum(1 for status in enabled if status["state"] == IntegrationState.OK.value)
-        self._draw_card(screen, x, y, width, height, "Integrations", f"{ok}/{len(enabled)} ok" if enabled else "",
-                        self.COLOR_GREEN if ok == len(enabled) else self.COLOR_YELLOW)
+        Tile.draw_card(screen, self._cards, x, y, width, height, "Integrations", f"{ok}/{len(enabled)} ok" if enabled else "",
+                        Theme.COLOR_GREEN if ok == len(enabled) else Theme.COLOR_YELLOW)
 
         columns, rows = self._integration_grid(len(enabled), inner_w)
         column_w = inner_w // columns
         bottom = y + height - 2     # the last content row
         for i, status in enumerate(enabled):
             cx = x + 2 + (i // rows) * column_w
-            cy = y + self.CARD_TOP + i % rows
+            cy = y + Tile.CARD_TOP + i % rows
             if cy > bottom:
                 continue
             healthy = status["state"] == IntegrationState.OK.value
-            state_color = self.STATUS_STATE_COLORS.get(status["state"], self.COLOR_DIM)
+            state_color = self.STATUS_STATE_COLORS.get(status["state"], Theme.COLOR_DIM)
             screen.set_color(state_color)
             screen.write_at(cx, cy, "●")
-            screen.set_color(self.COLOR_LABEL if healthy else state_color)
+            screen.set_color(Theme.COLOR_LABEL if healthy else state_color)
             screen.write_at(cx + 2, cy, fit(status["name"], column_w - 3))
-        screen.set_color(self.COLOR_DIM)
+        screen.set_color(Theme.COLOR_DIM)
         for i, line in enumerate(disabled_lines):
-            if y + self.CARD_TOP + rows + 1 + i <= bottom:
-                screen.write_at(x + 2, y + self.CARD_TOP + rows + 1 + i, line)
+            if y + Tile.CARD_TOP + rows + 1 + i <= bottom:
+                screen.write_at(x + 2, y + Tile.CARD_TOP + rows + 1 + i, line)
         screen.reset_color()
 
     def _draw_timing(self, screen: TUIScreen, x: int, y: int, width: int, height: int):
@@ -778,14 +680,14 @@ class DashboardTab(TabView):
         for name, value, note in stages:
             if value > -1:
                 share = value / total if total > 0 else 0.0
-                rows.append(MeterRow(name, f"{value}s", share, self.COLOR_YELLOW, start=elapsed, note=note))
+                rows.append(MeterRow(name, f"{value}s", share, Theme.COLOR_YELLOW, start=elapsed, note=note))
                 elapsed += share
             else:
-                rows.append(MeterRow(name, "–", 0.0, self.COLOR_DIM, idle=True))
+                rows.append(MeterRow(name, "–", 0.0, Theme.COLOR_DIM, idle=True))
 
-        self._draw_card(screen, x, y, width, height, "Last request",
-                        f"{round(total, 2)}s" if complete else "", self.COLOR_YELLOW)
-        self._draw_meter_rows(screen, x, y, width, height, rows)
+        Tile.draw_card(screen, self._cards, x, y, width, height, "Last request",
+                        f"{round(total, 2)}s" if complete else "", Theme.COLOR_YELLOW)
+        Board.draw_meter_rows(screen, x, y, width, height, rows)
 
     def _resource_rows(self) -> List[MeterRow]:
         console = self.console
@@ -794,7 +696,7 @@ class DashboardTab(TabView):
             return part / whole if whole > 0 else 0
 
         def row(label: str, value: str, fraction: float, warn: bool = False) -> MeterRow:
-            return MeterRow(label, value, fraction, self.COLOR_RED if warn else self.COLOR_CYAN)
+            return MeterRow(label, value, fraction, Theme.COLOR_RED if warn else Theme.COLOR_CYAN)
 
         photos_frac = ratio(console.photos_indexed, console.photos_total)
         voice_frac = ratio(console.voice_cache_size_gb, console.voice_cache_max_gb)
@@ -845,12 +747,12 @@ class DashboardTab(TabView):
         pm = self.console.prompt_manager
         stats = pm.get_section_stats() if pm else []
         if not stats:
-            self._draw_card(screen, x, y, width, height, "Prompt")
+            Tile.draw_card(screen, self._cards, x, y, width, height, "Prompt")
             return
 
-        stats = self._fit_prompt_stats(stats, height - self.CARD_CHROME)
+        stats = self._fit_prompt_stats(stats, height - Tile.CARD_CHROME)
         max_size = max((size for _, size, _ in stats), default=0) or 1
-        quiet = self._lerp_color(self.COLOR_PANEL_BG, self.COLOR_PURPLE, 0.6)
+        quiet = Theme.mix(Theme.COLOR_PANEL_BG, Theme.COLOR_PURPLE, 0.6)
         now = time.time()
 
         rows = []
@@ -860,7 +762,7 @@ class DashboardTab(TabView):
             # Sections that just changed light up for 30s so a refresh is visible.
             recent = 0 < int(time_ago) < 30
             rows.append(MeterRow(section_name.replace('_', ' ').capitalize(), f"{size_bytes / 1024.0:>5.1f} KB",
-                                 size_bytes / max_size, self.COLOR_PURPLE if recent else quiet,
+                                 size_bytes / max_size, Theme.COLOR_PURPLE if recent else quiet,
                                  note="" if int(time_ago) == 0 else time_str))
 
         total = ""
@@ -871,12 +773,13 @@ class DashboardTab(TabView):
             over = total_kb > self.PROMPT_BUDGET_KB
             total = f"{total_kb:.1f} KB"
 
-        self._draw_card(screen, x, y, width, height, "Prompt", total, self.COLOR_RED if over else self.COLOR_PURPLE)
-        self._draw_meter_rows(screen, x, y, width, height, rows)
+        Tile.draw_card(screen, self._cards, x, y, width, height, "Prompt", total, Theme.COLOR_RED if over else Theme.COLOR_PURPLE)
+        Board.draw_meter_rows(screen, x, y, width, height, rows)
 
     # --- Anthropic Cost Chart ---
 
-    MODEL_COLORS_LIST = [COLOR_CYAN, COLOR_PURPLE, COLOR_YELLOW, COLOR_GREEN, COLOR_PINK, COLOR_ORANGE]
+    MODEL_COLORS_LIST = [Theme.COLOR_CYAN, Theme.COLOR_PURPLE, Theme.COLOR_YELLOW, Theme.COLOR_GREEN, Theme.COLOR_PINK,
+                         Theme.COLOR_ORANGE]
 
     def _draw_cost_chart(self, screen: TUIScreen, x: int, y: int, width: int, box_h: int):
         if box_h < 6 or width < 30:
@@ -893,25 +796,25 @@ class DashboardTab(TabView):
         # Legend height: 1 line for legend + 1 for x-axis labels
         legend_h = 2
         box_w = width
-        chart_h = box_h - self.CARD_CHROME - legend_h
+        chart_h = box_h - Tile.CARD_CHROME - legend_h
 
-        self._draw_card(screen, x, y, box_w, box_h, "Anthropic API Cost",
-                        cost_summary if self.cost_last_updated > 0 else "", self.COLOR_CYAN)
+        Tile.draw_card(screen, self._cards, x, y, box_w, box_h, "Anthropic API Cost",
+                        cost_summary if self.cost_last_updated > 0 else "", Theme.COLOR_CYAN)
 
         # Show loading/error state
         if self.cost_error and not daily_costs:
-            screen.set_color(self.COLOR_DIM)
-            screen.write_at(x + 2, y + self.CARD_TOP, fit(self.cost_error, box_w - 4))
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(x + 2, y + Tile.CARD_TOP, fit(self.cost_error, box_w - 4))
             screen.reset_color()
             return
         if not self.cost_last_updated or not date_strs:
-            screen.set_color(self.COLOR_DIM)
-            screen.write_at(x + 2, y + self.CARD_TOP, "Loading cost data...")
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(x + 2, y + Tile.CARD_TOP, "Loading cost data...")
             screen.reset_color()
             return
 
         chart_x = x + 2 + y_axis_w
-        chart_y = y + self.CARD_TOP
+        chart_y = y + Tile.CARD_TOP
         chart_w = box_w - 4 - y_axis_w
 
         gap = 1
@@ -938,9 +841,9 @@ class DashboardTab(TabView):
             label_val = nice_max * i / num_labels
             label_y = chart_y + chart_h - 1 - row
             label_str = f"{label_val:.0f}" if label_val >= 1 or label_val == 0 else f"{label_val:.1f}"
-            screen.set_color(self.COLOR_DIM)
+            screen.set_color(Theme.COLOR_DIM)
             screen.write_at(x + 2, label_y, label_str.rjust(y_axis_w - 1))
-            screen.set_color(self.COLOR_GRID)
+            screen.set_color(Theme.COLOR_GRID)
             screen.write_at(chart_x, label_y, '┄' * chart_w)
         screen.reset_color()
 
@@ -997,7 +900,7 @@ class DashboardTab(TabView):
                         block_idx = max(1, min(7, round(fill * 8)))
                         char = self.BLOCK_CHARS[block_idx]
                         fg_color = color
-                        bg_color = self.COLOR_PANEL_BG
+                        bg_color = Theme.COLOR_PANEL_BG
                 else:
                     overlapping.sort(key=lambda s: s[1])
                     mi_low = overlapping[0][0]
@@ -1022,7 +925,7 @@ class DashboardTab(TabView):
                         char = self.BLOCK_CHARS[block_idx]
                         fill_high = fill_total - fill_low
                         fg_color = color_low if fill_low >= fill_high else color_high
-                        bg_color = self.COLOR_PANEL_BG
+                        bg_color = Theme.COLOR_PANEL_BG
 
                 screen.set_color(fg_color)
                 screen.set_bg_color(bg_color)
@@ -1041,7 +944,7 @@ class DashboardTab(TabView):
             if lx + 5 > x + box_w - 1:
                 break
             label = display_dates[idx].strftime("%b %-d")
-            screen.set_color(self.COLOR_DIM)
+            screen.set_color(Theme.COLOR_DIM)
             screen.write_at(lx, label_y, label)
         screen.reset_color()
 
@@ -1058,7 +961,7 @@ class DashboardTab(TabView):
                 break
             screen.set_color(self.MODEL_COLORS_LIST[mi % len(self.MODEL_COLORS_LIST)])
             screen.write_at(lx, legend_y, "\u2501\u2501")
-            screen.set_color(self.COLOR_LABEL)
+            screen.set_color(Theme.COLOR_LABEL)
             screen.write_at(lx + 2, legend_y, f" {short_name}")
             lx += entry_w
         screen.reset_color()
@@ -1067,7 +970,7 @@ class DashboardTab(TabView):
         """A model's colour at height `t` (0..1) of the cost chart: the same deep-to-bright
         shading the other charts' columns have."""
         fg = self.MODEL_COLORS_LIST[model_index % len(self.MODEL_COLORS_LIST)]
-        return self._lerp_color(self._lerp_color(self.COLOR_PANEL_BG, self._deep(fg), 0.8), fg, t)
+        return Theme.mix(Theme.mix(Theme.COLOR_PANEL_BG, Theme.deep(fg), 0.8), fg, t)
 
     @staticmethod
     def _shorten_model_name(model: str) -> str:
@@ -1083,10 +986,6 @@ class DashboardTab(TabView):
                 continue
             cleaned.append(p)
         return "-".join(cleaned)
-
-    @staticmethod
-    def _lerp_color(c1: Color, c2: Color, t: float) -> Color:
-        return Theme.mix(c1, c2, t)
 
     @staticmethod
     def _nice_ceil(value: float) -> float:

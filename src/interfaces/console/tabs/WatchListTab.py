@@ -1,19 +1,19 @@
 import dataclasses
 from datetime import datetime, timedelta
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
-from .MarkdownTabView import MarkdownTabView
 from .MemoryTab import MemoryTab
-from .ScrollableTabView import COLOR_HINT, draw_scrollbar
-from .TabView import SUB_CONTENT_TOP
+from .ScrollableTabView import draw_scrollbar
+from .TabView import SUB_CONTENT_TOP, TabView
 from assistant import FirstRun, WatchList
 from common.logging import trace
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.framework.TextWidth import display_width, fit
-from interfaces.console.widgets import Tile
+from interfaces.console.framework.TextWidth import display_width
+from interfaces.console.widgets import Board, Markdown, Tile
+from interfaces.console.widgets.Board import Fact, Meter, SummaryTile, Table
 from interfaces.console.widgets.SecretMarks import mark_masks
 
 # A check this many cadences after the last one is no longer merely due: it was missed.
@@ -132,40 +132,33 @@ def assess(item: WatchList.Item, now: datetime) -> Entry:
     return Entry(item, kind, reason, checked, next_check, fraction, due_days)
 
 
-class WatchListTab(MarkdownTabView):
+class WatchListTab(TabView):
     """The open watch items as a board in the Dashboard's tiles: four summary tiles (what needs
     attention, the next check, the last one, how many are watched), a table sorted most urgent
     first — a state dot, a meter filling towards the next check, the last check, the cadence
-    and the due date — and the selected item in full beside it (under it on a narrow screen).
+    and the due date — and the selected item in full beside it (under it on a narrow screen),
+    its note laid out by `widgets/Markdown`.
     Red is a passed due date or a missed check, yellow a check that is due, orange an item
     nobody has updated for long, green one on schedule, blue one that only waits for its date.
     Vaulted values are masked as in the other Memory tabs."""
 
-    LEFT = 3
-    RIGHT_MARGIN = 2
-    GAP = 2
-    SUMMARY_H = 1 + Tile.CARD_CHROME
-    SIDE_BY_SIDE_MIN = 150      # screen columns from which the selected item sits beside the table
-    DETAIL_MIN_W = 50
-    DETAIL_METER_MAX_W = 40
     STACKED_DETAIL_MIN_H = Tile.CARD_CHROME + 5
     NAME_MIN_W = 16
     NAME_MAX_W = 40
     METER_W = 10
     METER_GROW = 20
     NEXT_TEXT_W = 12            # "23h 59m late", the longest a span gets
-    FACT_LABEL_W = 12
     # The table's columns after the name, and the order they go in on a narrow tile.
     COLUMNS = (("status", "Status", 10), ("next", "Next check", METER_W + 1 + NEXT_TEXT_W), ("last", "Last check", 11),
                ("every", "Every", 8), ("due", "Due", 17))
     DROP_ORDER = ("every", "last", "status", "due")
 
     def __init__(self, redactor: Optional[Redactor] = None):
-        super().__init__()
         self._redactor = redactor  # over the Vault singleton, resolved on first draw
         self._cards: List[Tile.Card] = []
         self._items: List[WatchList.Item] = []
         self._loaded_version = None
+        self._notes: Dict[Tuple[str, int], Markdown.Document] = {}   # (item, width) -> its note laid out
         self._order: List[str] = []
         self._selected: Optional[str] = None
         self._top = 0
@@ -206,6 +199,7 @@ class WatchListTab(MarkdownTabView):
             mask = self.redactor.mask
             self._items = [dataclasses.replace(item, name=mask(item.name), note=mask(item.note))
                            for item in WatchList.items()]
+            self._notes = {}
             self._loaded_version = version
             trace(f"Watch list tab: {len(self._items)} open item(s) loaded")
         return self._items
@@ -220,55 +214,34 @@ class WatchListTab(MarkdownTabView):
         if FirstRun.curation_progress() is not None:
             MemoryTab._draw_first_curation_notice(screen, y)
             y += MemoryTab.NOTICE_ROWS + 1
-        self._draw_summary(screen, y, entries, now)
-        y += self.SUMMARY_H + 1
+        available = screen.width - Board.LEFT - Board.RIGHT_MARGIN
+        Board.draw_summary(screen, self._cards, y, available,
+                           [self._attention_tile(entries), self._next_check_tile(entries, now),
+                            self._last_check_tile(entries, now), self._watching_tile(entries)])
+        y += Board.SUMMARY_H + 1
 
-        available = screen.width - self.LEFT - self.RIGHT_MARGIN
         height = screen.height - 1 - y      # the last row is the key hints'
         if not entries:
-            self._draw_card(screen, self.LEFT, y, available, min(height, Tile.CARD_CHROME + 1), "Watch list")
-            screen.set_color(Theme.COLOR_DIM)
-            screen.write_at(self.LEFT + 2, y + Tile.CARD_TOP, fit(WatchList.EMPTY, available - 4))
-            screen.reset_color()
+            Board.draw_notice(screen, self._cards, Board.LEFT, y, available, height, "Watch list", WatchList.EMPTY)
         else:
             if self._selected not in self._order:
                 self._selected, self._note_scroll = self._order[0], 0
             index = self._order.index(self._selected)
-            if screen.width >= self.SIDE_BY_SIDE_MIN:
-                detail_w = max(self.DETAIL_MIN_W, available * 36 // 100)
-                table_w = available - self.GAP - detail_w
-                self._draw_table(screen, self.LEFT, y, table_w, height, entries, index)
-                self._draw_detail(screen, self.LEFT + table_w + self.GAP, y, detail_w, height, entries[index], now)
+            if screen.width >= Board.SIDE_BY_SIDE_MIN:
+                table_w, detail_w = Board.split(available)
+                self._draw_table(screen, Board.LEFT, y, table_w, height, entries, index)
+                self._draw_detail(screen, Board.LEFT + table_w + Board.GAP, y, detail_w, height, entries[index], now)
             else:
                 # The table's row already carries the selected item's facts: the tile under it is for the note.
                 table_h = min(len(entries) + Tile.CARD_CHROME + 1,
                               max(Tile.CARD_CHROME + 3, height - 1 - self.STACKED_DETAIL_MIN_H))
-                self._draw_table(screen, self.LEFT, y, available, table_h, entries, index)
-                self._draw_detail(screen, self.LEFT, y + table_h + 1, available, height - table_h - 1, entries[index], now,
+                self._draw_table(screen, Board.LEFT, y, available, table_h, entries, index)
+                self._draw_detail(screen, Board.LEFT, y + table_h + 1, available, height - table_h - 1, entries[index], now,
                                   compact=True)
         Tile.tint_cards(screen, self._cards)
-
-        screen.reset_color()
-        screen.set_color(COLOR_HINT)
-        screen.write_at(self.LEFT, screen.height - 1, "↑↓ select  PgUp/PgDn scroll the note")
-        screen.reset_color()
-
-    def _draw_card(self, screen: TUIScreen, x: int, y: int, width: int, height: int, label: str,
-                   value: str = "", value_color: Optional[Color] = None):
-        Tile.draw_card(screen, self._cards, x, y, width, height, label, value, value_color)
+        Board.draw_hints(screen, "↑↓ select  PgUp/PgDn scroll the note")
 
     # --- Summary tiles ---
-
-    def _draw_summary(self, screen: TUIScreen, y: int, entries: List[Entry], now: datetime):
-        available = screen.width - self.LEFT - self.RIGHT_MARGIN
-        width = (available - self.GAP * 3) // 4
-        tiles = (self._attention_tile(entries), self._next_check_tile(entries, now),
-                 self._last_check_tile(entries, now), self._watching_tile(entries))
-        for i, (label, value, color, segments) in enumerate(tiles):
-            x = self.LEFT + i * (width + self.GAP)
-            tile_w = width if i < 3 else available - (width + self.GAP) * 3
-            self._draw_card(screen, x, y, tile_w, self.SUMMARY_H, label, value, color)
-            Tile.write_segments(screen, x + 2, y + Tile.CARD_TOP, tile_w - 4, segments)
 
     @staticmethod
     def _counts(entries: List[Entry], kinds: Tuple[Kind, ...]) -> List[Tuple[str, Color]]:
@@ -276,7 +249,7 @@ class WatchListTab(MarkdownTabView):
         return [(f"{count} {kind.label}", kind.color) for kind, count in counts if count]
 
     @classmethod
-    def _attention_tile(cls, entries: List[Entry]):
+    def _attention_tile(cls, entries: List[Entry]) -> SummaryTile:
         segments = cls._counts(entries, (PAST_DUE, OVERDUE, CHECK_DUE, STALE))
         if not segments:
             return "Needs attention", "all clear", Theme.COLOR_GREEN, [("nothing overdue, nothing due", Theme.COLOR_DIM)]
@@ -284,7 +257,7 @@ class WatchListTab(MarkdownTabView):
         return "Needs attention", str(count), segments[0][1], segments
 
     @staticmethod
-    def _next_check_tile(entries: List[Entry], now: datetime):
+    def _next_check_tile(entries: List[Entry], now: datetime) -> SummaryTile:
         polled = [entry for entry in entries if entry.fraction is not None]
         if not polled:
             return "Next check", "–", Theme.COLOR_DIM, [("nothing is polled", Theme.COLOR_DIM)]
@@ -298,7 +271,7 @@ class WatchListTab(MarkdownTabView):
         return "Next check", f"in {span(soonest.next_check - now)}", Theme.COLOR_GREEN, [name, at]
 
     @staticmethod
-    def _last_check_tile(entries: List[Entry], now: datetime):
+    def _last_check_tile(entries: List[Entry], now: datetime) -> SummaryTile:
         checked = [entry for entry in entries if entry.checked]
         if not checked:
             return "Last check", "–", Theme.COLOR_DIM, [("nothing checked yet", Theme.COLOR_DIM)]
@@ -307,7 +280,7 @@ class WatchListTab(MarkdownTabView):
                 [(latest.item.name, Theme.COLOR_LABEL), (when(latest.checked, now), Theme.COLOR_DIM)])
 
     @staticmethod
-    def _watching_tile(entries: List[Entry]):
+    def _watching_tile(entries: List[Entry]) -> SummaryTile:
         polled = sum(1 for entry in entries if entry.item.every)
         dated = sum(1 for entry in entries if not entry.item.every and entry.due_days is not None)
         groups = ((polled, "polled", Theme.COLOR_GREEN), (dated, "waiting for a date", Theme.COLOR_BLUE),
@@ -342,47 +315,18 @@ class WatchListTab(MarkdownTabView):
     def _draw_table(self, screen: TUIScreen, x: int, y: int, width: int, height: int,
                     entries: List[Entry], selected: int):
         count = len(entries)
-        self._draw_card(screen, x, y, width, height, "Watch list", "1 item" if count == 1 else f"{count} items")
-        room = height - Tile.CARD_CHROME - 1    # a row goes to the column titles
-        if room <= 0:
-            return
-        self._top = max(0, min(max(min(self._top, selected), selected - room + 1), count - room))
         name_w, meter_w, columns = self._layout(entries, width - 4)
-
-        header_y = y + Tile.CARD_TOP
-        screen.set_color(Theme.COLOR_DIM)
-        screen.write_at(x + 4, header_y, "Item")
-        cx = x + 4 + name_w + 2
-        for _, title, column_w in columns:
-            screen.write_at(cx, header_y, title)
-            cx += column_w + 2
-
         now = self.now()
-        for i, entry in enumerate(entries[self._top:self._top + room]):
-            row_y = header_y + 1 + i
-            chosen = self._top + i == selected
-            screen.reset_color()
-            screen.set_color(entry.kind.color)
-            screen.write_at(x + 2, row_y, entry.kind.symbol)
-            screen.set_color(Theme.COLOR_BRIGHT if chosen else Theme.COLOR_TEXT)
-            if chosen:
-                screen.bold()
-            screen.write_at(x + 4, row_y, fit(entry.item.name, name_w))
-            screen.reset_color()
-            cx = x + 4 + name_w + 2
-            for key, _, column_w in columns:
-                if key == "next":
-                    self._draw_next_check(screen, cx, row_y, meter_w, column_w - meter_w - 1, entry, now)
-                else:
-                    text, color = self._cell(key, entry, now)
-                    screen.set_color(color)
-                    screen.write_at(cx, row_y, fit(text, column_w))
-                cx += column_w + 2
-            screen.reset_color()
-            if chosen:
-                screen.tint_row(x, row_y, width, Theme.COLOR_SELECTED_BG)
-        draw_scrollbar(screen, x + width - 1, header_y + 1, count, room, count - room - self._top)
-        screen.reset_color()
+        rows = []
+        for i, entry in enumerate(entries):
+            chosen = i == selected
+            cells: List[Board.Cell] = [(entry.item.name, Theme.COLOR_BRIGHT if chosen else Theme.COLOR_TEXT, chosen)]
+            for key, _, _ in columns:
+                cells.append(self._next_check_cell(entry, now, meter_w) if key == "next" else self._cell(key, entry, now))
+            rows.append((entry.kind.color, cells))
+        table = Table("Watch list", [("Item", name_w)] + [(title, column_w) for _, title, column_w in columns],
+                      rows, WatchList.EMPTY, "1 item" if count == 1 else f"{count} items")
+        self._top = Board.draw_table(screen, self._cards, x, y, width, height, table, self._top, selected)
 
     @staticmethod
     def _next_check_text(entry: Entry, now: datetime) -> Tuple[str, Color]:
@@ -394,19 +338,13 @@ class WatchListTab(MarkdownTabView):
             return f"{span(now - entry.next_check)} late", entry.check_color
         return f"in {span(entry.next_check - now)}", Theme.COLOR_TEXT
 
-    def _draw_next_check(self, screen: TUIScreen, x: int, y: int, meter_w: int, text_w: int, entry: Entry, now: datetime):
+    @classmethod
+    def _next_check_cell(cls, entry: Entry, now: datetime, meter_w: int) -> Board.Cell:
         """The cadence as a meter that fills from the last check to the next, and the time left."""
-        text, color = self._next_check_text(entry, now)
+        text, color = cls._next_check_text(entry, now)
         if entry.fraction is None:
-            screen.set_color(color)
-            screen.write_at(x, y, text)
-            return
-        Tile.draw_meter(screen, x, y, meter_w, min(1.0, entry.fraction), entry.check_color)
-        screen.set_color(color)
-        if entry.fraction >= 1:
-            screen.bold()
-        screen.write_at(x + meter_w + 1, y, fit(text, text_w))
-        screen.reset_color()
+            return text, color
+        return Meter(entry.fraction, entry.check_color, meter_w, text, color, entry.fraction >= 1)
 
     @staticmethod
     def _due_color(entry: Entry) -> Color:
@@ -435,66 +373,57 @@ class WatchListTab(MarkdownTabView):
 
     # --- The selected item ---
 
-    def _facts(self, entry: Entry, now: datetime) -> List[Tuple[str, Optional[str], Color]]:
-        """The (label, value, colour) rows of the selected item; a None value is the check meter."""
+    def _facts(self, entry: Entry, now: datetime) -> List[Fact]:
+        """The rows of the selected item; the check meter sits under its "Next check" row."""
         item = entry.item
         text, color = self._next_check_text(entry, now)
         if entry.next_check:
             text += f" · {when(entry.next_check, now)}"
         elif entry.fraction is None and not item.every:
             text, color = "not polled", Theme.COLOR_DIM
-        facts = [("Status", entry.reason, entry.kind.color), ("Next check", text, color)]
+        facts = [Fact("Status", entry.reason, entry.kind.color), Fact("Next check", text, color)]
         if entry.fraction is not None:
-            facts.append(("", None, entry.check_color))
-        facts.append(("Last check", f"{span(now - entry.checked)} ago · {item.checked}", Theme.COLOR_TEXT)
-                     if entry.checked else ("Last check", "never", Theme.COLOR_DIM))
-        facts.append(("Cadence", item.every, Theme.COLOR_TEXT) if item.every else ("Cadence", "–", Theme.COLOR_FAINT))
+            facts.append(Fact("", "", entry.check_color, meter=entry.fraction))
+        facts.append(Fact("Last check", f"{span(now - entry.checked)} ago · {item.checked}", Theme.COLOR_TEXT)
+                     if entry.checked else Fact("Last check", "never", Theme.COLOR_DIM))
+        facts.append(Fact("Cadence", item.every, Theme.COLOR_TEXT) if item.every else Fact("Cadence", "–", Theme.COLOR_FAINT))
         if entry.due_days is not None:
-            facts.append(("Due", f"{item.due} · {day_distance(entry.due_days)}", self._due_color(entry)))
+            facts.append(Fact("Due", f"{item.due} · {day_distance(entry.due_days)}", self._due_color(entry)))
         else:
-            facts.append(("Due", item.due, Theme.COLOR_TEXT) if item.due else ("Due", "–", Theme.COLOR_FAINT))
+            facts.append(Fact("Due", item.due, Theme.COLOR_TEXT) if item.due else Fact("Due", "–", Theme.COLOR_FAINT))
         for label, value in (("Updated", item.updated), ("Created", item.created)):
             moment = WatchList.stamp(value)
             distance = f" · {day_distance((moment.date() - now.date()).days)}" if moment else ""
-            facts.append((label, f"{value}{distance}", Theme.COLOR_LABEL))
+            facts.append(Fact(label, f"{value}{distance}", Theme.COLOR_LABEL))
         return facts
+
+    def _note(self, item: WatchList.Item, width: int) -> Markdown.Document:
+        """The item's note laid out `width` cells wide, kept until the items are re-read."""
+        key = (item.name, width)
+        if key not in self._notes:
+            self._notes[key] = Markdown.layout(item.note.splitlines(), width)
+        return self._notes[key]
 
     def _draw_detail(self, screen: TUIScreen, x: int, y: int, width: int, height: int, entry: Entry, now: datetime,
                      compact: bool = False):
         """The selected item: its facts, then its note; `compact` keeps only the first fact, why it has its state."""
         if height < Tile.CARD_CHROME + 1:
             return
-        self._draw_card(screen, x, y, width, height, entry.item.name, entry.kind.label, entry.kind.color)
+        Tile.draw_card(screen, self._cards, x, y, width, height, entry.item.name, entry.kind.label, entry.kind.color)
         inner_w = width - 4
-        value_x = x + 2 + self.FACT_LABEL_W
-        value_w = inner_w - self.FACT_LABEL_W
+        facts = self._facts(entry, now)[:1 if compact else None]
+        row = Board.draw_facts(screen, x, y, width, height, facts) + 1
         bottom = y + height - 2
-        row = y + Tile.CARD_TOP
-        for label, value, color in self._facts(entry, now)[:1 if compact else None]:
-            if row > bottom:
-                return
-            screen.set_color(Theme.COLOR_DIM)
-            screen.write_at(x + 2, row, label)
-            if value is None:
-                Tile.draw_meter(screen, value_x, row, min(value_w, self.DETAIL_METER_MAX_W), min(1.0, entry.fraction), color)
-            else:
-                screen.set_color(color)
-                screen.write_at(value_x, row, fit(value, value_w))
-            screen.reset_color()
-            row += 1
-
-        row += 1
-        lines = [wrapped for line in entry.item.note.splitlines() for wrapped in self.word_wrap(line, inner_w)]
+        rows = self._note(entry.item, inner_w).rows
         room = bottom - row + 1
-        if room <= 0 or not lines:
+        if room <= 0 or not rows:
             return
         self._note_room = room
-        self._note_scroll = max(0, min(self._note_scroll, len(lines) - room))
-        self.seek_code_block(lines, self._note_scroll)
+        self._note_scroll = max(0, min(self._note_scroll, len(rows) - room))
         mark = self.redactor.active
-        for i, line in enumerate(lines[self._note_scroll:self._note_scroll + room]):
-            self.draw_formatted_line(screen, x + 2, row + i, line, inner_w)
+        for i, note_row in enumerate(rows[self._note_scroll:self._note_scroll + room]):
+            Markdown.draw_row(screen, x + 2, row + i, inner_w, note_row)
             if mark:
                 mark_masks(screen, self.redactor, x + 2, row + i, inner_w)
-        draw_scrollbar(screen, x + width - 1, row, len(lines), room, len(lines) - room - self._note_scroll)
+        draw_scrollbar(screen, x + width - 1, row, len(rows), room, len(rows) - room - self._note_scroll)
         screen.reset_color()

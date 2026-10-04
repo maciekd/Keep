@@ -51,23 +51,6 @@ def write_segments(screen: TUIScreen, x: int, y: int, width: int, segments: List
     screen.reset_color()
 
 
-def write_cells(screen: TUIScreen, x: int, y: int, width: int, cells: List[Tuple[str, Optional[int], Color, bool]]):
-    """One table row: each (text, width, fg, bold) cell in turn, two columns apart, the
-    last one (width None) taking what is left of `width`."""
-    remaining = width
-    for text, cell_w, fg, bold in cells:
-        cell_w = remaining if cell_w is None else min(cell_w, remaining)
-        if cell_w <= 0:
-            break
-        screen.reset_color()
-        screen.set_color(fg)
-        if bold:
-            screen.bold()
-        screen.write_at(x + width - remaining, y, fit(text, cell_w))
-        remaining -= cell_w + 2
-    screen.reset_color()
-
-
 def tint_cards(screen: TUIScreen, cards: List[Card]):
     for x, y, width, height in cards:
         screen.tint_row(x, y, width, Theme.COLOR_TITLE_BG)

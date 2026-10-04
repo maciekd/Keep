@@ -2,7 +2,8 @@ from typing import List, Optional, Tuple
 
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import Color
-from interfaces.console.tabs.AuthTab import AuthTab, COLOR_GREEN, COLOR_YELLOW, PENDING, SummaryTile, Table
+from interfaces.console.tabs.AuthTab import AuthTab, PENDING
+from interfaces.console.widgets.Board import SummaryTile, Table
 from assistant.integration.integrations.ICloudIntegration import iCloudAPI, iCloudAuthenticationError
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
@@ -17,8 +18,8 @@ class iCloudTab(AuthTab):
     SUBMITTING_MESSAGE = "Verifying 2FA code..."
     STATUS_LABELS = {
         **AuthTab.STATUS_LABELS,
-        "partial_auth": ("Partly verified", COLOR_GREEN),
-        "needs_2fa": ("2FA Required", COLOR_YELLOW),
+        "partial_auth": ("Partly verified", Theme.COLOR_GREEN),
+        "needs_2fa": ("2FA Required", Theme.COLOR_YELLOW),
     }
 
     def __init__(self):
@@ -58,7 +59,7 @@ class iCloudTab(AuthTab):
         if self.status in VERIFIED_STATES:
             for device in self._icloud_devices:
                 configured = device.get("configured_as")
-                rows.append((COLOR_GREEN if configured else Theme.COLOR_FAINT, [
+                rows.append((Theme.COLOR_GREEN if configured else Theme.COLOR_FAINT, [
                     (device.get("name", "Unknown"), Theme.COLOR_TEXT),
                     (device.get("model") or PENDING, Theme.COLOR_LABEL),
                     (configured, Theme.COLOR_TEAL) if configured else (PENDING, Theme.COLOR_FAINT),
@@ -80,9 +81,9 @@ class iCloudTab(AuthTab):
 
     def _entry_hint(self) -> Optional[Tuple[str, Color]]:
         if self.status == "partial_auth":
-            return "Auto-2FA on standby — Ctrl-E to verify with an SMS code now (optional)", COLOR_GREEN
+            return "Auto-2FA on standby — Ctrl-E to verify with an SMS code now (optional)", Theme.COLOR_GREEN
         if self.status == "needs_2fa":
-            return "Auto-2FA in progress — Ctrl-E to enter the code manually", COLOR_YELLOW
+            return "Auto-2FA in progress — Ctrl-E to enter the code manually", Theme.COLOR_YELLOW
         return None
 
     def _begin_entry(self):

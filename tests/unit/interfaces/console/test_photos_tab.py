@@ -5,7 +5,8 @@ import pytest
 
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen
-from interfaces.console.tabs.PhotosTab import SIDE_BY_SIDE_MIN, PhotosTab
+from interfaces.console.tabs.PhotosTab import PhotosTab
+from interfaces.console.widgets.Board import SIDE_BY_SIDE_MIN
 
 PHOTO = {
     "short_description": "Charlotte and Frances on the jetty",

@@ -9,8 +9,9 @@ import pytest
 from assistant.integration.SingletonMixin import SingletonMixin
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.tabs import AuthTab as auth_tab_module
-from interfaces.console.tabs.AuthTab import (AuthTab, COLOR_GREEN, COLOR_PROMPT, COLOR_RED, COLOR_YELLOW,
-                                             SIDE_BY_SIDE_MIN, Table, code_display)
+from interfaces.console.Theme import COLOR_GREEN, COLOR_RED, COLOR_YELLOW
+from interfaces.console.tabs.AuthTab import AuthTab, code_display
+from interfaces.console.widgets.Board import COLOR_PROMPT, SIDE_BY_SIDE_MIN, Table
 from interfaces.console.tabs.ArloTab import ArloTab
 from interfaces.console.tabs.iCloudTab import iCloudTab
 from interfaces.console.tabs.RingTab import RingTab

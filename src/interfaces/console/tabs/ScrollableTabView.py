@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 from .TabView import TabView
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen
-from interfaces.console.framework.TextWidth import clip, display_width, normalize
+from interfaces.console.framework.TextWidth import wrap
 
 
 COLOR_SCROLLBAR_THUMB = Theme.COLOR_LABEL
@@ -102,20 +102,4 @@ class ScrollableTabView(TabView):
     @staticmethod
     def word_wrap(line: str, width: int) -> list:
         """Wrap line at word boundaries (`width` in cells). Hard-breaks words longer than width."""
-        line = normalize(line)
-        if display_width(line) <= width:
-            return [line]
-        result = []
-        while display_width(line) > width:
-            head = clip(line, width + 1)
-            break_at = head.rfind(' ')
-            if break_at <= 0:
-                head = clip(line, width)
-                result.append(head)
-                line = line[len(head):]
-            else:
-                result.append(line[:break_at])
-                line = line[break_at + 1:]
-        if line:
-            result.append(line)
-        return result
+        return wrap(line, width)

@@ -433,13 +433,6 @@ class TestPhotosTab:
         formatted = PhotosTab._format_date(1700000000.0)
         assert "2023" in formatted
 
-    @pytest.mark.unit
-    def test_wrap(self):
-        from interfaces.console.tabs.PhotosTab import PhotosTab
-        lines = PhotosTab._wrap("hello world foo bar", 12)
-        assert len(lines) == 2
-        assert lines[0] == "hello world"
-        assert lines[1] == "foo bar"
 
 # ---------------------------------------------------------------------------
 # PhotoProcessor

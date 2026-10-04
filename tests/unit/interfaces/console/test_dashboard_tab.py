@@ -2,7 +2,9 @@
 import pytest
 
 from interfaces.console.framework.TUIScreen import Color, TUIScreen
+from interfaces.console import Theme
 from interfaces.console.tabs.DashboardTab import DashboardTab
+from interfaces.console.widgets import Board, Tile
 
 C = Color(200, 100, 50)
 CHART_X, CHART_Y, CHART_W, CHART_H = 2, 2, 5, 4
@@ -50,9 +52,9 @@ class TestDrawColumns:
         # Terminal.app leaves seams between cells; a bar colour behind the block hides them
         screen = draw([0.0, 0.0, 0.0, 0.0, 62.5])
         full = screen.next_frame[CHART_Y - 1 + 3][CHART_X + 3].style      # bottom row, full cell
-        assert DashboardTab.COLOR_PANEL_BG not in (full.fg, full.bg) and full.fg != full.bg
+        assert Theme.COLOR_PANEL_BG not in (full.fg, full.bg) and full.fg != full.bg
         partial = screen.next_frame[CHART_Y - 1 + 1][CHART_X + 3].style   # the half block on top
-        assert partial.bg == DashboardTab.COLOR_PANEL_BG, "a partial block keeps the ground so its height reads"
+        assert partial.bg == Theme.COLOR_PANEL_BG, "a partial block keeps the ground so its height reads"
 
     def test_the_shading_steps_every_half_row_up_to_the_colour(self):
         tall = 2 * DashboardTab.SHADE_MIN_ROWS      # tall enough for the shading to run its whole range
@@ -76,7 +78,7 @@ from unittest.mock import patch
 
 from interfaces.console.widgets.FeedStrip import SYMBOL_FAILED, SYMBOL_PAUSED, SYMBOL_RUNNING
 
-PANEL_X, PANEL_Y, PANEL_W, PANEL_H = 1, 1, 64, 4 + DashboardTab.CARD_CHROME   # room for four feeds
+PANEL_X, PANEL_Y, PANEL_W, PANEL_H = 1, 1, 64, 4 + Tile.CARD_CHROME   # room for four feeds
 
 
 def status(state="live", **extra) -> dict:
@@ -109,7 +111,7 @@ def draw_feeds(feeds: dict, frame: int = 0, width: int = PANEL_W):
 
 def panel_row(screen, row: int):
     """A row of the panel: 0 is the title strip, 1 the first content row under the tile's blank row."""
-    return screen.next_frame[PANEL_Y - 1 + (row + DashboardTab.CARD_TOP - 1 if row else 0)]
+    return screen.next_frame[PANEL_Y - 1 + (row + Tile.CARD_TOP - 1 if row else 0)]
 
 
 def row_text(screen, row: int) -> str:
@@ -121,7 +123,7 @@ class TestFeedRow:
     def test_live_is_a_full_green_bar_with_the_count_and_the_feeds_noun(self):
         row = DashboardTab._feed_row("iMessage", status(items="messages"))
         assert (row.symbol, row.progress, row.text) == (SYMBOL_RUNNING, 1.0, "23436 messages")
-        assert row.fg == DashboardTab.COLOR_GREEN
+        assert row.fg == Theme.COLOR_GREEN
         assert DashboardTab._feed_row("Indigo", status(stored=512, items="events")).text == "512 events", \
             "an uncountable feed shows its rows"
 
@@ -131,7 +133,7 @@ class TestFeedRow:
     def test_catching_up_with_a_count_shows_done_over_total_without_separators(self):
         row = DashboardTab._feed_row("iCloud Photos", status("catching_up", progress=0.34, stored=1234, total=23356, remaining=22122))
         assert (row.symbol, row.name, row.progress, row.text) == (DashboardTab.SYMBOL_CATCHING_UP, "Photos", 0.34, "1234 / 23356 items")
-        assert row.fg == DashboardTab.COLOR_YELLOW
+        assert row.fg == Theme.COLOR_YELLOW
 
     def test_catching_up_with_an_eta_appends_it_in_one_rounded_unit(self):
         def text(eta):
@@ -150,22 +152,22 @@ class TestFeedRow:
     def test_paused_hollows_the_dot_fades_the_colour_and_says_only_that(self):
         row = DashboardTab._feed_row("Indigo", status("catching_up", progress=0.5, stored=5, total=10, remaining=5, paused=True))
         assert (row.symbol, row.text, row.progress) == (SYMBOL_PAUSED, "paused", 0.5)
-        assert row.fg != DashboardTab.COLOR_YELLOW
+        assert row.fg != Theme.COLOR_YELLOW
 
     def test_stopped_and_failed_are_red_empty_bars_saying_only_that(self):
         row = DashboardTab._feed_row("Telegram", status("stopped", last_error="no session file"))
         assert (row.symbol, row.progress, row.text) == (SYMBOL_FAILED, 0.0, "stopped")
-        assert row.fg == DashboardTab.COLOR_RED
+        assert row.fg == Theme.COLOR_RED
         failed = DashboardTab._feed_row("Telegram", status("failed", paused=True))
         assert (failed.symbol, failed.text) == (SYMBOL_FAILED, "failed"), "a dead feed is never shown as paused"
 
     def test_starting_is_a_grey_empty_bar(self):
         row = DashboardTab._feed_row("iMessage", status("starting"))
         assert (row.symbol, row.progress, row.text) == (SYMBOL_RUNNING, 0.0, "starting")
-        assert row.fg == DashboardTab.COLOR_DIM
+        assert row.fg == Theme.COLOR_DIM
 
 
-BLOCKS, NOTCH = DashboardTab.METER_BLOCKS, DashboardTab.METER_MARKER
+BLOCKS, NOTCH = Tile.METER_BLOCKS, Tile.METER_MARKER
 FULL = BLOCKS[8]
 
 
@@ -206,15 +208,15 @@ class TestDrawFeedsPanel:
         screen = draw_feeds({"iMessage": status()})
         line = row_text(screen, 1)
         cell = panel_row(screen, 1)[line.index("23436")]
-        assert cell.style.fg == DashboardTab.COLOR_GREEN
+        assert cell.style.fg == Theme.COLOR_GREEN
 
     def test_the_bar_fill_follows_the_progress(self):
         screen = draw_feeds({"a": status(), "b": status("catching_up", progress=0.5), "c": status("stopped")})
-        full = filled(screen, 1, DashboardTab.COLOR_GREEN_DIM)
-        half = filled(screen, 2, DashboardTab.COLOR_YELLOW_DIM)
+        full = filled(screen, 1, Theme.COLOR_GREEN_DIM)
+        half = filled(screen, 2, Theme.COLOR_YELLOW_DIM)
         assert full == len(cells(screen, 1, FULL)) > 0
         assert abs(half - full / 2) <= 1
-        assert filled(screen, 3, DashboardTab.COLOR_RED_DIM) == 0
+        assert filled(screen, 3, Theme.COLOR_RED_DIM) == 0
 
     def test_an_indeterminate_feed_sweeps_a_notch_across_the_bar(self):
         feeds = {"Indigo": status("catching_up")}
@@ -237,14 +239,14 @@ class TestDrawFeedsPanel:
 
 # --- Meters, tiles and the grid ------------------------------------------------------------------
 
-from interfaces.console.tabs.DashboardTab import MeterRow
+from interfaces.console.widgets.Board import MeterRow
 
 METER_X, METER_Y = 3, 2
 
 
 def meter(length, fraction, **kwargs) -> str:
     screen = TUIScreen(40, 4)
-    make_tab()._draw_meter(screen, METER_X, METER_Y, length, fraction, C, **kwargs)
+    Tile.draw_meter(screen, METER_X, METER_Y, length, fraction, C, **kwargs)
     return meter_cells(screen, length)[0]
 
 
@@ -258,7 +260,7 @@ def fill_mask(length, fraction, **kwargs):
     starting inside the cell (the track's block over the fill's ground), '.' track."""
     screen = TUIScreen(40, 4)
     track = Color(1, 2, 3)
-    make_tab()._draw_meter(screen, METER_X, METER_Y, length, fraction, C, track=track, **kwargs)
+    Tile.draw_meter(screen, METER_X, METER_Y, length, fraction, C, track=track, **kwargs)
     chars, colours = meter_cells(screen, length)
     return "".join("." if ch == " " else "F" if ch == FULL else "s" if fg == track else "p"
                    for ch, fg in zip(chars, colours))
@@ -291,7 +293,7 @@ class TestDrawMeter:
     def test_a_cell_has_the_same_shade_whatever_the_value(self):
         def colours(fraction):
             screen = TUIScreen(40, 4)
-            make_tab()._draw_meter(screen, METER_X, METER_Y, 10, fraction, C)
+            Tile.draw_meter(screen, METER_X, METER_Y, 10, fraction, C)
             return meter_cells(screen, 10)[1]
         half, full = colours(0.5), colours(1.0)
         assert half[:5] == full[:5]
@@ -303,7 +305,7 @@ class TestDrawMeter:
 
     def test_a_zero_length_meter_draws_nothing(self):
         screen = TUIScreen(40, 4)
-        make_tab()._draw_meter(screen, METER_X, METER_Y, 0, 0.5, C)
+        Tile.draw_meter(screen, METER_X, METER_Y, 0, 0.5, C)
         assert all(c.char == " " for row in screen.next_frame for c in row)
 
 
@@ -314,8 +316,8 @@ class TestDrawMeterRows:
     @staticmethod
     def draw(width):
         screen = TUIScreen(80, 6)
-        make_tab()._draw_meter_rows(screen, 1, 1, width, 2 + DashboardTab.CARD_CHROME, TestDrawMeterRows.ROWS)
-        return ["".join(c.char for c in screen.next_frame[r]).rstrip() for r in (DashboardTab.CARD_TOP, DashboardTab.CARD_TOP + 1)]
+        Board.draw_meter_rows(screen, 1, 1, width, 2 + Tile.CARD_CHROME, TestDrawMeterRows.ROWS)
+        return ["".join(c.char for c in screen.next_frame[r]).rstrip() for r in (Tile.CARD_TOP, Tile.CARD_TOP + 1)]
 
     def test_the_meter_takes_the_cells_the_label_and_value_leave(self):
         wide, wider = self.draw(40), self.draw(50)
@@ -330,7 +332,7 @@ class TestDrawMeterRows:
 
     def test_rows_the_tile_has_no_room_for_are_not_drawn(self):
         screen = TUIScreen(80, 6)
-        make_tab()._draw_meter_rows(screen, 1, 1, 40, 1 + DashboardTab.CARD_CHROME, self.ROWS)
+        Board.draw_meter_rows(screen, 1, 1, 40, 1 + Tile.CARD_CHROME, self.ROWS)
         text = "".join(c.char for row in screen.next_frame for c in row)
         assert "Database" in text and "Open FDs" not in text
 
@@ -368,12 +370,12 @@ class TestColumns:
     def test_tiles_span_the_width_with_even_gaps_and_the_last_takes_the_remainder(self, width, count):
         columns = DashboardTab._columns(TUIScreen(width, 10), count)
         assert len(columns) == count
-        assert columns[0][0] == DashboardTab.LEFT
+        assert columns[0][0] == Board.LEFT
         for (x, w), (next_x, _) in zip(columns, columns[1:]):
-            assert next_x - (x + w) == DashboardTab.GAP
+            assert next_x - (x + w) == Board.GAP
         assert len({w for _, w in columns[:-1]}) == 1
         last_x, last_w = columns[-1]
-        assert last_x + last_w == width - DashboardTab.RIGHT_MARGIN, "the last tile ends at the right margin"
+        assert last_x + last_w == width - Board.RIGHT_MARGIN, "the last tile ends at the right margin"
         assert 0 <= last_w - columns[0][1] < count
 
 

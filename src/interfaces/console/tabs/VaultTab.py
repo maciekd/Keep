@@ -16,11 +16,11 @@ from common.vault.SecretKinds import KINDS, VERBATIM_KINDS
 from common.vault.Vault import Secret, Vault, VaultError
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
-from interfaces.console.framework.TextWidth import fit
 from interfaces.console.tabs.AuthTab import ENTER_KEYS
-from interfaces.console.tabs.ScrollableTabView import COLOR_HINT, draw_scrollbar
+from interfaces.console.tabs.ScrollableTabView import draw_scrollbar
 from interfaces.console.tabs.TabView import CONTENT_TOP, TabView
-from interfaces.console.widgets import Markdown, Tile
+from interfaces.console.widgets import Board, Markdown, Tile
+from interfaces.console.widgets.Board import Fact, SummaryTile, Table
 from interfaces.console.widgets.LineEditor import LineEditor
 
 VIEW = "view"
@@ -41,20 +41,12 @@ VALUE_MODES = (ADD_VALUE, EDIT_VALUE)
 REVEAL_FIELD_KEY = 'tab'
 COMMAND_KEYS = ('a', 'e', 'd', 'v')
 
-LEFT = 3
-RIGHT_MARGIN = 2
-GAP = 2
-SUMMARY_H = 1 + Tile.CARD_CHROME
-SUMMARY_TILE_MIN_W = 30           # a narrower screen shows the first tiles only
-SIDE_BY_SIDE_MIN = 150            # screen columns from which the form and the help sit beside the table
-SIDE_MIN_W = 50
 MIN_LIST_ROWS = 3
 # The table's columns after the state dot; the value takes what is left
 ID_WIDTH, KIND_WIDTH, DESCRIPTION_WIDTH = 28, 12, 30
 DESCRIPTION_MIN_WIDTH = 12
 VALUE_MIN_WIDTH = 24              # the description gives way before the value is cut shorter than this
 FORM_ROWS = 3                     # the fields of the selected secret, or of the flow that is open
-FORM_LABEL_W = 13
 MASK = "•"
 CURSOR = "▏"
 PENDING = "–"
@@ -91,7 +83,6 @@ HELP_MIN_ROWS = 4
 
 COLOR_FORMAT_KIND = Theme.COLOR_BLUE      # a kind matched however it is written
 COLOR_VERBATIM_KIND = Theme.COLOR_PURPLE  # a kind matched exactly as typed
-COLOR_PROMPT = Theme.COLOR_YELLOW         # the step a flow waits on
 
 HINTS = {
     VIEW: "↑↓ select  a add  e edit  d delete  v reveal  PgUp/PgDn scroll the help",
@@ -103,12 +94,6 @@ HINTS = {
     EDIT_VALUE: "Enter save (empty keeps the old value)  Tab reveal  Esc cancel",
     CONFIRM_DELETE: "y delete  n/Esc cancel",
 }
-
-# A summary tile: its label, the value in its title strip, the value's colour, the row under it.
-SummaryTile = Tuple[str, str, Color, List[Tuple[str, Color]]]
-# A row of the form tile: its label, its value, the value's colour, whether the flow waits on it.
-Field = Tuple[str, str, Color, bool]
-
 
 def kind_color(kind: str) -> Color:
     return COLOR_VERBATIM_KIND if kind in VERBATIM_KINDS else COLOR_FORMAT_KIND
@@ -171,60 +156,42 @@ class VaultTab(TabView):
         self._cards = []
         rows = self._rows()
         selected = self._selected_secret(rows)
-        available = screen.width - LEFT - RIGHT_MARGIN
+        available = screen.width - Board.LEFT - Board.RIGHT_MARGIN
         bottom = screen.height - 1                # the last row is the key hints'
         y = CONTENT_TOP
-        side = screen.width >= SIDE_BY_SIDE_MIN
+        side = screen.width >= Board.SIDE_BY_SIDE_MIN
         # The form's fields and its status row, a blank row between them where there is height for one
         form_h = Tile.CARD_CHROME + FORM_ROWS + (2 if side else 1)
         table_min_h = Tile.CARD_CHROME + 1 + MIN_LIST_ROWS
 
-        if bottom - y - SUMMARY_H - 1 >= table_min_h + (0 if side else 1 + form_h):
-            self._draw_summary(screen, y, available, self._summary_tiles(rows))
-            y += SUMMARY_H + 1
+        if bottom - y - Board.SUMMARY_H - 1 >= table_min_h + (0 if side else 1 + form_h):
+            Board.draw_summary(screen, self._cards, y, available, [self._vault_tile(), self._secrets_tile(rows)])
+            y += Board.SUMMARY_H + 1
         height = bottom - y
 
         if side:
-            side_w = max(SIDE_MIN_W, available * 36 // 100)
-            table_w = available - GAP - side_w
-            side_x = LEFT + table_w + GAP
-            self._draw_table(screen, LEFT, y, table_w, height, rows)
+            table_w, side_w = Board.split(available)
+            side_x = Board.LEFT + table_w + Board.GAP
+            self._draw_table(screen, Board.LEFT, y, table_w, height, rows)
             self._draw_form(screen, side_x, y, side_w, min(form_h, height), selected)
             self._draw_help(screen, side_x, y + form_h + 1, side_w, height - form_h - 1)
         elif height - 1 - form_h < Tile.CARD_CHROME + 2:
             # No room for both: the list, or the form while a flow is open
             if self._mode == VIEW:
-                self._draw_table(screen, LEFT, y, available, height, rows)
+                self._draw_table(screen, Board.LEFT, y, available, height, rows)
             else:
-                self._draw_form(screen, LEFT, y, available, min(form_h, height), selected)
+                self._draw_form(screen, Board.LEFT, y, available, min(form_h, height), selected)
         else:
             table_h = min(max(1, len(rows)) + Tile.CARD_CHROME + 1, height - 1 - form_h)
-            self._draw_table(screen, LEFT, y, available, table_h, rows)
+            self._draw_table(screen, Board.LEFT, y, available, table_h, rows)
             y += table_h + 1
-            self._draw_form(screen, LEFT, y, available, form_h, selected)
+            self._draw_form(screen, Board.LEFT, y, available, form_h, selected)
             y += form_h + 1
-            self._draw_help(screen, LEFT, y, available, bottom - y)
+            self._draw_help(screen, Board.LEFT, y, available, bottom - y)
         Tile.tint_cards(screen, self._cards)
-
-        screen.reset_color()
-        screen.set_color(COLOR_HINT)
-        screen.write_at(LEFT, screen.height - 1, fit(HINTS[self._mode], max(0, available)))
-        screen.reset_color()
+        Board.draw_hints(screen, HINTS[self._mode])
 
     # --- summary tiles -----------------------------------------------------------------------
-
-    def _draw_summary(self, screen: TUIScreen, y: int, available: int, tiles: List[SummaryTile]):
-        tiles = tiles[:max(1, available // SUMMARY_TILE_MIN_W)]
-        count = len(tiles)
-        width = (available - GAP * (count - 1)) // count
-        for i, (label, value, color, segments) in enumerate(tiles):
-            x = LEFT + i * (width + GAP)
-            tile_w = width if i < count - 1 else available - (width + GAP) * (count - 1)
-            Tile.draw_card(screen, self._cards, x, y, tile_w, SUMMARY_H, label, value, color)
-            Tile.write_segments(screen, x + 2, y + Tile.CARD_TOP, tile_w - 4, segments)
-
-    def _summary_tiles(self, rows: list[Secret]) -> List[SummaryTile]:
-        return [self._vault_tile(), self._secrets_tile(rows)]
 
     def _vault_tile(self) -> SummaryTile:
         vault = self.vault
@@ -250,50 +217,25 @@ class VaultTab(TabView):
         (bright and bold on the selected row), the kind, the description, and the value —
         masked and dim, or revealed in the console's secret orange. Columns past the right
         edge of a narrow client shrink to nothing rather than wrap."""
-        if height <= Tile.CARD_CHROME:
-            return
         vault = self.vault
-        if vault.enabled:
-            Tile.draw_card(screen, self._cards, x, y, width, height, "Secrets", f"{len(rows)} in {vault.path.name}")
-        else:
-            Tile.draw_card(screen, self._cards, x, y, width, height, "Secrets", "LOCKED", Theme.COLOR_RED)
-        inner_w = width - 4
-        header_y = y + Tile.CARD_TOP
-        if not rows:
-            notice, color = (EMPTY_HINT, Theme.COLOR_DIM) if vault.enabled else (f"Locked: {vault.error}", Theme.COLOR_RED)
-            screen.set_color(color)
-            screen.write_at(x + 2, header_y, fit(notice, max(0, inner_w)))
-            screen.reset_color()
-            return
-        room = height - Tile.CARD_CHROME - 1    # a row goes to the column titles
-        if room <= 0:
-            return
-        count = len(rows)
-        self._top = max(0, min(max(min(self._top, self._selected), self._selected - room + 1), count - room))
-
         description_w = max(DESCRIPTION_MIN_WIDTH, min(DESCRIPTION_WIDTH,
-                                                       inner_w - 2 - ID_WIDTH - KIND_WIDTH - 6 - VALUE_MIN_WIDTH))
-        Tile.write_cells(screen, x + 4, header_y, inner_w - 2,
-                          [(title, column_w, Theme.COLOR_DIM, False) for title, column_w in
-                           (("Id", ID_WIDTH), ("Kind", KIND_WIDTH), ("Description", description_w), ("Value", None))])
-        for i, secret in enumerate(rows[self._top:self._top + room]):
-            row_y = header_y + 1 + i
-            chosen = self._top + i == self._selected
+                                                       width - 6 - ID_WIDTH - KIND_WIDTH - 6 - VALUE_MIN_WIDTH))
+        table_rows = []
+        for i, secret in enumerate(rows):
+            chosen = i == self._selected
             revealed = secret.id in self._revealed
-            screen.reset_color()
-            screen.set_color(kind_color(secret.kind))
-            screen.write_at(x + 2, row_y, "●")
-            Tile.write_cells(screen, x + 4, row_y, inner_w - 2, [
-                (secret.id, ID_WIDTH, Theme.COLOR_BRIGHT if chosen else Theme.COLOR_TEXT, chosen),
-                (secret.kind, KIND_WIDTH, kind_color(secret.kind), False),
-                (secret.description, description_w, Theme.COLOR_TEXT if chosen else Theme.COLOR_LABEL, False),
-                (secret.value if revealed else secret.masked, None,
-                 Theme.COLOR_SECRET if revealed else Theme.COLOR_LABEL if chosen else Theme.COLOR_DIM, revealed),
-            ])
-            if chosen:
-                screen.tint_row(x, row_y, width, Theme.COLOR_SELECTED_BG)
-        draw_scrollbar(screen, x + width - 1, header_y + 1, count, room, count - room - self._top)
-        screen.reset_color()
+            table_rows.append((kind_color(secret.kind), [
+                (secret.id, Theme.COLOR_BRIGHT if chosen else Theme.COLOR_TEXT, chosen),
+                (secret.kind, kind_color(secret.kind)),
+                (secret.description, Theme.COLOR_TEXT if chosen else Theme.COLOR_LABEL),
+                (secret.value if revealed else secret.masked,
+                 Theme.COLOR_SECRET if revealed else Theme.COLOR_LABEL if chosen else Theme.COLOR_DIM, revealed)]))
+        if vault.enabled:
+            table = Table("Secrets", [("Id", ID_WIDTH), ("Kind", KIND_WIDTH), ("Description", description_w), ("Value", None)],
+                          table_rows, EMPTY_HINT, f"{len(rows)} in {vault.path.name}")
+        else:
+            table = Table("Secrets", [], [], f"Locked: {vault.error}", "LOCKED", Theme.COLOR_RED, Theme.COLOR_RED)
+        self._top = Board.draw_table(screen, self._cards, x, y, width, height, table, self._top, self._selected)
 
     # --- the selected secret and the flows' form -----------------------------------------------
 
@@ -305,63 +247,40 @@ class VaultTab(TabView):
             return
         label, value, color, fields = self._form(selected)
         Tile.draw_card(screen, self._cards, x, y, width, height, label, value, color)
-        value_x = x + 2 + FORM_LABEL_W
-        value_w = max(0, width - 4 - FORM_LABEL_W)
-        last = y + height - 2
-        for i, (name, text, text_color, waiting) in enumerate(fields):
-            row_y = y + Tile.CARD_TOP + i
-            if row_y > last:
-                break
-            screen.reset_color()
-            screen.set_color(COLOR_PROMPT if waiting else Theme.COLOR_DIM)
-            screen.write_at(x + 2, row_y, name)
-            screen.set_color(text_color)
-            if waiting or text_color == Theme.COLOR_SECRET:
-                screen.bold()
-            screen.write_at(value_x, row_y, fit(text, value_w))
-        screen.reset_color()
-        if self._status and last >= y + Tile.CARD_TOP + len(fields):
-            screen.set_color(self._status_color)
-            screen.write_at(x + 2, last, fit(self._status, max(0, width - 4)))
-            screen.reset_color()
+        after = Board.draw_facts(screen, x, y, width, height, fields)
+        Board.draw_footer(screen, x, y, width, height, self._status, self._status_color, after)
 
-    def _form(self, selected: Optional[Secret]) -> Tuple[str, str, Color, List[Field]]:
+    def _form(self, selected: Optional[Secret]) -> Tuple[str, str, Color, List[Fact]]:
         """(the tile's label, the value in its title strip, that value's colour, its fields)."""
         mode = self._mode
         if mode in ADD_MODES:
             step = ADD_MODES.index(mode)
             kind = KINDS[self._kind_index]
-            return "Add a secret", f"step {step + 1} of {len(ADD_MODES)}", COLOR_PROMPT, self._steps(step, [
+            return "Add a secret", f"step {step + 1} of {len(ADD_MODES)}", Board.COLOR_PROMPT, Board.steps(step, [
                 ("Kind", f"‹ {kind} ›" if step == 0 else kind),
                 ("Description", self._field_text() if step == 1 else self._description or PENDING),
                 ("Value", self._field_text() if step == 2 else PENDING)])
         if mode in EDIT_MODES:
             step, target = EDIT_MODES.index(mode), self._target
             new_id = f"{target.id} → {self._new_id}?  y/n" if step == 1 else self._new_id or target.id
-            return f"Edit {target.id}", target.kind, kind_color(target.kind), self._steps(step, [
+            return f"Edit {target.id}", target.kind, kind_color(target.kind), Board.steps(step, [
                 ("Description", self._field_text() if step == 0 else self._description or target.description),
                 ("Id", new_id),
                 ("New value", self._field_text() if step == 2 else PENDING)])
         if mode == CONFIRM_DELETE:
             target = self._target
             return f"Delete {target.id}", "confirm", Theme.COLOR_RED, [
-                ("Description", target.description, Theme.COLOR_TEXT, False),
-                ("Value", target.masked, Theme.COLOR_LABEL, False),
-                ("Delete it?", "y/n", Theme.COLOR_RED, True)]
+                Fact("Description", target.description, Theme.COLOR_TEXT),
+                Fact("Value", target.masked, Theme.COLOR_LABEL),
+                Fact("Delete it?", "y/n", Theme.COLOR_RED, waiting=True)]
         if selected is None:
             return "No secret selected", "", Theme.COLOR_DIM, []
         revealed = selected.id in self._revealed
         return selected.id, selected.kind, kind_color(selected.kind), [
-            ("Description", selected.description, Theme.COLOR_TEXT, False),
-            ("Value", selected.value if revealed else selected.masked,
-             Theme.COLOR_SECRET if revealed else Theme.COLOR_LABEL, False),
-            ("The AI sees", f"{{{{secret:{selected.id}}}}}", Theme.COLOR_TEAL, False)]
-
-    @staticmethod
-    def _steps(waiting: int, fields: list[tuple[str, str]]) -> List[Field]:
-        colors = (Theme.COLOR_TEXT, Theme.COLOR_BRIGHT, Theme.COLOR_FAINT)   # answered, waited on, to come
-        return [(label, text, colors[(i >= waiting) + (i > waiting)], i == waiting)
-                for i, (label, text) in enumerate(fields)]
+            Fact("Description", selected.description, Theme.COLOR_TEXT),
+            Fact("Value", selected.value if revealed else selected.masked,
+                 Theme.COLOR_SECRET if revealed else Theme.COLOR_LABEL, bold=revealed),
+            Fact("The AI sees", f"{{{{secret:{selected.id}}}}}", Theme.COLOR_TEAL)]
 
     def _field_text(self) -> str:
         """The field as typed so far with the cursor in it; a value is drawn as one MASK per

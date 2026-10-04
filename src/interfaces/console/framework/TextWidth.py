@@ -15,7 +15,7 @@ column — so `drawable` (what `write` puts in the cells) turns each one but a n
 a space. The helpers keep them: a log line's colour codes are measured around, not drawn.
 """
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from wcwidth import wcwidth
 
@@ -116,6 +116,32 @@ def chunks(text: str, width: int) -> List[str]:
         used += w
     out.append(text[start:])
     return out
+
+
+def wrap(text: str, width: int, rows: Optional[int] = None) -> List[str]:
+    """`text` wrapped at word boundaries into lines of at most `width` cells, a word longer
+    than that broken. With `rows`, the lines past the last one are joined into it and that
+    line fitted, so the text never takes more than `rows` lines."""
+    text = normalize(text)
+    if display_width(text) <= width:
+        lines = [text]
+    else:
+        lines = []
+        while display_width(text) > width:
+            head = clip(text, width + 1)
+            break_at = head.rfind(' ')
+            if break_at <= 0:
+                head = clip(text, width)
+                lines.append(head)
+                text = text[len(head):]
+            else:
+                lines.append(text[:break_at])
+                text = text[break_at + 1:]
+        if text:
+            lines.append(text)
+    if rows is not None and len(lines) > rows:
+        lines = lines[:rows - 1] + [fit(" ".join(lines[rows - 1:]), width)] if rows > 0 else []
+    return lines
 
 
 def column(text: str, index: int) -> int:

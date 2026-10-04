@@ -2,7 +2,8 @@ from typing import List, Optional, Tuple
 
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import Color
-from interfaces.console.tabs.AuthTab import AuthTab, COLOR_GREEN, COLOR_YELLOW, PENDING, SummaryTile, Table
+from interfaces.console.tabs.AuthTab import AuthTab, PENDING
+from interfaces.console.widgets.Board import SummaryTile, Table
 from assistant.integration.integrations.cameras.RingIntegration import RingIntegration, RingAuthenticationError
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
 
@@ -37,7 +38,7 @@ class RingTab(AuthTab):
     def _table(self) -> Table:
         names = self._doorbell_names if self.status == "authenticated" else []
         return Table("Doorbells", [("Doorbell", None)],
-                     [(COLOR_GREEN, [(name, Theme.COLOR_TEXT)]) for name in names], "connect to see the doorbells")
+                     [(Theme.COLOR_GREEN, [(name, Theme.COLOR_TEXT)]) for name in names], "connect to see the doorbells")
 
     def _tiles(self) -> List[SummaryTile]:
         count = len(self._doorbell_names) if self.status == "authenticated" else 0
@@ -47,7 +48,7 @@ class RingTab(AuthTab):
 
     def _entry_hint(self) -> Optional[Tuple[str, Color]]:
         if self.status == "error" and "2FA" in self._auth_status.get("message", "").upper():
-            return "Press Ctrl+E to enter 2FA code", COLOR_YELLOW
+            return "Press Ctrl+E to enter 2FA code", Theme.COLOR_YELLOW
         return None
 
     def _verify_code(self, api, code: str):
