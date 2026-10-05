@@ -40,6 +40,12 @@ _sounddevice = _SoundDeviceStub("sounddevice")
 _sounddevice.PortAudioError = type("PortAudioError", (Exception,), {})
 sys.modules["sounddevice"] = _sounddevice
 
+# openai is imported here, at collection, rather than by the first ChatGPTLLM test on each
+# worker: the import is ~80 ms, and the test that paid it was recorded as slow, moved to the
+# front of the next run's collection and paid it again. anthropic is already imported at module
+# level by the ClaudeLLM tests; google.genai is left to the few workers that need it.
+import openai  # noqa: F401
+
 # Disable all file logging during tests
 import common.logging
 common.logging.disable_file_logging = True

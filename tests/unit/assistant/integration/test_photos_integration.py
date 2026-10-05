@@ -1,7 +1,9 @@
 import json
 import sqlite3
+import sys
 import threading
 import time
+import types
 from unittest.mock import Mock, patch, MagicMock
 
 import pytest
@@ -2283,6 +2285,19 @@ class TestPhotoProcessorIndexingLlm:
     memory.md, so the LLM must come from create_llm(): the VaultLLM wrapper is what keeps the
     vaulted values out of the provider."""
 
+    @staticmethod
+    def _fake_backends(*names):
+        """create_llm() imports the backend module by class name; a bare module per name stands
+        in so the test never loads a provider SDK (google.genai alone is ~0.3 s). Returns the
+        context manager and the fake class per name."""
+        classes = {name: Mock(name=name) for name in names}
+        modules = {}
+        for name, cls in classes.items():
+            module = types.ModuleType(f"assistant.llm.{name}")
+            setattr(module, name, cls)
+            modules[module.__name__] = module
+        return patch.dict(sys.modules, modules), classes
+
     @pytest.mark.unit
     @pytest.mark.parametrize("unindexed", [10, 500])
     def test_indexing_llm_defaults_to_gemini_flash_and_is_vault_wrapped(self, unindexed):
@@ -2297,19 +2312,19 @@ class TestPhotoProcessorIndexingLlm:
             return real_get(key, default)
 
         backend = Mock()
-        with patch.object(PhotoProcessor, 'count_unindexed_photos', return_value=unindexed), \
-             patch('assistant.llm.config.get', side_effect=no_ai_tiers), \
-             patch('assistant.llm.GeminiLLM.GeminiLLM', return_value=backend) as cls, \
-             patch('assistant.llm.ClaudeLLM.ClaudeLLM') as claude, \
-             patch('assistant.llm.GrokLLM.GrokLLM') as grok:
+        fakes, classes = self._fake_backends("GeminiLLM", "ClaudeLLM", "GrokLLM")
+        classes["GeminiLLM"].return_value = backend
+        with fakes, \
+             patch.object(PhotoProcessor, 'count_unindexed_photos', return_value=unindexed), \
+             patch('assistant.llm.config.get', side_effect=no_ai_tiers):
             processor = PhotoProcessor()
             llm = processor._get_llm()
             assert processor._get_llm() is llm
         assert isinstance(llm, VaultLLM) and llm.llm is backend
-        cls.assert_called_once_with(model="gemini-3.8-flash")
+        classes["GeminiLLM"].assert_called_once_with(model="gemini-3.8-flash")
         backend.initialize.assert_called_once()
-        claude.assert_not_called()
-        grok.assert_not_called()
+        classes["ClaudeLLM"].assert_not_called()
+        classes["GrokLLM"].assert_not_called()
 
     @pytest.mark.unit
     def test_a_configured_photo_indexing_tier_is_honoured(self):
@@ -2317,14 +2332,15 @@ class TestPhotoProcessorIndexingLlm:
         parse_llm_config by name, so the patch has to land on its own module."""
         from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
         backend = Mock()
-        with patch('assistant.integration.integrations.photos.PhotoProcessor.parse_llm_config',
-                   return_value=("ClaudeLLM", "claude-opus-5")) as tier, \
-             patch('assistant.llm.ClaudeLLM.ClaudeLLM', return_value=backend) as claude, \
-             patch('assistant.llm.GeminiLLM.GeminiLLM') as gemini:
+        fakes, classes = self._fake_backends("ClaudeLLM", "GeminiLLM")
+        classes["ClaudeLLM"].return_value = backend
+        with fakes, \
+             patch('assistant.integration.integrations.photos.PhotoProcessor.parse_llm_config',
+                   return_value=("ClaudeLLM", "claude-opus-5")) as tier:
             llm = PhotoProcessor()._get_llm()
         tier.assert_called_once_with('photo_indexing')
-        claude.assert_called_once_with(model="claude-opus-5")
-        gemini.assert_not_called()
+        classes["ClaudeLLM"].assert_called_once_with(model="claude-opus-5")
+        classes["GeminiLLM"].assert_not_called()
         assert llm.llm is backend
 
 
