@@ -596,3 +596,79 @@ class TestTelegramLoginLifecycle:
         tab._api.sign_in.assert_called_once_with("+1", "12345")
         tab._api.restart_feed.assert_called_once_with()
         assert tab._status_message == "Authentication successful!"
+
+
+from interfaces.console import Theme
+from interfaces.console.tabs.AuthTab import PENDING
+from interfaces.console.tabs.TabView import SUB_CONTENT_TOP
+
+
+@pytest.mark.unit
+class TestBoardLayout:
+    def test_a_screen_too_short_for_both_drops_the_summary_row_and_keeps_the_sign_in_tile(self):
+        tab = make_tab(message="Session valid")
+        shows_connection = lambda height: any("Connection" in l for l in rows(draw(tab, height=height)))
+        assert shows_connection(30)
+        first_without = next(h for h in range(30, 8, -1) if not shows_connection(h))
+        lines = rows(draw(tab, height=first_without))
+        assert lines.index(row_with(lines, "Sign-in")) == SUB_CONTENT_TOP - 1, "the Sign-in tile takes the summary's place"
+        assert "Session valid" in row_with(lines, "Status")
+
+    def test_the_entry_starts_under_the_message_rows_whatever_the_message_took(self):
+        def entry_row(message):
+            tab = make_tab(message=message)
+            tab._begin_entry()
+            lines = rows(draw(tab))
+            return lines, lines.index(row_with(lines, "_ _ _ _ _ _"))
+
+        short, short_entry = entry_row("ok")
+        long, long_entry = entry_row("word " * 40)
+        assert sum("word" in l for l in long) == 2 and sum("ok" in l for l in short) == 1
+        assert short_entry == long_entry
+
+    def test_a_tab_without_a_table_grows_its_sign_in_tile_with_the_screen_up_to_a_cap(self):
+        def strip_width(width):
+            screen = draw(make_tab(), width=width)
+            lines = rows(screen)
+            y = lines.index(row_with(lines, "Sign-in"))
+            return sum(1 for cell in screen.next_frame[y] if cell.style.bg == Theme.COLOR_TITLE_BG)
+
+        assert strip_width(100) == 100 - 5, "narrower than the cap: the tile fills the row's margins"
+        assert strip_width(160) == strip_width(220) < 160 - 5
+
+
+@pytest.mark.unit
+class TestTelegramFeedTile:
+    def make(self, feed):
+        tab = TelegramTab()
+        tab._api = Mock()
+        tab._auth_status = {"status": "authenticated", "message": "ok"}
+        tab._feed = feed
+        return tab
+
+    def test_a_live_feed_counts_what_it_stored_in_green(self):
+        screen = draw(self.make({"state": "live", "stored": 23436, "items": "messages", "remaining": 0}), width=120)
+        lines = rows(screen)
+        assert cell_style(screen, lines, "live").fg == COLOR_GREEN
+        assert any("23,436 messages" in l for l in lines) and not any("to go" in l for l in lines)
+
+    def test_a_feed_catching_up_says_how_much_is_left_and_paused_when_it_is(self):
+        feed = {"state": "catching_up", "stored": 1200, "items": "messages", "remaining": 22122}
+        screen = draw(self.make(feed), width=120)
+        lines = rows(screen)
+        assert cell_style(screen, lines, "catching up").fg == COLOR_YELLOW
+        assert any("22,122 to go" in l for l in lines)
+        paused = rows(draw(self.make({**feed, "paused": True}), width=120))
+        assert "paused" in row_with(paused, "Feed") and not any("catching up" in l for l in paused)
+
+    def test_an_error_replaces_the_counts_in_red(self):
+        feed = {"state": "failed", "stored": 5, "items": "messages", "last_error": "session revoked"}
+        screen = draw(self.make(feed), width=120)
+        lines = rows(screen)
+        assert cell_style(screen, lines, "failed").fg == COLOR_RED
+        assert cell_style(screen, lines, "session revoked").fg == COLOR_RED
+        assert not any("5 messages" in l for l in lines)
+
+    def test_without_a_feed_the_tile_is_pending(self):
+        lines = rows(draw(self.make(None), width=120))
+        assert PENDING in row_with(lines, "Feed") and any("not running" in l for l in lines)

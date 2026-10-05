@@ -102,3 +102,17 @@ class TestPhoto:
         assert not any("Details" in l or "Pretty score" in l for l in lines)
         assert any("No photos" in l for l in lines)
         assert any("Ctrl-P" in l for l in lines[:-2])            # how to index the first one
+
+
+from interfaces.console.tabs.PhotosTab import DESCRIPTION_MIN_ROWS
+
+
+@pytest.mark.unit
+class TestNarrowLayout:
+    def test_a_long_description_gives_way_so_the_details_stay_whole(self):
+        photo = dict(PHOTO, detailed_description="A long afternoon on the jetty with the whole family. " * 40)
+        description_rows = lambda height: sum("jetty" in l for l in rows(draw(make_tab(photo=photo), width=SIDE_BY_SIDE_MIN - 1, height=height)))
+        whole = description_rows(200)
+        lines = rows(draw(make_tab(photo=photo), width=SIDE_BY_SIDE_MIN - 1, height=36))
+        assert "0A1B2C3D-FAKE-GUID-0001" in row_with(lines, "Id ")
+        assert DESCRIPTION_MIN_ROWS <= description_rows(36) < whole

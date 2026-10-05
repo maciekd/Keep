@@ -311,3 +311,65 @@ class TestNoteScrolling:
         self.tab.handle_input("down")
         self.tab.handle_input("up")
         assert self.shown()[0] == 1
+
+
+import os
+
+from common.vault.Vault import Vault as _Vault
+
+PHONE = "+46701740605"
+
+
+@pytest.mark.unit
+class TestNote:
+    NOTE = f"Call **Alice** at {PHONE}\n\n## Steps\n- ask for Bob"
+
+    @pytest.fixture(autouse=True)
+    def store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(WatchList, "WATCHLIST_DIR", tmp_path / "watchlist")
+        monkeypatch.setattr(WatchList, "LOG_DIR", tmp_path / "log")
+        monkeypatch.setattr(WatchListTab, "now", staticmethod(lambda: NOW))
+        WatchList.WATCHLIST_DIR.mkdir()
+        self.write("parcel", self.NOTE)
+        vault = _Vault(tmp_path / "vault.bin", "test")
+        vault.add("phone", "Alice's mobile", PHONE, id="alice-mobile")
+        self.tab = WatchListTab(Redactor(vault))
+
+    @staticmethod
+    def write(name, note, day=1):
+        path = WatchList.WATCHLIST_DIR / f"{name}.md"
+        path.write_text(item(name, every="1d", checked=timedelta(hours=1)).text().replace("order 4711", note))
+        written = (NOW + timedelta(days=day)).timestamp()      # a rewrite in the same tick must still bump the version
+        os.utime(path, (written, written))
+
+    def draw(self, width=WIDTH):
+        screen = TUIScreen(width, HEIGHT)
+        self.tab.draw(screen, 0)
+        return screen, [screen.row_text(1, y, width).rstrip() for y in range(SUB_CONTENT_TOP, HEIGHT)]
+
+    def test_the_note_is_laid_out_as_markdown_without_its_marks(self):
+        screen, lines = self.draw()
+        text = "\n".join(lines)
+        assert "**" not in text and "##" not in text and "- ask" not in text
+        assert "Steps" in text and "ask for Bob" in text
+        y = next(i for i, line in enumerate(lines) if "Alice" in line)
+        assert screen.next_frame[SUB_CONTENT_TOP - 1 + y][lines[y].index("Alice")].style.bold
+
+    def test_a_vaulted_value_in_the_note_is_masked(self):
+        mask = self.tab.redactor.mask(PHONE)
+        assert mask != PHONE
+        text = "\n".join(self.draw()[1])
+        assert PHONE not in text and mask in text
+
+    def test_a_rewritten_note_shows_after_the_file_changes(self):
+        assert "Alice" in "\n".join(self.draw()[1])
+        self.write("parcel", "Ring Carol instead", day=2)
+        text = "\n".join(self.draw()[1])
+        assert "Carol" in text and "Alice" not in text
+
+    def test_a_narrow_screen_keeps_the_reason_and_the_note_and_drops_the_other_facts(self):
+        reason = assess(item("parcel", every="1d", checked=timedelta(hours=1)), NOW).reason
+        narrow = "\n".join(self.draw()[1])
+        assert reason in narrow and "ask for Bob" in narrow and "Cadence" not in narrow
+        wide = "\n".join(self.draw(Board.SIDE_BY_SIDE_MIN + 40)[1])
+        assert "Cadence" in wide

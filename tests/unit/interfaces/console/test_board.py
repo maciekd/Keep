@@ -163,3 +163,18 @@ class TestFacts:
         screen = TUIScreen(60, 8)
         Board.draw_footer(screen, 1, 1, 50, 6, "Saved", Theme.COLOR_GREEN, above=6)
         assert "Saved" not in "\n".join(rows(screen))
+
+
+@pytest.mark.unit
+class TestTableWidth:
+    def test_columns_the_tile_has_no_room_for_are_left_out_and_nothing_runs_past_its_edge(self):
+        screen = TUIScreen(60, 10)
+        table = Table("Items", [("Name", 12), ("Kind", 12), ("Where", 12)],
+                      [(C, [("item-00", Theme.COLOR_TEXT), ("phone", Theme.COLOR_TEXT), ("drawer", Theme.COLOR_TEXT)])], "")
+        x, width = 1, 24                      # inner 18 cells: the name column, a gap and four for the kind
+        Board.draw_table(screen, [], x, 1, width, 8, table)
+        lines = rows(screen)
+        row = next(line for line in lines if "item-00" in line)
+        assert "phone" not in row and row.endswith("...") and "drawer" not in row
+        assert "Where" not in "\n".join(lines)
+        assert max(len(line) for line in lines) <= x + width - 1
