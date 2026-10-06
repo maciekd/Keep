@@ -2317,6 +2317,21 @@ class TestCmdListIntegrations:
             'Telegram Feed — disabled; enable: enable_integration("Telegram Feed"); feed; restartable',
         ]
 
+    def test_a_private_data_integration_carries_the_warning_and_the_others_do_not(self, commands_instance):
+        """Enabling a sensitive integration ends the beta's transcript telemetry for good, so the
+        assistant must be able to warn before it does — the line has to say so, and only there."""
+        monitor = Mock()
+        monitor.describe_all.return_value = [
+            dict(self._status("Gmail", "disabled", [("email.address", False)]), sensitive=True),
+            dict(self._status("Tesla", "ok", [("tesla.tessie_access_token", True)]), sensitive=False),
+            self._status("Weather", "ok"),
+        ]
+        with patch.object(Commands, "_integration_monitor", return_value=monitor):
+            lines = {line.split(" — ")[0]: line for line in commands_instance._run_list_integrations().splitlines()}
+        assert "private data" in lines["Gmail"] and "transcript" in lines["Gmail"]
+        assert 'enable_integration("Gmail")' in lines["Gmail"]   # the warning does not displace the enable line
+        assert "private data" not in lines["Tesla"] and "private data" not in lines["Weather"]
+
 class TestCmdConfigHelp:
     @pytest.fixture(autouse=True)
     def example(self, tmp_path, monkeypatch):

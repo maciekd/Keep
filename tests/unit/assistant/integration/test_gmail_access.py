@@ -483,3 +483,58 @@ class TestRead:
         result = gmail.read("123")
 
         assert "Error" in result
+
+
+@pytest.fixture
+def mock_smtp():
+    with patch('assistant.integration.integrations.email.EmailProvider.smtplib.SMTP') as MockSMTP:
+        server = MagicMock()
+        MockSMTP.return_value.__enter__.return_value = server
+        MockSMTP.return_value.__exit__.return_value = False
+        yield MockSMTP, server
+
+
+@pytest.mark.unit
+class TestGmailSend:
+    """Gmail sends through EmailProvider like iCloud, but its SMTP server comes from config: the
+    nightly report used to carry its own smtplib block honouring these keys, and still must."""
+
+    @staticmethod
+    def _config(values):
+        patcher = patch('assistant.integration.integrations.email.GmailIntegration.ConfigManager')
+        MockCM = patcher.start()
+        MockCM.return_value.get.side_effect = lambda key, default=None: values.get(key, default)
+        return patcher
+
+    def test_the_smtp_server_is_a_contract_with_email_smtp_host_and_email_smtp_port(self, gmail, mock_smtp):
+        patcher = self._config({"email.address": "marcus@example.com", "email.password": "app-pw",
+                                "email.smtp_host": "smtp.mail.example", "email.smtp_port": "2525"})
+        try:
+            assert gmail.send("alice@example.com", "Hi", "Hello") == ""
+        finally:
+            patcher.stop()
+        host, port = mock_smtp[0].call_args.args[:2]
+        assert (host, port) == ("smtp.mail.example", 2525)
+        assert isinstance(port, int)   # config.yaml may hold the port as a string; smtplib wants a number
+
+    def test_a_prepared_message_keeps_its_own_headers_and_gets_the_missing_ones(self, gmail, mock_smtp):
+        import email as email_pkg
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        report = MIMEMultipart("alternative")
+        report["Subject"] = "Nightly report"
+        report["To"] = "marcus@example.com"
+        report["Message-ID"] = "<nightly-2026-10-06@mlab.test>"
+        report.attach(MIMEText("<p>All green</p>", "html"))
+        patcher = self._config({"email.address": "marcus@example.com", "email.password": "app-pw"})
+        try:
+            assert gmail.send_message(report, ["marcus@example.com"]) == ""
+        finally:
+            patcher.stop()
+        sender, recipients, payload = mock_smtp[1].sendmail.call_args.args
+        sent = email_pkg.message_from_string(payload)
+        assert (sender, recipients) == ("marcus@example.com", ["marcus@example.com"])
+        assert sent["Message-ID"] == "<nightly-2026-10-06@mlab.test>"   # the caller's id is not replaced
+        assert sent["From"] == "marcus@example.com"                       # the account fills in the sender
+        assert sent["Date"]                                                # and a Date the mail client can sort by
+        assert "<p>All green</p>" in payload

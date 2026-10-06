@@ -136,6 +136,17 @@ class TestGenericEscapeSequences:
         assert srv._process_input_buffer("\x1b_Gi=1;O", ADDR) == "\x1b_Gi=1;O"
         assert keys == []
 
+    def test_an_unfinished_graphics_reply_past_the_cap_is_dropped_not_kept_forever(self, server_keys):
+        """A terminal that never closes its APC string would otherwise grow the buffer on every
+        read and swallow every key after it; past the cap the buffer is thrown away."""
+        srv, keys = server_keys
+        under = "\x1b_G" + "x" * (srv._APC_MAX - 3)
+        assert srv._process_input_buffer(under, ADDR) == under
+        over = "\x1b_G" + "x" * srv._APC_MAX
+        assert srv._process_input_buffer(over, ADDR) == ""
+        assert keys == []
+        assert srv._process_input_buffer("q", ADDR) == "" and keys == ["q"]   # the next read is a key again
+
     def test_malformed_csi_is_dropped(self, server_keys):
         srv, keys = server_keys
         srv._process_input_buffer("\x1b[\x01q", ADDR)

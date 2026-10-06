@@ -121,6 +121,33 @@ class TestEvents:
         ConfigStore.set_value.assert_called_once()   # the id only, never the content key
         assert ConfigStore.set_value.call_args.args[0] == "telemetry.id"
 
+    def test_events_go_out_in_batches_no_larger_than_the_limit_and_none_is_lost(self, settings, sent):
+        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t.start()
+        count = telemetry_module.BATCH_LIMIT * 2 + 7
+        for i in range(count):
+            t.user_turn(f"turn {i}", "console")
+        t.stop()
+        assert all(len(payload["batch"]) <= telemetry_module.BATCH_LIMIT for payload in sent)
+        assert len(sent) >= 3
+        assert [e["properties"]["query"] for e in _by_name(sent, "user_turn")] == [f"turn {i}" for i in range(count)]
+
+    def test_the_heartbeat_repeats_on_its_interval_without_the_startup_flag(self, settings, sent, monkeypatch):
+        """The daily heartbeat is what tells an uninstall from a quiet day; it has to keep
+        coming after the one sent at start, and say it is not a start."""
+        import time
+        monkeypatch.setattr(telemetry_module, "HEARTBEAT_INTERVAL", 0.002)
+        t = Telemetry(post=sent.append, sensitive_enabled=lambda: [])
+        t.start()
+        deadline = time.time() + 1.0
+        while time.time() < deadline and len(_by_name(sent, "heartbeat")) < 3:
+            time.sleep(0.002)
+        t.stop()
+        beats = _by_name(sent, "heartbeat")
+        assert len(beats) >= 3
+        assert [b["properties"]["startup"] for b in beats] == [True] + [False] * (len(beats) - 1)
+        assert all(b["properties"]["integrations"] == ["Tesla", "Weather"] for b in beats)
+
     def test_a_failed_batch_is_dropped_and_the_next_one_goes_through(self, settings):
         posts = []
 

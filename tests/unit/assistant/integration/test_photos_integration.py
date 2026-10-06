@@ -440,6 +440,59 @@ class TestPhotosTab:
 # PhotoProcessor
 # ---------------------------------------------------------------------------
 
+class TestImageBytesForAsset:
+    """The Photos tab asks for a picture by the cloud asset GUID the photos table stores; the
+    processor has to find the file (and iCloud identity) behind it in the library database."""
+
+    MODULE = "assistant.integration.integrations.photos.PhotoProcessor"
+
+    @pytest.fixture
+    def library(self, tmp_path):
+        path = tmp_path / "Photos.sqlite"
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            CREATE TABLE ZCLOUDMASTER (Z_PK INTEGER PRIMARY KEY, ZCLOUDMASTERGUID TEXT);
+            CREATE TABLE ZASSET (Z_PK INTEGER PRIMARY KEY, ZUUID TEXT, ZFILENAME TEXT, ZDIRECTORY TEXT,
+                                 ZCLOUDASSETGUID TEXT, ZLIBRARYSCOPE INTEGER, ZMASTER INTEGER);
+            INSERT INTO ZCLOUDMASTER VALUES (7, 'MASTER-FAKE-0001');
+            INSERT INTO ZASSET VALUES (1, 'UUID-FAKE-0001', 'IMG_0001.HEIC', '3/02', 'ASSET-FAKE-0001', NULL, 7);
+            INSERT INTO ZASSET VALUES (2, 'UUID-FAKE-0002', 'IMG_0002.JPG', '4/11', 'ASSET-FAKE-0002', 1, NULL);
+        """)
+        conn.commit()
+        conn.close()
+        with patch(f"{self.MODULE}.PHOTOS_SQLITE_PATH", str(path)):
+            yield path
+
+    def test_the_row_behind_the_guid_names_the_file_and_its_icloud_identity(self, library):
+        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
+        with patch.object(PhotoProcessor, "_get_image_bytes", return_value=b"\xff\xd8jpeg") as fetch:
+            assert PhotoProcessor.image_bytes_for_asset("ASSET-FAKE-0001") == b"\xff\xd8jpeg"
+        assert fetch.call_args.args == ("3/02", "IMG_0001.HEIC")
+        assert fetch.call_args.kwargs == {"cloud_master_guid": "MASTER-FAKE-0001", "cloud_asset_guid": "ASSET-FAKE-0001",
+                                          "library_scope": 0}   # NULL scope means the personal library
+
+    def test_an_asset_without_a_cloud_master_still_resolves_through_its_own_guid(self, library):
+        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
+        with patch.object(PhotoProcessor, "_get_image_bytes", return_value=b"jpeg") as fetch:
+            PhotoProcessor.image_bytes_for_asset("ASSET-FAKE-0002")
+        assert fetch.call_args.kwargs["cloud_master_guid"] is None
+        assert fetch.call_args.kwargs["cloud_asset_guid"] == "ASSET-FAKE-0002"
+        assert fetch.call_args.kwargs["library_scope"] == 1
+
+    def test_a_guid_the_library_does_not_know_is_none_without_touching_the_disk(self, library):
+        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
+        with patch.object(PhotoProcessor, "_get_image_bytes") as fetch:
+            assert PhotoProcessor.image_bytes_for_asset("ASSET-FAKE-9999") is None
+        fetch.assert_not_called()
+
+    def test_a_missing_library_is_none_not_an_exception(self, tmp_path):
+        from assistant.integration.integrations.photos.PhotoProcessor import PhotoProcessor
+        with patch(f"{self.MODULE}.PHOTOS_SQLITE_PATH", str(tmp_path / "no-Photos.sqlite")), \
+             patch.object(PhotoProcessor, "_get_image_bytes") as fetch:
+            assert PhotoProcessor.image_bytes_for_asset("ASSET-FAKE-0001") is None
+        fetch.assert_not_called()
+
+
 class TestPhotoProcessorUuidDedup:
 
     @pytest.fixture(autouse=True)

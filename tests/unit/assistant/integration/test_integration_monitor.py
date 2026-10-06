@@ -690,6 +690,27 @@ class TestDisabledIntegrations:
         check.assert_not_called()
         assert placeholder.state is IntegrationState.DISABLED and placeholder.consecutive_failures == 0
 
+    def test_a_sensitive_integration_is_flagged_while_still_disabled(self):
+        """The warning before enabling a private-data integration (list_integrations, the beta
+        telemetry's transcript latch) is wanted exactly when it is still a placeholder — the
+        flag must come from the class behind the placeholder, which is not itself sensitive."""
+        class Mailbox(self.Switchable):
+            sensitive = True
+
+            @property
+            def name(self) -> str:
+                return "Mailbox"
+
+        monitor = IntegrationMonitor.get_instance()
+        try:
+            with patch.object(Integration, "enabled", classmethod(lambda cls, config: False)):
+                monitor.register_class(Mailbox)
+            monitor.register(FakeIntegration("Lamps"))
+            flags = {status["name"]: status["sensitive"] for status in monitor.get_all_statuses()}
+        finally:
+            Mailbox.reset_instance()
+        assert flags == {"Mailbox": True, "Lamps": False}
+
     def test_enabling_then_restart_builds_it(self):
         monitor = IntegrationMonitor.get_instance()
         started = []
