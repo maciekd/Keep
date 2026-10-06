@@ -9,6 +9,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # packages live under AIServer/src
 
+# Ahead of every other import: a library that builds its SSL context at import time (aiohttp)
+# would otherwise keep the bundled CA list for good.
+from common import SystemTrust
+_TLS_TRUST = SystemTrust.install()
+
 import asyncio
 import atexit
 import faulthandler
@@ -390,6 +395,7 @@ def _verify_config_or_exit():
 
 if __name__ == "__main__":
     _enable_crash_traces()
+    info(_TLS_TRUST)
     _port, _testsuite = _parse_args()
     RequirementsChecker.verify_or_exit()
     Migrations.run()

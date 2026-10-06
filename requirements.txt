@@ -3,6 +3,8 @@ ruamel.yaml==0.18.17
 colorama==0.4.6
 playsound==1.2.2
 requests==2.31.0
+# TLS verified against the macOS keychain, so a network that inspects HTTPS does not break every call
+truststore==0.10.4
 psutil==7.1.3
 numpy==2.3.2   # the console's Crystal tab renders with it
 openai==2.13.0
