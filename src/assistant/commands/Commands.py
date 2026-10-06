@@ -28,6 +28,7 @@ from common.ConfigStore import ConfigStoreError
 from assistant.ChannelProfile import AUTONOMOUS, PHOTO_TARGET_KITCHEN_TV, SOURCE_CONSOLE
 from assistant.Notifier import SecretRejected, notifier
 from assistant.SystemNote import system_note
+from assistant.Telemetry import Telemetry
 from .CommandEcho import describe_completion
 from assistant.integration.integrations.RemindersIntegration import add_reminder_item
 from assistant.integration.integrations.TeslaIntegration import TeslaIntegration, TeslaAPIError
@@ -1413,12 +1414,17 @@ class Commands:
             known = ", ".join(sorted(self._known_integration_names()))
             info(f"{verb}_integration: no integration named '{name}'")
             return f"No integration named '{name}'. Known: {known}"
+        was_listed = ConfigManager.get_instance().integration_enabled(canonical)
         try:
             changed = (ConfigStore.enable_integration if enable else ConfigStore.disable_integration)(canonical)
         except ConfigStoreError as e:
             info(f"{verb}_integration: refused — {e}")
             return f"{verb}_integration failed: {e}"
         result = self._integration_monitor().restart(canonical)
+        if was_listed != enable:
+            Telemetry.get_instance().integration_switch(canonical, enable, result["status"]["state"] if result else None)
+        else:
+            trace(f"{verb}_integration: {canonical} was already {verb}d, no telemetry event")
         if result is None:
             return changed
         return f"{changed}; {self._describe_restart(result['status'], result['restartable'])}"

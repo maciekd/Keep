@@ -243,7 +243,8 @@ The end game is 100% local. Keep already runs on local models and once the local
 
 > [!IMPORTANT]
 > **Beta telemetry.** During the beta Keep sends anonymous usage events: a random install id, the Keep version, which
-> interface and integrations are in use, and the names of the commands a turn ran — never their arguments. Until you
-> enable a sensitive integration (mail, messages, calendars, photos, cameras, Find My) the events also carry your queries
-> and Keep's replies; the moment you do, that is switched off for good. Vault secrets are placeholders in the transcript
-> too. `telemetry.enabled: false` in `config.yaml` turns it all off.
+> interface and integrations are in use, which you switch on or off, which TUI tabs you open, and the names of the
+> commands a turn ran — never their arguments. Until you enable a sensitive integration (mail, messages, calendars,
+> photos, cameras, Find My) the events also carry your queries and Keep's replies; the moment you do, that is switched
+> off for good. Vault secrets are placeholders in the transcript too. `telemetry.enabled: false` in `config.yaml` turns
+> it all off.

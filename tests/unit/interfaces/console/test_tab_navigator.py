@@ -1,5 +1,10 @@
 import json
+from unittest.mock import Mock
 
+import pytest
+
+import interfaces.console.tabs.TabNavigator as navigator_module
+from assistant.Telemetry import Telemetry
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.tabs import TabBar
 from interfaces.console.tabs.TabGroup import TabGroup
@@ -161,6 +166,45 @@ def test_group_delegates_input_and_draw_to_its_sub_tab():
     assert icloud.events == ['x', 'draw']
     row4 = "".join(cell.char for cell in screen.next_frame[3])
     assert "iCloud" in row4 and "Arlo" in row4
+
+
+@pytest.fixture
+def tab_changes(monkeypatch):
+    """The (tab, previous) pairs the navigator reported to the telemetry."""
+    sink = Mock()
+    monkeypatch.setattr(Telemetry, "get_instance", classmethod(lambda cls: sink))
+    return lambda: [c.args[:2] for c in sink.tab_change.call_args_list]
+
+
+def test_telemetry_gets_one_event_per_tab_shown_with_sub_tabs_under_their_group(tab_changes):
+    nav, _ = make_nav()
+    for key in ('shift_right', 'tab', 'tab', 'tab'):
+        nav.handle_key(key)
+    assert tab_changes() == [
+        ("Dialog", "Home"),
+        ("Integrations/iCloud", "Dialog"),
+        ("Integrations/Arlo", "Integrations/iCloud"),
+        ("Home", "Integrations/Arlo"),
+    ]
+
+
+def test_telemetry_hears_nothing_when_the_key_leaves_the_same_tab_on_screen(tab_changes):
+    nav, _ = make_nav()
+    nav.handle_key('shift_left')    # Home -> Integrations
+    nav.handle_key('shift_down')    # focus into the sub-tab bar
+    nav.handle_key('shift_up')      # and back
+    nav.handle_key('x')             # not navigation
+    assert tab_changes() == [("Integrations/iCloud", "Home")]
+
+
+def test_telemetry_dwell_is_the_time_on_the_tab_left(tab_changes, monkeypatch):
+    clock = iter([100.0, 107.5, 109.0])
+    monkeypatch.setattr(navigator_module.time, "monotonic", lambda: next(clock))
+    nav, _ = make_nav()
+    nav.handle_key('shift_right')
+    nav.handle_key('shift_right')
+    dwells = [c.args[2] for c in Telemetry.get_instance().tab_change.call_args_list]
+    assert dwells == pytest.approx([7.5, 1.5])
 
 
 def test_first_navigation_is_remembered_across_instances(tui_state_file):

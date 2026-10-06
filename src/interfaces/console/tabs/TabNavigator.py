@@ -1,5 +1,7 @@
+import time
 from typing import List
 
+from assistant.Telemetry import Telemetry
 from interfaces.console import TUIState
 from interfaces.console.tabs.TabGroup import TabGroup
 from interfaces.console.tabs.TabView import TabView
@@ -27,6 +29,7 @@ class TabNavigator:
             info(f"TUI start tab {start!r} not found among {names}; starting on {names[0]}.")
         # Whether the user has ever navigated tabs; the tab bar's hint stands out until then
         self.navigated = bool(TUIState.load("navigator").get("navigated", False))
+        self._shown_since = time.monotonic()
 
     @property
     def active_tab(self) -> TabView:
@@ -42,14 +45,33 @@ class TabNavigator:
         group = self.group
         return group is not None and group.focused
 
+    @property
+    def path(self) -> str:
+        """The tab on screen: a top-level tab's name, or `Group/Sub-tab`."""
+        tab = self.active_tab
+        return f"{tab.name}/{tab.content_tab().name}" if isinstance(tab, TabGroup) else tab.name
+
     def handle_key(self, key: str) -> bool:
         """Returns True when the key changed the tab selection or focus."""
+        before = self.path
         handled = self._navigate(key)
+        if handled:
+            self._report_change(before)
         if handled and not self.navigated:
             info("First tab navigation - remembering it so the navigation hint is muted from now on.")
             self.navigated = True
             TUIState.save("navigator", navigated=True)
         return handled
+
+    def _report_change(self, before: str):
+        """The telemetry's tab event — one per key that put another tab on screen, however
+        many selections the walk took; a focus move between the two bars shows the same tab."""
+        shown = self.path
+        if shown == before:
+            return
+        now = time.monotonic()
+        Telemetry.get_instance().tab_change(shown, before, now - self._shown_since)
+        self._shown_since = now
 
     def _navigate(self, key: str) -> bool:
         group = self.group

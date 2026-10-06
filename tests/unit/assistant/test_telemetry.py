@@ -148,6 +148,21 @@ class TestEvents:
         assert [b["properties"]["startup"] for b in beats] == [True] + [False] * (len(beats) - 1)
         assert all(b["properties"]["integrations"] == ["Tesla", "Weather"] for b in beats)
 
+    def test_a_tab_change_names_both_tabs_and_the_time_on_the_one_left(self, telemetry, sent):
+        telemetry.tab_change("Integrations/Arlo", "Home", 12.34)
+        telemetry.stop()
+        (event,) = _by_name(sent, "tab_change")
+        assert (event["properties"]["tab"], event["properties"]["from"]) == ("Integrations/Arlo", "Home")
+        assert event["properties"]["dwell"] == pytest.approx(12.3)
+
+    def test_an_integration_switch_is_one_event_per_direction_with_the_state_it_landed_in(self, telemetry, sent):
+        telemetry.integration_switch("Ring", True, "not_configured")
+        telemetry.integration_switch("Ring", False, "disabled")
+        telemetry.stop()
+        (on,), (off,) = _by_name(sent, "integration_enabled"), _by_name(sent, "integration_disabled")
+        assert (on["properties"]["integration"], on["properties"]["state"]) == ("Ring", "not_configured")
+        assert (off["properties"]["integration"], off["properties"]["state"]) == ("Ring", "disabled")
+
     def test_a_failed_batch_is_dropped_and_the_next_one_goes_through(self, settings):
         posts = []
 

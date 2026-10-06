@@ -2265,6 +2265,27 @@ class TestCmdListIntegrations:
         disable.assert_called_once_with("Ring")
         assert text == 'Ring disabled; Ring restarted: disabled — not in enabled_integrations; enable_integration("Ring") adds it'
 
+    @pytest.mark.parametrize("listed, enable, reported", [
+        (False, True, [call("Ring", True, "ok")]),
+        (True, False, [call("Ring", False, "ok")]),
+        (True, True, []),      # already on: the list did not change
+        (False, False, []),
+    ])
+    def test_telemetry_hears_of_a_switch_only_when_the_list_changed(self, commands_instance, listed, enable, reported):
+        from assistant.Telemetry import Telemetry
+        monitor = Mock()
+        monitor.get_all_statuses.return_value = [{"name": "Ring"}]
+        monitor.restart.return_value = {"restartable": True, "status": {
+            "name": "Ring", "state": "ok", "last_error": None, "config_keys": []}}
+        with patch.object(Commands, "_integration_monitor", return_value=monitor), \
+             patch("assistant.commands.Commands.ConfigStore.enable_integration", return_value="Ring enabled"), \
+             patch("assistant.commands.Commands.ConfigStore.disable_integration", return_value="Ring disabled"), \
+             patch("assistant.commands.Commands.ConfigManager.get_instance") as config, \
+             patch.object(Telemetry, "get_instance") as telemetry:
+            config.return_value.integration_enabled.return_value = listed
+            commands_instance._switch_integration("ring", enable)
+        assert telemetry.return_value.integration_switch.call_args_list == reported
+
     def test_enable_and_disable_run_in_the_config_lane(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
             assert commands_instance.run("enable_integration", ['"Ring"']) == ""

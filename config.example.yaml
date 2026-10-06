@@ -247,10 +247,11 @@ developer_release: false
 
 # Beta usage telemetry (assistant/Telemetry.py). An install is known by `id` alone, a random
 # value the server writes here on its first start; the events are one per user turn, one per
-# assistant turn (with the names of the commands it ran, never their arguments) and a daily
-# heartbeat. While `content` is true the turns carry the query and the reply in full; the
-# server sets it to false for good the moment a sensitive integration (messages, mail, calendar,
-# photos, cameras) is enabled. `enabled: false` turns all of it off.
+# assistant turn (with the names of the commands it ran, never their arguments), one per
+# integration switched on or off, one per TUI tab opened and a daily heartbeat. While `content`
+# is true the turns carry the query and the reply in full; the server sets it to false for good
+# the moment a sensitive integration (messages, mail, calendar, photos, cameras) is enabled.
+# `enabled: false` turns all of it off.
 telemetry:
   enabled: true
   content: true

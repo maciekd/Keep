@@ -1,6 +1,6 @@
 """Anonymous usage telemetry for the closed beta: an event when the user speaks, one when the
-assistant answers, a daily heartbeat — and, until a sensitive integration is enabled, the
-transcript itself.
+assistant answers, one when an integration is switched on or off, one per TUI tab opened, a
+daily heartbeat — and, until a sensitive integration is enabled, the transcript itself.
 
 An install is known only by a random id (`telemetry.id`, written to config.yaml on the first
 start) and `telemetry.enabled: false` turns the whole thing off. Every event carries the
@@ -54,8 +54,9 @@ def _post_http(payload: dict) -> None:
 
 
 class Telemetry:
-    """The process-wide sink: `user_turn` / `assistant_turn` / `heartbeat` enqueue, the
-    worker thread posts. Before `start()` (or when disabled) every call is a no-op."""
+    """The process-wide sink: `user_turn` / `assistant_turn` / `tab_change` /
+    `integration_switch` / `heartbeat` enqueue, the worker thread posts. Before `start()` (or
+    when disabled) every call is a no-op."""
 
     _instance: Optional["Telemetry"] = None
 
@@ -159,6 +160,21 @@ class Telemetry:
         if self.content_allowed():
             properties["reply"] = text or ""
         self._enqueue("assistant_turn", properties)
+
+    def tab_change(self, tab: str, previous: str, dwell: float):
+        """A TUI tab was opened, a sub-tab as `Group/Tab`. *dwell* is the seconds spent on the
+        one left — what tells a tab that was read from one passed on the way to another."""
+        if not self.active:
+            return
+        self._enqueue("tab_change", {"source": "console", "tab": tab, "from": previous, "dwell": round(dwell, 1)})
+
+    def integration_switch(self, name: str, enabled: bool, state: Optional[str] = None):
+        """`enabled_integrations` gained or lost *name*; *state* is where the restart that
+        followed left it (ok, not_configured, disabled, …)."""
+        if not self.active:
+            return
+        self._enqueue("integration_enabled" if enabled else "integration_disabled",
+                      {"integration": name, "state": state})
 
     def heartbeat(self, startup: bool = False):
         """Once a day and at start: the install is alive, and what it is — so churn can be told
