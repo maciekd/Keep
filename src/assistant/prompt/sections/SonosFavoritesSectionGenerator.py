@@ -5,24 +5,59 @@ from ...integration.integrations.MusicIntegration import MusicManager
 
 
 class SonosFavoritesSectionGenerator(PromptSectionGenerator):
-    """Refreshes the Sonos favorites and playlists section every 30 minutes once Sonos has loaded."""
+    """Refreshes the Sonos favorites and playlists section every 30 minutes once Sonos has loaded.
+
+    It reads the integration the IntegrationMonitor built and never builds one: while
+    Sonos & Spotify is disabled the section is empty and no speaker is looked for."""
+
+    INTEGRATION_POLL_SECONDS = 1
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "SonosFavorites")
-        self.playback_manager = MusicManager.get_instance()
+
+    @property
+    def playback_manager(self):
+        """The running integration, or None while it is disabled (or not built yet)."""
+        return MusicManager.peek_instance()
+
+    def _playlists(self) -> list:
+        manager = self.playback_manager
+        return manager.get_playlists() if manager is not None else []
+
+    def _favorites(self) -> list:
+        manager = self.playback_manager
+        return manager.get_favorites() if manager is not None else []
+
+    def _await_integration(self) -> bool:
+        """Wait until Sonos & Spotify is running; False when stopped first. The integrations
+        are built after the prompt sections start, so an enabled one is a moment away."""
+        if self.playback_manager is not None:
+            return True
+        info("SonosFavorites: Sonos & Spotify is not running (disabled or still starting) — "
+             "section stays empty until it is")
+        while not self._stop_event.is_set() and self.playback_manager is None:
+            self._wait(self.INTEGRATION_POLL_SECONDS)
+        if self._stop_event.is_set():
+            return False
+        info("SonosFavorites: Sonos & Spotify is running now")
+        return True
 
     def _start_monitoring(self):
-        """Update when Sonos data is available."""
-        # Poll until playlists/favorites are loaded (with timeout)
+        """Follow the integration: wait for it, load once its data is in, refresh every 30
+        minutes, and start over when it is dropped (disable_integration)."""
+        while not self._stop_event.is_set():
+            if not self._await_integration():
+                return
+            self._await_first_data()
+            self._refresh_until_dropped()
+
+    def _await_first_data(self):
+        """Poll until playlists/favorites are loaded (with timeout)."""
         max_wait = 60  # seconds
         start_time = time.time()
 
         while not self._stop_event.is_set():
-            playlists = self.playback_manager.get_playlists()
-            favorites = self.playback_manager.get_favorites()
-
-            if playlists or favorites:
-                # Data is available, update content
+            if self._playlists() or self._favorites():
                 info("Sonos data loaded, updating content")
                 self._update_content()
                 break
@@ -34,12 +69,17 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
 
             self._wait(0.1)
 
-        # Continue with normal 30-minute refresh cycle
+    def _refresh_until_dropped(self):
+        """The normal 30-minute refresh cycle; returns once the integration is gone."""
         while not self._stop_event.is_set():
             self._wait(30 * 60)  # 30 minutes
             if self._stop_event.is_set():
                 break
-            if self.playback_manager.get_playlists() or self.playback_manager.get_favorites():
+            if self.playback_manager is None:
+                info("SonosFavorites: Sonos & Spotify is no longer running, emptying the section")
+                self._update_content()
+                return
+            if self._playlists() or self._favorites():
                 self._update_content()
             else:
                 trace("Sonos: still no favorites or playlists, section left empty")
@@ -56,7 +96,7 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
         """Fetch Sonos playlists and append to result."""
         trace("Fetching Sonos playlists...")
         try:
-            playlists = self.playback_manager.get_playlists()
+            playlists = self._playlists()
             index = 0
             for playlist_name in playlists:
                 res += playlist_name + ' (ID: P-' + str(index) + ')\n'
@@ -71,7 +111,7 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
         trace("Fetching Sonos favorites...")
         res = ""
         try:
-            favorites = self.playback_manager.get_favorites()
+            favorites = self._favorites()
             index = 0
             for favorite_name in favorites:
                 res += favorite_name + ' (ID: F-' + str(index) + ')\n'

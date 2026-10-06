@@ -1,3 +1,4 @@
+import functools
 import re
 import threading
 import time
@@ -6,12 +7,40 @@ from typing import List, Dict, Optional
 
 import soco
 from soco.plugins.sharelink import ShareLinkPlugin
+from soco.zonegroupstate import ZoneGroupState
 from spotipy import Spotify
 from spotipy.oauth2 import SpotifyClientCredentials
 
 from common.logging import trace, info, error
 from common.ConfigManager import ConfigManager
 from ..Integration import Integration
+
+_zone_state_lock = threading.RLock()
+
+
+def _serialise_zone_state_parsing():
+    """Let one thread at a time into soco's zone-group parsing.
+
+    soco runs every zone-group payload through one module-level lxml XSLT object and takes no
+    lock around it. Two threads in that transform at once corrupt libxml2's dictionary, and
+    the allocator then aborts the whole process (SIGABRT under xmlDictGrow) — no exception,
+    no log line. Any `zone.group`, `zone.player_name` or `soco.discover()` can land there, so
+    the lock goes on soco's one entry point rather than on each of our callers."""
+    original = ZoneGroupState.process_payload
+    if getattr(original, "_serialised", False):
+        return
+
+    @functools.wraps(original)
+    def process_payload(self, *args, **kwargs):
+        with _zone_state_lock:
+            return original(self, *args, **kwargs)
+
+    process_payload._serialised = True
+    ZoneGroupState.process_payload = process_payload
+    trace("Sonos: soco's zone-group parsing is serialised (one thread at a time in its XSLT)")
+
+
+_serialise_zone_state_parsing()
 
 
 class MusicIntegration(Integration):
@@ -22,6 +51,7 @@ class MusicIntegration(Integration):
     """
 
     CACHE_EXPIRY_SECONDS = 30 * 60
+    REFRESH_INTERVAL_SECONDS = 30 * 60
 
     def __init__(self):
         Integration.__init__(self)
@@ -39,7 +69,8 @@ class MusicIntegration(Integration):
         self._spotify_search_cache: Dict[str, str] = {}  # Maps "AA" -> "spotify:track:xxx"
         self._next_cache_id: int = 0
 
-        self.prompt_manager = None
+        self._refresh_timer: Optional[threading.Timer] = None
+        self._stopped = threading.Event()
 
         # Load initial cache and start periodic refresh
         self._start_periodic_refresh()
@@ -85,18 +116,30 @@ class MusicIntegration(Integration):
             error(f"Error refreshing playlists and favorites cache: {e}")
 
     def _start_periodic_refresh(self):
-        """Start a timer to refresh playlists and favorites every 30 minutes."""
-        def refresh_timer():
-            self._refresh_playlists_and_favorites()
-            # Schedule next refresh
-            timer = threading.Timer(30 * 60, refresh_timer)
-            timer.daemon = True
-            timer.start()
+        """Load playlists and favorites in the background now, then every 30 minutes."""
+        self._schedule_refresh(0.1)
 
-        # Just load them in the bg at first start
-        timer = threading.Timer(0.1, refresh_timer)
-        timer.daemon = True
-        timer.start()
+    def _schedule_refresh(self, delay: float):
+        if self._stopped.is_set():
+            return
+        self._refresh_timer = threading.Timer(delay, self._refresh_tick)
+        self._refresh_timer.daemon = True
+        self._refresh_timer.start()
+
+    def _refresh_tick(self):
+        if self._stopped.is_set():
+            trace("Sonos: refresh tick after the integration was dropped, skipped")
+            return
+        self._refresh_playlists_and_favorites()
+        self._schedule_refresh(self.REFRESH_INTERVAL_SECONDS)
+
+    def _on_reset(self):
+        """A restarted or disabled integration is dropped, not destroyed: without this its
+        timer would go on discovering speakers every 30 minutes for good."""
+        self._stopped.set()
+        if self._refresh_timer is not None:
+            self._refresh_timer.cancel()
+        info("Sonos & Spotify dropped: playlist and favorites refresh stopped")
 
     def _uri_to_playlist_name(self, uri: str) -> Optional[str]:
         """Convert playlist URI (P-0, P-1, etc.) to playlist name."""

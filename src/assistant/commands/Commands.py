@@ -100,19 +100,21 @@ class Commands:
     PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
 
-    music_manager = None
-
-    @classmethod
-    def get_music_manager(cls) -> 'MusicManager':
-        if cls.music_manager is None:
-            cls.music_manager = MusicManager.get_instance()
-        return cls.music_manager
-
     # Integrations are looked up per call: get_instance() is the cache, so a restarted
     # integration (restart_integration) is what the next command uses.
     @staticmethod
     def _get_web_access() -> WebAccess:
         return WebAccess.get_instance()
+
+    # Built by the first music command when Sonos & Spotify is disabled — never at startup,
+    # where it would start discovering speakers on a network nobody asked it to look at.
+    @staticmethod
+    def _get_music_manager() -> MusicManager:
+        return MusicManager.get_instance()
+
+    @property
+    def music_manager(self) -> MusicManager:
+        return self._get_music_manager()
 
     @staticmethod
     def _get_x_integration() -> XIntegration:
@@ -1043,13 +1045,13 @@ class Commands:
         room = args[0].strip()
         playlist = args[1].strip()
 
-        favorites = Commands.music_manager.get_favorites(room)
+        favorites = self.music_manager.get_favorites(room)
         if playlist in favorites:
             trace("Sonos favorite, playing.")
-            Commands.music_manager.play_favorite(room, playlist)
+            self.music_manager.play_favorite(room, playlist)
         else:
             trace("Sonos playlist, playing.")
-            Commands.music_manager.play_playlist(room, playlist, shuffle=True)
+            self.music_manager.play_playlist(room, playlist, shuffle=True)
 
     def cmd_vault_add(self, *args: str) -> str:
         """Files a value the user has already said out loud into the vault, so every later

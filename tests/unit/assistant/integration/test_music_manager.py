@@ -23,7 +23,8 @@ def make_music_manager(room_mapping=ROOM_MAPPING):
     mm._cache_lock = threading.Lock()
     mm._spotify_search_cache = {}
     mm._next_cache_id = 0
-    mm.prompt_manager = None
+    mm._refresh_timer = None
+    mm._stopped = threading.Event()
     return mm
 
 
@@ -332,3 +333,54 @@ class TestGetAllZonesStatus:
 
         with pytest.raises(ConnectionError):
             mm.get_all_zones_status()
+
+
+class TestRefreshCycle:
+    def test_a_tick_refreshes_and_schedules_the_next_one(self):
+        mm = make_music_manager()
+        mm._refresh_playlists_and_favorites = Mock()
+        try:
+            mm._refresh_tick()
+            mm._refresh_playlists_and_favorites.assert_called_once()
+            assert mm._refresh_timer is not None and mm._refresh_timer.is_alive()
+        finally:
+            mm._on_reset()
+
+    def test_a_dropped_integration_stops_refreshing(self):
+        mm = make_music_manager()
+        mm._refresh_playlists_and_favorites = Mock()
+        mm._schedule_refresh(3600)
+        pending = mm._refresh_timer
+
+        mm._on_reset()
+        pending.join(timeout=1)
+        mm._refresh_tick()   # a tick that was already running when the integration was dropped
+
+        assert not pending.is_alive()
+        mm._refresh_playlists_and_favorites.assert_not_called()
+        assert mm._refresh_timer is pending, "no new timer may be scheduled after the drop"
+
+
+class TestZoneStateParsingIsSerialised:
+    """soco's zone-group XSLT is shared by every thread and not thread-safe: two threads in it
+    at once abort the process. The integration module puts a lock on soco's entry point."""
+
+    def test_soco_parses_one_zone_group_payload_at_a_time(self):
+        from soco.zonegroupstate import ZoneGroupState
+        from assistant.integration.integrations import MusicIntegration as module
+
+        done = threading.Event()
+
+        def parse():
+            try:
+                ZoneGroupState().process_payload(payload="<not-a-zone-group-state/>", source="test",
+                                                 source_ip="192.0.2.10")
+            except Exception:
+                pass   # the payload is junk; only when soco gets to it matters
+            done.set()
+
+        with module._zone_state_lock:
+            thread = threading.Thread(target=parse, daemon=True)
+            thread.start()
+            assert not done.wait(0.05), "soco parsed a payload while another thread held the parsing lock"
+        assert done.wait(2), "soco never got to the payload after the lock was released"

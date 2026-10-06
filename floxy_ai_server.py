@@ -229,7 +229,6 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
     SystemNote.set_history(prompt_manager.message_history)   # integrations' notes land in the dialog
     if running_as_testsuite:
         prompt_manager.load_test_suite_history("res/testsuite_history.json")
-    Commands.get_music_manager().prompt_manager = prompt_manager
 
     agents = []
     integration_monitor = None

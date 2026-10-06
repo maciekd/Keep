@@ -23,7 +23,7 @@ def memory(tmp_path, monkeypatch):
 def sonos(tmp_path, monkeypatch):
     from assistant.prompt.sections import SonosFavoritesSectionGenerator as module
     loaded = Mock(get_playlists=Mock(return_value=["p"]), get_favorites=Mock(return_value=[]))
-    monkeypatch.setattr(module.MusicManager, "get_instance", lambda: loaded)
+    monkeypatch.setattr(module.MusicManager, "peek_instance", lambda: loaded)
     return module.SonosFavoritesSectionGenerator(None)
 
 
