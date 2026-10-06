@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))  # packages liv
 
 import asyncio
 import atexit
+import faulthandler
 import os
 import time
 
@@ -313,6 +314,18 @@ async def main(server: Server):
         info("Clean shutdown complete")
 
 
+def _enable_crash_traces():
+    """A crash in native code (a C library aborting or segfaulting) raises no Python exception
+    and so reaches no log: the process is just gone. faulthandler writes every thread's Python
+    stack on the way down — to the real stderr (log/raw-floxy.log under start.sh), since it
+    needs a file descriptor that outlives the interpreter's own objects."""
+    if sys.__stderr__ is None:
+        info("Crash traces off: this process has no stderr to write them to")
+        return
+    faulthandler.enable(file=sys.__stderr__, all_threads=True)
+    trace("Crash traces on: a native crash writes every thread's Python stack to stderr")
+
+
 def _parse_args():
     sys.stderr = StderrLogger(sys.stderr)
     if "--developer-mode" in sys.argv:
@@ -376,6 +389,7 @@ def _verify_config_or_exit():
 
 
 if __name__ == "__main__":
+    _enable_crash_traces()
     _port, _testsuite = _parse_args()
     RequirementsChecker.verify_or_exit()
     Migrations.run()
