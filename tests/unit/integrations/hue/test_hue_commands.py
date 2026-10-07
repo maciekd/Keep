@@ -104,7 +104,10 @@ class TestCmdHuePair:
         assert "192.0.2.20" in text and "192.0.2.21" in text
         mocks.pair.assert_not_called()
 
-    def test_a_failed_discovery_reads_as_no_bridge(self, run):
+    def test_discovery_is_asked_without_a_host_and_only_then(self, run):
         run_pair, mocks = run
-        mocks.discover.side_effect = requests.ConnectionError("offline")
-        assert "no bridge found" in run_pair("")
+        mocks.discover.return_value = ["192.0.2.20"]
+        mocks.pair.return_value = "abc123"
+        run_pair("")
+        mocks.discover.assert_called_once_with()
+        mocks.pair.assert_called_once_with("192.0.2.20")

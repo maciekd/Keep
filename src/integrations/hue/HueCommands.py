@@ -8,7 +8,8 @@ from assistant.commands.CommandSet import CommandSet
 from common import ConfigStore
 from common.ConfigManager import config
 from common.logging import info
-from .HueClient import HueError, LinkButtonNotPressed, discover, pair
+from .HueClient import HueError, LinkButtonNotPressed, pair
+from .HueDiscovery import discover
 
 INTEGRATION = "Philips Hue"
 PRESS_BUTTON = ("press the round link button on the bridge, then run hue_pair() again within 30 seconds")
@@ -33,12 +34,9 @@ class HueCommands(CommandSet):
             return f'{INTEGRATION} is disabled — enable_integration("{INTEGRATION}") first, then hue_pair().'
         host = (host or str(config.get("hue.bridge", "") or "")).strip()
         if not host:
-            try:
-                found = discover()
-            except requests.RequestException as e:
-                info(f"hue_pair: discovery failed: {e}")
-                found = []
+            found = discover()
             if not found:
+                info("hue_pair: neither mDNS nor the discovery service found a bridge")
                 return ('hue_pair failed: no bridge found on this network. Ask the user for its address (the Hue app '
                         'shows it under Settings → My Hue system → the bridge) and run hue_pair("<address>").')
             if len(found) > 1:
