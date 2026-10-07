@@ -1073,6 +1073,13 @@ class TestCmdFetchCameraImages:
             result = Commands._fetch_all_camera_images(["pool"])
         assert "pool" in result and "Backyard" in result and "Garage" in result
 
+    def test_a_name_nothing_matches_with_no_camera_reachable_says_so_instead_of_an_empty_list(self):
+        arlo, ring = self._provider("Arlo", [], cameras=[]), self._provider("Ring", [], cameras=[])
+        with patch("assistant.commands.Commands.cameras.active", return_value=[arlo, ring]):
+            result = Commands._fetch_all_camera_images(["pool"])
+        assert "pool" in result and "reachable" in result
+        assert "The cameras:" not in result
+
     def test_the_command_hands_the_trimmed_names_to_the_background_fetch(self, commands_instance):
         with patch.object(commands_instance, "background_command") as bg:
             commands_instance.cmd_fetch_camera_images(" Front ", "", "Back")

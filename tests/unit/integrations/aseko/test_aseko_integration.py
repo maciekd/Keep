@@ -165,6 +165,16 @@ class TestRenderUnit:
         assert error_at < info_at
         assert "Unit messages: none" not in text
 
+    def test_filter_and_solar_parts_join_without_a_dangling_comma(self):
+        text = render_unit(dict(UNIT, statusValues={"filterFlowSpeed": 11, "solarTemperature": 31}))
+        assert "  Filter: 11 m³/h" in text and "  Solar: 31°C" in text
+        both = render_unit(dict(UNIT, statusValues={"filterPressure": 0.8, "filterFlowSpeed": 11}))
+        assert "  Filter: 0.8 bar, 11 m³/h" in both
+
+    def test_a_message_without_text_or_severity_shows_its_type_as_info(self):
+        text = render_unit(dict(UNIT, statusMessages=[{"type": "START_BY_SOLAR"}]))
+        assert "INFO: START_BY_SOLAR" in text
+
     def test_an_offline_unit_flags_its_readings_as_the_last_sent(self):
         text = render_unit(dict(UNIT, online=False))
         assert "OFFLINE" in text.splitlines()[0] and "Water: 27.4°C" in text

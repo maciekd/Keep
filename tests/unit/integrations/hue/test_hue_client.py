@@ -62,6 +62,14 @@ class TestResources:
         with pytest.raises(requests.HTTPError):
             hue.get("light")
 
+    def test_a_success_without_json_is_the_bridges_fault_not_http(self, client):
+        hue, session = client
+        response = _response(None, status=200)
+        response.json.side_effect = ValueError("no json")
+        session.get.return_value = response
+        with pytest.raises(HueError, match="200"):
+            hue.get("light")
+
 
 @pytest.mark.unit
 class TestPairing:
@@ -71,6 +79,16 @@ class TestPairing:
         body = post.call_args.kwargs["json"]
         assert body["generateclientkey"] is True and "#" in body["devicetype"]
         assert post.call_args.args[0] == "https://192.0.2.10/api"
+
+    def test_a_single_answer_object_is_read_like_a_list(self):
+        with patch(f"{MODULE}.requests.post", return_value=_response({"success": {"username": "key-xyz"}})):
+            assert pair("192.0.2.10") == "key-xyz"
+
+    @pytest.mark.parametrize("answers", [[], [{"foo": 1}]])
+    def test_an_answer_with_neither_key_nor_error_is_unexpected(self, answers):
+        with patch(f"{MODULE}.requests.post", return_value=_response(answers)):
+            with pytest.raises(HueError, match="unexpected"):
+                pair("192.0.2.10")
 
     def test_the_link_button_error_has_its_own_exception(self):
         answer = [{"error": {"type": 101, "address": "", "description": "link button not pressed"}}]

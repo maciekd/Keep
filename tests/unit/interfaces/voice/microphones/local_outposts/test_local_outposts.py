@@ -1172,6 +1172,18 @@ class TestSaveRecordingAsync:
         outpost._save_recording_async("hello", AUDIO, 0.0)
         assert len(errors) == 1              # no drop → no warning
 
+    def test_an_overheard_incomplete_recording_is_flagged_without_its_words(self, monkeypatch, file_logging_enabled, logged):
+        from interfaces.voice.microphones.local_outposts import constants
+        monkeypatch.setattr(constants, "LOG_OVERHEARD_TRANSCRIPTS", False)
+        mod = self._run_inline(monkeypatch)
+        text = "we should call the dentist tomorrow"
+        monkeypatch.setattr(mod, "save_pcm_wav", lambda folder, name, *a, **k: f"log/audio/{name}.wav")
+        outpost, _ = make_outpost()
+        outpost._save_recording_async(text, AUDIO, CAPTURE_DROP_MIN_GAP, addressed=False)
+        incomplete = [line for line in logged if "INCOMPLETE" in line]
+        assert len(incomplete) == 1
+        assert "dentist" not in incomplete[0]
+
 
 @pytest.mark.unit
 class TestScribeTranscriptGate:

@@ -1694,6 +1694,45 @@ class TestGeminiOutage:
         assert llm.client.models.generate_content.call_count == 2, "after the wait one call probes again"
         assert f"{module.RATE_BACKOFF_SECONDS * 2:.0f}s" in llm.unavailable()
 
+    @patch('assistant.llm.GeminiLLM.time')
+    def test_two_429s_in_the_same_window_double_the_backoff_once(self, mock_time):
+        """Two workers hitting the limit together: the second notes the outage already on and
+        must not double the wait on its own account."""
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from assistant.llm import GeminiLLM as module
+        clock = [1000.0]
+        mock_time.monotonic.side_effect = lambda: clock[0]
+        base = module.RATE_BACKOFF_SECONDS
+        first = module._outage.note(self.RATE, "gemini-3.8-flash")
+        second = module._outage.note(self.RATE, "gemini-3.8-flash")
+        assert isinstance(first, LLMUnavailable) and isinstance(second, LLMUnavailable)
+        assert f"{base:.0f}s" in str(second) and f"{base * 2:.0f}s" not in str(second)
+        clock[0] += base + 1
+        third = module._outage.note(self.RATE, "gemini-3.8-flash")
+        assert f"{base * 2:.0f}s" in str(third) and f"{base * 4:.0f}s" not in str(third)
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_an_image_request_during_an_outage_is_refused_before_any_cache_is_made(self, mock_types, mock_config):
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from assistant.llm import GeminiLLM as module
+        module._outage.note(self.RATE, "gemini-3.8-flash")
+        llm = self._llm()
+        with pytest.raises(LLMUnavailable):
+            llm.think("s", "u", images=[b"a"], background=True)
+        llm.client.caches.create.assert_not_called()
+        llm.client.models.generate_content.assert_not_called()
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
+    def test_a_batch_during_a_402_is_not_submitted(self, mock_types, mock_config):
+        from assistant.llm import GeminiLLM as module
+        module._outage.note(self.CREDITS, "gemini-3.8-flash")
+        llm = self._llm()
+        assert llm.think_batched_with_images("SYS", [("u1", b"a")]) is None
+        llm.client.batches.create.assert_not_called()
+        llm.client.caches.create.assert_not_called()
+
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
     def test_probe_clears_an_outage_only_when_gemini_answers(self, mock_types, mock_config):

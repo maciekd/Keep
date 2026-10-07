@@ -401,3 +401,35 @@ class TestSystemRows:
         assert len(rows) == 1 and rows[0][2] == "Ring"
         assert "did not request" in rows[0][1]
         assert cam._tfa_handler._code is None
+
+
+class TestRingCameraSelection:
+    """`ignore_cameras` keywords and the LLM's `only` list narrow the doorbells fetched and listed."""
+
+    @pytest.fixture
+    def cam(self):
+        cam = RingIntegration(config={**VALID_CONFIG, "ignore_cameras": ["side"]})
+        doorbells = []
+        for name in ("Front", "Side Gate", "Back"):
+            d = Mock()
+            d.name = name
+            doorbells.append(d)
+        cam._ring = Mock()
+        cam._ring.devices.return_value = Mock(doorbells=doorbells)
+        cam._ensure_connected = Mock()
+        cam._fetch_doorbell_snapshot = Mock(
+            side_effect=lambda d: [{"type": "text", "text": f"Camera: {d.name}"}])
+        return cam
+
+    def test_only_fetches_the_matching_doorbell(self, cam):
+        blocks = cam.fetch_snapshots(["back"])
+        fetched = [call.args[0].name for call in cam._fetch_doorbell_snapshot.call_args_list]
+        assert fetched == ["Back"]
+        assert [b["text"] for b in blocks] == ["Camera: Back"]
+
+    def test_asking_only_for_an_ignored_doorbell_fetches_nothing(self, cam):
+        assert cam.fetch_snapshots(["side"]) == []
+        cam._fetch_doorbell_snapshot.assert_not_called()
+
+    def test_camera_names_leaves_out_the_ignored_doorbell(self, cam):
+        assert cam.camera_names() == ["Front", "Back"]

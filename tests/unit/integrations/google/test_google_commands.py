@@ -98,3 +98,15 @@ class TestCmdGoogleLoginCode:
         assert "expired" in reply and 'google_login("Personal")' in reply and "Personal" in reply
         note.assert_not_called()
         monitor.check_now.assert_not_called()
+
+    def test_an_exchange_that_raises_is_the_reason_not_an_escaped_exception(self, commands_instance):
+        integration = _integration()
+        integration.login_finish.side_effect = RuntimeError("token endpoint timed out")
+        monitor = _monitor(integration)
+        with patch.object(Commands, "_integration_monitor", return_value=monitor), patch(f"{MODULE}.system_note") as note:
+            reply = commands_instance._owner("google_login_code")._run_google_login_code(PASTED)
+
+        assert "token endpoint timed out" in reply and "RuntimeError" in reply and "Personal" in reply
+        assert "signed in" not in reply
+        note.assert_not_called()
+        monitor.check_now.assert_not_called()

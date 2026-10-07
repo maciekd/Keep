@@ -166,3 +166,36 @@ def test_the_tab_walk_enters_the_row_as_it_is_now_not_as_last_drawn(monitor):
     nav.handle_key('tab')
     nav.handle_key('tab')
     assert nav.path == "Integrations/Catalog"
+
+
+class BrokenTab(FakeTab):
+    integration = KettleIntegration
+
+    def __init__(self):
+        raise RuntimeError("no kettle on the network")
+
+
+def test_a_tab_that_fails_to_build_is_left_out_while_the_rest_of_the_row_builds(monitor):
+    group = IntegrationsGroup([LampTab, BrokenTab, RadioTab])
+    enable(monitor, LampIntegration)
+    enable(monitor, KettleIntegration)
+    enable(monitor, RadioIntegration)
+
+    assert names(group) == ["Catalog", "Lamp", "Radio"]
+    group.draw(TUIScreen(100, 30), 0)
+    assert {type(tab) for tab in FakeTab.built} == {LampTab, RadioTab}
+
+
+def test_the_selection_clamps_to_the_new_last_tab_when_the_last_one_is_disabled(monitor):
+    group = make_group()
+    enable(monitor, LampIntegration)
+    enable(monitor, RadioIntegration)
+    group.on_activate()
+    group.select(2)
+    assert group.content_tab().name == "Radio"
+
+    disable(monitor, RadioIntegration)
+    group.draw(TUIScreen(100, 30), 0)
+
+    assert names(group) == ["Catalog", "Lamp"]
+    assert group.content_tab().name == "Lamp"

@@ -1,5 +1,7 @@
-"""PlejdLink without Bluetooth: the site choice, what an advertisement does to the manager,
-the state store, `run` without a loop, and the thread giving up on a refused login."""
+"""PlejdLink without Bluetooth: the site choice, the site load against a faked cloud and
+manager, what an advertisement does to the manager, the ping, the state store, `run` without
+a loop, and the thread giving up on a refused login or an unexpected failure."""
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -7,6 +9,7 @@ import pytest
 from integrations.plejd.PlejdModel import MANUFACTURER_ID
 from integrations.plejd.PlejdLink import NotConnected, PlejdLink, SiteChoice, choose_site
 from pyplejd import AuthenticationError
+from pyplejd import ConnectionError as PlejdCloudUnreachable
 
 MODULE = "integrations.plejd.PlejdLink"
 SITES = [{"siteId": "abc123", "title": "Villa Nyström", "deviceCount": 12},
@@ -91,6 +94,139 @@ class TestAdvertisements:
         assert link.units_seen == 0
 
 
+class SiteDevice:
+    """A device as pyplejd hands it out: it keeps the one callback the link subscribes."""
+
+    def __init__(self, name, output_type="LIGHT"):
+        self.name, self.identifier, self.outputType = name, ("dev", name), output_type
+        self.callback = None
+
+    def subscribe(self, callback):
+        self.callback = callback
+
+
+class SiteManager:
+    """What PlejdManager looks like to _load_site: built from the credentials, init'd, then read."""
+
+    def __init__(self, username, password, site_id):
+        self.site_id = site_id
+        self.devices = [SiteDevice("Taklampa"), SiteDevice("Fläkt"), SiteDevice("Kväll", "SCENE")]
+        self.hardware = {"AABBCCDDEEFF": Hardware()}
+        self.connected = False
+        self.connection_monitor = None
+
+    async def init(self):
+        pass
+
+
+@pytest.mark.unit
+class TestLoadSite:
+    @pytest.fixture
+    def link(self):
+        link = PlejdLink("m@mlab.test", "secret")
+        link.slept = []
+
+        async def no_sleep(seconds):
+            link.slept.append(seconds)
+
+        link._sleep = no_sleep
+        return link
+
+    def test_an_unreachable_cloud_is_waited_out_and_said_so(self, link):
+        attempts = []
+
+        async def get_sites(username, password):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise PlejdCloudUnreachable("cloud down")
+            return SITES[:1]
+
+        with patch(f"{MODULE}.get_sites", get_sites), patch(f"{MODULE}.PlejdManager", SiteManager):
+            manager = asyncio.run(link._load_site())
+        assert len(attempts) == 2 and len(link.slept) == 1
+        assert "unreachable" in link.waiting
+        assert isinstance(manager, SiteManager) and link.manager is manager
+        assert link.site_title == "Villa Nyström" and link.error is None
+
+    def test_each_device_reports_into_its_own_state(self, link):
+        async def get_sites(username, password):
+            return SITES[:1]
+
+        with patch(f"{MODULE}.get_sites", get_sites), patch(f"{MODULE}.PlejdManager", SiteManager):
+            manager = asyncio.run(link._load_site())
+        taklampa, flakt = manager.devices[0], manager.devices[1]
+        taklampa.callback({"state": True, "dim": 255})
+        flakt.callback({"state": False})
+        states = link.states()
+        assert states[("dev", "Taklampa")] == {"state": True, "dim": 255}
+        assert states[("dev", "Fläkt")] == {"state": False}
+        assert manager.connection_monitor == link._on_connection
+
+    def test_two_sites_without_a_choice_give_up_with_the_key_to_set(self, link):
+        async def get_sites(username, password):
+            return SITES
+
+        with patch(f"{MODULE}.get_sites", get_sites), patch(f"{MODULE}.PlejdManager", SiteManager):
+            assert asyncio.run(link._load_site()) is None
+        assert "plejd.site" in link.error and link.manager is None and link.slept == []
+
+
+class MeshManager:
+    """pyplejd's ping as the link sees it: it connects (or not) and says so."""
+
+    def __init__(self, failure=None):
+        self.connected = False
+        self.pings = 0
+        self.failure = failure
+
+    async def ping(self, retry=True):
+        self.pings += 1
+        if self.failure is not None:
+            raise self.failure
+        self.connected = True
+        return True
+
+
+@pytest.mark.unit
+class TestPing:
+    @pytest.fixture
+    def link(self):
+        link = PlejdLink("m@mlab.test", "secret")
+        link.manager = MeshManager()
+        link.units_seen = 1
+        return link
+
+    def test_nothing_heard_on_the_air_means_no_ping(self, link):
+        link.units_seen = 0
+        asyncio.run(link._ping())
+        assert link.manager.pings == 0 and link.connected_at is None
+
+    def test_a_failing_ping_is_swallowed_and_leaves_the_link_down(self, link):
+        link.manager = MeshManager(failure=OSError("Bluetooth is off"))
+        asyncio.run(link._ping())
+        assert link.manager.pings == 1 and not link.connected and link.connected_at is None
+
+    def test_connected_at_marks_the_ping_that_connected_and_no_later_one(self, link):
+        asyncio.run(link._ping())
+        assert link.connected and link.connected_at is not None
+        link.connected_at = 1234.5
+        asyncio.run(link._ping())
+        assert link.manager.pings == 2 and link.connected_at == 1234.5
+
+
+@pytest.mark.unit
+class TestConnectionMonitor:
+    def test_a_drop_asks_for_a_ping_unless_the_link_is_stopping(self):
+        link = PlejdLink("m@mlab.test", "secret")
+        link._on_connection(True)
+        assert not link._ping_wanted
+        link._on_connection(False)
+        assert link._ping_wanted
+        link._ping_wanted, link._stopping = False, True
+        link._on_connection(False)
+        assert not link._ping_wanted
+
+
 @pytest.mark.unit
 class TestStates:
     def test_states_are_kept_per_device_as_copies(self):
@@ -126,4 +262,17 @@ class TestThread:
             assert not link._thread.is_alive()
         assert not link.wait_ready(0)
         assert "login refused" in link.error and "plejd.password" in link.error
+        link.stop()
+
+    def test_an_unexpected_failure_ends_the_thread_naming_it(self):
+        async def broken(username, password):
+            raise ValueError("bad site data")
+
+        link = PlejdLink("m@mlab.test", "secret")
+        with patch(f"{MODULE}.get_sites", broken):
+            link.start()
+            link._thread.join(2)
+            assert not link._thread.is_alive()
+        assert not link.wait_ready(0)
+        assert "Plejd stopped" in link.error and "ValueError" in link.error and "bad site data" in link.error
         link.stop()

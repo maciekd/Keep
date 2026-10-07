@@ -93,3 +93,14 @@ class TestSignIn:
         tab.handle_input("\x0f")
         api.sign_out.assert_called_once_with("Work")
         assert "signed out" in tab._status_message
+
+    def test_ctrl_l_while_a_code_is_pending_starts_no_second_flow(self):
+        tab, api = make_tab(_account("Work", "a@example.com", signed_in=False))
+        tab._flow = DeviceFlow("WXYZ-9876", "https://microsoft.com/devicelogin", time.time() + 900, {})
+        tab._flow_account = "Work"
+
+        tab.handle_input("\x0c")
+
+        api.login_begin.assert_not_called()
+        assert "Work" in tab._status_message and "wait" in tab._status_message.lower()
+        assert tab._fields()[1].value == "WXYZ-9876"

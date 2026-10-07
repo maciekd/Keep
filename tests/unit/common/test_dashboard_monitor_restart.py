@@ -60,3 +60,12 @@ def test_a_start_while_the_stopped_loop_is_still_sampling_leaves_a_loop_running(
     first.join(5)
     assert not first.is_alive(), "the stopped loop was revived by the restart"
     assert second is not first and second.is_alive(), "no loop is left running after the restart"
+
+
+@pytest.mark.unit
+def test_a_second_start_on_a_running_monitor_keeps_the_one_loop(stuck):
+    monitor, _, samples = stuck
+    first = monitor._thread
+    monitor.start()
+    assert monitor._thread is first, "a second start spawned another loop beside the running one"
+    assert len(samples) == 1

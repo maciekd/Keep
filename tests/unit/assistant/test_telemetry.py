@@ -217,6 +217,18 @@ class TestEvents:
         assert len(_by_name(posts, "user_turn")) == 1
 
 
+class TestQueueLimit:
+    def test_events_past_the_queue_limit_are_dropped_and_counted_without_an_error_reaching_the_caller(
+            self, settings, sent, monkeypatch):
+        monkeypatch.setattr(telemetry_module, "QUEUE_LIMIT", 2)
+        monkeypatch.setattr(Telemetry, "active", property(lambda self: True))   # on, but no worker drains the queue
+        t = Telemetry(post=sent.append, setup_in_progress=lambda: True)
+        for n in range(5):
+            t.user_turn(f"turn {n}", "console")
+        assert t._dropped == 3 and t._queue.qsize() == 2
+        assert sent == []
+
+
 class TestFeedCount:
     def test_a_changed_count_waits_for_the_hour_and_each_feed_has_its_own(self, telemetry, sent):
         telemetry.feed_count("iCloud Photos", 10)

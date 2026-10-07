@@ -123,6 +123,31 @@ class TestRouting:
         indigo.turn_on = lambda name: "Request timed out"
         assert home.turn_on("Godnatt") == "Request timed out"
 
+    def test_an_unknown_name_is_answered_even_when_the_refresh_fails_everywhere(self, house):
+        indigo, ha, home = house
+        indigo.fail = RuntimeError("Indigo down")
+        ha.fail = RuntimeError("HA down")
+        answer = home.turn_on("Fönster")
+        assert isinstance(answer, str) and "Fönster" in answer
+        assert indigo.calls == [] and ha.calls == []
+
+    @pytest.mark.parametrize("name", ["", "   "])
+    def test_an_empty_name_is_not_answered_with_every_entity_as_a_lookalike(self, house, name):
+        indigo, ha, home = house
+        home.snapshot()
+        answer = home.turn_on(name)
+        assert "Tak" not in answer and "Spots" not in answer and "Godnatt" not in answer
+        assert indigo.calls == [] and ha.calls == []
+
+    def test_a_bare_name_another_backend_claimed_through_its_area_is_suffixed_and_routed_apart(self):
+        a = Backend("A", HomeSnapshot(lights=[Entity("Lamp", "on", area="Hall")]))
+        b = Backend("B", HomeSnapshot(lights=[Entity("Lamp", "off")]))
+        home = CompositeHome([a, b])
+        snap = home.snapshot()
+        assert [e.name for e in snap.lights] == ["Lamp", "Lamp (B)"]
+        assert home.turn_on("Lamp") == "" and home.turn_on("Lamp (B)") == ""
+        assert a.calls == [("on", "Lamp")] and b.calls == [("on", "Lamp")]
+
 
 @pytest.mark.unit
 class TestPrune:

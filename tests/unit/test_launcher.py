@@ -407,3 +407,20 @@ def test_the_config_migration_note_goes_out_with_the_startup_announcement():
             system_note.assert_called_once()
     finally:
         set_notifier(None)
+
+
+def test_the_config_migration_note_goes_out_even_without_a_startup_announcement():
+    import floxy_ai_server
+    from assistant.Notifier import set_notifier
+    chats = Mock()
+    set_notifier(chats)
+    try:
+        with patch("common.ConfigMigrations.take_note", return_value="email moved to imap.accounts"), \
+                patch("assistant.SystemNote.system_note") as system_note:
+            server = floxy_ai_server.Server(Mock(), [], [], None, running_as_testsuite=False)
+            server.startup_announcement = ""
+            floxy_ai_server._announce_startup(server)
+        system_note.assert_called_once_with("Config", "email moved to imap.accounts")
+        chats.send_message.assert_not_called()
+    finally:
+        set_notifier(None)

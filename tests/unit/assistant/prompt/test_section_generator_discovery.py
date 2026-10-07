@@ -104,6 +104,16 @@ def test_a_key_with_two_owners_is_an_error_naming_both(folders, template):
     assert "KettleSectionGenerator" in str(raised.value) and "VaultSectionGenerator" in str(raised.value)
 
 
+def test_a_key_a_gated_core_section_owns_is_an_error_naming_the_core_owner(folders, template):
+    folders("kettle", "KettleSectionGenerator", GENERATOR.format(name="Kettle", key="home", content="x"))
+    kettle, = SectionGenerators.find_in(folders.load())
+
+    with pytest.raises(ValueError) as raised:
+        manager([kettle])
+
+    assert "KettleSectionGenerator" in str(raised.value) and "HomeSectionGenerator" in str(raised.value)
+
+
 def test_a_generator_without_a_key_or_with_a_failing_constructor_costs_only_itself(folders, template):
     folders("kettle", "KettleSectionGenerator", GENERATOR.format(name="Kettle", key="kettle", content="cold"))
     folders("radio", "RadioSectionGenerator", GENERATOR.format(name="Radio", key="", content="off"))

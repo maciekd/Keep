@@ -40,6 +40,12 @@ class TestCmdHuePair:
             assert commands_instance.run("hue_pair", ['"192.0.2.10"']) == ""
         bg.assert_called_once_with(commands_instance._owner("hue_pair")._run_hue_pair, ("192.0.2.10",), lane=Commands.CONFIG_LANE)
 
+    def test_an_unregistered_integration_asks_for_a_restart(self, run):
+        run_pair, mocks = run
+        mocks.monitor.find.return_value = None
+        assert "restart" in run_pair("192.0.2.10").lower()
+        mocks.pair.assert_not_called()
+
     def test_a_disabled_integration_is_pointed_at_enable_integration(self, run):
         run_pair, mocks = run
         mocks.monitor.find.return_value.state = IntegrationState.DISABLED

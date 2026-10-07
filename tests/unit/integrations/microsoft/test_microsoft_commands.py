@@ -96,3 +96,17 @@ class TestCmdMicrosoftLogin:
             text = commands_instance._owner("microsoft_login")._run_microsoft_login("Work")
         assert text.startswith("microsoft_login failed") and "client_id" in text
         note.assert_not_called()
+
+    def test_a_wait_that_raises_ends_in_a_note_naming_the_error_and_no_health_check(self, commands_instance):
+        integration = _integration()
+        integration.login_finish.side_effect = ConnectionError("login.microsoftonline.com unreachable")
+        monitor = _monitor(integration)
+        with patch.object(Commands, "_integration_monitor", return_value=monitor), \
+             patch(f"{MODULE}.system_note") as note, patch(f"{MODULE}.threading.Thread", InlineThread):
+            reply = commands_instance._owner("microsoft_login")._run_microsoft_login("Work")
+
+        assert "ABCD-1234" in reply
+        last = note.call_args_list[-1].args[1]
+        assert "ConnectionError" in last and "unreachable" in last and 'microsoft_login("Work")' in last
+        assert "signed in" not in last
+        monitor.check_now.assert_not_called()

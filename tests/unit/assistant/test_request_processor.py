@@ -1883,3 +1883,21 @@ class TestTelemetryReport:
         handler._rounds = [handler.dialog_manager]   # a Mock: its executed_commands cannot be iterated
         with patch.object(Telemetry, "get_instance"):
             handler._report_turn()
+
+    def test_a_real_request_reports_the_users_turn_once(self, full_handler):
+        from assistant.Telemetry import Telemetry
+        full_handler.request_context.text_only = True
+        with patch.object(Telemetry, "get_instance") as get_instance:
+            events = TestGenerateEvents._run(full_handler)
+        assert isinstance(events[-1], Done)
+        get_instance.return_value.user_turn.assert_called_once_with("hello", "VoiceToVoice")
+
+    def test_a_test_request_reports_no_turn_at_all(self, full_handler):
+        from assistant.Telemetry import Telemetry
+        full_handler.request_context.text_only = True
+        full_handler.request_context.test = True
+        with patch.object(Telemetry, "get_instance") as get_instance:
+            events = TestGenerateEvents._run(full_handler)
+        assert isinstance(events[-1], Done)
+        get_instance.return_value.user_turn.assert_not_called()
+        get_instance.return_value.assistant_turn.assert_not_called()

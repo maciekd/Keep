@@ -49,6 +49,12 @@ class TestDiscoverIntegrations:
         assert TelegramFeedIntegration not in registered
         assert PhotosIntegration not in registered
 
+    def test_the_monitor_is_notified_once_after_the_last_registration(self, monitor):
+        bootstrap.discover_integrations()
+        calls = [name for name, _args, _kwargs in monitor.method_calls]
+        assert calls[-1] == "notify" and calls.count("notify") == 1
+        assert calls.index("notify") > max(i for i, name in enumerate(calls) if name == "register_class")
+
 
 @pytest.mark.unit
 class TestStartFeeds:

@@ -1,6 +1,6 @@
 import base64
 import io
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from PIL import Image
@@ -62,6 +62,12 @@ class TestConfiguration:
         with pytest.raises(UnifiProtectConfigurationError):
             UnifiProtectIntegration(config={"host": "192.0.2.10"})
 
+    def test_a_missing_section_is_a_configuration_error(self):
+        manager = Mock()
+        manager.get.side_effect = KeyError("unifi_protect")
+        with pytest.raises(UnifiProtectConfigurationError):
+            UnifiProtectIntegration(config_manager=manager)
+
     def test_bare_host_gets_https_and_the_integration_api_path(self):
         cam = provider()
         cam.camera_names()
@@ -113,6 +119,18 @@ class TestFetchSnapshots:
         width, height = Image.open(io.BytesIO(decoded)).size
         assert width == MAX_DIMENSION
         assert abs(width / height - 16 / 9) < 0.01
+
+    def test_a_snapshot_that_cannot_be_resized_is_sent_as_it_came(self):
+        original = jpeg(640, 480)
+        with patch("integrations.unifi_protect.UnifiProtectIntegration.resize_to_jpeg", return_value=None):
+            blocks = provider(snapshot=original).fetch_snapshots(only=["front"])
+        assert base64.b64decode(blocks[0]["source"]["data"]) == original
+
+    def test_a_camera_without_a_state_is_taken_as_connected(self):
+        cam = provider(cameras=[{"id": "c9", "name": "Porch"}])
+        blocks = cam.fetch_snapshots()
+        assert [b["type"] for b in blocks] == ["image", "text"]
+        assert cam._session.get.call_count == 2   # the list, then the snapshot
 
     def test_snapshot_asks_for_high_quality(self):
         cam = provider()

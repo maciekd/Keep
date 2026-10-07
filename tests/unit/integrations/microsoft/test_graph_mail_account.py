@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from assistant.integration.mail.MailAccount import FolderNotFound
-from integrations.microsoft.GraphClient import GraphClient
+from integrations.microsoft.GraphClient import MAX_RETRY_AFTER, GraphClient
 from integrations.microsoft.GraphMailAccount import GraphMailAccount, message_body, parse_graph_time
 
 from .graph_fakes import FakeGraph, FakeResponse, StubAuth, message, recipient
@@ -205,6 +205,14 @@ class TestErrors:
         graph.route("GET", "/me/mailFolders/inbox/messages", lambda p, h, j: FakeResponse(429, None, {"Retry-After": "1"}))
         with patch("integrations.microsoft.GraphClient.time.sleep"):
             assert "throttling" in account().fetch_latest()
+
+    def test_the_retry_after_wait_is_clamped_to_a_minute_at_least_a_second_and_five_without_the_header(self, graph):
+        for headers, wait in (({"Retry-After": "600"}, MAX_RETRY_AFTER), ({}, 5), ({"Retry-After": "0"}, 1)):
+            answers = [FakeResponse(429, None, headers), FakeResponse(200, {"value": INBOX[:1]})]
+            graph.route("GET", "/me/mailFolders/inbox/messages", lambda p, h, j, a=answers: a.pop(0))
+            with patch("integrations.microsoft.GraphClient.time.sleep") as sleep:
+                assert "Invoice 2026-09" in account().fetch_latest()
+            sleep.assert_called_once_with(wait)
 
     def test_graphs_own_message_reaches_the_llm_on_any_other_error(self, graph):
         graph.route("POST", "/me/sendMail", {"error": {"code": "ErrorSendAsDenied", "message": "Not allowed to send as this user"}}, status=403)

@@ -3,10 +3,11 @@ leaves (0600, deleted on sign-out), the refresh near expiry and the refused refr
 import json
 import stat
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+import requests
 
 from integrations.google import GoogleAuth as auth_module
 from integrations.google.GoogleAuth import (REDIRECT_URI, SCOPE_CALENDAR, SCOPE_MAIL, GoogleAuth, NotSignedIn,
@@ -196,3 +197,52 @@ class TestToken:
         assert token_path("Charlotte's").name == "google-charlotte-s.json" and token_path("Charlotte's").exists()
         assert delete_all_token_files() == 1 and list(token_dir.iterdir()) == []
         assert delete_all_token_files() == 0
+
+
+@pytest.mark.unit
+class TestRefusedRefresh:
+    def _signed_in(self, token_dir, **file):
+        token_dir.mkdir()
+        token_path("Personal").write_text(json.dumps(token_file(**file)))
+
+    def test_a_refusal_that_is_not_invalid_grant_is_tried_again_on_the_next_call(self, token_dir, google):
+        """Only invalid_grant means the consent is gone; a bad client or a server error is
+        reported but not latched, so the next call asks Google again."""
+        self._signed_in(token_dir, expires_in=0)
+        google.answer_token({"error": "invalid_client", "error_description": "The OAuth client was not found."}, status=401)
+        google.answer_token(None, status=500)
+        google.answer_token(token_grant(access_token="ya29.new", refresh_token=""))
+        a = auth()
+
+        with pytest.raises(NotSignedIn) as bad_client:
+            a.token()
+        with pytest.raises(NotSignedIn) as server_error:
+            a.token()
+
+        assert "The OAuth client was not found." in str(bad_client.value) and "500" in str(server_error.value)
+        assert not a.needs_sign_in_again() and a.signed_in()
+        assert a.token() == "ya29.new" and len(google.token_posts()) == 3
+
+    def test_an_unreachable_token_endpoint_is_a_not_signed_in_that_leaves_the_file_alone(self, token_dir):
+        self._signed_in(token_dir, expires_in=0)
+        before = token_path("Personal").read_text()
+        with patch(POST, Mock(side_effect=requests.ConnectionError("name resolution failed"))), pytest.raises(NotSignedIn) as raised:
+            auth().token()
+        assert "reached" in str(raised.value) and "name resolution failed" in str(raised.value)
+        assert token_path("Personal").read_text() == before
+
+    def test_an_unreadable_token_file_counts_as_not_signed_in(self, token_dir, google):
+        token_dir.mkdir()
+        token_path("Personal").write_text("{refresh_token: not json")
+        a = auth()
+        assert not a.signed_in() and a.signed_in_as() == "" and a.expires_at() is None
+        with pytest.raises(NotSignedIn):
+            a.token()
+        assert google.token_posts() == []
+
+    def test_a_pasted_address_with_the_state_but_no_code_exchanges_nothing(self, token_dir, google):
+        a = auth()
+        sign_in = a.begin()
+        reply = a.finish(f"{REDIRECT_URI}?state={sign_in.state}&scope=email")
+        assert "code" in reply.lower() and google.token_posts() == []
+        assert a.pending() and not a.signed_in()

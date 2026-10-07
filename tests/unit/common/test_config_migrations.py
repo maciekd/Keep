@@ -96,6 +96,33 @@ class TestMappings:
         ConfigMigrations.run(str(config_file))
         assert [a["name"] for a in _load(config_file)["imap"]["accounts"]] == ["Work", "Gmail"]
 
+    def test_a_partly_filled_section_carries_only_its_real_values_over(self, config_file):
+        """A placeholder password is screened out like an empty one, but the address beside it
+        is real, so an account is made — without the password key, which the owner fills in."""
+        config_file.write_text("email:\n  address: m@mlab.test\n  password: YOUR_APP_PASSWORD\n  smtp_host: smtp.example\n"
+                               "calendar:\n  username: m@mlab.test\n  password: CHANGE_ME\n")
+        changes = ConfigMigrations.run(str(config_file))
+        data = _load(config_file)
+        gmail, = data["imap"]["accounts"]
+        assert gmail == {"name": "Gmail", "preset": "gmail", "address": "m@mlab.test", "smtp_host": "smtp.example"}
+        caldav, = data["caldav"]["accounts"]
+        assert caldav == {"name": "iCloud", "preset": "icloud", "username": "m@mlab.test", "default_calendar": "Home"}
+        assert any("imap.accounts[0]" in c for c in changes) and any("caldav.accounts[0]" in c for c in changes)
+
+    def test_a_scalar_enabled_integrations_becomes_a_list_with_imap_mail(self, config_file):
+        config_file.write_text("enabled_integrations: Gmail\nemail:\n  address: m@mlab.test\n  password: pw\n")
+        ConfigMigrations.run(str(config_file))
+        assert _load(config_file)["enabled_integrations"] == [ConfigMigrations.IMAP_INTEGRATION]
+
+        config_file.write_text("enabled_integrations: iCloud Email\n")
+        assert ConfigMigrations.run(str(config_file))
+        assert _load(config_file)["enabled_integrations"] == [ConfigMigrations.IMAP_INTEGRATION]
+
+    def test_send_from_joins_an_existing_mail_section_without_disturbing_its_other_keys(self, config_file):
+        config_file.write_text("mail:\n  signature: Marcus\n  max_results: 20\nicloud_email:\n  address: m@mlab.test\n  password: pw\n")
+        ConfigMigrations.run(str(config_file))
+        assert _load(config_file)["mail"] == {"signature": "Marcus", "max_results": 20, "send_from": "iCloud"}
+
 
 @pytest.mark.unit
 class TestTheFile:

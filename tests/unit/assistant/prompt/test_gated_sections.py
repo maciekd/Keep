@@ -169,3 +169,42 @@ def test_a_notify_that_changes_nothing_still_rebuilds_for_the_toolkit_index(mana
     before = manager._last_assembly_time
     manager.monitor.notify()
     assert manager._last_assembly_time >= before and "kettle" not in manager.sections
+
+
+class BrokenSectionGenerator(KettleSectionGenerator):
+    """A folder's generator whose constructor fails while `broken` is set."""
+    __module__ = "integrations.toaster.BrokenSectionGenerator"
+    key = "toaster"
+    heading = "# THE TOASTER"
+    intro = ""
+    data = "Toaster: idle"
+    broken = True
+
+    def __init__(self, prompt_manager):
+        if type(self).broken:
+            raise RuntimeError("no toaster on the network")
+        PromptSectionGenerator.__init__(self, prompt_manager, "ToasterState")
+        self.content = type(self).data
+
+
+@pytest.mark.unit
+def test_a_gated_generator_that_fails_to_build_costs_only_itself_until_it_builds(workspace):
+    BrokenSectionGenerator.broken = True
+    monitor, lifecycle = FakeMonitor(), []
+    with patch.object(PromptManager, "_monitor", lambda self: monitor), \
+            patch.object(PromptSectionGenerator, "start", lambda self: lifecycle.append(("start", self.section_name))), \
+            patch.object(PromptSectionGenerator, "stop", lambda self: lifecycle.append(("stop", self.section_name))):
+        pm = PromptManager(section_generators=[KettleSectionGenerator, BrokenSectionGenerator])
+        try:
+            monitor.folders.update(kettle=True, toaster=True)
+            monitor.notify()
+            assert "kettle" in pm.sections and "toaster" not in pm.sections
+            assert ("start", "KettleState") in lifecycle and ("start", "ToasterState") not in lifecycle
+            assert "toaster" in pm.section_classes(), "still gated, for the next verdict"
+
+            BrokenSectionGenerator.broken = False
+            monitor.notify()
+            assert "toaster" in pm.sections and ("start", "ToasterState") in lifecycle
+            assert "# THE TOASTER\nToaster: idle\n" in pm.prompt
+        finally:
+            pm.stop()

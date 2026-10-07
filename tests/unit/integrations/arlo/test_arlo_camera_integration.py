@@ -876,3 +876,37 @@ class TestCheckHealth:
              patch.object(arlo, "camera_names", return_value=[]):
             assert [arlo.check_health() for _ in range(3)] == [False] * 3
         assert connect.call_count == 3
+
+
+class TestCameraSelection:
+    """`fetch_snapshots(only)` and `camera_names()` honour the ignore keywords and the LLM's `only` list."""
+
+    @staticmethod
+    def _cam(name):
+        cam = Mock()
+        cam.name = name
+        return cam
+
+    @pytest.fixture
+    def fleet(self, arlo):
+        arlo._arlo = Mock(cameras=[self._cam("Front Door"), self._cam("Backyard"), self._cam("Garage")])
+        arlo._ignore_keywords = ["garage"]
+        with patch.object(arlo, "_ensure_connected"), \
+             patch.object(ArloCameraIntegration, "_fetch_single_snapshot",
+                          side_effect=lambda cam: [{"type": "text", "text": f"Camera: {cam.name}"}]) as fetch:
+            yield arlo, fetch
+
+    def test_only_narrows_to_the_matching_camera_without_a_header_block(self, fleet):
+        arlo, fetch = fleet
+        blocks = arlo.fetch_snapshots(["front"])
+        assert [c.name for (c,), _ in (call for call in fetch.call_args_list)] == ["Front Door"]
+        assert [b["text"] for b in blocks] == ["Camera: Front Door"]
+
+    def test_asking_only_for_an_ignored_camera_fetches_nothing(self, fleet):
+        arlo, fetch = fleet
+        assert arlo.fetch_snapshots(["garage"]) == []
+        fetch.assert_not_called()
+
+    def test_camera_names_leaves_out_the_ignored_camera(self, fleet):
+        arlo, _ = fleet
+        assert arlo.camera_names() == ["Front Door", "Backyard"]

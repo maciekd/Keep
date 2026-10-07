@@ -90,6 +90,17 @@ class TestBuild:
         snapshot, _ = build({})
         assert snapshot.is_empty()
 
+    def test_a_grouped_light_of_an_unknown_owner_is_left_out(self):
+        orphan = {"id": "g-x", "owner": {"rid": "r-gone", "rtype": "room"}, "on": {"on": True}}
+        snapshot, _ = build({"grouped_light": [orphan]})
+        assert snapshot.lights == []
+
+    def test_a_light_without_metadata_goes_by_its_v1_id_then_its_id(self):
+        lights = [{"id": "l-9", "id_v1": "/lights/9", "on": {"on": True}}, {"id": "l-10", "on": {"on": False}}]
+        snapshot, index = build({"light": lights})
+        assert [e.name for e in snapshot.lights] == ["/lights/9", "l-10"]
+        assert index.resolve("/lights/9").rid == "l-9"
+
 
 @pytest.mark.unit
 class TestValues:
@@ -124,6 +135,10 @@ class TestNameIndex:
         assert index.resolve("Taklampa (Garage)").rid == "l-tak"
         with pytest.raises(Unresolved, match="could be"):
             index.resolve("All lights (Garage)")
+
+    def test_a_name_with_its_own_parentheses_round_trips_through_the_display_form(self, house):
+        _, index = house
+        assert index.resolve("Trädgårdslampa [vänster]").rid == "l-garden"
 
     def test_an_unknown_name_suggests_close_ones(self, house):
         _, index = house

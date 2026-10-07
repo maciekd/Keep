@@ -7,6 +7,7 @@ import pytest
 
 from assistant.integration.HomeAutomation import render
 from integrations.plejd.PlejdIntegration import NO_MESH, PlejdIntegration
+from integrations.plejd.PlejdLink import NotConnected
 
 MODULE = "integrations.plejd.PlejdIntegration"
 CONFIG = {"plejd.username": "m@mlab.test", "plejd.password": "secret", "plejd.site": "Villa Nyström"}
@@ -170,6 +171,11 @@ class TestCommands:
         assert integration.turn_on("Taklampa") == "Request timed out"
         link.failure = RuntimeError("Bluetooth is off")
         assert integration.turn_on("Taklampa") == "Bluetooth is off"
+
+    def test_a_loop_that_stopped_before_the_write_is_no_mesh(self, integration, link):
+        link.failure = NotConnected("the Plejd link is not running")
+        assert integration.turn_on("Taklampa") == NO_MESH
+        assert device(link, "Taklampa").calls == []
 
 
 @pytest.mark.unit

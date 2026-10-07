@@ -17,6 +17,7 @@ REQUEST = "integrations.google.GoogleCalendarAccount.requests.request"
 SLEEP = "integrations.google.GoogleCalendarAccount.time.sleep"
 PRIMARY_PATH = "/calendars/marcus%40example.com/events"
 FAMILY_PATH = "/calendars/family-id%40group.calendar.google.com/events"
+KIDS_PATH = "/calendars/kids-id%40group.calendar.google.com/events"
 CALENDARS = calendar_list(calendar("marcus@example.com", "marcus@example.com", primary=True),
                           calendar("Family", "family-id@group.calendar.google.com"))
 STOCKHOLM = pytz.timezone("Europe/Stockholm")
@@ -151,3 +152,40 @@ class TestFailures:
         with pytest.raises(NotSignedIn):
             account(auth=StubAuth(signed_in=False)).calendars()
         assert google.calls == []
+
+
+@pytest.mark.unit
+class TestNamesAndBounds:
+    def test_a_renamed_calendar_goes_by_its_override_not_the_owners_summary(self, google):
+        google.route("GET", "/users/me/calendarList", calendar_list(
+            calendar("marcus@example.com", "marcus@example.com", primary=True),
+            calendar("family-xyz", "kids-id@group.calendar.google.com", summaryOverride="Kids")))
+        google.route("GET", KIDS_PATH, events_page(timed("Swim lesson", "2026-06-17T16:00:00+02:00", "2026-06-17T17:00:00+02:00")))
+        acc = account()
+
+        assert [c.name for c in acc.calendars()] == ["marcus@example.com", "Kids"]
+        events = acc.events(["kids", "family-xyz"], date(2026, 6, 15), date(2026, 6, 22))
+
+        assert [(e.title, e.calendar) for e in events] == [("Swim lesson", "Kids")]
+        assert len(google.sent("GET", KIDS_PATH)) == 1 and len(google.sent("GET", "/users/me/calendarList")) == 1
+
+    def test_an_all_day_event_over_several_days_keeps_its_exclusive_end(self, google):
+        """The Event's all-day end is already the day after the last one (the renderer's convention,
+        the same shape Google sends back), so it is posted as is — only a zero-length one is widened."""
+        google.route("POST", FAMILY_PATH, {"id": "ev-3"})
+        event = Event(datetime(2026, 6, 16, tzinfo=pytz.UTC), datetime(2026, 6, 19, tzinfo=pytz.UTC), "Camp", all_day=True)
+
+        account().create_event("Family", event)
+
+        posted, = google.sent("POST", FAMILY_PATH)
+        assert posted.json["start"] == {"date": "2026-06-16"} and posted.json["end"] == {"date": "2026-06-19"}
+
+    def test_a_403_that_is_not_a_rate_limit_fails_at_once_without_a_retry(self, google):
+        forbidden = {"error": {"code": 403, "message": "Insufficient Permission", "errors": [{"reason": "insufficientPermissions"}]}}
+        google.route("GET", FAMILY_PATH, forbidden, status=403)
+
+        with patch(SLEEP) as sleep, pytest.raises(GoogleCalendarError) as raised:
+            account().events(["Family"], date(2026, 6, 15), date(2026, 6, 22))
+
+        assert raised.value.status == 403 and "Insufficient Permission" in str(raised.value)
+        assert len(google.sent("GET", FAMILY_PATH)) == 1 and not sleep.called
