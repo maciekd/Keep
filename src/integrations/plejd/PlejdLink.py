@@ -59,6 +59,7 @@ class PlejdLink:
         self._stopping = False
         self._ping_wanted = False
         self._ready = threading.Event()         # the site is loaded and the scanner runs
+        self._mesh = threading.Event()          # the mesh link is up (cleared on a drop)
         self._lock = threading.Lock()
         self._states: dict[tuple, dict] = {}    # device identifier → its last reported state
         self.manager: Optional[PlejdManager] = None
@@ -67,6 +68,7 @@ class PlejdLink:
         self.waiting = "the Plejd site is still loading"     # why there is none yet
         self.units_seen = 0                     # mesh units of the site heard on the air since start
         self.connected_at: Optional[float] = None
+        self.scanning_since: Optional[float] = None     # monotonic time the scanner started
 
     # --- lifecycle, from any thread -----------------------------------------------------------------
 
@@ -85,6 +87,19 @@ class PlejdLink:
 
     def wait_ready(self, timeout: float) -> bool:
         return self._ready.wait(timeout)
+
+    def wait_connected(self, timeout: float) -> bool:
+        """Blocks until the mesh link is up or *timeout* passes; whether it is up."""
+        return self._mesh.wait(timeout) or self.connected
+
+    def scan_time_left(self, window: float) -> float:
+        """Seconds of the first *window* seconds of scanning still ahead — 0 once they have
+        passed or while the scanner has not started. A fresh scanner hears the units of a
+        site one by one over several seconds and the link follows the first one heard, so
+        a verdict on the mesh inside that window is early."""
+        if self.scanning_since is None:
+            return 0.0
+        return max(0.0, window - (time.monotonic() - self.scanning_since))
 
     @property
     def connected(self) -> bool:
@@ -132,6 +147,7 @@ class PlejdLink:
             info(self.error)
         finally:
             self._ready.clear()
+            self._mesh.clear()
             self._loop.close()
 
     async def _main(self):
@@ -142,6 +158,7 @@ class PlejdLink:
         scanner = BleakScanner(self._on_advertisement, service_uuids=[PLEJD_SERVICE])
         await scanner.start()
         info(f"Plejd: scanning for the units of {self.site_title}")
+        self.scanning_since = time.monotonic()
         self._ready.set()
         last_ping = last_sync = 0.0
         try:
@@ -226,6 +243,10 @@ class PlejdLink:
             info("Plejd: connected to the mesh")
         elif not ok:
             info("Plejd: the mesh did not answer — reconnecting at the next ping")
+        if ok:
+            self._mesh.set()
+        else:
+            self._mesh.clear()
 
     async def _sync_time(self):
         try:
@@ -237,6 +258,7 @@ class PlejdLink:
         if connected:
             return
         info("Plejd: the mesh link dropped")
+        self._mesh.clear()
         if not self._stopping:
             self.request_ping()
 

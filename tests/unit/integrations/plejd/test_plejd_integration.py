@@ -60,6 +60,9 @@ class FakeLink:
         self._states = {("dev", "Taklampa"): {"state": True, "dim": 255}}
         self.started = self.stopped = 0
         self.failure = None
+        self.scan_left = 0.0            # seconds of the first scan window still ahead
+        self.waited = []                # the timeouts check_health waited for the mesh with
+        self.connects_while_waiting = False
 
     def start(self):
         self.started += 1
@@ -69,6 +72,15 @@ class FakeLink:
 
     def wait_ready(self, timeout):
         return self.ready
+
+    def scan_time_left(self, window):
+        return self.scan_left
+
+    def wait_connected(self, timeout):
+        self.waited.append(timeout)
+        if self.connects_while_waiting:
+            self.connected = True
+        return self.connected
 
     def states(self):
         return dict(self._states)
@@ -193,3 +205,24 @@ class TestHealth:
         link.error = "The Plejd account has 2 sites"
         with pytest.raises(RuntimeError, match="2 sites"):
             integration.check_health()
+
+    def test_past_the_first_scan_a_missing_link_is_judged_at_once(self, integration, link):
+        link.connected = False
+        with pytest.raises(RuntimeError, match="no mesh link"):
+            integration.check_health()
+        assert link.waited == []
+
+    def test_during_the_first_scan_the_check_waits_for_the_link_and_passes_when_it_comes(self, integration, link):
+        link.connected = False
+        link.scan_left = 7.5
+        link.connects_while_waiting = True
+        assert integration.check_health() is True
+        assert link.waited == [7.5]
+
+    def test_the_wait_ends_with_the_scan_window_and_then_the_missing_link_is_a_failure(self, integration, link):
+        link.connected = False
+        link.units_seen = 0
+        link.scan_left = 3.0
+        with pytest.raises(RuntimeError, match="none of its units"):
+            integration.check_health()
+        assert link.waited == [3.0]

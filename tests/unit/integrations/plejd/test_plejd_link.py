@@ -213,6 +213,35 @@ class TestPing:
         asyncio.run(link._ping())
         assert link.manager.pings == 2 and link.connected_at == 1234.5
 
+    def test_a_waiter_is_released_by_the_ping_that_connects_and_not_by_a_drop(self, link):
+        assert not link.wait_connected(0)
+        asyncio.run(link._ping())
+        assert link.wait_connected(0)
+        link.manager.connected = False
+        link._on_connection(False)
+        assert not link.wait_connected(0) and link._ping_wanted
+
+    def test_a_failing_ping_releases_no_waiter(self, link):
+        link.manager = MeshManager(failure=OSError("Bluetooth is off"))
+        asyncio.run(link._ping())
+        assert not link.wait_connected(0)
+
+
+@pytest.mark.unit
+class TestScanWindow:
+    def test_before_the_scanner_starts_there_is_no_window_to_wait_out(self):
+        assert PlejdLink("m@mlab.test", "secret").scan_time_left(20) == 0
+
+    def test_the_window_counts_down_from_the_scanner_start_and_ends_at_zero(self):
+        link = PlejdLink("m@mlab.test", "secret")
+        with patch(f"{MODULE}.time.monotonic", return_value=1000.0):
+            link.scanning_since = 1000.0
+            assert link.scan_time_left(20) == 20
+        with patch(f"{MODULE}.time.monotonic", return_value=1012.5):
+            assert link.scan_time_left(20) == 7.5
+        with patch(f"{MODULE}.time.monotonic", return_value=1100.0):
+            assert link.scan_time_left(20) == 0
+
 
 @pytest.mark.unit
 class TestConnectionMonitor:

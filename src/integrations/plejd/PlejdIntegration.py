@@ -16,6 +16,7 @@ from .PlejdLink import NotConnected, PlejdLink
 from .PlejdModel import SCENE_TYPE, Unresolved, build, kind_of, to_plejd_level
 
 CONNECT_WAIT = 10       # seconds a snapshot, a command or the health check waits for the site to load
+MESH_WAIT = 20          # seconds of scanning the health check gives the mesh link before judging it
 COMMAND_TIMEOUT = 10    # seconds a command waits for the mesh write
 NO_MESH = "No Plejd unit in Bluetooth range — the mesh is not connected."
 
@@ -59,7 +60,16 @@ class PlejdIntegration(Integration, HomeAutomation):
         return "plejd"
 
     def check_health(self) -> bool:
+        """Healthy with the mesh link up. Right after a start the scanner is still hearing
+        the units and the link follows the first one, so inside the first MESH_WAIT seconds of
+        scanning the check waits for the link instead of calling its absence a failure."""
         link = self._ready_link()
+        if not link.connected:
+            left = link.scan_time_left(MESH_WAIT)
+            if left > 0:
+                info(f"Plejd: health check waits up to {left:.0f} s for the first scan to bring the mesh link up")
+                if link.wait_connected(left):
+                    info(f"Plejd: the mesh link came up within the first scan — {link.units_seen} units heard")
         if not link.connected:
             seen = f"{link.units_seen} of its units heard since start" if link.units_seen else "none of its units heard since start"
             raise RuntimeError(f"site {link.site_title} loaded, but no mesh link: {seen}")
