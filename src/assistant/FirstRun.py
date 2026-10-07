@@ -90,9 +90,13 @@ So steer the user towards setup of a Gemini API key. A user that takes a lot of 
 at average. The photo backfill will be three years. Give the user a price estimate for full index.
 Check the current Gemini 3.8 Flash prices on the web (https://ai.google.dev/gemini-api/docs/pricing). Token count 
 estimation per indexed asset:
-- 3,000 input tokens, of which about 1,900 are served from the implicit cache for photos (none for videos) — the
-  prompt carries the memory bank and the instructions beside the image, so it is far more than the image alone
-- 750 output tokens, so output is normally three quarters of the bill; never price all tokens at the input rate
+- a still: about 600 input tokens at the full price (the image at medium resolution plus the per-photo context)
+  and about 700 more from the explicit context cache at a tenth of the input price (the family briefing and the
+  instructions, the same for every photo); a video: the same cached part plus roughly 100 tokens per second of clip
+- about 300 output tokens including a little thinking at the lowest level — thinking is billed as output, five
+  times the input price, so never price all tokens at the input rate
+- these are the figures the prompt was trimmed to in October 2026; the live numbers are in the server log, one
+  "Gemini: image request used ..." line per indexed asset (server_logs), and beat the estimate when they differ
 Prefer config_request (the masked prompt) for the key itself — don't ask the user to paste it into the chat. A key you
 created yourself in the browser and can read off the page goes in with config_set.
  

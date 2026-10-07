@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from typing import Callable, Optional
 
 from assistant import MemoryFile
+from .PhotoContext import PhotoContext
 from assistant.llm import create_llm, parse_llm_config
 from assistant.integration.Feed import FeedEntry
 from common.logging import info, error, trace, fine
@@ -24,7 +25,8 @@ from assistant.tools.VideoAnalyzer import short_clip_fps
 from .ICloudPhotoDownloader import (CorruptImageError, NoVideoRenditionError, PhotoNotInCloudError,
                                     VideoTooLargeError)
 
-_FAMILY_CONTEXT = """# Current long term memory about the family and house
+_FAMILY_CONTEXT = """# What is known about the family and the house
+Use it to recognise who, what and where is in the picture.
 {current_memory}
 """
 
@@ -35,8 +37,7 @@ You are a photo analyst for a family's personal photo library. Analyze the provi
 """ + _FAMILY_CONTEXT + """
 # Return ONLY a JSON object with these keys
 - "short_description": A concise 1-sentence description of the photo (max 50 chars)
-- "detailed_description": A RICH description covering subjects, setting, mood, colors, and notable details. Include any visible text, objects, landmarks, or activities. This will be used for search. Be verbose, detail everything in the photo with high accuracy. Around 200 words is good.
-- "thinking": Detail your thinking about how you decide on the two scores below. Don't emit your scores here, only the thinking
+- "detailed_description": A RICH description covering subjects, setting, mood, colors, and notable details. Include any visible text, objects, landmarks, or activities. This will be used for search, so name who and what is in the photo with high accuracy and skip filler. Around 120 words is good.
 - "pretty_score": 0-100 rating of aesthetic quality (facial expressions, composition, lighting, color, sharpness). 0=average snapshot, 80+=genuinely beautiful, 90+=exceptional
 - "family_importance_score": 0-100 rating of likely importance to a family (milestones, gatherings, children, pets, holidays). 0=no family connection, 80+=significant moment, 90+=exceptional
 
@@ -47,8 +48,8 @@ You are a photo analyst for a family's personal photo library. Analyze the provi
 """
 
 # The per-asset fields come last, in the user message: everything before them is identical from
-# photo to photo, so a local model's prefix cache covers the memory and the instructions and each
-# request prefills only the image and these lines.
+# photo to photo, so a provider's context cache (or a local model's prefix cache) covers the
+# briefing and the instructions and each request pays only for the image and these lines.
 ANALYSIS_PROMPT_USER = """# Context about this photo
 - Date taken: {date}
 - Location: {location}
@@ -65,9 +66,8 @@ You are a video analyst for a family's personal photo library. Watch the provide
 """ + _FAMILY_CONTEXT + """
 # Return ONLY a JSON object with these keys
 - "short_description": A concise 1-sentence description of the video (max 50 chars)
-- "detailed_description": A RICH description of what happens over the course of the clip: subjects, setting, actions, mood, and notable details. For clips longer than about 30 seconds, follow the timeline ("first ..., then ..., at the end ...") so that moments late in the clip are described too. Include any visible text, landmarks, or activities. This will be used for search.
+- "detailed_description": A RICH description of what happens over the course of the clip: subjects, setting, actions, mood, and notable details. For clips longer than about 30 seconds, follow the timeline ("first ..., then ..., at the end ...") so that moments late in the clip are described too. Include any visible text, landmarks, or activities. This will be used for search, so name who and what is in the clip with high accuracy and skip filler. Around 120 words is good, more only for a long clip.
 - "spoken_content": What is said or sung in the video, quoted or closely summarized, covering the whole clip. Keep it under 1500 characters; summarize rather than transcribe long passages. An empty string if nobody speaks or sings.
-- "thinking": Detail your thinking about how you decide on the two scores below. Don't emit your scores here, only the thinking
 - "pretty_score": 0-100 rating of aesthetic quality (steady, well-lit, well-framed footage, nice expressions, clear sound). 0=average clip, 80+=genuinely beautiful, 90+=exceptional
 - "family_importance_score": 0-100 rating of likely importance to a family (milestones, first words, songs, speeches at gatherings, children, pets, holidays). 0=no family connection, 80+=significant moment, 90+=exceptional
 
@@ -400,7 +400,7 @@ class PhotoProcessor:
         """The indexing LLM, one for stills and videos alike: the `photo_indexing` tier, by
         default Gemini 3.8 Flash — cheap enough for a backlog, and the only backend with native
         video input. Built through create_llm() like every other backend: the analysis prompt
-        carries all of the memory bank, and only the VaultLLM wrapper keeps its secrets at home."""
+        carries an extract of the memory bank, and only the VaultLLM wrapper keeps its secrets at home."""
         if self._llm is None:
             with self._llm_lock:
                 if self._llm is None:
@@ -1071,8 +1071,7 @@ class PhotoProcessor:
 
     def _analyze_video_with_llm(self, video_bytes: bytes, mime_type: str, date_str: str, location: str,
                                 albums: str, persons: str, video_type: str, duration: float) -> Optional[dict]:
-        system = VIDEO_ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"))
+        system = VIDEO_ANALYSIS_PROMPT_SYSTEM.format(current_memory=self._escape_braces(self._photo_context()))
         user = VIDEO_ANALYSIS_PROMPT_USER.format(
             date=date_str,
             location=self._escape_braces(location or "unknown"),
@@ -1332,6 +1331,11 @@ class PhotoProcessor:
             trace(f"Photos: could not read the memory bank: {e}")
         return ""
 
+    def _photo_context(self) -> str:
+        """The family briefing both prompts carry: the bank's photo-relevant extract (see
+        PhotoContext), a few hundred tokens instead of the bank's thousands on every call."""
+        return PhotoContext.briefing(self._read_memory(), self._get_llm())
+
     @staticmethod
     def _home_time(timestamp: float) -> str:
         from common.ConfigManager import ConfigManager
@@ -1344,10 +1348,9 @@ class PhotoProcessor:
 
     def _photo_system_prompt(self) -> str:
         """The part of a still's prompt that is the same for every photo: the instructions and the
-        memory bank. Identical text from photo to photo is what a provider's prefix or explicit
+        family briefing. Identical text from photo to photo is what a provider's prefix or explicit
         cache keys on, so nothing per-photo may go in here."""
-        return ANALYSIS_PROMPT_SYSTEM.format(
-            current_memory=self._escape_braces(self._read_memory() or "(no memory available)"))
+        return ANALYSIS_PROMPT_SYSTEM.format(current_memory=self._escape_braces(self._photo_context()))
 
     def _photo_prompt(self, date_str: str, location: str, albums: str, persons: str,
                       photo_type: str) -> tuple[str, str]:
@@ -1406,6 +1409,4 @@ class PhotoProcessor:
             "Photos")
         data["pretty_score"] = int(data["pretty_score"])
         data["family_importance_score"] = int(data["family_importance_score"])
-        if data.get("thinking"):
-            fine(f"  AI thinking ({data["short_description"]}): p:{data["pretty_score"]} f:{data["family_importance_score"]} {data['thinking']}")
         return data

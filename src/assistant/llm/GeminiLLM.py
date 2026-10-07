@@ -29,6 +29,11 @@ FILE_POLL_INTERVAL = 1.0
 # so a cache made for one lives longer and is extended while the job is polled.
 SYSTEM_CACHE_TTL_SECONDS = 600
 BATCH_CACHE_TTL_SECONDS = 3600
+# Bulk image work (the photo indexer) sends its stills at medium resolution: Gemini 3 bills a
+# medium image at half the tokens of the default high one, and a 1024 px photo loses nothing a
+# description needs. Video keeps the model's own frame sampling. A user's one-off image question
+# is not bulk work and goes at the default.
+BACKGROUND_IMAGE_RESOLUTION = "MEDIA_RESOLUTION_MEDIUM"
 # Inline batch jobs must stay under 20 MB in total; the photo indexer's 1024 px JPEGs are
 # ~150 kB each, so a 100-photo fetch fits in one job and a heavier one is split. The limit is
 # measured on the wire, where an inline image is base64 — a third larger than its bytes.
@@ -315,25 +320,42 @@ class GeminiLLM(AbstractLLM):
                     ))
 
         # Bulk work (the photo indexer) repeats one long system instruction per image: serve it
-        # from an explicit cache. A user's own image question is one-off and goes as is.
+        # from an explicit cache, think as little as the model allows and send the image at medium
+        # resolution. A user's own image question is one-off and goes as is.
         reason = _outage.active(background)
         if reason:
             raise LLMUnavailable(reason)    # before the cache call: no cache for a key that is refused
         cache = self._cached_system(system_instruction, SYSTEM_CACHE_TTL_SECONDS) if background else None
-        response = self._generate_with_cache(gemini_messages, system_instruction, cache, background)
+        settings = self._bulk_media_settings(image=True) if background else {}
+        response = self._generate_with_cache(gemini_messages, system_instruction, cache, settings, background)
         self._log_usage(response, "image")
         return self._text_or_empty(response, "image")
 
+    def _bulk_media_settings(self, image: bool) -> dict:
+        """The generation settings of a bulk media request (an indexed photo or clip): the lowest
+        thinking level the model takes — thinking is billed as output, five times the input price,
+        and a description needs none — and, for a still, the medium resolution."""
+        settings = {'thinking_config': types.ThinkingConfig(thinking_level=self._min_thinking_level())}
+        if image:
+            settings['media_resolution'] = BACKGROUND_IMAGE_RESOLUTION
+        return settings
+
+    def _bulk_batch_settings(self) -> dict:
+        """`_bulk_media_settings` as the plain dicts an inline batch request carries."""
+        return {'thinking_config': {'thinking_level': self._min_thinking_level().value},
+                'media_resolution': BACKGROUND_IMAGE_RESOLUTION}
+
     def _generate_with_cache(self, contents, system_instruction: str | None, cache: _SystemCache | None,
-                             background: bool = False):
+                             settings: dict, background: bool = False):
         """generate_content through `cache` when there is one; a cache Gemini no longer knows
         (expired between the check and the call, deleted elsewhere) is dropped and the request
-        repeated with the system instruction inline, so no image is lost to the cache."""
+        repeated with the system instruction inline, so no image is lost to the cache. `settings`
+        are the other GenerateContentConfig fields and ride along either way."""
         if cache is not None:
             try:
                 return self._request(lambda: self.client.models.generate_content(
                     model=self.model, contents=contents,
-                    config=types.GenerateContentConfig(cached_content=cache.name)), background)
+                    config=types.GenerateContentConfig(cached_content=cache.name, **settings)), background)
             except LLMUnavailable:
                 raise
             except Exception as e:
@@ -341,7 +363,9 @@ class GeminiLLM(AbstractLLM):
                     raise
                 info(f"Gemini: cache {cache.name} is gone ({str(e)[:80]}) — resending with the system instruction inline")
                 self._forget_cache(cache)
-        config_params = {'system_instruction': system_instruction} if system_instruction else {}
+        config_params = dict(settings)
+        if system_instruction:
+            config_params['system_instruction'] = system_instruction
         return self._request(lambda: self.client.models.generate_content(
             model=self.model, contents=contents,
             config=types.GenerateContentConfig(**config_params) if config_params else None), background)
@@ -418,6 +442,7 @@ class GeminiLLM(AbstractLLM):
         system_instruction = self.strip_cache_markers(system_message)
         cache = self._cached_system(system_instruction, BATCH_CACHE_TTL_SECONDS)
         request_config = {'cached_content': cache.name} if cache else {'system_instruction': system_instruction}
+        request_config.update(self._bulk_batch_settings())
         jobs: list[tuple[object, list[int]]] = []    # (job, indexes of `requests` it carries)
         t_start = time.time()
         for indexes in self._batch_chunks(requests):
@@ -597,18 +622,18 @@ class GeminiLLM(AbstractLLM):
             )
         contents = [{'role': 'user', 'parts': [video_part, {'text': user_message}]}]
 
+        # A clip is bulk work like a still: the system instruction (the indexer's briefing and
+        # instructions, the same for every clip) rides in the explicit cache, thinking stays low.
         system_instruction = self.strip_cache_markers(system_message)
-        generation_config = types.GenerateContentConfig(system_instruction=system_instruction) \
-            if system_instruction else None
-
         info(f"Gemini: sending video ({size_mb:.1f} MB, {mime_type}"
              f"{f', {fps} fps' if fps else ''}, {'Files API' if uploaded else 'inline'}) to {self.model}")
         try:
-            response = self._request(lambda: self.client.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=generation_config
-            ), background=True)
+            reason = _outage.active(background=True)
+            if reason:
+                raise LLMUnavailable(reason)
+            cache = self._cached_system(system_instruction, SYSTEM_CACHE_TTL_SECONDS)
+            response = self._generate_with_cache(contents, system_instruction, cache,
+                                                 self._bulk_media_settings(image=False), background=True)
         finally:
             if uploaded is not None:
                 self._delete_file(uploaded)

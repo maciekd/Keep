@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
 import pytest
@@ -2614,7 +2615,7 @@ class TestPhotosFeedProviderRefusal:
         llm.think_with_video.return_value = reply
         processor = PhotoProcessor()
         processor._llm = llm
-        with patch.object(PhotoProcessor, '_read_memory', return_value="Marcus lives at Storgatan 1"):
+        with patch.object(PhotoProcessor, '_photo_context', return_value="Marcus lives at Storgatan 1"):
             processor._analyze_with_llm(b"jpeg", "2026-01-01 10:00", "Home", "Family", "Charlotte", "photo")
             processor._analyze_with_llm(b"jpeg", "2026-03-14 18:30", "IKEA, Kållered", "", "", "screenshot")
             processor._analyze_video_with_llm(b"mp4", "video/mp4", "2026-01-01 10:00", "Home", "", "Frances", "video", 12.0)
@@ -2627,6 +2628,35 @@ class TestPhotosFeedProviderRefusal:
         video_a, video_b = (c.kwargs for c in llm.think_with_video.call_args_list)
         assert video_a["system_message"] == video_b["system_message"]
         assert "Beach" in video_b["user_message"] and "slow-motion" in video_b["user_message"]
+
+
+    def test_both_prompts_carry_the_briefing_extracted_once_and_never_the_bank(self):
+        """The bank is thousands of tokens of preferences and rules resent with every photo; the
+        prompt carries the photo-relevant extract instead, made by one call per bank version."""
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        from integrations.photos.PhotoContext import PhotoContext, EXTRACT_PROMPT
+        reply = '{"short_description":"a","detailed_description":"b","pretty_score":1,"family_importance_score":2}'
+        bank = "Marcus likes his coffee black. The dog is called Rufus. Never book meetings before nine."
+        llm = Mock()
+        llm.think.side_effect = lambda system_message, user_message, **kw: \
+            "- the dog Rufus" if system_message == EXTRACT_PROMPT else reply
+        llm.think_with_video.return_value = reply
+        processor = PhotoProcessor()
+        processor._llm = llm
+        PhotoContext._memo = None
+        with patch.object(PhotoProcessor, '_read_memory', return_value=bank), \
+             patch.object(PhotoContext, '_read_cached', return_value=None), \
+             patch.object(PhotoContext, 'CACHE_PATH', Path("/nonexistent/photo_context.json")):
+            processor._analyze_with_llm(b"jpeg", "2026-01-01 10:00", "Home", "", "", "photo")
+            processor._analyze_with_llm(b"jpeg", "2026-01-02 10:00", "Home", "", "", "photo")
+            processor._analyze_video_with_llm(b"mp4", "video/mp4", "2026-01-01 10:00", "Home", "", "", "video", 12.0)
+        PhotoContext._memo = None
+        extractions = [c for c in llm.think.call_args_list if c.kwargs["system_message"] == EXTRACT_PROMPT]
+        assert len(extractions) == 1 and extractions[0].kwargs["user_message"] == bank
+        systems = [c.kwargs["system_message"] for c in llm.think.call_args_list if c not in extractions]
+        systems.append(llm.think_with_video.call_args.kwargs["system_message"])
+        assert len(systems) == 3
+        assert all("Rufus" in s and "coffee" not in s for s in systems)
 
 
 REPLY = '{"short_description":"a barn","detailed_description":"red barn","pretty_score":40,"family_importance_score":10}'
