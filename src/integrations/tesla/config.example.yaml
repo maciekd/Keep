@@ -1,5 +1,7 @@
 tesla:
   tessie_access_token: YOUR_TESSIE_ACCESS_TOKEN
+  # Language and country of the addresses tesla_navigate sends to the cars (default en-US)
+  navigation_locale: en-US
   vehicles:
     - name: home_car
       display_name: Family Model Y

@@ -51,11 +51,12 @@ class TeslaIntegration(Integration):
     """The Teslas, through Tessie.
 
     Reads the state of the cars and sends them commands: defrost, climate on and off, opening
-    the trunk.
+    the trunk, a destination for the navigation.
 
     Talks to the Tessie API."""
 
     TESSIE_API_BASE = "https://api.tessie.com"
+    DEFAULT_NAVIGATION_LOCALE = "en-US"
 
     def __init__(
         self,
@@ -183,10 +184,14 @@ class TeslaIntegration(Integration):
         """Make GET request to Tessie API with retries."""
         return self._api_request("GET", vin, endpoint, max_retries)
 
-    def _api_post(self, vin: str, endpoint: str, retry: bool = True, max_retries: int = 3, **body_params) -> Dict[str, Any]:
-        """Make POST request to Tessie API with retries."""
+    def _api_post(self, vin: str, endpoint: str, retry: bool = True, max_retries: int = 3,
+                  query: Optional[Dict[str, Any]] = None, **body_params) -> Dict[str, Any]:
+        """Make POST request to Tessie API with retries; `query` goes on the URL, the rest in the body."""
         payload = {"retry": retry, **body_params}
-        data = self._api_request("POST", vin, endpoint, max_retries, json=payload)
+        kwargs = {"json": payload}
+        if query:
+            kwargs["params"] = query
+        data = self._api_request("POST", vin, endpoint, max_retries, **kwargs)
         result = data.get("result")
         if not result:
             reason = data.get("reason", "Unknown error")
@@ -220,6 +225,18 @@ class TeslaIntegration(Integration):
 
         self._api_post(spec.vin, "command/activate_rear_trunk")
         return f"Trunk opened for {spec.label()}."
+
+    def navigate_to(self, vehicle_name: Optional[str], destination: str) -> str:
+        """Send a destination (an address or coordinates) to the vehicle's navigation."""
+        destination = (destination or "").strip()
+        if not destination:
+            raise TeslaCommandError("No destination given.")
+        spec = self._require_vehicle_spec_with_vin(vehicle_name)
+        locale = self._config.get("navigation_locale") or self.DEFAULT_NAVIGATION_LOCALE
+
+        info(f"Tesla: sending navigation destination '{destination}' to {spec.label()} (locale {locale})")
+        self._api_post(spec.vin, "command/share", query={"value": destination, "locale": locale})
+        return f"Navigation to {destination} sent to {spec.label()}."
 
 
 TeslaAPI = TeslaIntegration

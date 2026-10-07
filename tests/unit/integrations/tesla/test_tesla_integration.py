@@ -230,3 +230,53 @@ def test_require_vehicle_spec_with_vin_raises_on_missing_vin():
     api = TeslaIntegration(config=config)
     with pytest.raises(TeslaConfigurationError, match="missing VIN"):
         api._require_vehicle_spec_with_vin("novin")
+
+
+@pytest.mark.unit
+def test_navigate_to_shares_the_destination_on_the_query_string():
+    """Tessie's share command takes `value` and `locale` as URL parameters, not in the body."""
+    session = FakeSession()
+    session.queue_response("POST", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/share",
+                           DummyResponse(200, {"result": True}))
+    config = build_default_config()
+    config["navigation_locale"] = "sv-SE"
+    api = TeslaIntegration(config=config, session=session)
+
+    result = api.navigate_to("family", "Storgatan 1, Stockholm")
+
+    assert "Storgatan 1, Stockholm" in result and "Floxy" in result
+    post_calls = [call for call in session.calls if call[0] == "POST"]
+    assert len(post_calls) == 1
+    assert post_calls[0][2]["params"] == {"value": "Storgatan 1, Stockholm", "locale": "sv-SE"}
+    assert "value" not in post_calls[0][2]["json"]
+
+
+@pytest.mark.unit
+def test_navigate_to_without_a_configured_locale_falls_back_to_the_default():
+    session = FakeSession()
+    session.queue_response("POST", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/share",
+                           DummyResponse(200, {"result": True}))
+    api = TeslaIntegration(config=build_default_config(), session=session)
+
+    api.navigate_to(None, "59.3293,18.0686")
+
+    assert session.calls[0][2]["params"]["locale"] == TeslaIntegration.DEFAULT_NAVIGATION_LOCALE
+
+
+@pytest.mark.unit
+def test_navigate_to_refuses_a_blank_destination_without_a_request():
+    session = FakeSession()
+    api = TeslaIntegration(config=build_default_config(), session=session)
+    with pytest.raises(TeslaCommandError):
+        api.navigate_to("family", "   ")
+    assert session.calls == []
+
+
+@pytest.mark.unit
+def test_navigate_to_reports_the_cars_refusal():
+    session = FakeSession()
+    session.queue_response("POST", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/command/share",
+                           DummyResponse(200, {"result": False, "reason": "vehicle unavailable"}))
+    api = TeslaIntegration(config=build_default_config(), session=session)
+    with pytest.raises(TeslaCommandError, match="vehicle unavailable"):
+        api.navigate_to("family", "Storgatan 1")
