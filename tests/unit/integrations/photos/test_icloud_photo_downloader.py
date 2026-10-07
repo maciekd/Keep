@@ -451,7 +451,7 @@ class TestEnsureService:
         assert role == "system"
         assert history.add_context_message.call_args[1] == {"source": "icloud_photos"}
         assert "session refresh failed" in msg and "2FA required" in msg
-        mock_bot.send_message.assert_called_once_with(msg, in_history=True)
+        mock_bot.send_message.assert_called_once_with(msg, disable_notification=False, in_history=True)
 
 
 # ---------------------------------------------------------------------------

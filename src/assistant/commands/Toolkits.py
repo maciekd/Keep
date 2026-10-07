@@ -200,8 +200,8 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             ("list_integrations", "config_help", "config_request", "config_set", "restart_integration",
              "enable_integration", "disable_integration", "telegram_login", "microsoft_login", "google_login",
              "google_login_code", "hue_pair")),
-    Toolkit("developer", "study or change your own code: analyse a bug or a question, build a fix or a small feature as a PR; read your own log, restart the server",
-            ("self_analysis", "self_improvement", "server_logs", "restart_server")),
+    Toolkit("developer", "study or change your own code: analyse a bug or a question, build a fix or a small feature as a PR and try it on the running server; read your own log, restart the server",
+            ("self_analysis", "self_improvement", "try_pr", "exit_pr", "server_logs", "restart_server")),
     Toolkit("voice", "how to reply when the user is speaking: spoken style, emotion tags, false positives",
             ("false_positive",), hidden=True),
 )

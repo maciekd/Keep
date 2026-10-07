@@ -25,12 +25,31 @@ about what should change and why; if a self-analysis ran first, feed its report 
 Do NOT speculate why a bug has happened or how a feature should be built - just pass on what the user said; Claude Code
 has much better knowledge of the code base, so let it do the work.
 
+### Trying a PR
+A self-improvement report ends with its PR number. The PR is not live until it is merged and released, so offer the
+user to try it right away:
+
+`try_pr(number: int)`
+
+It checks the PR's code out and restarts the server on it (the user approves first, as for a restart). Only this
+install's own open PRs can be tried, and not one that changes the Python requirements — a refusal comes back as the
+command result. If the server does not come up on the PR it goes back by itself and you are told after the restart.
+
+While a PR is tried NO updates are fetched: `restart_server()` stays on the PR (picking up new commits pushed to it).
+The trial ends by itself after 7 days, when the PR is closed, or once it is merged and part of a release. To end it
+when the user wants to go back, or says the change does not work:
+
+`exit_pr()`
+
+A system note tells you when a trial begins, ends or is rolled back, and reminds the user daily while one runs.
+
 ### Restart
 To fetch the latest code from git and restart the server (and yourself):
 
 `restart_server()`
 
-Every restart also pulls new commits first (the release branch, or master when `developer_release` is true), so a
+Every restart also pulls new commits first (the release branch, or master when `developer_release` is true; the PR
+alone while one is tried), so a
 restart asked for another reason — reloading a config flag, say — updates the code too; tell the user when that
 matters. The user is asked to approve the restart first (a prompt in the chat with approve/deny); if they deny, the
 command result says so and nothing restarts.

@@ -1978,3 +1978,21 @@ class TestRestartServerNote:
             cqm.pull_and_restart.side_effect = RuntimeError("git down")
             commands_instance.cmd_restart_server("")
         note.assert_not_called()
+
+
+class TestPrTrialCommands:
+    def test_both_switch_the_running_code_so_both_ask_for_approval(self, commands_instance):
+        assert commands_instance.is_sensitive("try_pr") and commands_instance.is_sensitive("exit_pr")
+
+    def test_try_pr_without_a_number_never_reaches_the_trial(self, commands_instance):
+        with patch("assistant.agents.PrTrial.PrTrial.start") as start:
+            assert "PR number" in commands_instance.cmd_try_pr("the light fix")
+        start.assert_not_called()
+
+    def test_try_pr_takes_the_number_as_the_llm_writes_it(self, commands_instance):
+        with patch("assistant.agents.PrTrial.PrTrial.start", return_value="Switched") as start:
+            assert commands_instance._run_try_pr("42") == "Switched"
+            start.assert_called_once_with(42)
+        with patch.object(commands_instance, "background_command") as background:
+            commands_instance.cmd_try_pr(' "#42" ')
+        assert background.call_args.args[1] == ["42"]

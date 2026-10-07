@@ -35,6 +35,13 @@ only when HEAD is no longer the commit the process booted on. Never
 hard-code `master` in a git command — `CodeQualityMaintainer._current_branch()` is the branch to come
 back to after a Claude Code run, `target_branch()` the one to pull.
 
+A third state is the **PR trial** (`assistant/agents/PrTrial.py`, commands `try_pr` / `exit_pr`, `//exit_pr`): the
+install runs one of its own open PRs as `trial/pr-<N>` and `restart_server` stays on it instead of pulling. The
+state is `cache/trial/state.json`, not a config key. `trial_watchdog.sh` — run from a copy taken before the PR is
+checked out — goes back to the previous branch when the server has not written `cache/trial/started` in time. The
+trial ends on `exit_pr`, when the PR is closed, when its merge commit is on the target branch, or after 7 days;
+the maintainer's thread checks daily and reminds the user that no updates are fetched meanwhile.
+
 ## Code Style
 
 - Keep code concise and readable

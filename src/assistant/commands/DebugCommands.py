@@ -13,6 +13,7 @@ A command returns a human-readable string that is relayed back as the reply.
     //TP            - last conversations were True Positives  -> copy their audio to en/
     //wipe confirm  - back up and wipe the user state, then stop the server (FTUE testing)
     //restart       - pull the target branch and restart the server, as the restart_server command does (fallback when the LLM is unusable)
+    //exit_pr       - end a PR trial and go back to the target branch (fallback when the PR broke the LLM path)
     //feed <pause|resume> <all|name> - hold / carry on filling the history from a feed; bare //feed lists them
     //memory_curate <start> [end]    - curate the long-term memory over a span of days (YYYYMMDD, end inclusive), in 4-day chunks
     //memory_split [apply]           - propose the split of an old one-file bank into bank / watch list / procedures; apply the latest proposal
@@ -120,6 +121,14 @@ def _pull_and_restart():
         system_note("server", f"Server restart (//restart): {result}")
     except Exception as e:
         error(f"//restart failed: {e}")
+
+
+def _exit_pr():
+    from assistant.agents.PrTrial import PrTrial
+    try:
+        info(f"//exit_pr: {PrTrial.end('//exit_pr')}")
+    except Exception as e:
+        error(f"//exit_pr failed: {e}")
 
 
 def _close_browser():
@@ -455,6 +464,19 @@ class DebugCommands:
             runner = Feeds.get_instance().runner(name)
             lines.append(f"{name}: {describe_feed_status(runner.status() if runner else None)}")
         return "\n".join(lines)
+
+    # --- //exit_pr --------------------------------------------------------------------------
+
+    def cmd_EXIT_PR(self, args: str) -> str:
+        """End a PR trial and restart on the target branch; the fallback when the tried PR left the LLM unusable."""
+        from assistant.agents.PrTrial import PrTrial
+        trial = PrTrial.state()
+        if trial is None:
+            info("//exit_pr: no PR is being tried")
+            return "No PR is being tried."
+        threading.Timer(STOP_DELAY_SECONDS, _exit_pr).start()
+        info(f"//exit_pr: ending the trial of PR #{trial.number} in {STOP_DELAY_SECONDS:g}s")
+        return f"Ending the trial of PR #{trial.number} and restarting the server in {STOP_DELAY_SECONDS:g}s."
 
     # --- //restart ------------------------------------------------------------------------
 

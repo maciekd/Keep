@@ -252,6 +252,7 @@ Steps:
 3. If applicable create new unit tests.
 4. Run all unit tests to make sure nothing is broken.
 5. Commit (check rules for commits in the /commit skill) and create a PR and push it. 
+6. End your final message with the line `PR #<number>` on its own, so the PR can be offered for a trial run.
 
 Log files from running system are available at:
 log/floxy.out (Floxy server logs, be mindful, it's huge, so tail)
@@ -306,6 +307,8 @@ class CodeQualityMaintainer:
                         self._execute_nightly_run()
                     finally:
                         self._nightly_update()
+                from assistant.agents.PrTrial import PrTrial
+                PrTrial.daily_check(now)
             except Exception as e:
                 error(f"CodeQualityMaintainer error: {e}")
             for _ in range(CHECK_INTERVAL):
@@ -865,6 +868,10 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def pull_and_restart() -> str:
+        from assistant.agents.PrTrial import PrTrial
+        on_trial = PrTrial.on_restart()
+        if on_trial:
+            return on_trial
         failure, output = CodeQualityMaintainer._pull_target()
         if failure:
             return failure

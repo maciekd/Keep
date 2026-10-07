@@ -155,6 +155,18 @@ def _open_first_conversation(server: "Server | None" = None):
     console.after_intro(send)
 
 
+def _confirm_pr_trial():
+    """The server is up: stand the PR trial's watchdog down and tell the user what became of the trial."""
+    from assistant.agents.PrTrial import PrTrial
+    from assistant.SystemNote import system_note
+    try:
+        message = PrTrial.confirm_started()
+        if message:
+            system_note("server", message)
+    except Exception as e:
+        error(f"PR trial check at startup failed: {e}")
+
+
 class Server:
     """Everything build() created, in start order, so main() can serve and stop it."""
 
@@ -319,6 +331,7 @@ async def main(server: Server):
     if not server.running_as_testsuite:
         _announce_startup(server)
         _open_first_conversation(server)
+        _confirm_pr_trial()
     try:
         await server.http.serve()
     finally:

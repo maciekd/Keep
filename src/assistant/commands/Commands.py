@@ -62,13 +62,17 @@ class Commands:
     derived from the `cmd_` method names of all of them; SENSITIVE_COMMANDS go through the
     notifier's approval gate before running.
     """
-    SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server"})
+    SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server", "try_pr", "exit_pr"})
     # What the approval prompt shows under the title when the command has no parameters
     # to preview — the user should know what saying yes does before the screen goes blank.
     APPROVAL_NOTES = {
         "restart_server": "Pulls the latest code from git (the release branch, or master when "
                           "developer_release is true) and relaunches the server. "
                           "The console goes blank for a moment and reconnects by itself.",
+        "try_pr": "Checks the pull request's code out and relaunches the server on it. No updates are "
+                  "fetched while the trial lasts; if the server does not come up it goes back by itself.",
+        "exit_pr": "Ends the pull request trial: checks the normal branch out again, pulls it and "
+                     "relaunches the server.",
     }
     # Commands whose handler accepts multiple positional arguments. The dispatcher
     # splats the parsed parameter list (`f(*params)`); the handler decides how to
@@ -644,6 +648,29 @@ class Commands:
                 error(f"Restart server failed: {e}")
 
         self.fire_and_forget(_run, parameter_string)
+
+    def cmd_try_pr(self, parameter_string: str):
+        """Runs the server on one of this install's own open PRs (PrTrial). A refusal comes back as
+        the command result; a start ends in a restart, and the new process tells the user."""
+        number = parameter_string.strip().strip('"\'').lstrip("#")
+        if not number.isdigit():
+            return "try_pr failed: expected a PR number, e.g. try_pr(123)"
+        self.background_command(self._run_try_pr, [number])
+
+    def _run_try_pr(self, number: str) -> str:
+        from assistant.agents.PrTrial import PrTrial
+        result = PrTrial.start(int(number))
+        info(f"try_pr({number}): {result}")
+        return result
+
+    def cmd_exit_pr(self, parameter_string: str):
+        self.background_command(self._run_exit_pr, [])
+
+    def _run_exit_pr(self) -> str:
+        from assistant.agents.PrTrial import PrTrial
+        result = PrTrial.end()
+        info(f"exit_pr: {result}")
+        return result
 
     def cmd_execute(self, parameter_string: str) -> str:
         return home.active().execute(self._home_name(parameter_string))
@@ -1548,6 +1575,8 @@ class Commands:
     def describe_self_analysis(self, p):          return "Running self-analysis"
     def describe_self_improvement(self, p):       return "Running self-improvement"
     def describe_restart_server(self, p):         return "Restarting server"
+    def describe_try_pr(self, p):                 return f"Switching the server to PR #{p.strip().lstrip('#')}"
+    def describe_exit_pr(self, p):                return "Ending the PR trial"
     def describe_execute(self, p):                return f"Running action {p.strip()}"
     def describe_vault_add(self, p):
         # Never the value: the notification is exactly where a secret must not be echoed.

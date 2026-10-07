@@ -33,10 +33,11 @@ def history():
     return _history
 
 
-def system_note(source: str, text: str, timestamp: Optional[float] = None, push: bool = True) -> bool:
+def system_note(source: str, text: str, timestamp: Optional[float] = None, push: bool = True,
+                quiet: bool = False) -> bool:
     """Record *text* as a system row from *source* and push it to the chats that do not
-    show the history; with *push* off it is a history row only. Returns True when it
-    reached the history or a chat."""
+    show the history — without a sound when *quiet*; with *push* off it is a history row
+    only. Returns True when it reached the history or a chat."""
     text = text.strip()
     if not text:
         trace(f"SystemNote: empty note from {source}, skipped")
@@ -51,5 +52,5 @@ def system_note(source: str, text: str, timestamp: Optional[float] = None, push:
     if not push:
         trace(f"SystemNote: {source} note is history-only, not pushed to the chats")
         return stored
-    pushed = notifier().send_message(text, in_history=stored)
+    pushed = notifier().send_message(text, disable_notification=quiet, in_history=stored)
     return stored or pushed
