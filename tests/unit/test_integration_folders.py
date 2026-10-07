@@ -3,6 +3,7 @@ the role, a `*Tab.py` being the console's and everything else the assistant's, a
 folder by discovery or through a contract. The two allowlists are the by-name imports still
 left — an entry goes when its import does, and none is added. Each wants a contract of its own."""
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -32,12 +33,43 @@ FOLDER_IMPORTS_FOLDER = {
 }
 
 
+IMPORT_STATEMENT = re.compile(r"^[ \t]*(?:from|import)[ \t]+[^\n]*", re.MULTILINE)
+
+
+def import_statements(text: str) -> str:
+    """The import statements of a module as a module of their own, dedented: parsing only
+    those is a tenth of parsing the whole tree (WebAccess.py alone is 250 KB). A parenthesised
+    or backslash-continued statement is taken whole; a prose line that happens to start with
+    the keyword (a docstring's) is dropped as what it is, not a statement."""
+    statements = []
+    for match in IMPORT_STATEMENT.finditer(text):
+        statement, end = match.group().strip(), match.end()
+        while end < len(text) and (("(" in statement and ")" not in statement) or statement.endswith("\\")):
+            next_end = text.find("\n", end + 1)
+            next_end = len(text) if next_end < 0 else next_end
+            statement, end = statement + "\n" + text[end + 1:next_end], next_end
+        statements.append(statement)
+    try:
+        ast.parse("\n".join(statements))
+    except SyntaxError:
+        statements = [statement for statement in statements if _parses(statement)]
+    return "\n".join(statements)
+
+
+def _parses(statement: str) -> bool:
+    try:
+        ast.parse(statement)
+    except SyntaxError:
+        return False
+    return True
+
+
 def imported_modules(path: Path, src: Path) -> set[str]:
     """Every module `path` imports, absolute: `from x import y` counts as both `x` and `x.y`
     (y may be a module), a relative import is resolved against the file's package."""
     package = list(path.relative_to(src).with_suffix("").parts[:-1])
     found = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+    for node in ast.walk(ast.parse(import_statements(path.read_text(encoding="utf-8")))):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -58,7 +90,7 @@ def survey(src: Path) -> dict:
             continue
         text = path.read_text(encoding="utf-8")
         if "integrations" not in text and "interfaces" not in text:
-            continue   # parsing every source file costs more than the rest of the test
+            continue   # reading every source file is cheap, parsing its imports is not
         for module in imported_modules(path, src):
             parts = module.split(".")
             if top == "integrations" and parts[0] == "interfaces" and not path.stem.endswith("Tab"):
@@ -118,7 +150,9 @@ def test_the_survey_sees_each_kind_of_breach(tmp_path):
           "from interfaces.console.tabs.TabView import TabView\nfrom ..kettle.KettleIntegration import Kettle\n")
     write(tmp_path, "integrations/lamp/LampTab.py", "from interfaces.console.tabs.TabView import TabView\n")
     write(tmp_path, "assistant/Brain.py",
-          "def think():\n    from integrations.lamp import LampTab\n    import integrations.kettle.KettleIntegration\n")
+          '"""Thinks.\n\nfrom the lamp the kettle is lit, import nothing of it\n"""\n'
+          "def think():\n    from integrations.lamp import (\n        LampTab,\n    )\n"
+          "    import integrations.kettle.KettleIntegration\n")
     write(tmp_path, "interfaces/console/Lamps.py", "from integrations.lamp.LampTab import LampTab\n")
 
     found = survey(tmp_path)
