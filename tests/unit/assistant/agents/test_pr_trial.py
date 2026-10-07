@@ -197,6 +197,18 @@ class TestNightlyRunDuringATrial:
             run.assert_called_once()
 
 
+    def test_the_nightly_update_does_not_pull_the_checkout_off_the_pr(self, world, monkeypatch):
+        running_trial()
+        monkeypatch.setattr(module.CodeQualityMaintainer, "_pull_target", staticmethod(lambda: pytest.fail("pulled")))
+        maintainer = CodeQualityMaintainer()
+        maintainer._boot_commit = HEAD
+        with patch("assistant.agents.CodeQualityMaintainer.ConfigManager") as config, \
+                patch("assistant.agents.CodeQualityMaintainer.DevelopmentConfig.LOCAL_DEVELOPMENT_MODE", False):
+            config.return_value.get.side_effect = lambda key, default=None: default
+            maintainer._nightly_update()
+        assert world.restarts == []
+
+
 class TestConfirmStarted:
     def test_a_pending_trial_becomes_active_and_stands_the_watchdog_down(self, world):
         running_trial(status=PENDING)

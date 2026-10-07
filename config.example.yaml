@@ -186,6 +186,7 @@ developer_release: false
 # is on — the server checks out the branch developer_release names, pulls it and restarts if that
 # left it on other code than it is running. No new commits, no restart. false: the code only
 # changes on a restart_server. Read at each fire, no restart needed.
+# Not while a PR is being tried (try_pr): the server stays on the PR until the trial is over.
 nightly_update: true
 
 # Beta usage telemetry (assistant/Telemetry.py). An install is known by `id` alone, a random

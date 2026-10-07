@@ -362,7 +362,7 @@ class CodeQualityMaintainer:
         PR's code, so the run would analyse that and branch its own PRs off the trial branch."""
         from assistant.agents.PrTrial import PrTrial
         number = PrTrial.active_number()
-        return f"the server is trying PR #{number}; the nightly run waits until the trial is over" if number else None
+        return f"the server is trying PR #{number}; nightly runs and updates wait until the trial is over" if number else None
 
     def _execute_nightly_run(self, force=False, only=None):
         """The whole night, or with `only` (one of NIGHTLY_STEPS) that step alone. `force` is
@@ -422,6 +422,12 @@ class CodeQualityMaintainer:
         from assistant.SystemNote import system_note
         if not ConfigManager().get(NIGHTLY_UPDATE_KEY, True):
             info(f"CodeQualityMaintainer: {NIGHTLY_UPDATE_KEY} is off, no nightly update.")
+            return
+        trial = self.trial_skip_reason()
+        if trial:
+            # Pulling the target branch would take the checkout off the PR; PrTrial.daily_check
+            # reminds the user instead that no updates arrive, and ends a trial that is over.
+            info(f"CodeQualityMaintainer: no nightly update — {trial}.")
             return
         if DevelopmentConfig.LOCAL_DEVELOPMENT_MODE:
             info("CodeQualityMaintainer: LOCAL_DEVELOPMENT_MODE is on, no nightly update.")

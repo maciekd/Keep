@@ -41,7 +41,8 @@ state is `cache/trial/state.json`, not a config key. `trial_watchdog.sh` — run
 checked out — goes back to the previous branch when the server has not written `cache/trial/started` in time. The
 trial ends on `exit_pr`, when the PR is closed, when its merge commit is on the target branch, or after 7 days;
 the maintainer's thread checks nightly at 03:00 and quietly reminds the user that no updates are fetched meanwhile.
-No nightly code-quality run happens during a trial (`trial_skip_reason`, `//nightly` included): the checkout holds the PR's code.
+Neither the nightly code-quality run nor the nightly update happens during a trial (`trial_skip_reason`, `//nightly`
+included): the checkout holds the PR's code and a pull of the target branch would take it off the PR.
 
 ## Code Style
 
