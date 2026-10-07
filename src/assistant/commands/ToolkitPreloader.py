@@ -4,9 +4,10 @@ config list in its place — voice wants `home`, with the home data, `music`, `t
 `weather`, since "turn on the kitchen lamp", "turn off the music", "defrost the car" and
 "will it rain" are the product and a `load_toolkit` round there costs a second or two on
 every request), in front of them the channel's `ChannelProfile.fixed_toolkits`, which no
-config list replaces (voice's `voice`: the spoken dialog style lives there and not in the
-prompt), plus whatever the caller adds for the moment (`FirstRun.preload_toolkits` — the
-`setup` toolkit while the FTUE lasts, on any channel). A toolkit whose integration is off
+config list replaces (voice's `voice`, the spoken dialog style, which lives there and not in
+the prompt, and `timers`, the spoken "set a timer" that every household asks for), plus
+whatever the caller adds for the moment (`FirstRun.preload_toolkits` — the `setup` toolkit
+while the FTUE lasts, on any channel). A toolkit whose integration is off
 (`Toolkit.offered_by`, the IntegrationMonitor's verdict) is skipped: a house without a Tesla
 preloads no Tesla.
 

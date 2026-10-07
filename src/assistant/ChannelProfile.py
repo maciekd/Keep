@@ -51,8 +51,9 @@ class ChannelProfile:
     # is skipped by itself; the `preload_toolkits.<channel>` config list replaces this default.
     preload_toolkits: tuple[str, ...] = ()
     # Toolkits the channel cannot do without, preloaded ahead of `preload_toolkits` and out of
-    # the config list's reach: voice's is `voice`, the spoken dialog style and the false
-    # positive rule, which the prompt carries nowhere else.
+    # the config list's reach: voice's are `voice`, the spoken dialog style and the false
+    # positive rule, which the prompt carries nowhere else, and `timers`, since "set a timer
+    # for ten minutes" is spoken to it daily and a load_toolkit round there costs a second.
     fixed_toolkits: tuple[str, ...] = ()
 
 
@@ -60,7 +61,7 @@ VOICE_TO_VOICE = ChannelProfile(
     name=SOURCE_VOICE, llm_tier="fast", brevity_directive=True, forward_thinking=False,
     command_notifications=False, notification_ephemeral=False, notify_observers_of_commands=False,
     photo_target=PHOTO_TARGET_KITCHEN_TV, screenshot_allowed=False,
-    streams_tokens=False, preload_toolkits=("home", "music", "tesla", "weather"), fixed_toolkits=("voice",),
+    streams_tokens=False, preload_toolkits=("home", "music", "tesla", "weather"), fixed_toolkits=("voice", "timers"),
 )
 
 TEXT_CHAT = ChannelProfile(

@@ -224,8 +224,8 @@ telemetry:
 
 # Toolkits put in the LLM's window before every request from a channel, replacing the
 # channel's default (VoiceToVoice: [home, music, tesla, weather]). Optional. A toolkit whose
-# integration is off is skipped by itself. The `voice` toolkit (the spoken dialog style) is
-# always loaded for VoiceToVoice and is not part of this list.
+# integration is off is skipped by itself. The `voice` toolkit (the spoken dialog style) and
+# the `timers` toolkit are always loaded for VoiceToVoice and are not part of this list.
 # preload_toolkits:
 #   VoiceToVoice: [home, music]   # a household that never asks about the car or the weather
 
