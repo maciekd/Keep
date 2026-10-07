@@ -28,7 +28,7 @@ WATCHDOG_SOURCE = AISERVER_DIR / "trial_watchdog.sh"
 WATCHDOG_COPY = TRIAL_DIR / "watchdog.sh"
 WATCHDOG_TIMEOUT = 80   # seconds for start.sh to stop the old server and the new one to load its models
 MAX_DAYS = 7
-REMINDER_HOUR = 9
+REMINDER_HOUR = 3   # with the nightly run: the check may restart the server, so it runs while nobody uses it
 PENDING, ACTIVE, ENDED = "pending", "active", "ended"
 ROLLBACK_OUTPUT_CHARS = 1200
 
@@ -43,6 +43,7 @@ class Trial:
     status: str = PENDING
     reminded: str = ""       # the date of the last daily reminder
     end_reason: str = ""
+    ended_unattended: bool = False   # ended by the daily check, so the news must not ring the phone at night
 
     @property
     def branch(self) -> str:
@@ -68,6 +69,12 @@ class PrTrial:
         except (OSError, ValueError, TypeError) as e:
             error(f"PrTrial: unreadable state in {STATE_PATH} ({e}), treating it as no trial")
             return None
+
+    @staticmethod
+    def active_number() -> Optional[int]:
+        """The number of the PR the checkout is on for a trial, None when it is on its normal branch."""
+        trial = PrTrial.state()
+        return trial.number if trial and trial.status != ENDED else None
 
     @staticmethod
     def _save(trial: Trial) -> None:
@@ -238,9 +245,10 @@ class PrTrial:
         return f"updated to {head[:8]}"
 
     @staticmethod
-    def confirm_started() -> Optional[str]:
+    def confirm_started() -> Optional[tuple[str, bool]]:
         """Called once the server is up: stands the watchdog down and returns what the user should
-        be told about the trial — it began, it was rolled back, it ended — or None."""
+        be told about the trial — it began, it was rolled back, it ended — and whether to say it
+        quietly, or None."""
         trial = PrTrial.state()
         if trial is None:
             trace("PrTrial: no PR is being tried")
@@ -251,10 +259,11 @@ class PrTrial:
             PrTrial._clear()
             info(f"PrTrial: PR #{trial.number} was rolled back by the watchdog, now on {branch}")
             return (f"PR #{trial.number} did not start within {WATCHDOG_TIMEOUT} seconds, so the server went back "
-                    f"to {branch}. The trial is over. The server's last output:\n{output or '(none)'}")
+                    f"to {branch}. The trial is over. The server's last output:\n{output or '(none)'}"), False
         if trial.status == ENDED:
             PrTrial._clear()
-            return f"The trial of PR #{trial.number} is over ({trial.end_reason}). The server now runs {branch}."
+            return (f"The trial of PR #{trial.number} is over ({trial.end_reason}). The server now runs {branch}.",
+                    trial.ended_unattended)
         if branch != trial.branch:
             PrTrial._clear()
             info(f"PrTrial: state says PR #{trial.number} but the checkout is on {branch}, state dropped")
@@ -270,12 +279,12 @@ class PrTrial:
         return (f"The server now runs PR #{trial.number} ({trial.title}) at {trial.sha[:8]} as a trial. No updates "
                 f"are fetched while it lasts; it ends after {MAX_DAYS} days, when the PR is closed, or once it "
                 f"is merged and released. exit_pr() goes back to {trial.previous_branch} — the user can also "
-                f"send //exit_pr.")
+                f"send //exit_pr."), False
 
     @staticmethod
     def daily_check(now: datetime) -> None:
         """Once a day from REMINDER_HOUR: ends a trial that is over (a restart), otherwise reminds
-        the user that the server runs a PR and gets no updates."""
+        the user that the server runs a PR and gets no updates. Both quietly — it is night."""
         trial = PrTrial.state()
         today = now.date().isoformat()
         if trial is None or trial.status != ACTIVE or now.hour < REMINDER_HOUR or trial.reminded == today:
@@ -283,6 +292,7 @@ class PrTrial:
         from assistant.SystemNote import system_note
         reason = PrTrial.over_reason(trial)
         if reason:
+            trial.ended_unattended = True
             PrTrial._mark_ended(trial, reason)
             info(f"PrTrial: daily check restarts the server: {CodeQualityMaintainer.pull_and_restart()}")
             return

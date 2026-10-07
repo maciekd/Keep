@@ -40,7 +40,8 @@ install runs one of its own open PRs as `trial/pr-<N>` and `restart_server` stay
 state is `cache/trial/state.json`, not a config key. `trial_watchdog.sh` — run from a copy taken before the PR is
 checked out — goes back to the previous branch when the server has not written `cache/trial/started` in time. The
 trial ends on `exit_pr`, when the PR is closed, when its merge commit is on the target branch, or after 7 days;
-the maintainer's thread checks daily and reminds the user that no updates are fetched meanwhile.
+the maintainer's thread checks nightly at 03:00 and quietly reminds the user that no updates are fetched meanwhile.
+No nightly code-quality run happens during a trial (`trial_skip_reason`, `//nightly` included): the checkout holds the PR's code.
 
 ## Code Style
 

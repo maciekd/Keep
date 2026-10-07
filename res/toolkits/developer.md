@@ -41,7 +41,7 @@ when the user wants to go back, or says the change does not work:
 
 `exit_pr()`
 
-A system note tells you when a trial begins, ends or is rolled back, and reminds the user daily while one runs.
+A system note tells you when a trial begins, ends or is rolled back, and reminds the user once a day, silently, while one runs.
 
 ### Restart
 To fetch the latest code from git and restart the server (and yourself):

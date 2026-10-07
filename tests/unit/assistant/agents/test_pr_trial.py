@@ -182,11 +182,27 @@ class TestRestartDuringATrial:
         assert PrTrial.state().status == ENDED
 
 
+class TestNightlyRunDuringATrial:
+    @pytest.mark.parametrize("force", [False, True], ids=["scheduled", "//nightly"])
+    def test_no_nightly_run_works_on_the_prs_checkout(self, world, force):
+        running_trial()
+        maintainer = CodeQualityMaintainer()
+        with patch.object(CodeQualityMaintainer, "unavailable_reason", return_value=None), \
+                patch.object(CodeQualityMaintainer, "nightly_skip_reason", return_value=None), \
+                patch.object(maintainer, "_nightly_run") as run:
+            maintainer._execute_nightly_run(force=force)
+            run.assert_not_called()
+            running_trial(status=ENDED)   # over, the checkout is on its way back: the run is on again
+            maintainer._execute_nightly_run(force=force)
+            run.assert_called_once()
+
+
 class TestConfirmStarted:
     def test_a_pending_trial_becomes_active_and_stands_the_watchdog_down(self, world):
         running_trial(status=PENDING)
         world.branch = "trial/pr-42"
-        assert "42" in PrTrial.confirm_started()
+        message, quiet = PrTrial.confirm_started()
+        assert "42" in message and not quiet
         assert PrTrial.state().status == ACTIVE
         assert module.STARTED_MARKER.exists()
 
@@ -199,13 +215,15 @@ class TestConfirmStarted:
     def test_a_rollback_is_reported_with_the_servers_last_output_and_forgotten(self, world):
         running_trial(status=PENDING)
         module.ROLLED_BACK_PATH.write_text("ImportError: no module named lights")
-        message = PrTrial.confirm_started()
+        message, quiet = PrTrial.confirm_started()
+        assert not quiet
         assert "ImportError: no module named lights" in message and "release" in message
         assert PrTrial.state() is None
 
     def test_an_ended_trial_is_reported_once(self, world):
         running_trial(status=ENDED, end_reason="the PR was closed")
-        assert "the PR was closed" in PrTrial.confirm_started()
+        message, quiet = PrTrial.confirm_started()
+        assert "the PR was closed" in message and not quiet
         assert PrTrial.state() is None
         assert PrTrial.confirm_started() is None
 
@@ -217,31 +235,34 @@ class TestConfirmStarted:
 
 
 class TestDailyCheck:
-    MORNING = datetime(2026, 3, 4, 9, 5)
+    NIGHT = datetime(2026, 3, 4, 3, 5)
 
     def test_reminds_once_a_day_that_no_updates_are_fetched(self, world):
         running_trial(age_days=2)
         with patch("assistant.SystemNote.system_note") as note:
-            PrTrial.daily_check(self.MORNING)
-            PrTrial.daily_check(self.MORNING.replace(hour=15))
+            PrTrial.daily_check(self.NIGHT)
+            PrTrial.daily_check(self.NIGHT.replace(hour=15))
             assert note.call_count == 1
-            PrTrial.daily_check(self.MORNING.replace(day=5))
+            PrTrial.daily_check(self.NIGHT.replace(day=5))
             assert note.call_count == 2
         assert "42" in note.call_args.args[1]
         assert note.call_args.kwargs["quiet"] is True   # a daily reminder must not ring the phone
 
     def test_keeps_quiet_before_the_reminder_hour_and_without_a_trial(self, world):
         with patch("assistant.SystemNote.system_note") as note:
-            PrTrial.daily_check(self.MORNING)
+            PrTrial.daily_check(self.NIGHT)
             running_trial()
-            PrTrial.daily_check(self.MORNING.replace(hour=3))
+            PrTrial.daily_check(self.NIGHT.replace(hour=1))
         note.assert_not_called()
 
     def test_a_trial_that_is_over_is_ended_with_a_restart_instead_of_a_reminder(self, world):
         running_trial(age_days=MAX_DAYS + 1)
         with patch("assistant.SystemNote.system_note") as note, \
                 patch.object(CodeQualityMaintainer, "pull_and_restart", return_value="restarting") as pull:
-            PrTrial.daily_check(self.MORNING)
+            PrTrial.daily_check(self.NIGHT)
         pull.assert_called_once_with()
         note.assert_not_called()
         assert PrTrial.state().status == ENDED
+        # nobody asked for this restart, so what the new process reports must not ring the phone
+        world.branch = "release"
+        assert PrTrial.confirm_started()[1] is True

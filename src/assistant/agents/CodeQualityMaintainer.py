@@ -356,10 +356,18 @@ class CodeQualityMaintainer:
             return NIGHTLY_OFF_MESSAGE
         return None
 
+    @staticmethod
+    def trial_skip_reason() -> Optional[str]:
+        """Why no nightly run happens while a PR is tried, //nightly included: the checkout holds the
+        PR's code, so the run would analyse that and branch its own PRs off the trial branch."""
+        from assistant.agents.PrTrial import PrTrial
+        number = PrTrial.active_number()
+        return f"the server is trying PR #{number}; the nightly run waits until the trial is over" if number else None
+
     def _execute_nightly_run(self, force=False, only=None):
         """The whole night, or with `only` (one of NIGHTLY_STEPS) that step alone. `force` is
         //nightly: it runs with `self_improvement.nightly_runs` off, never with the integration off."""
-        reason = self.unavailable_reason() if force else self.nightly_skip_reason()
+        reason = (self.unavailable_reason() if force else self.nightly_skip_reason()) or self.trial_skip_reason()
         if reason:
             info(f"CodeQualityMaintainer: skipping nightly run — {reason}")
             return

@@ -160,9 +160,10 @@ def _confirm_pr_trial():
     from assistant.agents.PrTrial import PrTrial
     from assistant.SystemNote import system_note
     try:
-        message = PrTrial.confirm_started()
-        if message:
-            system_note("server", message)
+        news = PrTrial.confirm_started()
+        if news:
+            message, quiet = news
+            system_note("server", message, quiet=quiet)
     except Exception as e:
         error(f"PR trial check at startup failed: {e}")
 

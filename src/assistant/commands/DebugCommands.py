@@ -413,7 +413,7 @@ class DebugCommands:
         only = args.strip().lower() or None
         if only and only not in cqm.NIGHTLY_STEPS:
             return f"Usage: //nightly (the whole run) or //nightly <{'|'.join(cqm.NIGHTLY_STEPS)}> (one step)"
-        reason = cqm.CodeQualityMaintainer.unavailable_reason()
+        reason = cqm.CodeQualityMaintainer.unavailable_reason() or cqm.CodeQualityMaintainer.trial_skip_reason()
         if reason:
             info(f"//nightly: not started — {reason}")
             return reason
