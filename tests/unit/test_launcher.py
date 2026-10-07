@@ -31,8 +31,12 @@ def telegram_only_config():
 def quiet_heavy_startup():
     """Everything that would talk to the world: LLM pre-heat, integrations, agents, the bot,
     both history markers (they would otherwise land in the suite's database), and the first-run
-    files (the memory stub and first_run.json would land in the developer's checkout)."""
+    files (the memory stub and first_run.json would land in the developer's checkout). No LLM
+    backend is built either — the CacheAuditor is stubbed whole and the handlers' DialogManagers
+    get a fake per tier: the fast tier is Gemini by default and importing its client is ~0.3 s,
+    paid by the first test on each worker that built one."""
     with patch('floxy_ai_server._register_llm_pre_heat'), \
+         patch('assistant.DialogManager.create_llm', side_effect=lambda *a, **k: Mock(model="fake-model")), \
          patch('floxy_ai_server._post_startup_message'), \
          patch('assistant.MemoryFile.seed', return_value=False), \
          patch('assistant.FirstRun.begin_if_fresh'), \
@@ -40,7 +44,7 @@ def quiet_heavy_startup():
          patch('common.StartupTracker.StartupTracker.record_shutdown'), \
          patch('assistant.integration.bootstrap.discover_integrations', return_value=Mock()) as monitor, \
          patch('assistant.integration.bootstrap.start_feeds'), \
-         patch('assistant.agents.CacheAuditor.CacheAuditor.start'), \
+         patch('assistant.agents.CacheAuditor.CacheAuditor'), \
          patch('assistant.agents.CodeQualityMaintainer.CodeQualityMaintainer.start'), \
          patch('assistant.agents.AutonomousActionManager.AutonomousActionManager.get_instance') as autonomous, \
          patch('assistant.prompt.PromptSectionGenerator.PromptSectionGenerator.start'), \

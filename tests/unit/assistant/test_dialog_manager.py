@@ -536,13 +536,20 @@ def test_transport_drop_notice_starts_audio_and_publishes_overlay(monkeypatch):
 # Additional tests
 # ===========================================================================
 
+@pytest.fixture
+def fake_llm_backends(monkeypatch):
+    """A DialogManager whose test is about the voice, not the LLMs: the real create_llm builds
+    the fast tier's Gemini client, and that import costs the worker ~0.25 s."""
+    monkeypatch.setattr('assistant.DialogManager.CachedLLM', FakeAI)
+    monkeypatch.setattr('assistant.llm.CachedLLM.CachedLLM', FakeAI)
+    monkeypatch.setattr('assistant.DialogManager.create_llm', lambda *a, **k: Mock(model="fake-model"))
+
+
 @pytest.mark.unit
-def test_select_voice_without_factory_runs_text_only(monkeypatch):
+def test_select_voice_without_factory_runs_text_only(fake_llm_backends):
     """A process without a voice interface passes voice_factory=None: no synthesizer is
     ever built and self.voice stays None, which RequestProcessor.stream_response reads
     as "stream the reply as text"."""
-    monkeypatch.setattr('assistant.DialogManager.CachedLLM', FakeAI)
-    monkeypatch.setattr('assistant.llm.CachedLLM.CachedLLM', FakeAI)
 
     dm = DialogManager(web_request_handler=Mock(), test_suite_mode=True)
     assert dm.voice is None
@@ -551,13 +558,11 @@ def test_select_voice_without_factory_runs_text_only(monkeypatch):
 
 
 @pytest.mark.unit
-def test_select_voice_builds_one_synth_per_language_via_factory(monkeypatch):
+def test_select_voice_builds_one_synth_per_language_via_factory(fake_llm_backends):
     """The factory decides the backend; DialogManager only memoizes its result per
     request language so a warm backend connection survives across the turns of one
     dialog (as the old per-DialogManager synth pair did) and set_request_language is
     applied on every selection."""
-    monkeypatch.setattr('assistant.DialogManager.CachedLLM', FakeAI)
-    monkeypatch.setattr('assistant.llm.CachedLLM.CachedLLM', FakeAI)
     built = []
 
     def factory(lang):
@@ -580,11 +585,9 @@ def test_select_voice_builds_one_synth_per_language_via_factory(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("server_sound", [True, False])
-def test_select_voice_allows_the_night_voice_only_on_the_house_speakers(monkeypatch, server_sound):
+def test_select_voice_allows_the_night_voice_only_on_the_house_speakers(fake_llm_backends, server_sound):
     """A reply the client plays itself (the phone apps) wakes nobody, so only a
     server_sound request may whisper."""
-    monkeypatch.setattr('assistant.DialogManager.CachedLLM', FakeAI)
-    monkeypatch.setattr('assistant.llm.CachedLLM.CachedLLM', FakeAI)
 
     dm = DialogManager(web_request_handler=Mock(), test_suite_mode=True, voice_factory=lambda lang: Mock())
     dm.select_voice(Mock(lang="en-US", server_sound=server_sound))
@@ -1173,12 +1176,10 @@ def test_llms_are_cached_llm_around_vault_llm(monkeypatch):
 
 
 @pytest.mark.unit
-def test_select_voice_does_not_memoize_a_language_no_engine_speaks(monkeypatch):
+def test_select_voice_does_not_memoize_a_language_no_engine_speaks(fake_llm_backends):
     """d93803e4: the factory answers None when no enabled engine speaks the language. That
     turn runs text-only and the question is asked again next time, so enabling an engine
     from the chat takes effect on the very next request instead of after a restart."""
-    monkeypatch.setattr('assistant.DialogManager.CachedLLM', FakeAI)
-    monkeypatch.setattr('assistant.llm.CachedLLM.CachedLLM', FakeAI)
     answers = [None, Mock(name="voice-sv-SE")]
     built = []
 

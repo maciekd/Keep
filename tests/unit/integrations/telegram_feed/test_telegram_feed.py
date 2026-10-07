@@ -276,8 +276,13 @@ class TestFormatMessageWithVideos:
     @pytest.mark.asyncio
     async def test_video_download_failure_returns_placeholder(self, feed_no_blacklist):
         msg = _make_msg(sender_id=123, text=None, video=Mock(), download_media_result=None)
-        result = await feed_no_blacklist._format_message(msg, _make_me(), _make_dialog())
+        # The size check asks the analyzer for its cap; the real one builds the video LLM.
+        with patch('integrations.telegram_feed.TelegramFeedIntegration.media_analyzer') as mock_accessor:
+            mock_accessor.return_value.video_size_limit.return_value = 200 * 1024 * 1024
+            result = await feed_no_blacklist._format_message(msg, _make_me(), _make_dialog())
         assert "[Video]" in result
+        assert msg.downloads == 1
+        mock_accessor.return_value.describe_bytes.assert_not_called()
 
 
 def _dialog_with(messages, name="chat"):
