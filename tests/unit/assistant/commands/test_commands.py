@@ -1811,6 +1811,15 @@ class TestCmdConfigSet:
         assert reply == "developer_release saved. " + Commands.DEVELOPER_RELEASE_HINT
         assert ConfigStore.coerce("developer_release", "true") is True
 
+    @pytest.mark.parametrize("key", ["telemetry.transcripts", "telemetry.enabled"])
+    def test_a_telemetry_key_gets_the_telemetry_hint_not_the_server_restart(self, commands_instance, key):
+        """The telemetry reads its keys per event, so turning it off needs no restart; the
+        assistant must not be told to offer one as it is for every other section."""
+        with patch.object(ConfigStore, "set_value", return_value=f"{key} saved"):
+            reply = commands_instance._run_config_set(key, "false")
+        assert reply == f"{key} saved. " + Commands.TELEMETRY_HINT
+        assert Commands.TELEMETRY_HINT not in (Commands.RESTART_HINT, Commands.SERVER_RESTART_HINT)
+
     def test_a_telegram_key_points_at_the_bot_restart(self, commands_instance):
         with patch.object(ConfigStore, "set_value", return_value="telegram_bot.link_previews saved"):
             reply = commands_instance._run_config_set("telegram_bot.link_previews", "true")

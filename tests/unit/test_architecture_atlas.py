@@ -137,3 +137,41 @@ def test_more_info_keeps_the_whole_docstring_when_the_description_is_an_override
     monkeypatch.setitem(atlas.MODULES, "src/pkg/lamp.py", "Runs the lamp.")
     node = module_in("lamp.py", '"""Dims the lamp. Slowly."""\n')
     assert (node["desc"], node["more"]) == ("Runs the lamp.", "Dims the lamp. Slowly.")
+
+
+# --- the toolkits the atlas lists ------------------------------------------------------------
+
+def test_the_atlas_reads_a_folder_toolkits_front_matter_the_way_the_server_does(atlas, tmp_path):
+    """build.py runs in CI with the stdlib alone, so it reads toolkit.md front matter with a
+    reader of its own, which must agree with the YAML loader the server uses — on every
+    toolkit of the repository and on a summary that is quoted because it holds a colon."""
+    from assistant.commands import Toolkits
+
+    for toolkit in Toolkits.discover():
+        meta = atlas._front_matter(toolkit.file)
+        assert (meta["name"], meta["summary"], tuple(meta["commands"])) == \
+               (toolkit.name, toolkit.summary, toolkit.commands), toolkit.file
+
+    path = tmp_path / "lamp" / Toolkits.FOLDER_TOOLKIT_FILE
+    path.parent.mkdir()
+    path.write_text('---\nname: lamp\nsummary: "the lamps: on, off"\ncommands: [lamp_on, "lamp_off"]\n---\nbody\n',
+                    encoding="utf-8")
+    toolkit = Toolkits.read_folder_toolkit(path)
+    meta = atlas._front_matter(path)
+    assert (meta["name"], meta["summary"], tuple(meta["commands"])) == (toolkit.name, toolkit.summary, toolkit.commands)
+
+
+def test_the_atlas_lists_every_toolkit_under_the_file_that_holds_it(atlas, unchanged_modules_from_the_cache):
+    """A core toolkit is in res/toolkits, one an integration owns is in its folder: the atlas
+    node of each points at the file the server reads, with the commands the server registered."""
+    from assistant.commands.Toolkits import TOOLKITS
+
+    res = next(g for g in atlas.build_tree()["children"] if g["id"] == "res")
+    group = next(c for c in res["children"] if c["id"] == "res/toolkits")
+    listed = {node["path"]: node for node in group["children"]}
+
+    expected = {toolkit.path.relative_to(REPO_DIR).as_posix(): toolkit for toolkit in TOOLKITS}
+    assert set(listed) == set(expected)
+    for path, toolkit in expected.items():
+        assert listed[path]["commands"] == list(toolkit.commands), path
+        assert listed[path]["lines"] == len(toolkit.path.read_text(encoding="utf-8").splitlines()), path

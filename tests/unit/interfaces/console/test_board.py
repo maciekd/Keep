@@ -178,3 +178,32 @@ class TestTableWidth:
         assert "phone" not in row and row.endswith("...") and "drawer" not in row
         assert "Where" not in "\n".join(lines)
         assert max(len(line) for line in lines) <= x + width - 1
+
+
+@pytest.mark.unit
+class TestGroupedRows:
+    """A row without cells parts two groups of a table (the Catalog's enabled and disabled
+    integrations): it takes a line of its own, drawn blank, and the rows under it keep
+    their place in the list the selection counts in."""
+
+    @staticmethod
+    def table() -> Table:
+        row = lambda name: (C, [(name, Theme.COLOR_TEXT), ("in 2h", Theme.COLOR_TEXT)])
+        return Table("Items", [("Name", 12), ("Next", None)],
+                     [row("item-00"), row("item-01"), (C, []), row("item-02")], "nothing yet")
+
+    def test_the_parting_row_is_a_blank_line_between_its_neighbours(self):
+        screen = TUIScreen(60, 12)
+        Board.draw_table(screen, [], 1, 1, 50, 10, self.table())
+        lines = rows(screen)
+        last_of_first_group = next(i for i, line in enumerate(lines) if "item-01" in line)
+        assert "●" not in lines[last_of_first_group + 1] and "item" not in lines[last_of_first_group + 1]
+        assert "item-02" in lines[last_of_first_group + 2]
+
+    def test_a_row_under_the_parting_is_selected_by_its_place_in_the_list(self):
+        screen = TUIScreen(60, 12)
+        Board.draw_table(screen, [], 1, 1, 50, 10, self.table(), selected=3)
+        lines = rows(screen)
+        selected_y = next(i for i, line in enumerate(lines) if "item-02" in line) + 1
+        assert style(screen, selected_y, 3).bg == Theme.COLOR_SELECTED_BG
+        assert style(screen, selected_y - 1, 3).bg != Theme.COLOR_SELECTED_BG, "the blank row took the tint"
