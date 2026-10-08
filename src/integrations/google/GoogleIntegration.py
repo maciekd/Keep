@@ -9,9 +9,8 @@ from assistant.integration.mail.MailAccount import MailAccount
 from assistant.integration.mail.MailSource import MailSource
 from common.ConfigManager import ConfigManager
 from common.logging import info, trace
-from integrations.google.GoogleAuth import (SCOPE_CALENDAR, SCOPE_MAIL, GoogleAuth, NotSignedIn, SignIn,
-                                            delete_all_token_files, not_signed_in_hint, parse_pasted,
-                                            sign_in_again_hint)
+from assistant.integration.OAuthPaste import SignIn, parse_pasted
+from integrations.google.GoogleAuth import (SCOPE_CALENDAR, SCOPE_MAIL, GoogleAuth, NotSignedIn, delete_all_token_files, not_signed_in_hint, sign_in_again_hint)
 from integrations.google.GoogleCalendarAccount import GoogleCalendarAccount
 
 SECTION = "google"

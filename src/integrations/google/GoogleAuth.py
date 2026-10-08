@@ -4,9 +4,9 @@ A Google "Desktop app" OAuth client may only redirect to localhost — the machi
 runs on, which is not the server. So the flow is loopback-by-paste: `begin()` builds the
 authorization URL (offline access, consent forced so a refresh token comes back, a random
 `state` kept per account), the user signs in with it in any browser and lands on a
-`http://localhost:18722/?state=…&code=…` page that never loads, and pastes that address — or
-just the code — back into `finish()`, which checks the state and exchanges the code at the
-token endpoint. The refresh token, the access token and its expiry live in
+`http://localhost:18722/?state=…&code=…` page that never loads, and pastes that whole address
+back into `finish()`, which checks the state and exchanges the code at the token endpoint (the
+paste handling is `assistant.integration.OAuthPaste`, shared with the other sign-ins by paste). The refresh token, the access token and its expiry live in
 `cache/oauth/google-<slug>.json` (mode 600); `token()` refreshes within a minute of the expiry.
 
 A refresh Google answers with `invalid_grant` (consent revoked, or a refresh token that
@@ -19,15 +19,15 @@ import os
 import secrets
 import threading
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import urlencode
 
 import requests
 
 from assistant.integration.Accounts import slug
+from assistant.integration.OAuthPaste import SignIn, pasted_code
 from common.logging import error, info, trace
 from common.Paths import CACHE_DIR
 
@@ -46,21 +46,6 @@ TIMEOUT = 30
 
 class NotSignedIn(Exception):
     """The account has no usable token: never signed in, signed out, or the refresh was refused."""
-
-
-@dataclass(frozen=True)
-class SignIn:
-    """What the user needs — the URL to open — and the state the pasted answer must carry."""
-    url: str
-    state: str
-    address: str
-
-    @property
-    def instructions(self) -> str:
-        who = f" as {self.address}" if self.address else ""
-        return (f"open {self.url} in any browser and sign in{who}; the browser then lands on a "
-                f"{REDIRECT_URI}… page that will not load — that is expected — copy that page's whole address "
-                f"from the address bar and paste it back")
 
 
 def token_path(name: str) -> Path:
@@ -88,18 +73,6 @@ def not_signed_in_hint(name: str) -> str:
 
 def sign_in_again_hint(name: str) -> str:
     return f'sign in again — google_login("{name}")'
-
-
-def parse_pasted(pasted: str) -> tuple[str, str, str]:
-    """(code, state, error) out of what the user pasted: the whole redirected URL, its query
-    string, or the bare code (no state then)."""
-    text = pasted.strip().strip("\"'`<>").strip()
-    if "code=" not in text and "state=" not in text and "error=" not in text:
-        return text, "", ""
-    query = urlsplit(text).query if "?" in text else text.lstrip("?")
-    values = parse_qs(query, keep_blank_values=True)
-    first = lambda key: (values.get(key) or [""])[0].strip()
-    return first("code"), first("state"), first("error")
 
 
 class GoogleAuth:
@@ -229,7 +202,7 @@ class GoogleAuth:
                 params["login_hint"] = address
             url = f"{AUTH_URL}?{urlencode(params)}"
         info(f"Google: sign-in of '{self.name}' started for {', '.join(scopes)}")
-        return SignIn(url, self._state, address)
+        return SignIn(url, self._state, REDIRECT_URI, address)
 
     def pending(self) -> bool:
         return self._state is not None
@@ -238,20 +211,12 @@ class GoogleAuth:
         return bool(state) and self._state == state
 
     def finish(self, pasted: str) -> str:
-        """Exchanges the pasted address (or code) for the tokens and stores them; "" when
+        """Exchanges the code in the pasted address for the tokens and stores them; "" when
         signed in, else why not."""
-        code, state, refusal = parse_pasted(pasted)
-        if refusal:
-            info(f"Google: sign-in of '{self.name}' refused by Google: {refusal}")
-            return f"Google refused the sign-in: {refusal}"
         with self._lock:
-            if self._state is None:
-                return f'no sign-in is in progress for {self.name} — run google_login("{self.name}") first'
-            if state and state != self._state:
-                info(f"Google: sign-in of '{self.name}' pasted with a state that is not this flow's")
-                return f'the pasted address belongs to another sign-in — run google_login("{self.name}") again and paste that one'
-            if not code:
-                return "no code in what was pasted — paste the whole address the browser landed on"
+            code, problem = pasted_code(pasted, self._state, "Google", f'google_login("{self.name}")')
+            if problem:
+                return problem
             client_id, client_secret = self._client()
             answer = self._token_request({"code": code, "client_id": client_id, "client_secret": client_secret,
                                           "redirect_uri": REDIRECT_URI, "grant_type": "authorization_code"})

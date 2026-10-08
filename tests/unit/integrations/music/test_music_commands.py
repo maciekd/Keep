@@ -5,7 +5,8 @@ import pytest
 from assistant.commands.Commands import Commands
 from assistant.commands.Toolkits import TOOLKITS
 from integrations.music.MusicCommands import MusicCommands
-from integrations.music.SpotifyAuth import REDIRECT_URI, SignIn
+from assistant.integration.OAuthPaste import SignIn
+from integrations.music.SpotifyAuth import REDIRECT_URI
 
 
 @pytest.fixture
@@ -53,7 +54,7 @@ PASTED = f"{REDIRECT_URI}?code=AQcode&state=st-1"
 
 def _integration(finish="", playlists=3):
     integration = Mock()
-    integration.login_begin.return_value = SignIn(URL, "st-1")
+    integration.login_begin.return_value = SignIn(URL, "st-1", REDIRECT_URI)
     integration.login_finish.return_value = finish
     integration.spotify_user_name.return_value = "Marcus"
     integration.get_spotify_playlists.return_value = [Mock()] * playlists

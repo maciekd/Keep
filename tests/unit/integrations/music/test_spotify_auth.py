@@ -11,7 +11,7 @@ import pytest
 import requests
 
 from integrations.music.SpotifyAuth import (REDIRECT_URI, SCOPES, NotSignedIn, SpotifyAuth, TokenUnavailable,
-                                            _PasteOnlyOAuth, parse_pasted)
+                                            _PasteOnlyOAuth)
 
 CLIENT = ("cid-1234", "csecret")
 
@@ -78,19 +78,6 @@ def redirected(sign_in, code="AQcode", state=None) -> str:
 
 
 @pytest.mark.unit
-class TestParsePasted:
-    def test_the_whole_address_or_its_query(self):
-        assert parse_pasted(f'"{REDIRECT_URI}?code=AQ%2Fx&state=st"') == ("AQ/x", "st", "")
-        assert parse_pasted("?code=AQx&state=st") == ("AQx", "st", "")
-        assert parse_pasted(f"{REDIRECT_URI}?error=access_denied&state=st")[2] == "access_denied"
-
-    def test_anything_without_the_parameters_is_no_code(self):
-        for pasted in ("  AQbare  ", REDIRECT_URI, "https://accounts.spotify.com/authorize?client_id=cid",
-                       "the page says it cannot be reached"):
-            assert parse_pasted(pasted) == ("", "", ""), pasted
-
-
-@pytest.mark.unit
 class TestBegin:
     def test_the_url_asks_for_the_playlist_scopes_at_the_registered_redirect_and_carries_a_fresh_state(self, token_path):
         first = auth(token_path).begin()
@@ -102,7 +89,7 @@ class TestBegin:
         assert params["redirect_uri"] == REDIRECT_URI and params["client_id"] == "cid-1234"
         assert params["response_type"] == "code"
         assert params["state"] == first.state and len(first.state) >= 16 and first.state != second.state
-        assert REDIRECT_URI in first.instructions and first.url in first.instructions
+        assert REDIRECT_URI in first.instructions and first.url in first.instructions and " as " not in first.instructions
 
     def test_without_a_client_it_refuses(self, token_path):
         with pytest.raises(RuntimeError, match="client_id"):

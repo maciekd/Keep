@@ -5,10 +5,8 @@ A Spotify app redirects only to an address registered with it — here the loopb
 So the flow is loopback-by-paste: `begin()` builds the authorization URL (a random `state` is
 kept for the flow), the user signs in with it in any browser and lands on a
 `http://127.0.0.1:8888/callback?code=…&state=…` page that never loads, and pastes that whole
-address back into `finish()`, which checks the state and exchanges the code. The whole address
-is required: a bare code would skip the state check, and a paste without `code=` (the bare
-redirect, the link itself, a sentence) is refused as such instead of being sent to Spotify.
-spotipy keeps the refresh token, the access token and its expiry in `cache/oauth/spotify.json`
+address back into `finish()`, which checks the state and exchanges the code (the paste handling
+is `assistant.integration.OAuthPaste`, shared with the other sign-ins by paste). spotipy keeps the refresh token, the access token and its expiry in `cache/oauth/spotify.json`
 (mode 600) and refreshes the access token itself when `token()` finds it expired. The failures
 of `token()` are two kinds: `NotSignedIn` when only the user can help (never signed in, the
 refresh refused because the consent was revoked, the scopes grown) — the token file is kept,
@@ -22,15 +20,14 @@ opening a browser or reading the code from stdin — is cut off: a server has ne
 import os
 import secrets
 import threading
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.parse import parse_qs, urlsplit
 
 import requests
 from spotipy.cache_handler import CacheFileHandler
 from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 
+from assistant.integration.OAuthPaste import SignIn, pasted_code
 from common.logging import error, info, trace
 from common.Paths import CACHE_DIR
 
@@ -50,32 +47,6 @@ class NotSignedIn(Exception):
 
 class TokenUnavailable(Exception):
     """No token this time: the token endpoint could not be reached or failed. The sign-in stands."""
-
-
-@dataclass(frozen=True)
-class SignIn:
-    """What the user needs — the URL to open — and the state the pasted answer must carry."""
-    url: str
-    state: str
-
-    @property
-    def instructions(self) -> str:
-        return (f"open {self.url} in any browser and sign in to the household's Spotify account; the browser then "
-                f"lands on a {REDIRECT_URI}… page that will not load — that is expected — copy that page's whole "
-                f"address from the address bar and paste it back")
-
-
-def parse_pasted(pasted: str) -> tuple[str, str, str]:
-    """(code, state, error) out of what the user pasted: the whole redirected URL or its query
-    string. Anything without those parameters — a bare code, the bare redirect, the sign-in
-    link, a sentence — parses to nothing, so `finish()` asks for the whole address."""
-    text = pasted.strip().strip("\"'`<>").strip()
-    if "code=" not in text and "state=" not in text and "error=" not in text:
-        return "", "", ""
-    query = urlsplit(text).query if "?" in text else text.lstrip("?")
-    values = parse_qs(query, keep_blank_values=True)
-    first = lambda key: (values.get(key) or [""])[0].strip()
-    return first("code"), first("state"), first("error")
 
 
 class _PasteOnlyOAuth(SpotifyOAuth):
@@ -159,7 +130,7 @@ class SpotifyAuth:
             self._state = secrets.token_urlsafe(16)
             url = oauth.get_authorize_url(state=self._state)
         info(f"Spotify: sign-in started for {', '.join(SCOPES)}")
-        return SignIn(url, self._state)
+        return SignIn(url, self._state, REDIRECT_URI)
 
     def pending(self) -> bool:
         return self._state is not None
@@ -167,19 +138,10 @@ class SpotifyAuth:
     def finish(self, pasted: str) -> str:
         """Exchanges the code in the pasted address for the tokens and stores them; "" when
         signed in, else why not."""
-        code, state, refusal = parse_pasted(pasted)
-        if refusal:
-            info(f"Spotify: sign-in refused by Spotify: {refusal}")
-            return f"Spotify refused the sign-in: {refusal}"
         with self._lock:
-            if self._state is None:
-                return "no sign-in is in progress — run spotify_login() first"
-            if not code or not state:
-                info(f"Spotify: the paste carries {'no code' if not code else 'no state'}, nothing exchanged")
-                return "no code and state in what was pasted — paste the whole address the browser landed on"
-            if state != self._state:
-                info("Spotify: sign-in pasted with a state that is not this flow's")
-                return "the pasted address belongs to another sign-in — run spotify_login() again and paste that one"
+            code, problem = pasted_code(pasted, self._state, "Spotify", "spotify_login()")
+            if problem:
+                return problem
             oauth = self._oauth()
             try:
                 oauth.get_access_token(code, as_dict=False, check_cache=False)

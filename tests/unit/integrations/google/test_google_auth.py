@@ -11,7 +11,7 @@ import requests
 
 from integrations.google import GoogleAuth as auth_module
 from integrations.google.GoogleAuth import (REDIRECT_URI, SCOPE_CALENDAR, SCOPE_MAIL, GoogleAuth, NotSignedIn,
-                                            delete_all_token_files, parse_pasted, token_path)
+                                            delete_all_token_files, token_path)
 
 from .google_fakes import FakeGoogle, token_file, token_grant
 
@@ -88,12 +88,12 @@ class TestFinish:
         assert stored["refresh_token"] == "1//refresh" and 3500 < stored["expiry"] - time.time() <= 3599
         assert a.token() == "ya29.access" and len(google.token_posts()) == 1      # fresh: no refresh yet
 
-    def test_the_bare_code_is_accepted_too(self, token_dir, google):
-        google.answer_token(token_grant())
+    def test_a_bare_code_the_bare_redirect_and_the_link_are_refused_without_an_exchange(self, token_dir, google):
         a = auth()
-        a.begin()
-        assert a.finish("  4/0Abare  ") == ""
-        assert google.token_posts()[0].data["code"] == "4/0Abare"
+        sign_in = a.begin()
+        for pasted in ("  4/0Abare  ", REDIRECT_URI, sign_in.url):
+            assert "whole address" in a.finish(pasted), pasted
+        assert google.token_posts() == [] and not a.signed_in() and a.pending()
 
     def test_a_wrong_state_or_no_flow_exchanges_nothing(self, token_dir, google):
         a = auth()
@@ -120,12 +120,6 @@ class TestFinish:
         sign_in = a.begin()
         outcome = a.finish(redirected(sign_in))
         assert "refresh token" in outcome and not a.signed_in()
-
-    def test_parse_pasted_takes_a_url_a_query_string_or_a_code_with_quotes_around(self):
-        assert parse_pasted(f'"{REDIRECT_URI}?state=s1&code=4%2Fabc"') == ("4/abc", "s1", "")
-        assert parse_pasted("state=s1&code=4%2Fabc") == ("4/abc", "s1", "")
-        assert parse_pasted("'4/abc'") == ("4/abc", "", "")
-        assert parse_pasted(f"{REDIRECT_URI}?error=access_denied") == ("", "", "access_denied")
 
 
 @pytest.mark.unit

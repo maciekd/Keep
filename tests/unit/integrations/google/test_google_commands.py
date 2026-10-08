@@ -6,7 +6,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from assistant.commands.Commands import Commands
-from integrations.google.GoogleAuth import REDIRECT_URI, SignIn
+from assistant.integration.OAuthPaste import SignIn
+from integrations.google.GoogleAuth import REDIRECT_URI
 
 MODULE = "integrations.google.GoogleCommands"
 URL = "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid&state=st-1"
@@ -15,7 +16,7 @@ PASTED = f"{REDIRECT_URI}?state=st-1&code=4%2F0Acode"
 
 def _integration(finish=""):
     integration = Mock()
-    integration.login_begin.return_value = SignIn(URL, "st-1", "marcus@example.com")
+    integration.login_begin.return_value = SignIn(URL, "st-1", REDIRECT_URI, "marcus@example.com")
     integration.login_finish.return_value = finish
     account = Mock()
     account.name = "Personal"

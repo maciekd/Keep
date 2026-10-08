@@ -5,7 +5,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from integrations.google.GoogleAuth import REDIRECT_URI, SignIn
+from assistant.integration.OAuthPaste import SignIn
+from integrations.google.GoogleAuth import REDIRECT_URI
 from integrations.google.GoogleTab import GoogleTab
 
 URL = "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A18722%2F&response_type=code&scope=https%3A%2F%2Fmail.google.com%2F&access_type=offline&prompt=consent&state=st-1&login_hint=marcus%40example.com"
@@ -27,7 +28,7 @@ def make_tab(*accounts, finish=""):
     api = Mock()
     api.accounts.return_value = list(accounts)
     api.get_auth_status.return_value = {"status": "needs_auth", "message": ""}
-    api.login_begin.return_value = SignIn(URL, "st-1", "marcus@example.com")
+    api.login_begin.return_value = SignIn(URL, "st-1", REDIRECT_URI, "marcus@example.com")
     api.login_finish.return_value = finish
     tab = GoogleTab()
     tab._api = api

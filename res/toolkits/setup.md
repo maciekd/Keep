@@ -62,7 +62,8 @@ a system note says when the account is signed in (or that the code expired — r
 `google_login("Personal")`, from any chat. It comes back with a link: the user opens it in any browser, signs in,
 and lands on a http://localhost:18722/... page that does not load — that is expected. Tell the user to copy that
 page's whole address from the address bar and paste it into the chat; then run `google_login_code(pasted: str)`
-with it, quoted, e.g. `google_login_code("http://localhost:18722/?state=...&code=...")` (the bare code works too).
+with it, quoted, e.g. `google_login_code("http://localhost:18722/?state=...&code=...")` — the whole address, a bare
+code is refused.
 The link lives about ten minutes; an expired or reused code comes back as text — run google_login again. Needs
 `google.oauth.client_id` and `client_secret` set and the integration enabled; list_integrations shows the accounts
 still to sign in.

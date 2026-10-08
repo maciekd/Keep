@@ -19,7 +19,7 @@ class GoogleCommands(CommandSet):
         self.background_command(self._run_google_login, (name,), lane=self.commands.CONFIG_LANE)
 
     def cmd_google_login_code(self, parameter_string: str):
-        """Finishes the flow with the address the browser landed on (or the bare code)."""
+        """Finishes the flow with the whole address the browser landed on."""
         pasted = parameter_string.strip().strip("\"'`").strip()
         if not pasted:
             return 'google_login_code failed: paste the address the browser landed on, e.g. google_login_code("http://localhost:18722/?state=...&code=...")'
