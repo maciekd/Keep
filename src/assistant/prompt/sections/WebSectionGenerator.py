@@ -16,9 +16,11 @@ class WebSectionGenerator(PromptSectionGenerator):
                  "behind a bot wall, and the browse_* commands cannot run at all. Installing Google Chrome on the "
                  "server fixes it — nothing to sign in to or configure, the next web command picks it up.")
 
+    _UNPOLLED = object()
+
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "WebBrowser")
-        self._binary = None
+        self._binary = self._UNPOLLED    # the last poll's binary; None once a poll found none
 
     @staticmethod
     def chrome_binary() -> str | None:

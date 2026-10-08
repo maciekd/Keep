@@ -43,3 +43,23 @@ class TestCarriedByTheWebToolkit:
     def test_an_installed_chrome_leaves_no_heading_behind(self):
         assert Toolkits.render_sections(Toolkits.by_name("web"), {"web": ""}) == ""
         assert Toolkits.render_sections(Toolkits.by_name("web"), {}) == ""
+
+
+@pytest.mark.unit
+class TestPollLogging:
+    """The section is polled, so an unchanged verdict must not put a line in the log per poll."""
+
+    def test_an_unchanged_verdict_is_logged_once(self, section):
+        with patch(f"{MODULE}.chrome_binary", return_value=None), \
+                patch("assistant.prompt.sections.WebSectionGenerator.info") as info:
+            texts = {section._fetch_content() for _ in range(3)}
+        assert info.call_count == 1
+        assert texts == {WebSectionGenerator.NO_CHROME}
+
+    def test_a_chrome_installed_while_the_server_runs_is_logged_once_more(self, section):
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        with patch(f"{MODULE}.chrome_binary", side_effect=[None, None, chrome, chrome]), \
+                patch("assistant.prompt.sections.WebSectionGenerator.info") as info:
+            texts = [section._fetch_content() for _ in range(4)]
+        assert info.call_count == 2
+        assert texts == [WebSectionGenerator.NO_CHROME, WebSectionGenerator.NO_CHROME, "", ""]
