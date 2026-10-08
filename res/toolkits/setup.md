@@ -19,6 +19,10 @@ addressed by index — a field of a list of sections, `icloud.devices[0].display
 values, `yeslocal_outposts.exclude_mics[0]`; the index equal to the list's current length adds a new item, and a refusal
 names the index to use.
 
+`ai_message_footer` (top level, default true) is whether a message the assistant sends for the user — iMessage, WhatsApp — ends
+with the "[Sent with the help of AI 🤖]" footer; `config_set("ai_message_footer", "false")` turns it off everywhere at once,
+read at each send.
+
 The interfaces the server starts — `interfaces.voice.enabled`, `interfaces.telegram.enabled`,
 `interfaces.console.enabled` (`config_help("interfaces")`) — are set the same way, e.g.
 `config_set("interfaces.voice.enabled", "true")`. Telegram and the console are on by default and voice is off, so the

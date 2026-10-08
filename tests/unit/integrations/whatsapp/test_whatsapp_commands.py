@@ -75,6 +75,16 @@ class TestCmdSendWhatsapp:
         cls.get_instance.return_value.send.assert_called_once_with(
             "Charlotte", f"On my way home\n\n{commands_instance.AI_MESSAGE_SUFFIX}")
 
+    def test_the_footer_stays_home_when_the_setting_is_off(self, commands_instance):
+        import common.ConfigManager as config_module
+        real_get = config_module.config.get
+        with patch.object(config_module.config, "get",
+                          lambda key, *a, **k: False if key == "ai_message_footer" else real_get(key, *a, **k)), \
+             patch("integrations.whatsapp.WhatsAppIntegration.WhatsAppIntegration") as cls:
+            cls.get_instance.return_value.send.return_value = ""
+            commands_instance.run("send_whatsapp", ["Charlotte", "On my way home"])
+        cls.get_instance.return_value.send.assert_called_once_with("Charlotte", "On my way home")
+
     def test_an_unquoted_body_is_rejoined_on_its_commas(self, commands_instance):
         with patch("integrations.whatsapp.WhatsAppIntegration.WhatsAppIntegration") as cls:
             cls.get_instance.return_value.send.return_value = ""

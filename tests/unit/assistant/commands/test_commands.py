@@ -1863,6 +1863,15 @@ class TestCmdConfigSet:
         assert reply == "developer_release saved. " + Commands.DEVELOPER_RELEASE_HINT
         assert ConfigStore.coerce("developer_release", "true") is True
 
+    def test_the_ai_footer_flag_is_read_live_so_no_restart_is_offered(self, commands_instance):
+        """Contract with the config.yaml key ai_message_footer: a bool the sends read per message."""
+        with patch.object(ConfigStore, "set_value", return_value="ai_message_footer saved"):
+            reply = commands_instance._run_config_set("ai_message_footer", "false")
+        assert reply.startswith("ai_message_footer saved. ")
+        assert "no restart needed" in reply
+        assert "restart_integration" not in reply and "restart_server" not in reply
+        assert ConfigStore.coerce("ai_message_footer", "false") is False
+
     @pytest.mark.parametrize("key", ["telemetry.transcripts", "telemetry.enabled"])
     def test_a_telemetry_key_gets_the_telemetry_hint_not_the_server_restart(self, commands_instance, key):
         """The telemetry reads its keys per event, so turning it off needs no restart; the
@@ -2000,3 +2009,29 @@ class TestRestartServerNote:
             cqm.pull_and_restart.side_effect = RuntimeError("git down")
             commands_instance.cmd_restart_server("")
         note.assert_not_called()
+
+
+class TestWithAiFooter:
+    @staticmethod
+    def _footer(value):
+        import common.ConfigManager as config_module
+        real_get = config_module.config.get
+
+        def get(key, *args, **kwargs):
+            return value if key == "ai_message_footer" else real_get(key, *args, **kwargs)
+        return patch.object(config_module.config, "get", get)
+
+    def test_the_footer_is_appended_when_the_example_config_says_nothing_else(self, commands_instance):
+        sent = commands_instance.with_ai_footer("On my way")
+        assert sent.startswith("On my way\n\n")
+        assert "help of AI" in sent
+
+    def test_false_sends_the_body_as_written(self, commands_instance):
+        with self._footer(False):
+            assert commands_instance.with_ai_footer("On my way") == "On my way"
+
+    def test_an_absent_key_keeps_the_footer(self, commands_instance):
+        """An install whose config.yaml predates the setting must not change behaviour."""
+        import common.ConfigManager as config_module
+        with patch.object(config_module.config, "get", side_effect=lambda key, default=None: default):
+            assert commands_instance.with_ai_footer("On my way").endswith(commands_instance.AI_MESSAGE_SUFFIX)

@@ -20,7 +20,7 @@ class IMessageCommands(CommandSet):
 
         # LLM emits literal "\n" escape sequences — turn them into real newlines.
         body = normalize_llm_escapes(body)
-        body = f"{body}\n\n{self.commands.AI_MESSAGE_SUFFIX}"
+        body = self.commands.with_ai_footer(body)
         from integrations.imessage.IMessageIntegration import IMessageIntegration
         return IMessageIntegration.get_instance().send(recipient, body)
 

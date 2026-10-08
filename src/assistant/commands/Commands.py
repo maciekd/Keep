@@ -88,6 +88,8 @@ class Commands:
     # never receives would fail every expectation that depends on its reference.
     PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
+    # The footer is on unless config.yaml says ai_message_footer: false — read at each send.
+    AI_FOOTER_KEY = "ai_message_footer"
 
     # Integrations are looked up per call: get_instance() is the cache, so a restarted
     # integration (restart_integration) is what the next command uses.
@@ -108,6 +110,13 @@ class Commands:
     # (interfaces.voice.microphones.FalsePositiveFlood.report_false_positive_flood);
     # None in a text-only process.
     false_positive_reporter: Callable[[], None] | None = None
+
+    def with_ai_footer(self, body: str) -> str:
+        """*body* with the AI disclosure footer, unless the user turned it off."""
+        if ConfigManager.get_instance().get(self.AI_FOOTER_KEY, True) is False:
+            trace(f"{self.AI_FOOTER_KEY} is off — the message goes out without the AI footer")
+            return body
+        return f"{body}\n\n{self.AI_MESSAGE_SUFFIX}"
 
     @staticmethod
     def _home_name(name: str) -> str:
@@ -923,11 +932,14 @@ class Commands:
                               "switch now.")
     TELEMETRY_HINT = ("Telemetry reads it for every event: false is in force from the next event on, "
                       "no restart needed. Switching telemetry.enabled back to true takes a restart_server.")
+    AI_FOOTER_HINT = "Read at each send: in force from the next message on, no restart needed."
 
     @classmethod
     def _restart_hint(cls, key: str) -> str:
         if key == "developer_release":
             return cls.DEVELOPER_RELEASE_HINT
+        if key == cls.AI_FOOTER_KEY:
+            return cls.AI_FOOTER_HINT
         if key.startswith("telemetry."):
             return cls.TELEMETRY_HINT
         if key.startswith("interfaces."):

@@ -187,6 +187,12 @@ vault:                      # secrets the LLM never sees — the console's Vault
 # sender identity of their own (TUI chat, Telegram messages without a sender name).
 owner_name: YOUR_NAME
 
+# Whether a message the assistant sends on the user's behalf — send_imessage, send_whatsapp and any
+# channel that discloses it — ends with the "[Sent with the help of AI 🤖]" footer. false: the body
+# goes out as written. Emails never carry it. Read at each send, no restart needed; the assistant
+# flips it on request (config_set).
+ai_message_footer: true
+
 # Which line of the code restart_server follows. false: the `release` branch, what ./release.sh
 # last published. true: `master`, the development line — every commit, straight away. The
 # restart checks that branch out before pulling, so flipping this and restarting switches the

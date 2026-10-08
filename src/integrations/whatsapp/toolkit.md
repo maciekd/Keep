@@ -14,6 +14,9 @@ name alone is ambiguous — the error lists the full names), a group's name, or 
 says when the user has never written with that number; WhatsApp restricts accounts that message strangers first, so
 only send to an unknown number when the user clearly asked for it.
 
+The message ends with a "[Sent with the help of AI 🤖]" footer unless the setting `ai_message_footer` is false;
+`config_set("ai_message_footer", "false")` (setup toolkit) turns it off for every channel, read at each send.
+
 `whatsapp_login(phone: str)` — links the server to the user's WhatsApp account as a companion device, e.g.
 `whatsapp_login("+46701234567")`, from any chat. Run it when the integration is enabled and reports "needs 2FA" (or
 WhatsApp unlinked the server — the phone was off WhatsApp for 14 days, or the user removed the device). It comes

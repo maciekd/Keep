@@ -13,6 +13,18 @@ class TestCmdSendImessage:
             "Charlotte", f"On my way home\n\n{commands_instance.AI_MESSAGE_SUFFIX}"
         )
 
+    def test_the_footer_stays_home_when_the_setting_is_off(self, commands_instance):
+        import common.ConfigManager as config_module
+        real_get = config_module.config.get
+        with patch.object(config_module.config, "get",
+                          lambda key, *a, **k: False if key == "ai_message_footer" else real_get(key, *a, **k)), \
+             patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
+            inst = Mock()
+            inst.send.return_value = ""
+            MockCls.get_instance.return_value = inst
+            commands_instance.run("send_imessage", ["Charlotte", "On my way home"])
+        inst.send.assert_called_once_with("Charlotte", "On my way home")
+
     def test_empty_recipient_returns_error_without_calling_send(self, commands_instance):
         with patch("integrations.imessage.IMessageIntegration.IMessageIntegration") as MockCls:
             result = commands_instance.run("send_imessage", ["", "just a body"])

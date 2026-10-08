@@ -74,7 +74,7 @@ class WhatsAppCommands(CommandSet):
         if not recipient or not body:
             return "send_whatsapp failed: expected 'recipient, message' parameters"
         body = normalize_llm_escapes(body)
-        body = f"{body}\n\n{self.commands.AI_MESSAGE_SUFFIX}"
+        body = self.commands.with_ai_footer(body)
         from integrations.whatsapp.WhatsAppIntegration import WhatsAppIntegration
         return WhatsAppIntegration.get_instance().send(recipient, body)
 
