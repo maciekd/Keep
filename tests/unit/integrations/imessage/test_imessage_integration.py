@@ -891,139 +891,179 @@ class TestRecordFullName:
         assert m["+12345678901"] == "Alice Smith"
 
 @pytest.mark.unit
-class TestRecordReverseHandle:
-    def test_first_handle_recorded(self):
-        reverse = {}
-        IMessageIntegration._record_reverse_handle(reverse, "Alice", "+12345678901")
-        assert reverse == {"alice": "+12345678901"}
+class TestAddCandidate:
+    def test_handles_normalized_and_keyed_by_collapsed_name(self):
+        candidates = {}
+        IMessageIntegration._add_candidate(candidates, "  Alice   Smith ", "+1 (234) 567-8901", "_$!<Mobile>!$_")
+        assert candidates == {"alice smith": [("+12345678901", "_$!<Mobile>!$_")]}
 
-    def test_e164_preferred_over_local(self):
-        reverse = {}
-        IMessageIntegration._record_reverse_handle(reverse, "Bob", "0701234567")
-        IMessageIntegration._record_reverse_handle(reverse, "Bob", "+46701234567")
-        assert reverse["bob"] == "+46701234567"
+    def test_same_handle_listed_once(self):
+        candidates = {}
+        IMessageIntegration._add_candidate(candidates, "Alice", "+46 70-174 06 05", "_$!<Mobile>!$_")
+        IMessageIntegration._add_candidate(candidates, "Alice", "+46701740605", "_$!<iPhone>!$_")
+        assert [h for h, _ in candidates["alice"]] == ["+46701740605"]
 
-    def test_local_does_not_overwrite_e164(self):
-        reverse = {"bob": "+46701234567"}
-        IMessageIntegration._record_reverse_handle(reverse, "Bob", "0701234567")
-        assert reverse["bob"] == "+46701234567"
+    def test_blank_name_or_handle_ignored(self):
+        candidates = {}
+        IMessageIntegration._add_candidate(candidates, "   ", "+46701740605")
+        IMessageIntegration._add_candidate(candidates, "Alice", "")
+        assert candidates == {}
 
-    def test_email_preferred_over_local_phone(self):
-        reverse = {}
-        IMessageIntegration._record_reverse_handle(reverse, "Carol", "0701234567")
-        IMessageIntegration._record_reverse_handle(reverse, "Carol", "carol@example.com")
-        assert reverse["carol"] == "carol@example.com"
 
-    def test_e164_preferred_over_email(self):
-        reverse = {}
-        IMessageIntegration._record_reverse_handle(reverse, "Dave", "dave@example.com")
-        IMessageIntegration._record_reverse_handle(reverse, "Dave", "+12345678901")
-        assert reverse["dave"] == "+12345678901"
-
-    def test_same_priority_handles_tracked_as_ties(self):
-        reverse = {}
-        ties = {}
-        IMessageIntegration._record_reverse_handle(reverse, "Charlotte", "+12025550176", ties)
-        IMessageIntegration._record_reverse_handle(reverse, "Charlotte", "+46701740605", ties)
-        assert set(ties["charlotte"]) == {"+12025550176", "+46701740605"}
-
-    def test_better_priority_resets_ties(self):
-        reverse = {}
-        ties = {}
-        IMessageIntegration._record_reverse_handle(reverse, "Eve", "0701234567", ties)
-        IMessageIntegration._record_reverse_handle(reverse, "Eve", "+46701234567", ties)
-        assert ties["eve"] == ["+46701234567"]
-
-    def test_no_ties_without_dict(self):
-        reverse = {}
-        IMessageIntegration._record_reverse_handle(reverse, "Alice", "+11111111111")
-        IMessageIntegration._record_reverse_handle(reverse, "Alice", "+22222222222")
-        assert reverse["alice"] == "+11111111111"
+def _rank(candidates, activity):
+    """Rank with chat.db replaced by `activity` (handle → (imessage, last_date, count))."""
+    with patch.object(IMessageIntegration, "_chat_activity", return_value=activity):
+        reverse, reasons = IMessageIntegration._rank_candidates(candidates)
+    return reverse
 
 
 @pytest.mark.unit
-class TestResolveHandleTies:
-    def test_picks_handle_with_more_recent_activity(self):
-        reverse = {"charlotte": "+12025550176"}
-        ties = {"charlotte": ["+12025550176", "+46701740605"]}
+class TestRankCandidates:
+    def test_mobile_beats_landline_listed_first_on_card(self):
+        """The bug: the card lists a 031 landline before the mobile and Messages knows neither."""
+        candidates = {"bob": [("+4631123456", "_$!<Home>!$_"), ("+46701740605", "_$!<Mobile>!$_")]}
+        assert _rank(candidates, {})["bob"] == "+46701740605"
 
-        def mock_execute(query, params=()):
-            handle = params[0]
-            cursor = Mock()
-            if handle == "+46701740605":
-                cursor.fetchone.return_value = (250, 700_000_000_000_000_000)
-            else:
-                cursor.fetchone.return_value = (0, 0)
-            return cursor
+    def test_swedish_07x_number_counts_as_mobile_without_label(self):
+        candidates = {"bob": [("+4631123456", None), ("0701740606", None)]}
+        assert _rank(candidates, {})["bob"] == "0701740606"
 
-        with patch('integrations.imessage.IMessageIntegration.sqlite3') as mock_sqlite:
-            mock_conn = MagicMock()
-            mock_conn.__enter__ = Mock(return_value=mock_conn)
-            mock_conn.__exit__ = Mock(return_value=False)
-            mock_conn.execute.side_effect = mock_execute
-            mock_sqlite.connect.return_value = mock_conn
-            IMessageIntegration._resolve_handle_ties(reverse, ties)
+    def test_imessage_registered_email_beats_landline_and_mobile(self):
+        """Only the email is an iMessage handle: it wins over the mobile and the landline."""
+        candidates = {"carol": [("+4631123456", "_$!<Home>!$_"), ("+46701740607", "_$!<Mobile>!$_"),
+                                ("carol@example.com", None)]}
+        activity = {"carol@example.com": (True, 600_000_000_000_000_000, 12)}
+        assert _rank(candidates, activity)["carol"] == "carol@example.com"
 
-        assert reverse["charlotte"] == "+46701740605"
+    def test_email_unknown_to_messages_ranks_below_phones(self):
+        candidates = {"dave": [("dave@example.com", None), ("+4631123456", "_$!<Work>!$_")]}
+        assert _rank(candidates, {})["dave"] == "+4631123456"
 
-    def test_falls_back_to_first_seen_when_neither_has_history(self):
-        reverse = {"bob": "+11111111111"}
-        ties = {"bob": ["+11111111111", "+22222222222"]}
+    def test_landline_known_to_imessage_beats_unknown_mobile(self):
+        candidates = {"alice": [("+4631123456", "_$!<Home>!$_"), ("+46701740608", "_$!<Mobile>!$_")]}
+        activity = {"+4631123456": (True, 500_000_000_000_000_000, 3)}
+        assert _rank(candidates, activity)["alice"] == "+4631123456"
 
-        def mock_execute(query, params=()):
-            cursor = Mock()
-            cursor.fetchone.return_value = (0, 0)
-            return cursor
+    def test_sms_only_history_does_not_make_a_handle_imessage(self):
+        candidates = {"alice": [("+4631123456", "_$!<Home>!$_"), ("+46701740608", "_$!<Mobile>!$_")]}
+        activity = {"+4631123456": (False, 500_000_000_000_000_000, 3)}
+        assert _rank(candidates, activity)["alice"] == "+46701740608"
 
-        with patch('integrations.imessage.IMessageIntegration.sqlite3') as mock_sqlite:
-            mock_conn = MagicMock()
-            mock_conn.__enter__ = Mock(return_value=mock_conn)
-            mock_conn.__exit__ = Mock(return_value=False)
-            mock_conn.execute.side_effect = mock_execute
-            mock_sqlite.connect.return_value = mock_conn
-            IMessageIntegration._resolve_handle_ties(reverse, ties)
+    def test_several_handles_with_history_most_recent_wins(self):
+        candidates = {"charlotte": [("+12025550176", "_$!<Mobile>!$_"), ("+46701740605", "_$!<iPhone>!$_"),
+                                    ("charlotte@example.com", None)]}
+        activity = {
+            "+12025550176": (True, 500_000_000_000_000_000, 900),
+            "+46701740605": (True, 700_000_000_000_000_000, 40),
+            "charlotte@example.com": (True, 600_000_000_000_000_000, 5),
+        }
+        assert _rank(candidates, activity)["charlotte"] == "+46701740605"
 
-        assert reverse["bob"] == "+11111111111"
+    def test_equal_recency_breaks_on_message_count(self):
+        candidates = {"carol": [("+11111111111", None), ("+22222222222", None)]}
+        activity = {"+11111111111": (True, 100_000_000, 10), "+22222222222": (True, 100_000_000, 500)}
+        assert _rank(candidates, activity)["carol"] == "+22222222222"
 
-    def test_chat_db_failure_preserves_existing(self):
-        reverse = {"alice": "+11111111111"}
-        ties = {"alice": ["+11111111111", "+22222222222"]}
+    def test_local_format_card_number_matches_e164_chat_handle(self):
+        candidates = {"frances": [("+4631123456", "_$!<Home>!$_"), ("0701740609", "_$!<Home>!$_")]}
+        activity = {"+46701740609": (True, 1, 1), "701740609": (True, 1, 1)}
+        assert _rank(candidates, activity)["frances"] == "0701740609"
 
+    def test_fax_ranks_last(self):
+        candidates = {"bob": [("+4631123457", "_$!<HomeFAX>!$_"), ("+4631123456", "_$!<Home>!$_")]}
+        assert _rank(candidates, {})["bob"] == "+4631123456"
+
+    def test_same_tier_without_history_keeps_card_order(self):
+        candidates = {"bob": [("+11111111111", None), ("+22222222222", None)]}
+        assert _rank(candidates, {})["bob"] == "+11111111111"
+
+    def test_single_handle_contacts_do_not_open_chat_db(self):
+        candidates = {"alice": [("+12345678901", None)], "bob": [("bob@example.com", None)]}
+        with patch.object(IMessageIntegration, "_chat_activity") as mock_activity:
+            reverse, _ = IMessageIntegration._rank_candidates(candidates)
+        mock_activity.assert_not_called()
+        assert reverse == {"alice": "+12345678901", "bob": "bob@example.com"}
+
+    def test_chat_db_failure_ranks_by_card_alone(self):
+        candidates = {"bob": [("+4631123456", "_$!<Home>!$_"), ("+46701740605", "_$!<Mobile>!$_")]}
         with patch('integrations.imessage.IMessageIntegration.sqlite3') as mock_sqlite:
             mock_sqlite.connect.side_effect = Exception("database is locked")
-            IMessageIntegration._resolve_handle_ties(reverse, ties)
+            reverse, _ = IMessageIntegration._rank_candidates(candidates)
+        assert reverse["bob"] == "+46701740605"
 
-        assert reverse["alice"] == "+11111111111"
 
-    def test_skips_single_handle_entries(self):
-        reverse = {"dave": "+12345678901"}
-        ties = {"dave": ["+12345678901"]}
-        with patch('integrations.imessage.IMessageIntegration.sqlite3') as mock_sqlite:
-            IMessageIntegration._resolve_handle_ties(reverse, ties)
-        mock_sqlite.connect.assert_not_called()
-
-    def test_prefers_higher_count_when_last_date_equal(self):
-        reverse = {"carol": "+11111111111"}
-        ties = {"carol": ["+11111111111", "+22222222222"]}
-
-        def mock_execute(query, params=()):
-            handle = params[0]
-            cursor = Mock()
-            if handle == "+22222222222":
-                cursor.fetchone.return_value = (500, 100_000_000)
-            else:
-                cursor.fetchone.return_value = (10, 100_000_000)
-            return cursor
-
+@pytest.mark.unit
+class TestChatActivity:
+    def _activity(self, rows):
         with patch('integrations.imessage.IMessageIntegration.sqlite3') as mock_sqlite:
             mock_conn = MagicMock()
             mock_conn.__enter__ = Mock(return_value=mock_conn)
             mock_conn.__exit__ = Mock(return_value=False)
-            mock_conn.execute.side_effect = mock_execute
+            mock_conn.execute.return_value.fetchall.return_value = rows
             mock_sqlite.connect.return_value = mock_conn
-            IMessageIntegration._resolve_handle_ties(reverse, ties)
+            return IMessageIntegration._chat_activity()
 
-        assert reverse["carol"] == "+22222222222"
+    def test_imessage_and_sms_rows_of_one_handle_merge(self):
+        activity = self._activity([("+46701740605", "SMS", 3, 900), ("+46701740605", "iMessage", 7, 500)])
+        assert activity["+46701740605"] == (True, 900, 10)
+
+    def test_phone_indexed_by_suffix_and_email_lowercased(self):
+        activity = self._activity([("+46701740605", "iMessage", 1, 1), ("Carol@Example.com", "iMessage", 2, 2)])
+        assert activity["701740605"] == (True, 1, 1)
+        assert activity["carol@example.com"] == (True, 2, 2)
+        assert "example.com" not in activity
+
+
+@pytest.mark.unit
+class TestRefreshContactCacheRanking:
+    """The whole path: an AddressBook database on disk → resolve_recipient."""
+
+    @staticmethod
+    def _address_book(root, people):
+        """Write a minimal AddressBook-v22.abcddb; `people` are (first, last, phones, emails) with
+        phones as (number, label) tuples."""
+        db = root / "Library" / "Application Support" / "AddressBook" / "Sources" / "ABC" / "AddressBook-v22.abcddb"
+        db.parent.mkdir(parents=True)
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT, ZLASTNAME TEXT)")
+            conn.execute("CREATE TABLE ZABCDPHONENUMBER (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER, "
+                         "ZFULLNUMBER TEXT, ZLABEL TEXT)")
+            conn.execute("CREATE TABLE ZABCDEMAILADDRESS (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER, ZADDRESS TEXT)")
+            for pk, (first, last, phones, emails) in enumerate(people, start=1):
+                conn.execute("INSERT INTO ZABCDRECORD VALUES (?, ?, ?)", (pk, first, last))
+                for number, label in phones:
+                    conn.execute("INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER, ZLABEL) VALUES (?, ?, ?)",
+                                 (pk, number, label))
+                for email in emails:
+                    conn.execute("INSERT INTO ZABCDEMAILADDRESS (ZOWNER, ZADDRESS) VALUES (?, ?)", (pk, email))
+
+    def _resolve(self, tmp_path, people, activity, name):
+        self._address_book(tmp_path, people)
+        m = IMessageIntegration()
+        with patch('integrations.imessage.IMessageIntegration.Path.home', return_value=tmp_path), \
+                patch.object(IMessageIntegration, "_chat_activity", return_value=activity):
+            m._refresh_contact_cache()
+        handle, err = m.resolve_recipient(name)
+        assert err is None
+        return handle, m
+
+    def test_landline_first_on_card_still_resolves_to_mobile(self, tmp_path):
+        people = [("Bob", "Jones", [("031-12 34 56", "_$!<Home>!$_"), ("070-174 06 05", "_$!<Mobile>!$_")], [])]
+        handle, m = self._resolve(tmp_path, people, {}, "Bob")
+        assert handle == "0701740605"
+        assert m.resolve_recipient("Bob Jones")[0] == "0701740605"
+
+    def test_only_email_registered_with_imessage_wins(self, tmp_path):
+        people = [("Carol", None, [("031-12 34 56", "_$!<Home>!$_"), ("+46 70 174 06 07", "_$!<Mobile>!$_")],
+                   ["Carol@Example.com"])]
+        activity = {"carol@example.com": (True, 1_000, 2)}
+        handle, _ = self._resolve(tmp_path, people, activity, "carol")
+        assert handle == "carol@example.com"
+
+    def test_reason_for_the_choice_is_kept(self, tmp_path):
+        people = [("Bob", None, [("031-12 34 56", "_$!<Home>!$_"), ("070-174 06 05", "_$!<Mobile>!$_")], [])]
+        _, m = self._resolve(tmp_path, people, {}, "Bob")
+        assert "mobile" in m._handle_reasons["bob"]
 
 
 @pytest.mark.unit
@@ -1059,9 +1099,10 @@ class TestResolveRecipient:
             "701234567": "Ingeborg",  # suffix
         }
         integration._contact_cache_time = 1e18
-        handle, err = integration.resolve_recipient("Ingeborg")
+        with patch.object(IMessageIntegration, "_chat_activity", return_value={}):
+            handle, err = integration.resolve_recipient("Ingeborg")
         assert err is None
-        assert handle == "+46701234567"  # E.164 wins by priority
+        assert handle == "+46701234567"  # all mobiles, no history: E.164 wins by priority
 
     def test_fallback_picks_email_when_only_email_available(self, integration):
         integration._name_to_handle = {}

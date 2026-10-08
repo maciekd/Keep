@@ -47,6 +47,16 @@ SCHEDULE_STATE_FAILED = 4
 # from here (Send Later fires from whichever device is online) — stop tracking it
 SCHEDULED_GRACE_PERIOD = 7 * 24 * 3600
 
+# Which of a contact's handles send_imessage picks, best first: one chat.db knows as an iMessage
+# handle (phone or email), a mobile number (AddressBook label or a Swedish 07x number), any other
+# phone (landline, unlabelled), an email Messages has never seen, a fax/pager. Inside a tier the
+# handle with the most recent conversation wins.
+TIER_IMESSAGE, TIER_MOBILE, TIER_OTHER_PHONE, TIER_UNKNOWN_EMAIL, TIER_FAX = range(5)
+TIER_NAMES = ("iMessage handle", "mobile", "other phone", "email unknown to Messages", "fax")
+MOBILE_LABEL_PATTERN = re.compile(r"iphone|mobil|cell", re.IGNORECASE)     # "Mobile", "mobil" (sv)
+FAX_LABEL_PATTERN = re.compile(r"fax|pager", re.IGNORECASE)
+SWEDISH_MOBILE_PATTERN = re.compile(r"^(?:\+46|0046)7\d{8}$|^07\d{8}$")
+
 
 class IMessageIntegration(Integration, Feed):
     """iMessage and SMS on the server's Mac.
@@ -76,6 +86,7 @@ class IMessageIntegration(Integration, Feed):
         self._pending_entries: list[FeedEntry] = []
         self._contact_cache: dict[str, str] = {}
         self._name_to_handle: dict[str, str] = {}
+        self._handle_reasons: dict[str, str] = {}     # name key → why its handle won (for the log)
         self._handle_to_full_name: dict[str, str] = {}
         self._contact_cache_time = 0.0
         self._rate_limiter = RateLimiter(SEND_RATE_LIMIT_MAX, SEND_RATE_LIMIT_WINDOW)
@@ -575,36 +586,20 @@ class IMessageIntegration(Integration, Feed):
                                                context=f"{label} sent via iMessage by {sender_name}")
 
     @classmethod
-    def _record_reverse_handle(cls, reverse: dict[str, str], name: str, raw_handle: str,
-                               ties: dict[str, list[str]] | None = None):
-        """Add a name → handle mapping, preferring iMessage-capable handles (E.164 / email)
-        when a contact has multiple. The key is the lowercased, whitespace-collapsed name —
-        callers pass first name, full name, etc. as separate calls.
-        When *ties* is provided, same-priority handles are collected for later tiebreaking."""
+    def _add_candidate(cls, candidates: dict[str, list[tuple[str, Optional[str]]]], name: str,
+                       raw_handle: str, label: Optional[str] = None):
+        """Add a handle (with its AddressBook label) to the candidates of a name. The key is the
+        lowercased, whitespace-collapsed name — callers pass first name, full name, etc. as
+        separate calls; `_rank_candidates` picks one handle per name once the cards are read."""
         if not name or not raw_handle:
             return
         key = " ".join(name.split()).lower()
-        if not key:
+        handle = cls._prefer_handle(raw_handle)
+        if not key or not handle:
             return
-        candidate = cls._prefer_handle(raw_handle)
-        if not candidate:
-            return
-        existing = reverse.get(key)
-        if not existing:
-            reverse[key] = candidate
-            if ties is not None:
-                ties.setdefault(key, []).append(candidate)
-        elif cls._handle_priority(candidate) < cls._handle_priority(existing):
-            reverse[key] = candidate
-            if ties is not None:
-                ties[key] = [candidate]
-        elif cls._handle_priority(candidate) == cls._handle_priority(existing) and candidate != existing:
-            if ties is not None:
-                tie_list = ties.setdefault(key, [])
-                if existing not in tie_list:
-                    tie_list.append(existing)
-                if candidate not in tie_list:
-                    tie_list.append(candidate)
+        entries = candidates.setdefault(key, [])
+        if all(h != handle for h, _ in entries):
+            entries.append((handle, label))
 
     @classmethod
     def _record_full_name(cls, mapping: dict[str, str], first: str | None, last: str | None, raw_handle: str):
@@ -663,38 +658,90 @@ class IMessageIntegration(Integration, Feed):
         return 2
 
     @staticmethod
-    def _resolve_handle_ties(reverse: dict[str, str], ties: dict[str, list[str]]):
-        """Break same-priority ties using message activity from chat.db.
-        Prefer the handle with the most recent message; break ties with message count."""
-        contested = {k: v for k, v in ties.items() if len(v) > 1}
-        if not contested:
-            return
-        all_handles = {h for handles in contested.values() for h in handles}
-        scores: dict[str, tuple[int, int]] = {}
+    def _handle_tier(handle: str, label: Optional[str], activity: Optional[tuple[bool, int, int]]) -> int:
+        """The preference tier of a handle (`TIER_*`, lower is better) given its AddressBook label
+        and what chat.db knows about it."""
+        if activity and activity[0]:
+            return TIER_IMESSAGE
+        if "@" in handle:
+            return TIER_UNKNOWN_EMAIL
+        if label and FAX_LABEL_PATTERN.search(label):
+            return TIER_FAX
+        if (label and MOBILE_LABEL_PATTERN.search(label)) or SWEDISH_MOBILE_PATTERN.match(handle):
+            return TIER_MOBILE
+        return TIER_OTHER_PHONE
+
+    @classmethod
+    def _chat_activity(cls) -> dict[str, tuple[bool, int, int]]:
+        """What chat.db knows per handle: (seen on the iMessage service, Apple date of the latest
+        message, message count), keyed by the handle id and, for phones, by its 9-digit suffix so a
+        card's local-format number matches the E.164 handle Messages stores. Empty when chat.db
+        cannot be read — the ranking then falls back to the card alone."""
+        activity: dict[str, tuple[bool, int, int]] = {}
+
+        def merge(key, imessage, last_date, count):
+            seen = activity.get(key, (False, 0, 0))
+            activity[key] = (seen[0] or imessage, max(seen[1], last_date), seen[2] + count)
+
         try:
             with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-                for handle in all_handles:
-                    row = conn.execute(
-                        "SELECT COUNT(*) AS cnt, COALESCE(MAX(m.date), 0) AS last_date "
-                        "FROM handle h JOIN message m ON m.handle_id = h.ROWID "
-                        "WHERE h.id = ?",
-                        (handle,)
-                    ).fetchone()
-                    scores[handle] = (row[1], row[0]) if row else (0, 0)
+                rows = conn.execute(
+                    "SELECT h.id, h.service, COUNT(m.ROWID), COALESCE(MAX(m.date), 0) "
+                    "FROM handle h LEFT JOIN message m ON m.handle_id = h.ROWID "
+                    "GROUP BY h.id, h.service"
+                ).fetchall()
         except Exception as e:
-            info(f"iMessage: chat.db tiebreak query failed, keeping first-seen handles: {e}")
-            return
-        picked: list[str] = []
-        for key, candidates in contested.items():
-            best = max(candidates, key=lambda h: scores.get(h, (0, 0)))
-            if scores.get(best, (0, 0)) > (0, 0):
-                reverse[key] = best
-                picked.append(f"{key}→{best} ({scores[best][1]} msgs)")
-        if picked:
-            fine(f"iMessage: broke {len(picked)}/{len(contested)} contact-name ties by chat activity: "
-                 + ", ".join(picked))
-        else:
-            fine(f"iMessage: {len(contested)} contact-name ties, none with chat history; kept first-seen handles")
+            info(f"iMessage: chat.db handle query failed, ranking contact handles by card only: {e}")
+            return activity
+        for handle_id, service, count, last_date in rows:
+            if not handle_id:
+                continue
+            imessage = (service or "").lower() == "imessage"
+            merge(handle_id.lower(), imessage, last_date or 0, count or 0)
+            suffix = cls._phone_suffix(handle_id) if "@" not in handle_id else None
+            if suffix:
+                merge(suffix, imessage, last_date or 0, count or 0)
+        trace(f"iMessage: chat.db knows {len(rows)} handles")
+        return activity
+
+    @classmethod
+    def _lookup_activity(cls, activity: dict[str, tuple[bool, int, int]], handle: str) \
+            -> Optional[tuple[bool, int, int]]:
+        found = activity.get(handle.lower())
+        if found is None and "@" not in handle:
+            suffix = cls._phone_suffix(handle)
+            found = activity.get(suffix) if suffix else None
+        return found
+
+    @classmethod
+    def _rank_candidates(cls, candidates: dict[str, list[tuple[str, Optional[str]]]]) \
+            -> tuple[dict[str, str], dict[str, str]]:
+        """Pick one handle per name: the best tier, then the most recent conversation in chat.db
+        (then the most messages), then E.164 over an email over bare digits, then the card's
+        order. Returns the name → handle map and, per name, why the handle won — the line
+        `resolve_recipient` logs. chat.db is read only when some name has a choice to make."""
+        reverse: dict[str, str] = {}
+        reasons: dict[str, str] = {}
+        contested = {key: entries for key, entries in candidates.items() if len(entries) > 1}
+        activity = cls._chat_activity() if contested else {}
+        for key, entries in candidates.items():
+            ranked = []
+            for index, (handle, label) in enumerate(entries):
+                seen = cls._lookup_activity(activity, handle)
+                tier = cls._handle_tier(handle, label, seen)
+                last_date, count = (seen[1], seen[2]) if seen else (0, 0)
+                ranked.append(((tier, -last_date, -count, cls._handle_priority(handle), index), handle))
+            (tier, neg_date, neg_count, _, index), handle = min(ranked)
+            reverse[key] = handle
+            history = f", {-neg_count} messages" if neg_count else ", no chat history"
+            reasons[key] = f"{TIER_NAMES[tier]}{history}, listed {index + 1}/{len(entries)} on the card"
+        if contested:
+            overridden = [f"{key}→{reverse[key]} ({reasons[key]})" for key, entries in contested.items()
+                          if reverse[key] != entries[0][0]]
+            shown = "; ".join(overridden[:20]) + (" …" if len(overridden) > 20 else "")
+            fine(f"iMessage: {len(contested)} contacts with several handles, {len(overridden)} resolved to "
+                 f"one other than the card's first" + (f": {shown}" if overridden else ""))
+        return reverse, reasons
 
     @staticmethod
     def _looks_like_handle(s: str) -> bool:
@@ -724,6 +771,7 @@ class IMessageIntegration(Integration, Feed):
         key = " ".join(candidate.split()).lower()
         handle = self._name_to_handle.get(key)
         if handle:
+            info(f"iMessage: resolved '{candidate}' → {handle} ({self._handle_reasons.get(key, 'only handle')})")
             return handle, None
 
         fallback = self._fallback_lookup(key)
@@ -740,20 +788,20 @@ class IMessageIntegration(Integration, Feed):
         return None, f"unknown contact: {candidate} (cache has {len(self._name_to_handle)} names)"
 
     def _fallback_lookup(self, name_lower: str) -> Optional[str]:
-        """Last-resort: scan the forward (handle → name) cache for any handle whose name matches.
-        Picks the best handle by priority. Useful when the reverse cache missed for any reason."""
+        """Last-resort: scan the forward (handle → name) cache for any handle whose name matches
+        and rank them like the card's handles (without labels — the forward cache has none).
+        Useful when the reverse cache missed for any reason."""
         if not self._contact_cache:
             return None
-        matches: list[str] = []
+        candidates: dict[str, list[tuple[str, Optional[str]]]] = {}
         for raw_handle, contact_name in self._contact_cache.items():
             if contact_name and contact_name.strip().lower() == name_lower:
-                normalized = self._prefer_handle(raw_handle)
-                if normalized:
-                    matches.append(normalized)
-        if not matches:
+                self._add_candidate(candidates, name_lower, raw_handle)
+        if not candidates:
             return None
-        matches.sort(key=self._handle_priority)
-        return matches[0]
+        reverse, reasons = self._rank_candidates(candidates)
+        trace(f"iMessage: fallback lookup of '{name_lower}' → {reverse[name_lower]} ({reasons[name_lower]})")
+        return reverse[name_lower]
 
     @staticmethod
     def _applescript_quote(s: str) -> str:
@@ -876,16 +924,16 @@ class IMessageIntegration(Integration, Feed):
                 return
 
             cache: dict[str, str] = {}
-            reverse: dict[str, str] = {}
-            reverse_ties: dict[str, list[str]] = {}
+            candidates: dict[str, list[tuple[str, Optional[str]]]] = {}
             handle_to_full: dict[str, str] = {}
             for db_path in source_dbs:
                 try:
                     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
-                        for first, last, phone in conn.execute("""
-                            SELECT r.ZFIRSTNAME, r.ZLASTNAME, p.ZFULLNUMBER
+                        for first, last, phone, label in conn.execute("""
+                            SELECT r.ZFIRSTNAME, r.ZLASTNAME, p.ZFULLNUMBER, p.ZLABEL
                             FROM ZABCDRECORD r JOIN ZABCDPHONENUMBER p ON p.ZOWNER = r.Z_PK
                             WHERE r.ZFIRSTNAME IS NOT NULL AND p.ZFULLNUMBER IS NOT NULL
+                            ORDER BY r.Z_PK, p.Z_PK
                         """):
                             normalized = self._normalize_phone(phone)
                             if normalized:
@@ -894,7 +942,7 @@ class IMessageIntegration(Integration, Feed):
                             if suffix:
                                 cache[suffix] = first
                             for name_key in self._name_keys(first, last):
-                                self._record_reverse_handle(reverse, name_key, phone, reverse_ties)
+                                self._add_candidate(candidates, name_key, phone, label)
                             self._record_full_name(handle_to_full, first, last, phone)
 
                         for first, last, email in conn.execute("""
@@ -904,14 +952,15 @@ class IMessageIntegration(Integration, Feed):
                         """):
                             cache[email.lower()] = first
                             for name_key in self._name_keys(first, last):
-                                self._record_reverse_handle(reverse, name_key, email, reverse_ties)
+                                self._add_candidate(candidates, name_key, email)
                             self._record_full_name(handle_to_full, first, last, email)
                 except Exception as e:
                     fine(f"iMessage: skipping contact source {db_path.parent.name}: {e}")
 
-            self._resolve_handle_ties(reverse, reverse_ties)
+            reverse, reasons = self._rank_candidates(candidates)
             self._contact_cache = cache
             self._name_to_handle = reverse
+            self._handle_reasons = reasons
             self._handle_to_full_name = handle_to_full
             self._contact_cache_time = time.time()
             if cache:
