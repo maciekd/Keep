@@ -1,10 +1,15 @@
 from assistant.commands.CommandSet import CommandSet
-from common.logging import trace
+from assistant.SystemNote import system_note
+from common.logging import info, trace
 from integrations.music.MusicIntegration import MusicManager
+
+INTEGRATION = "Sonos & Spotify"
+NOTE_SOURCE = "Spotify"
 
 
 class MusicCommands(CommandSet):
-    """The music commands: playback and volume in a Sonos zone, Spotify search, playlists and favorites."""
+    """The music commands: playback and volume in a Sonos zone, Spotify search, playlists and
+    favorites, and the sign-in of the user's Spotify account (spotify_login / spotify_login_code)."""
     MULTI_PARAM_COMMANDS = frozenset({"play_music", "sonos_enqueue_and_play"})
 
     # Built by the first music command when Sonos & Spotify is disabled — never at startup,
@@ -56,6 +61,69 @@ class MusicCommands(CommandSet):
         else:
             trace("Sonos playlist, playing.")
             self.music_manager.play_playlist(room, playlist, shuffle=True)
+
+    # --- the user's Spotify sign-in: the URL out, the address the browser lands on back in ---
+
+    def cmd_spotify_login(self, parameter_string: str):
+        """Starts the flow: the sign-in URL and what to do with it come back as the command's
+        result and as a system note in every chat."""
+        self.background_command(self._run_spotify_login, (), lane=self.commands.CONFIG_LANE)
+
+    def cmd_spotify_login_code(self, parameter_string: str):
+        """Finishes the flow with the address the browser landed on (or the bare code)."""
+        pasted = parameter_string.strip().strip("\"'`").strip()
+        if not pasted:
+            return 'spotify_login_code failed: paste the address the browser landed on, e.g. spotify_login_code("http://127.0.0.1:8888/callback?code=...&state=...")'
+        self.background_command(self._run_spotify_login_code, (pasted,), lane=self.commands.CONFIG_LANE)
+
+    def _integration(self, command: str):
+        """(integration, "") when Sonos & Spotify can sign a user in, else (None, the reason)."""
+        monitor = self.commands.integration_monitor()
+        integration = monitor.find(INTEGRATION)
+        if integration is None or not hasattr(integration, "login_begin"):
+            state = getattr(integration, "state", None)
+            label = self.commands.state_label(getattr(state, "value", state), "not available")
+            info(f"{command}: {INTEGRATION} is {label}, no sign-in possible")
+            if label == "disabled":
+                return None, f'{INTEGRATION} is disabled — enable_integration("{INTEGRATION}") first.'
+            return None, f"{INTEGRATION} is {label} — set api_keys.spotify.client_id and client_secret and enable it first."
+        return integration, ""
+
+    def _run_spotify_login(self) -> str:
+        integration, problem = self._integration("spotify_login")
+        if integration is None:
+            return problem
+        try:
+            sign_in = integration.login_begin()
+        except Exception as e:   # no client id or secret
+            info(f"spotify_login: {e}")
+            return f"spotify_login failed: {e}"
+        text = (f"Spotify sign-in: {sign_in.instructions} into the chat as "
+                f'spotify_login_code("<the pasted address>") (quote it). The link is valid for about ten minutes.')
+        system_note(NOTE_SOURCE, text)
+        return text
+
+    def _run_spotify_login_code(self, pasted: str) -> str:
+        integration, problem = self._integration("spotify_login_code")
+        if integration is None:
+            return problem
+        try:
+            failure = integration.login_finish(pasted)
+        except Exception as e:
+            failure = f"{type(e).__name__}: {e}"
+        if failure:
+            info(f"spotify_login_code: not signed in — {failure}")
+            return f"Spotify sign-in did not complete: {failure}"
+        user = integration.spotify_user_name()
+        playlists = len(integration.get_spotify_playlists())
+        text = ("Spotify: signed in" + (f" as {user}" if user else "")
+                + f". {playlists} playlists of the account are listed in SONOS PLAYLISTS AND ZONES (ids S-0, S-1, …) "
+                  "from the next request and can be started with play_music.")
+        system_note(NOTE_SOURCE, text)
+        return text
+
+    def describe_spotify_login(self, p):          return "Signing the Spotify account in"
+    def describe_spotify_login_code(self, p):     return "Finishing the Spotify sign-in"
 
     def describe_search_music(self, p):           return f"Searching music for {p.strip()}"
     def describe_play(self, p):                   return f"Playing in {p.strip()}" if p.strip() else "Playing"

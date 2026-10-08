@@ -28,6 +28,11 @@ api_keys:
   google_maps: YOUR_GOOGLE_MAPS_API_KEY_HERE
   cartesia: YOUR_CARTESIA_API_KEY_HERE
   fish_audio: YOUR_FISH_AUDIO_API_KEY_HERE  # https://fish.audio -> API keys
+  # Sonos & Spotify: an app of your own at https://developer.spotify.com/dashboard (Web API). Its client id and
+  # secret are all search and playback need. To start your own and followed Spotify playlists (Discover Weekly,
+  # Release Radar, …) by name, add the redirect URI http://127.0.0.1:8888/callback to the app and sign the account
+  # in once from any chat with spotify_login() (the assistant hands you a link; paste the address the browser
+  # lands on back as spotify_login_code("...")). The token lands in cache/oauth/spotify.json and survives restarts.
   spotify:
     client_id: YOUR_SPOTIFY_CLIENT_ID_HERE
     client_secret: YOUR_SPOTIFY_CLIENT_SECRET_HERE

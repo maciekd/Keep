@@ -1,5 +1,7 @@
 from unittest.mock import patch, Mock
 
+from integrations.music.MusicIntegration import SpotifyPlaylist
+
 
 # ===========================================================================
 # TestMusicZonesSectionGenerator
@@ -40,6 +42,7 @@ class TestSonosFavoritesSectionGenerator:
         mock_mm = Mock()
         mock_mm.get_favorites.return_value = ["Radio 1", "Jazz FM"]
         mock_mm.get_playlists.return_value = []
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = mock_mm
         from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
         section = SonosFavoritesSectionGenerator(None)
@@ -52,6 +55,7 @@ class TestSonosFavoritesSectionGenerator:
         mock_mm = Mock()
         mock_mm.get_favorites.return_value = []
         mock_mm.get_playlists.return_value = ["Chill", "Workout"]
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = mock_mm
         from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
         section = SonosFavoritesSectionGenerator(None)
@@ -64,6 +68,7 @@ class TestSonosFavoritesSectionGenerator:
         mock_mm = Mock()
         mock_mm.get_favorites.side_effect = RuntimeError("connection failed")
         mock_mm.get_playlists.return_value = []
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = mock_mm
         from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
         section = SonosFavoritesSectionGenerator(None)
@@ -75,6 +80,7 @@ class TestSonosFavoritesSectionGenerator:
         mock_mm = Mock()
         mock_mm.get_favorites.return_value = ["Radio 1"]
         mock_mm.get_playlists.side_effect = RuntimeError("connection failed")
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = mock_mm
         from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
         section = SonosFavoritesSectionGenerator(None)
@@ -92,12 +98,13 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
         mock_mm = Mock()
         mock_mm.get_favorites.return_value = ["Radio 1"]
         mock_mm.get_playlists.return_value = []
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = mock_mm
 
         mock_time.time.return_value = 100.0
 
         def sleep_and_stop(duration):
-            if duration == 30 * 60:
+            if duration == SonosFavoritesSectionGenerator.CHECK_INTERVAL:
                 section._stop_event.set()
 
         mock_time.sleep.side_effect = sleep_and_stop
@@ -125,12 +132,13 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
 
         mock_mm.get_favorites.side_effect = get_favorites_delayed
         mock_mm.get_playlists.return_value = []
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = mock_mm
 
         mock_time.time.return_value = 100.0
 
         def sleep_and_stop(duration):
-            if duration == 30 * 60:
+            if duration == SonosFavoritesSectionGenerator.CHECK_INTERVAL:
                 section._stop_event.set()
 
         mock_time.sleep.side_effect = sleep_and_stop
@@ -151,6 +159,7 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
         mock_mm = Mock()
         mock_mm.get_favorites.return_value = []
         mock_mm.get_playlists.return_value = []
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = mock_mm
 
         mock_time.time.return_value = 100.0
@@ -172,6 +181,7 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
         mock_mm = Mock()
         mock_mm.get_favorites.return_value = ["Radio 1"]
         mock_mm.get_playlists.return_value = []
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = mock_mm
 
         mock_time.time.return_value = 100.0
@@ -180,7 +190,7 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
 
         def sleep_and_stop(duration):
             sleep_call_count[0] += 1
-            if sleep_call_count[0] == 1 and duration == 30 * 60:
+            if sleep_call_count[0] == 1 and duration == SonosFavoritesSectionGenerator.CHECK_INTERVAL:
                 section._stop_event.set()
 
         mock_time.sleep.side_effect = sleep_and_stop
@@ -200,12 +210,13 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
         mock_mm = Mock()
         mock_mm.get_favorites.return_value = []
         mock_mm.get_playlists.return_value = ["Chill Playlist"]
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = mock_mm
 
         mock_time.time.return_value = 100.0
 
         def sleep_and_stop(duration):
-            if duration == 30 * 60:
+            if duration == SonosFavoritesSectionGenerator.CHECK_INTERVAL:
                 section._stop_event.set()
 
         mock_time.sleep.side_effect = sleep_and_stop
@@ -249,6 +260,7 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
         mock_mm = Mock()
         mock_mm.get_favorites.return_value = ["Radio 1"]
         mock_mm.get_playlists.return_value = []
+        mock_mm.get_spotify_playlists.return_value = []
         mock_mm_cls.peek_instance.return_value = None
         mock_time.time.return_value = 100.0
         waits = []
@@ -257,7 +269,7 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
             waits.append(duration)
             if len(waits) == 2:
                 mock_mm_cls.peek_instance.return_value = mock_mm   # enable_integration built it
-            if duration == 30 * 60:
+            if duration == SonosFavoritesSectionGenerator.CHECK_INTERVAL:
                 section._stop_event.set()
 
         from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
@@ -268,3 +280,43 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
         section._start_monitoring()
 
         section._update_content.assert_called_once()
+
+    @patch('integrations.music.SonosFavoritesSectionGenerator.MusicManager')
+    def test_the_users_spotify_playlists_follow_the_sonos_lists_with_s_ids_and_their_owner(self, mock_mm_cls):
+        mock_mm = Mock()
+        mock_mm.get_favorites.return_value = ["Radio 1"]
+        mock_mm.get_playlists.return_value = ["Chill"]
+        mock_mm.get_spotify_playlists.return_value = [SpotifyPlaylist("Discover Weekly", "spotify:playlist:dw1", "Spotify"),
+                                                      SpotifyPlaylist("Road Trip", "spotify:playlist:rt2", "")]
+        mock_mm_cls.peek_instance.return_value = mock_mm
+        from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
+        section = SonosFavoritesSectionGenerator(None)
+        result = section._fetch_content()
+        assert "Discover Weekly by Spotify (ID: S-0)" in result
+        assert "Road Trip (ID: S-1)" in result
+        assert result.index("(ID: P-0)") < result.index("(ID: S-0)")
+        assert "spotify:playlist" not in result
+
+    @patch('integrations.music.SonosFavoritesSectionGenerator.MusicManager')
+    def test_a_library_without_sonos_lists_still_counts_as_data(self, mock_mm_cls):
+        mock_mm = Mock()
+        mock_mm.get_favorites.return_value = []
+        mock_mm.get_playlists.return_value = []
+        mock_mm.get_spotify_playlists.return_value = [SpotifyPlaylist("Road Trip", "spotify:playlist:rt2")]
+        mock_mm_cls.peek_instance.return_value = mock_mm
+        from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
+        section = SonosFavoritesSectionGenerator(None)
+        assert section._has_data()
+        assert "S-0" in section._fetch_content()
+
+    @patch('integrations.music.SonosFavoritesSectionGenerator.MusicManager')
+    def test_no_library_lists_nothing_under_spotify(self, mock_mm_cls):
+        mock_mm = Mock()
+        mock_mm.get_favorites.return_value = ["Radio 1"]
+        mock_mm.get_playlists.return_value = []
+        mock_mm.get_spotify_playlists.return_value = []
+        mock_mm_cls.peek_instance.return_value = mock_mm
+        from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
+        section = SonosFavoritesSectionGenerator(None)
+        result = section._fetch_content()
+        assert "S-0" not in result and "Spotify playlists" not in result

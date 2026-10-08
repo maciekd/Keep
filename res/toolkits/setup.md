@@ -67,6 +67,18 @@ The link lives about ten minutes; an expired or reused code comes back as text �
 `google.oauth.client_id` and `client_secret` set and the integration enabled; list_integrations shows the accounts
 still to sign in.
 
+`spotify_login()` — signs the household's Spotify account in for the Sonos & Spotify integration, from any chat, so
+the user's own and followed playlists (Discover Weekly, Release Radar, …) are listed in SONOS PLAYLISTS AND ZONES with
+"S-" ids and can be started with play_music. Same dance as google_login: it comes back with a link, the user opens it
+in any browser, signs in, and lands on a http://127.0.0.1:8888/callback?... page that does not load — that is expected.
+Tell the user to copy that page's whole address from the address bar and paste it into the chat; then run
+`spotify_login_code(pasted: str)` with it, quoted, e.g. `spotify_login_code("http://127.0.0.1:8888/callback?code=...&state=...")`
+(the bare code works too). The link lives about ten minutes; an expired or reused code comes back as text — run
+spotify_login again. The token survives restarts; signing in again is only needed when the account's consent was
+revoked (the playlist list then says so in the log and the "S-" ids disappear). Needs `api_keys.spotify.client_id`
+and `client_secret` set (`config_help("api_keys")`: the app on developer.spotify.com must have the redirect URI
+http://127.0.0.1:8888/callback registered) and the integration enabled.
+
 `hue_pair(bridge: str = "")` — pairs Keep with the Philips Hue bridge, from any chat. The bridge hands out its key only
 while its round link button has just been pressed, so ask the user to press it, then run `hue_pair()` within 30
 seconds. It finds the bridge on the local network (or takes its address, `hue_pair("192.168.1.10")`), writes `hue.bridge`
@@ -81,4 +93,4 @@ the state it came back with — if it failed, say why and offer to re-enter the 
 the chat, and never guess a key that config_help does not list.
 
 ### Stop-and-wait
-`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()`, `google_login()`, `google_login_code()` return data: emit them and stop generating; the result arrives in the next round.
+`list_integrations()`, `config_help()`, `config_request()`, `config_set()`, `restart_integration()`, `enable_integration()`, `disable_integration()`, `telegram_login()`, `microsoft_login()`, `google_login()`, `google_login_code()`, `spotify_login()`, `spotify_login_code()` return data: emit them and stop generating; the result arrives in the next round.

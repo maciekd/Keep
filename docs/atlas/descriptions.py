@@ -31,7 +31,7 @@ GROUPS = {
     'src/integrations/microsoft': ('microsoft', 'Microsoft 365 over the Graph API: the mail and calendars of one account per microsoft.accounts entry, signed in once with a device code.'),
     'src/integrations/imessage': ('imessage', 'iMessage and SMS on the server’s Mac: a feed of incoming messages and the way to send one.'),
     'src/integrations/indigo': ('indigo', 'Indigo as the home automation backend: REST for commands, a state file for the snapshot and an event feed.'),
-    'src/integrations/music': ('music', 'Sonos zones and Spotify: playback, volume, search and favorites.'),
+    'src/integrations/music': ('music', 'Sonos zones and Spotify: playback, volume, search, favorites and the user\'s own Spotify playlists.'),
     'src/integrations/plejd': ('plejd', 'Plejd lights over Bluetooth from the server’s own Mac: the site from the Plejd cloud, the state and the commands through any mesh unit in range.'),
     'src/integrations/photos': ('photos', 'The family photo library: iCloud downloads, vision-LLM indexing and a feed into the history.'),
     'src/integrations/reminders': ('reminders', 'Adds items to Apple Reminders lists such as the shopping list.'),

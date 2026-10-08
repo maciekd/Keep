@@ -4,7 +4,8 @@ import pytest
 from unittest.mock import Mock, patch
 import threading
 
-from integrations.music.MusicIntegration import MusicManager, MusicIntegration
+from integrations.music.MusicIntegration import MusicManager, MusicIntegration, SpotifyPlaylist
+from integrations.music.SpotifyAuth import NotSignedIn
 
 
 ROOM_MAPPING = {"Kitchen Front": "Kitchen", "Kitchen Back": ""}
@@ -20,6 +21,12 @@ def make_music_manager(room_mapping=ROOM_MAPPING):
     mm._sonos_zones_cache_time = None
     mm._playlists_cache = ["Chill Vibes", "Workout Mix", "Jazz Evening"]
     mm._favorites_cache = ["Liked Songs", "Daily Mix 1", "Discover Weekly"]
+    mm._spotify_playlists_cache = [SpotifyPlaylist("Discover Weekly", "spotify:playlist:dw1", "Spotify"),
+                                   SpotifyPlaylist("Road Trip", "spotify:playlist:rt2", "")]
+    mm._spotify_auth = Mock()
+    mm._spotify_auth.signed_in.return_value = True
+    mm._user_client = None
+    mm._user_client_token = ""
     mm._cache_lock = threading.Lock()
     mm._spotify_search_cache = {}
     mm._next_cache_id = 0
@@ -444,3 +451,169 @@ class TestZoneStateParsingIsSerialised:
             thread.start()
             assert not done.wait(0.05), "soco parsed a payload while another thread held the parsing lock"
         assert done.wait(2), "soco never got to the payload after the lock was released"
+
+
+class TestSpotifyUserPlaylists:
+    """The signed-in user's playlist library: S- ids, the fetch, and playback by URI through the Sonos Spotify service."""
+
+    def test_s_ids_resolve_to_the_cached_playlists_in_order(self):
+        mm = make_music_manager()
+        assert mm._uri_to_spotify_playlist("S-0").uri == "spotify:playlist:dw1"
+        assert mm._uri_to_spotify_playlist("S-1").name == "Road Trip"
+        assert mm._uri_to_spotify_playlist("S-2") is None
+        assert mm._uri_to_spotify_playlist("P-0") is None
+        assert mm._uri_to_spotify_playlist("S-x") is None
+
+    def test_get_spotify_playlists_returns_a_copy(self):
+        mm = make_music_manager()
+        playlists = mm.get_spotify_playlists()
+        playlists.clear()
+        assert len(mm.get_spotify_playlists()) == 2
+
+    @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
+    def test_an_s_id_is_started_by_its_spotify_uri_through_the_sonos_spotify_service(self, share_cls):
+        mm = make_music_manager()
+        coordinator = Mock()
+        mm._get_zone = Mock(return_value=Mock())
+        mm._get_coordinator = Mock(return_value=coordinator)
+
+        assert mm.play_in_zone("S-0", "Kitchen") is True
+
+        share_cls.assert_called_once_with(coordinator)
+        share_cls.return_value.add_share_link_to_queue.assert_called_once_with("spotify:playlist:dw1")
+        coordinator.clear_queue.assert_called_once()
+        coordinator.play_from_queue.assert_called_once_with(0)
+        assert coordinator.play_mode == 'SHUFFLE'
+
+    @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
+    def test_a_playlist_found_by_search_plays_the_same_way(self, share_cls):
+        mm = make_music_manager()
+        coordinator = Mock()
+        mm._get_zone = Mock(return_value=Mock())
+        mm._get_coordinator = Mock(return_value=coordinator)
+        mm._spotify_search_cache["AB"] = "spotify:playlist:pub9"
+
+        assert mm.play_in_zone("AB", "Kitchen") is True
+
+        share_cls.return_value.add_share_link_to_queue.assert_called_once_with("spotify:playlist:pub9")
+        coordinator.play_from_queue.assert_called_once_with(0)
+
+    @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
+    def test_a_sonos_refusal_is_reported_as_failure(self, share_cls):
+        mm = make_music_manager()
+        mm._get_zone = Mock(return_value=Mock())
+        mm._get_coordinator = Mock(return_value=Mock())
+        share_cls.return_value.add_share_link_to_queue.side_effect = Exception("Unsupported URI")
+
+        assert mm.play_in_zone("S-1", "Kitchen") is False
+
+    def test_an_s_id_out_of_range_does_not_play(self):
+        mm = make_music_manager()
+        mm._get_zone = Mock(return_value=Mock())
+        mm._get_coordinator = Mock(return_value=Mock())
+        mm.play_spotify_playlist = Mock()
+
+        assert mm.play_in_zone("S-7", "Kitchen") is False
+        mm.play_spotify_playlist.assert_not_called()
+
+    @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
+    def test_a_spotify_favorite_still_goes_through_the_share_link(self, share_cls):
+        mm = make_music_manager()
+        coordinator = Mock()
+        mm._get_zone = Mock(return_value=Mock())
+        mm._get_coordinator = Mock(return_value=coordinator)
+        favorite = Mock()
+        favorite.title = "Daily Mix 1"
+        favorite.get_uri.return_value = "x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a37i9dQZF1E3?sid=9"
+        coordinator.music_library.get_sonos_favorites.return_value = [favorite]
+
+        assert mm.play_favorite("Kitchen", "Daily Mix 1") is True
+
+        share_cls.return_value.add_share_link_to_queue.assert_called_once_with("https://open.spotify.com/playlist/37i9dQZF1E3")
+        coordinator.play_from_queue.assert_called_once_with(0)
+
+    def test_the_library_is_fetched_whole_across_pages_and_null_items_are_skipped(self):
+        mm = make_music_manager()
+        client = Mock()
+        mm._get_user_client = Mock(return_value=client)
+        first = {'items': [{'name': 'Discover Weekly', 'uri': 'spotify:playlist:dw1', 'owner': {'display_name': 'Spotify'}},
+                           None,
+                           {'name': 'Road Trip', 'uri': 'spotify:playlist:rt2', 'owner': {}}],
+                 'next': 'https://api.spotify.com/v1/me/playlists?offset=50'}
+        second = {'items': [{'name': 'Release Radar', 'uri': 'spotify:playlist:rr3', 'owner': {'display_name': 'Spotify'}}],
+                  'next': None}
+        client.current_user_playlists.return_value = first
+        client.next.return_value = second
+
+        playlists = mm._fetch_spotify_playlists()
+
+        assert [(p.name, p.uri, p.owner) for p in playlists] == [
+            ("Discover Weekly", "spotify:playlist:dw1", "Spotify"),
+            ("Road Trip", "spotify:playlist:rt2", ""),
+            ("Release Radar", "spotify:playlist:rr3", "Spotify")]
+        client.next.assert_called_once_with(first)
+
+    def test_without_a_signed_in_user_the_library_is_empty_and_spotify_is_not_asked(self):
+        mm = make_music_manager()
+        mm._spotify_auth.signed_in.return_value = False
+        mm._get_user_client = Mock()
+
+        mm._refresh_spotify_playlists()
+
+        assert mm.get_spotify_playlists() == []
+        mm._get_user_client.assert_not_called()
+
+    def test_a_refused_token_empties_the_library_but_a_failed_fetch_keeps_it(self):
+        mm = make_music_manager()
+        mm._get_user_client = Mock(side_effect=Exception("timed out"))
+        mm._refresh_spotify_playlists()
+        assert len(mm.get_spotify_playlists()) == 2
+
+        mm._get_user_client = Mock(side_effect=NotSignedIn("sign in again"))
+        mm._refresh_spotify_playlists()
+        assert mm.get_spotify_playlists() == []
+
+    def test_the_user_client_follows_the_access_token(self):
+        mm = make_music_manager()
+        mm._spotify_auth.token.return_value = "tok-1"
+        first = mm._get_user_client()
+        assert mm._get_user_client() is first
+        mm._spotify_auth.token.return_value = "tok-2"
+        assert mm._get_user_client() is not first
+
+    def test_a_finished_sign_in_reloads_the_library_at_once(self):
+        mm = make_music_manager()
+        mm._spotify_auth.finish.return_value = ""
+        mm._user_client = Mock()
+        mm._fetch_spotify_playlists = Mock(return_value=[SpotifyPlaylist("New", "spotify:playlist:n1")])
+
+        assert mm.login_finish("http://127.0.0.1:8888/callback?code=AQ&state=st") == ""
+
+        assert [p.name for p in mm.get_spotify_playlists()] == ["New"]
+        assert mm._user_client is None
+
+    def test_a_failed_sign_in_comes_back_as_the_reason_and_touches_nothing(self):
+        mm = make_music_manager()
+        mm._spotify_auth.finish.return_value = "the code expired"
+        mm._fetch_spotify_playlists = Mock()
+
+        assert mm.login_finish("AQold") == "the code expired"
+        mm._fetch_spotify_playlists.assert_not_called()
+        assert len(mm.get_spotify_playlists()) == 2
+
+    def test_search_lists_public_playlists_with_their_owner_and_skips_null_items(self):
+        mm = make_music_manager()
+        mock_spotify = Mock()
+        mm._get_spotify_client = Mock(return_value=mock_spotify)
+        mock_spotify.search.return_value = {
+            'tracks': {'items': []},
+            'artists': {'items': []},
+            'playlists': {'items': [None, {'name': 'Summer Hits', 'uri': 'spotify:playlist:sh1', 'owner': {'display_name': 'Alice'}}]},
+        }
+
+        result = mm.search_spotify("summer")
+
+        assert "PLAYLISTS:" in result
+        assert "Summer Hits - by Alice ID: AA" in result
+        assert mm._spotify_search_cache["AA"] == "spotify:playlist:sh1"
+        assert mock_spotify.search.call_args.kwargs['type'] == 'track,artist,playlist'

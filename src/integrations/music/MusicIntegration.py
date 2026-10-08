@@ -3,6 +3,7 @@ import re
 import threading
 import time
 import urllib.parse
+from dataclasses import dataclass
 from typing import List, Dict, Optional
 
 import soco
@@ -15,6 +16,15 @@ from spotipy.exceptions import SpotifyException
 from common.logging import trace, info, error
 from common.ConfigManager import ConfigManager
 from assistant.integration.Integration import Integration
+from integrations.music.SpotifyAuth import SpotifyAuth, SignIn, NotSignedIn
+
+
+@dataclass(frozen=True)
+class SpotifyPlaylist:
+    """One playlist of the signed-in user's library: its name, its Spotify URI, and who made it."""
+    name: str
+    uri: str
+    owner: str = ""
 
 _zone_state_lock = threading.RLock()
 
@@ -48,10 +58,17 @@ class MusicIntegration(Integration):
     """Music on the Sonos speakers.
 
     Plays Spotify music, playlists and favorites in the Sonos zones, with pause, skip and
-    volume. Keep can search Spotify and start what it finds in any room.
+    volume. Keep can search Spotify and start what it finds in any room, and once the user's
+    Spotify account is signed in, their own and followed playlists (Discover Weekly, Release
+    Radar) by name.
 
-    Playlists and favorites are cached and refreshed periodically; Spotify search results get
-    short ids the LLM can refer back to within the conversation."""
+    Sonos playlists (`P-n`), Sonos favorites (`F-n`) and the user's Spotify playlists (`S-n`)
+    are cached and refreshed every 30 minutes; Spotify search results get short ids the LLM
+    can refer back to within the conversation. Search runs on the app's client credentials;
+    only the user's playlist library needs the user token `SpotifyAuth` keeps. A playlist is
+    started by its URI through the Sonos Spotify service (ShareLinkPlugin), so Sonos resolves
+    the tracks with the household's Spotify account — this app may not read the tracks of a
+    Spotify-owned playlist, and never needs to."""
 
     CACHE_EXPIRY_SECONDS = 30 * 60
     REFRESH_INTERVAL_SECONDS = 30 * 60
@@ -60,12 +77,16 @@ class MusicIntegration(Integration):
         Integration.__init__(self)
         self.config = ConfigManager()
         self._spotify_client: Optional[Spotify] = None
+        self._spotify_auth = SpotifyAuth(self._spotify_client_settings)
+        self._user_client: Optional[Spotify] = None
+        self._user_client_token = ""
         self._sonos_zones_cache: Dict[str, soco.SoCo] = {}
         self._sonos_zones_cache_time: Optional[float] = None
 
         # Cache for playlists and favorites with their indices
         self._playlists_cache: List[str] = []
         self._favorites_cache: List[str] = []
+        self._spotify_playlists_cache: List[SpotifyPlaylist] = []
         self._cache_lock = threading.Lock()
 
         # Cache for Spotify search results with short IDs (persists for conversation)
@@ -103,6 +124,7 @@ class MusicIntegration(Integration):
 
     def _refresh_playlists_and_favorites(self):
         """Load playlists and favorites and cache them with their indices."""
+        self._refresh_spotify_playlists()
         try:
             # Use any available zone to fetch playlists and favorites
             zones = self._discover_sonos_zones()
@@ -117,6 +139,41 @@ class MusicIntegration(Integration):
                 self._favorites_cache = self._fetch_favorites_from_sonos(zone_name)
         except Exception as e:
             error(f"Error refreshing playlists and favorites cache: {e}")
+
+    def _refresh_spotify_playlists(self):
+        """Reloads the signed-in user's playlist library; a failed fetch keeps the list it had."""
+        playlists = self._fetch_spotify_playlists()
+        if playlists is None:
+            return
+        with self._cache_lock:
+            self._spotify_playlists_cache = playlists
+
+    def _fetch_spotify_playlists(self) -> Optional[List[SpotifyPlaylist]]:
+        """The user's own and followed playlists — name and URI only, since this app may not
+        read the tracks of a Spotify-owned one and Sonos resolves them itself. None when the
+        fetch failed (the cached list stands), empty when no user is signed in."""
+        if not self._spotify_auth.signed_in():
+            trace("Spotify: no user signed in, no playlist library to list (spotify_login())")
+            return []
+        try:
+            spotify = self._get_user_client()
+            playlists: List[SpotifyPlaylist] = []
+            page = spotify.current_user_playlists(limit=50)
+            while page:
+                # Spotify answers a null item for a playlist this app may not see at all.
+                for item in page.get('items') or []:
+                    if item and item.get('name') and item.get('uri'):
+                        owner = (item.get('owner') or {}).get('display_name') or ""
+                        playlists.append(SpotifyPlaylist(item['name'], item['uri'], owner))
+                page = spotify.next(page) if page.get('next') else None
+            info(f"Spotify: {len(playlists)} playlists in the signed-in user's library")
+            return playlists
+        except NotSignedIn as e:
+            info(f"Spotify: playlist library not listed — {e}")
+            return []
+        except Exception as e:
+            error(f"Error fetching the user's Spotify playlists: {e}")
+            return None
 
     def _start_periodic_refresh(self):
         """Load playlists and favorites in the background now, then every 30 minutes."""
@@ -174,6 +231,21 @@ class MusicIntegration(Integration):
             error(f"Invalid favorite URI format: {uri}")
             return None
 
+    def _uri_to_spotify_playlist(self, uri: str) -> Optional[SpotifyPlaylist]:
+        """The user's Spotify playlist behind an S-0, S-1, … id."""
+        try:
+            if not uri.startswith('S-'):
+                return None
+            index = int(uri[2:])
+            with self._cache_lock:
+                if 0 <= index < len(self._spotify_playlists_cache):
+                    return self._spotify_playlists_cache[index]
+            error(f"Spotify playlist index {index} out of range (have {len(self._spotify_playlists_cache)} playlists)")
+            return None
+        except ValueError:
+            error(f"Invalid Spotify playlist URI format: {uri}")
+            return None
+
     def _generate_short_id(self) -> str:
         """Generate short IDs: AA, AB, AC, ..., AZ, BA, BB, ..., ZZ (676 total)."""
         id_num = self._next_cache_id
@@ -182,10 +254,15 @@ class MusicIntegration(Integration):
         second = chr(65 + (id_num % 26))
         return f"{first}{second}"
 
+    def _spotify_client_settings(self) -> tuple[str, str]:
+        """The app's (client_id, client_secret), read at call time so a key set through config_request works at once."""
+        return (self.config.get("api_keys.spotify.client_id") or "",
+                self.config.get("api_keys.spotify.client_secret") or "")
+
     def _get_spotify_client(self) -> Spotify:
+        """The app's own client (client credentials): search, track and artist lookups."""
         if self._spotify_client is None:
-            client_id = self.config.get("api_keys.spotify.client_id")
-            client_secret = self.config.get("api_keys.spotify.client_secret")
+            client_id, client_secret = self._spotify_client_settings()
 
             if not client_id or not client_secret:
                 raise ValueError("Spotify credentials not found in config.yaml. Add api_keys.spotify.client_id and api_keys.spotify.client_secret")
@@ -198,6 +275,44 @@ class MusicIntegration(Integration):
             info("Spotify client initialized")
 
         return self._spotify_client
+
+    def _get_user_client(self) -> Spotify:
+        """A client on the signed-in user's token (the playlist library); rebuilt when the token
+        was refreshed. Raises NotSignedIn."""
+        token = self._spotify_auth.token()
+        if self._user_client is None or self._user_client_token != token:
+            self._user_client = Spotify(auth=token)
+            self._user_client_token = token
+            trace("Spotify user client built on a fresh access token")
+        return self._user_client
+
+    # --- the user's sign-in (spotify_login / spotify_login_code) -----------------------------
+
+    def spotify_signed_in(self) -> bool:
+        return self._spotify_auth.signed_in()
+
+    def login_begin(self) -> SignIn:
+        """Starts the sign-in of the user's Spotify account; raises RuntimeError without a client id."""
+        return self._spotify_auth.begin()
+
+    def login_finish(self, pasted: str) -> str:
+        """"" when the pasted answer signed the user in — the playlist library is then reloaded
+        at once — else why not."""
+        failure = self._spotify_auth.finish(pasted)
+        if failure:
+            return failure
+        self._user_client = None
+        self._refresh_spotify_playlists()
+        return ""
+
+    def spotify_user_name(self) -> str:
+        """The signed-in user's display name, or "" when it cannot be read (nothing depends on it)."""
+        try:
+            profile = self._get_user_client().current_user() or {}
+            return str(profile.get('display_name') or profile.get('id') or "")
+        except Exception as e:
+            trace(f"Spotify: the signed-in user's profile could not be read: {e}")
+            return ""
 
     def _discover_sonos_zones(self) -> Dict[str, soco.SoCo]:
         current_time = time.time()
@@ -287,7 +402,7 @@ class MusicIntegration(Integration):
             res = f"Searching Spotify for '{query}':\n\n"
             spotify = self._get_spotify_client()
 
-            results = spotify.search(q=query, type='track,artist', market='SE', limit=limit)
+            results = spotify.search(q=query, type='track,artist,playlist', market='SE', limit=limit)
 
             with self._cache_lock:
                 res += "TRACKS:\n"
@@ -309,6 +424,19 @@ class MusicIntegration(Integration):
                         res += f"{item['name']} - {genres}{self._popularity(item)} ID: {short_id}\n"
                 else:
                     res += "No artists found.\n"
+
+                res += "\nPLAYLISTS:\n"
+                # Spotify answers a null item for a playlist this app may not see (an algorithmic one).
+                playlists = [p for p in (results.get('playlists') or {}).get('items') or [] if p]
+                if playlists:
+                    for item in playlists:
+                        short_id = self._generate_short_id()
+                        self._spotify_search_cache[short_id] = item['uri']
+                        owner = (item.get('owner') or {}).get('display_name') or ''
+                        by = f" - by {owner}" if owner else ""
+                        res += f"{item['name']}{by} ID: {short_id}\n"
+                else:
+                    res += "No playlists found.\n"
 
             items = results['tracks']['items'] + results['artists']['items']
             if items and not any('popularity' in item for item in items):
@@ -370,10 +498,20 @@ class MusicIntegration(Integration):
                     error(f"Could not resolve favorite URI: {id}")
                     return False
                 return self.play_favorite(room_name, favorite_name)
+            elif id.startswith('S-'):
+                playlist = self._uri_to_spotify_playlist(id)
+                if playlist is None:
+                    error(f"Could not resolve Spotify playlist URI: {id}")
+                    return False
+                return self.play_spotify_playlist(room_name, playlist)
             else:
                 spotify_id = id.split(":")[-1]
 
-                if "artist" in id:
+                if ":playlist:" in id or "/playlist/" in id:
+                    shuffle_msg = self._play_spotify_share(coordinator, id, shuffle=True)
+                    info(f"Playing Spotify playlist {id} in {room_name}{shuffle_msg}")
+                    return True
+                elif "artist" in id:
                     sonos_uri = f"x-sonosapi-radio:spotify%3aartistRadio%3a{spotify_id}?sid=9&flags=8300&sn=4"
                     trace(f"Converted {id} to artist radio: {sonos_uri}")
                     coordinator.play_uri(sonos_uri)
@@ -536,6 +674,44 @@ class MusicIntegration(Integration):
         with self._cache_lock:
             return self._favorites_cache.copy()
 
+    def get_spotify_playlists(self) -> List[SpotifyPlaylist]:
+        """The cached playlist library of the signed-in Spotify user, in S-0, S-1, … order."""
+        with self._cache_lock:
+            return self._spotify_playlists_cache.copy()
+
+    def _play_spotify_share(self, coordinator: soco.SoCo, uri: str, shuffle: bool) -> str:
+        """Clears the queue, adds a Spotify container (playlist, album) through the Sonos Spotify
+        service and starts it — Sonos resolves the tracks with the household's own account.
+        Returns the shuffle suffix for the log line."""
+        trace(f"Using ShareLinkPlugin to play Spotify container {uri}")
+        share = ShareLinkPlugin(coordinator)
+        coordinator.clear_queue()
+        share.add_share_link_to_queue(uri)
+        shuffle_msg = ""
+        if shuffle:
+            try:
+                coordinator.play_mode = 'SHUFFLE'
+                shuffle_msg = " (shuffled)"
+            except Exception as e:
+                trace(f"Could not enable shuffle: {e}")
+        coordinator.play_from_queue(0)
+        return shuffle_msg
+
+    def play_spotify_playlist(self, room_name: str, playlist: SpotifyPlaylist, shuffle: bool = True) -> bool:
+        """Starts one of the signed-in user's playlists by its Spotify URI."""
+        zone = self._get_zone(room_name)
+        if not zone:
+            return False
+
+        coordinator = self._get_coordinator(zone)
+        try:
+            shuffle_msg = self._play_spotify_share(coordinator, playlist.uri, shuffle)
+            info(f"Playing Spotify playlist '{playlist.name}' ({playlist.uri}) in {room_name}{shuffle_msg}")
+            return True
+        except Exception as e:
+            error(f"Error playing Spotify playlist '{playlist.name}' ({playlist.uri}) in {room_name}: {e}")
+            return False
+
     def play_playlist(self, room_name: str, playlist_name: str, shuffle: bool = True) -> bool:
         zone = self._get_zone(room_name)
         if not zone:
@@ -608,20 +784,7 @@ class MusicIntegration(Integration):
                     content_type = spotify_match.group(1)
                     content_id = spotify_match.group(2)
                     spotify_url = f'https://open.spotify.com/{content_type}/{content_id}'
-                    trace(f"Using ShareLinkPlugin to play Spotify {content_type}: {spotify_url}")
-
-                    share = ShareLinkPlugin(coordinator)
-                    coordinator.clear_queue()
-                    share.add_share_link_to_queue(spotify_url)
-
-                    if shuffle:
-                        try:
-                            coordinator.play_mode = 'SHUFFLE'
-                            shuffle_msg = " (shuffled)"
-                        except Exception as e:
-                            trace(f"Could not enable shuffle: {e}")
-
-                    coordinator.play_from_queue(0)
+                    shuffle_msg = self._play_spotify_share(coordinator, spotify_url, shuffle)
                 else:
                     # Other container type - try play_uri as fallback
                     coordinator.play_uri(uri)
