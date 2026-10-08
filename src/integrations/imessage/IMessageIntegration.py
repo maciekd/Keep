@@ -4,7 +4,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 from assistant.SystemNote import system_note
 
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
@@ -56,6 +56,7 @@ TIER_NAMES = ("iMessage handle", "mobile", "other phone", "email unknown to Mess
 MOBILE_LABEL_PATTERN = re.compile(r"iphone|mobil|cell", re.IGNORECASE)     # "Mobile", "mobil" (sv)
 FAX_LABEL_PATTERN = re.compile(r"fax|pager", re.IGNORECASE)
 SWEDISH_MOBILE_PATTERN = re.compile(r"^(?:\+46|0046)7\d{8}$|^07\d{8}$")
+CHAT_ACTIVITY_CHUNK = 500      # handle rowids per chat.db query, well under SQLite's parameter limit
 
 
 class IMessageIntegration(Integration, Feed):
@@ -672,46 +673,68 @@ class IMessageIntegration(Integration, Feed):
         return TIER_OTHER_PHONE
 
     @classmethod
-    def _chat_activity(cls) -> dict[str, tuple[bool, int, int]]:
-        """What chat.db knows per handle: (seen on the iMessage service, Apple date of the latest
-        message, message count), keyed by the handle id and, for phones, by its 9-digit suffix so a
-        card's local-format number matches the E.164 handle Messages stores. Empty when chat.db
+    def _chat_activity(cls, handles: Iterable[str]) -> dict[str, tuple[bool, int, int]]:
+        """What chat.db knows about the given handles: (seen on the iMessage service, Apple date of
+        the latest message, message count), keyed by the handle id and, for phones, by its 9-digit
+        suffix so a card's local-format number matches the E.164 handle Messages stores. Messages
+        are counted through the chats the handle takes part in, group chats included — Apple stores
+        handle_id = 0 on outgoing messages (see `_resolve_chat_recipient`), so joining on it would
+        count only the contact's replies and miss a conversation where the owner does the writing.
+        Only the handle rows matching the wanted ids or suffixes are read. Empty when chat.db
         cannot be read — the ranking then falls back to the card alone."""
+        wanted_ids = {h.lower() for h in handles}
+        wanted_suffixes = {s for h in handles if "@" not in h and (s := cls._phone_suffix(h))}
+        if not wanted_ids:
+            return {}
         activity: dict[str, tuple[bool, int, int]] = {}
 
         def merge(key, imessage, last_date, count):
             seen = activity.get(key, (False, 0, 0))
             activity[key] = (seen[0] or imessage, max(seen[1], last_date), seen[2] + count)
 
+        matched: dict[int, tuple[str, str, str | None]] = {}
+        counts: dict[int, tuple[int, int]] = {}
         try:
             with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-                rows = conn.execute(
-                    "SELECT h.id, h.service, COUNT(m.ROWID), COALESCE(MAX(m.date), 0) "
-                    "FROM handle h LEFT JOIN message m ON m.handle_id = h.ROWID "
-                    "GROUP BY h.id, h.service"
-                ).fetchall()
+                for rowid, handle_id, service in conn.execute("SELECT ROWID, id, service FROM handle"):
+                    if not handle_id:
+                        continue
+                    suffix = cls._phone_suffix(handle_id) if "@" not in handle_id else None
+                    if handle_id.lower() in wanted_ids or (suffix and suffix in wanted_suffixes):
+                        matched[rowid] = (handle_id, service or "", suffix)
+                rowids = list(matched)
+                for start in range(0, len(rowids), CHAT_ACTIVITY_CHUNK):
+                    chunk = rowids[start:start + CHAT_ACTIVITY_CHUNK]
+                    marks = ",".join("?" * len(chunk))
+                    for rowid, count, last_date in conn.execute(
+                            "SELECT chj.handle_id, COUNT(m.ROWID), COALESCE(MAX(m.date), 0) "
+                            "FROM chat_handle_join chj "
+                            "JOIN chat_message_join cmj ON cmj.chat_id = chj.chat_id "
+                            "JOIN message m ON m.ROWID = cmj.message_id "
+                            f"WHERE chj.handle_id IN ({marks}) GROUP BY chj.handle_id", chunk):
+                        counts[rowid] = (count or 0, last_date or 0)
         except Exception as e:
             info(f"iMessage: chat.db handle query failed, ranking contact handles by card only: {e}")
-            return activity
-        for handle_id, service, count, last_date in rows:
-            if not handle_id:
-                continue
-            imessage = (service or "").lower() == "imessage"
-            merge(handle_id.lower(), imessage, last_date or 0, count or 0)
-            suffix = cls._phone_suffix(handle_id) if "@" not in handle_id else None
+            return {}
+        for rowid, (handle_id, service, suffix) in matched.items():
+            imessage = service.lower() == "imessage"
+            count, last_date = counts.get(rowid, (0, 0))
+            merge(handle_id.lower(), imessage, last_date, count)
             if suffix:
-                merge(suffix, imessage, last_date or 0, count or 0)
-        trace(f"iMessage: chat.db knows {len(rows)} handles")
+                merge(suffix, imessage, last_date, count)
+        trace(f"iMessage: chat.db knows {len(matched)} handle rows for {len(wanted_ids)} contested handles, "
+              f"{len(counts)} with messages")
         return activity
 
     @classmethod
     def _lookup_activity(cls, activity: dict[str, tuple[bool, int, int]], handle: str) \
             -> Optional[tuple[bool, int, int]]:
-        found = activity.get(handle.lower())
-        if found is None and "@" not in handle:
-            suffix = cls._phone_suffix(handle)
-            found = activity.get(suffix) if suffix else None
-        return found
+        """The activity of a handle. A phone is looked up by its suffix first: that entry merges every
+        chat.db row of the number whatever its format, so a local-format id Messages once stored
+        verbatim does not hide the history of its E.164 twin."""
+        suffix = cls._phone_suffix(handle) if "@" not in handle else None
+        found = activity.get(suffix) if suffix else None
+        return found if found is not None else activity.get(handle.lower())
 
     @classmethod
     def _rank_candidates(cls, candidates: dict[str, list[tuple[str, Optional[str]]]]) \
@@ -719,11 +742,13 @@ class IMessageIntegration(Integration, Feed):
         """Pick one handle per name: the best tier, then the most recent conversation in chat.db
         (then the most messages), then E.164 over an email over bare digits, then the card's
         order. Returns the name → handle map and, per name, why the handle won — the line
-        `resolve_recipient` logs. chat.db is read only when some name has a choice to make."""
+        `resolve_recipient` logs. chat.db is read only for the handles of the names with a choice
+        to make, so the fallback lookup of one name costs one small query."""
         reverse: dict[str, str] = {}
         reasons: dict[str, str] = {}
         contested = {key: entries for key, entries in candidates.items() if len(entries) > 1}
-        activity = cls._chat_activity() if contested else {}
+        contested_handles = {handle for entries in contested.values() for handle, _ in entries}
+        activity = cls._chat_activity(contested_handles) if contested else {}
         for key, entries in candidates.items():
             ranked = []
             for index, (handle, label) in enumerate(entries):

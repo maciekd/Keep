@@ -969,6 +969,21 @@ class TestRankCandidates:
         activity = {"+46701740609": (True, 1, 1), "701740609": (True, 1, 1)}
         assert _rank(candidates, activity)["frances"] == "0701740609"
 
+    def test_verbatim_local_sms_row_does_not_hide_the_e164_imessage_history(self):
+        """chat.db keeps an old SMS row under the local-format id and the iMessage history under
+        the E.164 id; the card lists the local format. The phone is still the iMessage handle."""
+        candidates = {"carol": [("0701740605", "_$!<Mobile>!$_"), ("carol@example.com", None)]}
+        activity = {"0701740605": (False, 100, 1), "+46701740605": (True, 900, 300),
+                    "701740605": (True, 900, 301), "carol@example.com": (True, 500, 1)}
+        assert _rank(candidates, activity)["carol"] == "0701740605"
+
+    def test_chat_db_asked_about_the_contested_handles_only(self):
+        candidates = {"alice": [("+12345678901", None)],
+                      "bob": [("+4631123456", "_$!<Home>!$_"), ("bob@example.com", None)]}
+        with patch.object(IMessageIntegration, "_chat_activity", return_value={}) as mock_activity:
+            IMessageIntegration._rank_candidates(candidates)
+        assert set(mock_activity.call_args.args[0]) == {"+4631123456", "bob@example.com"}
+
     def test_fax_ranks_last(self):
         candidates = {"bob": [("+4631123457", "_$!<HomeFAX>!$_"), ("+4631123456", "_$!<Home>!$_")]}
         assert _rank(candidates, {})["bob"] == "+4631123456"
@@ -992,26 +1007,83 @@ class TestRankCandidates:
         assert reverse["bob"] == "+46701740605"
 
 
+def _chat_db(path, handles, chats):
+    """Write a chat.db with Apple's shape: `handles` are (rowid, id, service); `chats` are
+    (chat_id, [handle rowids], [(message rowid, date, is_from_me)]). Outgoing messages carry
+    handle_id = 0 as Apple writes them."""
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT, service TEXT);
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, date INTEGER, is_from_me INTEGER, handle_id INTEGER);
+            CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
+            CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+        """)
+        conn.executemany("INSERT INTO handle VALUES (?, ?, ?)", handles)
+        for chat_id, members, messages in chats:
+            conn.executemany("INSERT INTO chat_handle_join VALUES (?, ?)", [(chat_id, h) for h in members])
+            for rowid, date, from_me in messages:
+                sender = 0 if from_me else members[0]
+                conn.execute("INSERT INTO message VALUES (?, ?, ?, ?)", (rowid, date, from_me, sender))
+                conn.execute("INSERT INTO chat_message_join VALUES (?, ?)", (chat_id, rowid))
+
+
 @pytest.mark.unit
 class TestChatActivity:
-    def _activity(self, rows):
-        with patch('integrations.imessage.IMessageIntegration.sqlite3') as mock_sqlite:
-            mock_conn = MagicMock()
-            mock_conn.__enter__ = Mock(return_value=mock_conn)
-            mock_conn.__exit__ = Mock(return_value=False)
-            mock_conn.execute.return_value.fetchall.return_value = rows
-            mock_sqlite.connect.return_value = mock_conn
-            return IMessageIntegration._chat_activity()
+    def _activity(self, tmp_path, handles, chats, wanted):
+        db = tmp_path / "chat.db"
+        _chat_db(db, handles, chats)
+        with patch('integrations.imessage.IMessageIntegration.CHAT_DB_PATH', str(db)):
+            return IMessageIntegration._chat_activity(wanted)
 
-    def test_imessage_and_sms_rows_of_one_handle_merge(self):
-        activity = self._activity([("+46701740605", "SMS", 3, 900), ("+46701740605", "iMessage", 7, 500)])
-        assert activity["+46701740605"] == (True, 900, 10)
+    def test_conversation_where_only_the_owner_writes_counts(self, tmp_path):
+        """The owner texts the phone daily and the contact never replies; the email got one reply
+        years ago. Counting by message.handle_id (0 on outgoing rows) would hand the email the win."""
+        activity = self._activity(
+            tmp_path,
+            handles=[(1, "+46701740605", "iMessage"), (2, "carol@example.com", "iMessage")],
+            chats=[(10, [1], [(100, 900, 1), (101, 901, 1), (102, 902, 1)]),
+                   (11, [2], [(103, 500, 0)])],
+            wanted={"+46701740605", "carol@example.com"})
+        assert activity["+46701740605"] == (True, 902, 3)
+        assert activity["carol@example.com"] == (True, 500, 1)
 
-    def test_phone_indexed_by_suffix_and_email_lowercased(self):
-        activity = self._activity([("+46701740605", "iMessage", 1, 1), ("Carol@Example.com", "iMessage", 2, 2)])
+    def test_imessage_and_sms_rows_of_one_handle_merge(self, tmp_path):
+        activity = self._activity(
+            tmp_path,
+            handles=[(1, "+46701740605", "SMS"), (2, "+46701740605", "iMessage")],
+            chats=[(10, [1], [(100, 900, 0), (101, 300, 1)]), (11, [2], [(102, 500, 1)])],
+            wanted={"+46701740605"})
+        assert activity["+46701740605"] == (True, 900, 3)
+
+    def test_phone_indexed_by_suffix_and_email_lowercased(self, tmp_path):
+        activity = self._activity(
+            tmp_path,
+            handles=[(1, "+46701740605", "iMessage"), (2, "Carol@Example.com", "iMessage")],
+            chats=[(10, [1], [(100, 1, 0)]), (11, [2], [(101, 2, 0), (102, 2, 1)])],
+            wanted={"0701740605", "carol@example.com"})
         assert activity["701740605"] == (True, 1, 1)
         assert activity["carol@example.com"] == (True, 2, 2)
         assert "example.com" not in activity
+
+    def test_only_the_wanted_handles_are_read(self, tmp_path):
+        activity = self._activity(
+            tmp_path,
+            handles=[(1, "+46701740605", "iMessage"), (2, "+12025550176", "iMessage"), (3, "bob@example.com", "SMS")],
+            chats=[(10, [1, 2], [(100, 1, 0)]), (11, [3], [(101, 5, 1)])],
+            wanted={"+46701740605"})
+        assert set(activity) == {"+46701740605", "701740605"}
+
+    def test_handle_without_messages_still_known_to_imessage(self, tmp_path):
+        activity = self._activity(tmp_path, handles=[(1, "+46701740605", "iMessage")], chats=[],
+                                  wanted={"+46701740605"})
+        assert activity["+46701740605"] == (True, 0, 0)
+
+    def test_more_handles_than_one_query_holds(self, tmp_path):
+        many = [(i, f"+4670174{i:04d}", "iMessage") for i in range(1, 1203)]
+        chats = [(1000 + i, [i], [(100_000 + i, i, 1)]) for i, _, _ in many]
+        activity = self._activity(tmp_path, many, chats, wanted={h for _, h, _ in many})
+        assert activity["+46701741202"] == (True, 1202, 1)
+        assert activity["+46701740001"] == (True, 1, 1)
 
 
 @pytest.mark.unit
