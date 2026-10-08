@@ -70,7 +70,7 @@ class MusicCommands(CommandSet):
         self.background_command(self._run_spotify_login, (), lane=self.commands.CONFIG_LANE)
 
     def cmd_spotify_login_code(self, parameter_string: str):
-        """Finishes the flow with the address the browser landed on (or the bare code)."""
+        """Finishes the flow with the whole address the browser landed on."""
         pasted = parameter_string.strip().strip("\"'`").strip()
         if not pasted:
             return 'spotify_login_code failed: paste the address the browser landed on, e.g. spotify_login_code("http://127.0.0.1:8888/callback?code=...&state=...")'
@@ -115,10 +115,17 @@ class MusicCommands(CommandSet):
             info(f"spotify_login_code: not signed in — {failure}")
             return f"Spotify sign-in did not complete: {failure}"
         user = integration.spotify_user_name()
-        playlists = len(integration.get_spotify_playlists())
-        text = ("Spotify: signed in" + (f" as {user}" if user else "")
-                + f". {playlists} playlists of the account are listed in SONOS PLAYLISTS AND ZONES (ids S-0, S-1, …) "
-                  "from the next request and can be started with play_music.")
+        text = "Spotify: signed in" + (f" as {user}" if user else "") + ". "
+        problem = integration.spotify_library_error()
+        if problem:
+            info(f"spotify_login_code: signed in, but the playlist library did not load — {problem}")
+            text += (f"The playlist library could not be loaded yet ({problem}); it is tried again every "
+                     f"{integration.REFRESH_INTERVAL_SECONDS // 60} minutes, and the S- ids appear in "
+                     "SONOS PLAYLISTS AND ZONES once it has.")
+        else:
+            listed, total = len(integration.get_spotify_playlists()), integration.spotify_playlists_total()
+            text += (f"{listed} of the account's {total} playlists are listed in SONOS PLAYLISTS AND ZONES (ids S-0, "
+                     "S-1, …) from the next request and can be started with play_music.")
         system_note(NOTE_SOURCE, text)
         return text
 

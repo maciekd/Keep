@@ -68,16 +68,18 @@ The link lives about ten minutes; an expired or reused code comes back as text �
 still to sign in.
 
 `spotify_login()` — signs the household's Spotify account in for the Sonos & Spotify integration, from any chat, so
-the user's own and followed playlists (Discover Weekly, Release Radar, …) are listed in SONOS PLAYLISTS AND ZONES with
-"S-" ids and can be started with play_music. Same dance as google_login: it comes back with a link, the user opens it
-in any browser, signs in, and lands on a http://127.0.0.1:8888/callback?... page that does not load — that is expected.
-Tell the user to copy that page's whole address from the address bar and paste it into the chat; then run
-`spotify_login_code(pasted: str)` with it, quoted, e.g. `spotify_login_code("http://127.0.0.1:8888/callback?code=...&state=...")`
-(the bare code works too). The link lives about ten minutes; an expired or reused code comes back as text — run
-spotify_login again. The token survives restarts; signing in again is only needed when the account's consent was
-revoked (the playlist list then says so in the log and the "S-" ids disappear). Needs `api_keys.spotify.client_id`
-and `client_secret` set (`config_help("api_keys")`: the app on developer.spotify.com must have the redirect URI
-http://127.0.0.1:8888/callback registered) and the integration enabled.
+the newest 20 playlists of the user's own Spotify library (own and followed) are listed in SONOS PLAYLISTS AND ZONES
+with "S-" ids and can be started with play_music. Spotify-made playlists (Discover Weekly, Release Radar) are not
+among them — Spotify hides them from apps like this one; a Sonos favorite is the way to those. Same dance as
+google_login: it comes back with a link, the user opens it in any browser, signs in, and lands on a
+http://127.0.0.1:8888/callback?... page that does not load — that is expected. Tell the user to copy that page's
+whole address from the address bar and paste it into the chat; then run `spotify_login_code(pasted: str)` with it,
+quoted, e.g. `spotify_login_code("http://127.0.0.1:8888/callback?code=...&state=...")` — the whole address, a bare
+code is refused. The link lives about ten minutes; an expired or reused code comes back as text — run spotify_login
+again. The token survives restarts; signing in again is only needed when the account's consent was revoked (a system
+note says so once, list_integrations shows it on Sonos & Spotify, and the "S-" ids disappear). Needs
+`api_keys.spotify.client_id` and `client_secret` set (`config_help("api_keys")`: the app on developer.spotify.com must
+have the redirect URI http://127.0.0.1:8888/callback registered) and the integration enabled.
 
 `hue_pair(bridge: str = "")` — pairs Keep with the Philips Hue bridge, from any chat. The bridge hands out its key only
 while its round link button has just been pressed, so ask the user to press it, then run `hue_pair()` within 30

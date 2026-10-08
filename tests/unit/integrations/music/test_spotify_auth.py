@@ -1,6 +1,6 @@
-"""SpotifyAuth: the authorization URL, the code pasted back as a URL or bare, the token file it
-leaves (0600, deleted on sign-out), the refresh when the token ran out, the refused refresh,
-and spotipy's interactive fallback cut off."""
+"""SpotifyAuth: the authorization URL, the whole redirected address pasted back, the token file it
+leaves (0600, deleted on sign-out), the refresh when the token ran out, the refused refresh told
+apart from a failed one, and spotipy's interactive fallback cut off."""
 import json
 import stat
 import time
@@ -10,8 +10,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import requests
 
-from integrations.music.SpotifyAuth import (REDIRECT_URI, SCOPES, NotSignedIn, SpotifyAuth, _PasteOnlyOAuth,
-                                            parse_pasted)
+from integrations.music.SpotifyAuth import (REDIRECT_URI, SCOPES, NotSignedIn, SpotifyAuth, TokenUnavailable,
+                                            _PasteOnlyOAuth, parse_pasted)
 
 CLIENT = ("cid-1234", "csecret")
 
@@ -23,9 +23,14 @@ class FakeSpotify:
         self.codes = {"AQcode": "access-1"}
         self.refresh_tokens = {"refresh-1": "access-2"}
         self.posts = []
+        self.outage = None   # a status code to answer, or an exception to raise, instead of a token
 
     def post(self, url, data=None, **kwargs):
         self.posts.append(data)
+        if isinstance(self.outage, Exception):
+            raise self.outage
+        if self.outage:
+            return _response(self.outage, {"error": "server_error"})
         if data.get("grant_type") == "authorization_code" and data.get("code") in self.codes:
             return _response(200, {"access_token": self.codes[data["code"]], "token_type": "Bearer", "expires_in": 3600,
                                    "refresh_token": "refresh-1", "scope": " ".join(SCOPES)})
@@ -74,11 +79,15 @@ def redirected(sign_in, code="AQcode", state=None) -> str:
 
 @pytest.mark.unit
 class TestParsePasted:
-    def test_the_whole_address_its_query_or_the_bare_code(self):
+    def test_the_whole_address_or_its_query(self):
         assert parse_pasted(f'"{REDIRECT_URI}?code=AQ%2Fx&state=st"') == ("AQ/x", "st", "")
         assert parse_pasted("?code=AQx&state=st") == ("AQx", "st", "")
-        assert parse_pasted("  AQbare  ") == ("AQbare", "", "")
         assert parse_pasted(f"{REDIRECT_URI}?error=access_denied&state=st")[2] == "access_denied"
+
+    def test_anything_without_the_parameters_is_no_code(self):
+        for pasted in ("  AQbare  ", REDIRECT_URI, "https://accounts.spotify.com/authorize?client_id=cid",
+                       "the page says it cannot be reached"):
+            assert parse_pasted(pasted) == ("", "", ""), pasted
 
 
 @pytest.mark.unit
@@ -121,11 +130,19 @@ class TestFinish:
         assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
         assert a.token() == "access-1"
 
-    def test_the_bare_code_works_too(self, token_path, spotify):
+    def test_a_bare_code_the_bare_redirect_and_the_link_are_refused_without_an_exchange(self, token_path, spotify):
         a = auth(token_path)
-        a.begin()
-        assert a.finish("AQcode") == ""
-        assert a.signed_in()
+        sign_in = a.begin()
+        for pasted in ("AQcode", REDIRECT_URI, sign_in.url, f"{REDIRECT_URI}?code=AQcode"):
+            assert "whole address" in a.finish(pasted), pasted
+        assert spotify.posts == [] and not a.signed_in() and a.pending()
+
+    def test_a_token_spotipy_could_not_write_is_a_failed_sign_in_not_a_silent_one(self, token_path, spotify):
+        a = auth(token_path)
+        sign_in = a.begin()
+        with patch("spotipy.cache_handler.CacheFileHandler.save_token_to_cache"):
+            failure = a.finish(redirected(sign_in))
+        assert str(token_path) in failure and not a.signed_in() and a.pending()
 
     def test_another_flows_state_an_expired_code_and_a_refusal_are_reported_not_exchanged(self, token_path, spotify):
         a = auth(token_path)
@@ -172,9 +189,21 @@ class TestToken:
             a.token()
         assert len(spotify.posts) == 1
 
-        a.begin()
-        assert a.finish("AQcode") == ""
+        sign_in = a.begin()
+        assert a.finish(redirected(sign_in)) == ""
         assert not a.needs_sign_in_again() and a.token() == "access-1"
+
+    def test_an_unreachable_or_failing_token_endpoint_is_not_a_lost_sign_in(self, token_path, spotify):
+        token_file(token_path, expires_in=-10)
+        a = auth(token_path)
+        for outage in (requests.ConnectionError("timed out"), 503):
+            spotify.outage = outage
+            with pytest.raises(TokenUnavailable):
+                a.token()
+            assert a.signed_in() and not a.needs_sign_in_again()
+
+        spotify.outage = None
+        assert a.token() == "access-2"
 
     def test_a_file_from_narrower_scopes_asks_for_a_new_sign_in(self, token_path, spotify):
         token_file(token_path, scope="playlist-read-private")

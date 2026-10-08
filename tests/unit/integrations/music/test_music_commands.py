@@ -57,6 +57,9 @@ def _integration(finish="", playlists=3):
     integration.login_finish.return_value = finish
     integration.spotify_user_name.return_value = "Marcus"
     integration.get_spotify_playlists.return_value = [Mock()] * playlists
+    integration.spotify_playlists_total.return_value = playlists
+    integration.spotify_library_error.return_value = ""
+    integration.REFRESH_INTERVAL_SECONDS = 1800
     return integration
 
 
@@ -115,9 +118,18 @@ class TestSpotifyLogin:
         with patch.object(Commands, "_integration_monitor", return_value=_monitor(integration)), patch(f"{MODULE}.system_note") as note:
             text = commands_instance._owner("spotify_login_code")._run_spotify_login_code(PASTED)
 
-        assert "signed in as Marcus" in text and "3 playlists" in text and "S-0" in text
+        assert "signed in as Marcus" in text and "3 of the account's 3 playlists" in text and "S-0" in text
         assert note.call_args.args[1] == text
         integration.login_finish.assert_called_once_with(PASTED)
+
+    def test_a_signed_in_account_whose_library_did_not_load_says_so_instead_of_a_count(self, commands_instance):
+        integration = _integration(playlists=0)
+        integration.spotify_library_error.return_value = "Spotify's token endpoint could not be reached: timed out"
+        with patch.object(Commands, "_integration_monitor", return_value=_monitor(integration)), patch(f"{MODULE}.system_note") as note:
+            text = commands_instance._owner("spotify_login_code")._run_spotify_login_code(PASTED)
+
+        assert "signed in as Marcus" in text and "timed out" in text and "0 of" not in text
+        assert note.call_args.args[1] == text
 
     def test_a_failed_sign_in_comes_back_as_text_without_a_note(self, commands_instance):
         integration = _integration(finish="the code expired or was already used — run spotify_login() for a new link")

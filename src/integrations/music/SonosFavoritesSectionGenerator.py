@@ -38,6 +38,10 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
         manager = self.playback_manager
         return manager.get_spotify_playlists() if manager is not None else []
 
+    def _spotify_playlists_total(self) -> int:
+        manager = self.playback_manager
+        return manager.spotify_playlists_total() if manager is not None else 0
+
     def _has_data(self) -> bool:
         return bool(self._playlists() or self._favorites() or self._spotify_playlists())
 
@@ -86,15 +90,20 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
         return res.strip()
 
     def _fetch_spotify_playlists(self, res) -> str:
-        """The signed-in user's Spotify playlists (owned and followed), appended with S- ids."""
+        """The listed part of the signed-in user's Spotify library with S- ids, and how much of
+        the library it is."""
         try:
             playlists = self._spotify_playlists()
             if playlists:
-                res += "\nThe user's own Spotify playlists (incl. followed ones such as Discover Weekly):\n"
+                res += "\nThe user's own Spotify playlists (own and followed, newest first):\n"
             for index, playlist in enumerate(playlists):
                 by = f" by {playlist.owner}" if playlist.owner else ""
                 res += f"{playlist.name}{by} (ID: S-{index})\n"
-            trace(f"Found {len(playlists)} Spotify playlists of the signed-in user")
+            total = self._spotify_playlists_total()
+            if total > len(playlists):
+                res += (f"(the {total - len(playlists)} older playlists of the library are not listed; "
+                        "search_music finds a public one by name)\n")
+            trace(f"Listed {len(playlists)} of the signed-in user's {total} Spotify playlists")
         except Exception as e:
             error(f"Error listing the user's Spotify playlists: {e}")
         return res

@@ -4,12 +4,17 @@ A Spotify app redirects only to an address registered with it — here the loopb
 `http://127.0.0.1:8888/callback`, on the machine the browser runs on, which is not the server.
 So the flow is loopback-by-paste: `begin()` builds the authorization URL (a random `state` is
 kept for the flow), the user signs in with it in any browser and lands on a
-`http://127.0.0.1:8888/callback?code=…&state=…` page that never loads, and pastes that address
-— or just the code — back into `finish()`, which checks the state and exchanges the code.
+`http://127.0.0.1:8888/callback?code=…&state=…` page that never loads, and pastes that whole
+address back into `finish()`, which checks the state and exchanges the code. The whole address
+is required: a bare code would skip the state check, and a paste without `code=` (the bare
+redirect, the link itself, a sentence) is refused as such instead of being sent to Spotify.
 spotipy keeps the refresh token, the access token and its expiry in `cache/oauth/spotify.json`
-(mode 600) and refreshes the access token itself when `token()` finds it expired; a refresh
-Spotify refuses (the consent revoked) deletes nothing — the account is marked as needing a
-new sign-in and every call says so until `finish()` succeeds again.
+(mode 600) and refreshes the access token itself when `token()` finds it expired. The failures
+of `token()` are two kinds: `NotSignedIn` when only the user can help (never signed in, the
+refresh refused because the consent was revoked, the scopes grown) — the token file is kept,
+the account marked as needing a new sign-in and every call says so until `finish()` succeeds
+again — and `TokenUnavailable` for a transient one (the token endpoint unreachable or failing),
+which a caller rides out with what it has.
 
 The client (`api_keys.spotify.client_id` / `client_secret`) is read at call time, so a key set
 through config_request works without a rebuild. spotipy's own fallback for a missing token —
@@ -40,7 +45,11 @@ SIGN_IN_AGAIN_HINT = "sign in again — spotify_login()"
 
 
 class NotSignedIn(Exception):
-    """No usable user token: never signed in, signed out, or the refresh was refused."""
+    """No usable user token and only the user can help: never signed in, signed out, the refresh refused."""
+
+
+class TokenUnavailable(Exception):
+    """No token this time: the token endpoint could not be reached or failed. The sign-in stands."""
 
 
 @dataclass(frozen=True)
@@ -57,11 +66,12 @@ class SignIn:
 
 
 def parse_pasted(pasted: str) -> tuple[str, str, str]:
-    """(code, state, error) out of what the user pasted: the whole redirected URL, its query
-    string, or the bare code (no state then)."""
+    """(code, state, error) out of what the user pasted: the whole redirected URL or its query
+    string. Anything without those parameters — a bare code, the bare redirect, the sign-in
+    link, a sentence — parses to nothing, so `finish()` asks for the whole address."""
     text = pasted.strip().strip("\"'`<>").strip()
     if "code=" not in text and "state=" not in text and "error=" not in text:
-        return text, "", ""
+        return "", "", ""
     query = urlsplit(text).query if "?" in text else text.lstrip("?")
     values = parse_qs(query, keep_blank_values=True)
     first = lambda key: (values.get(key) or [""])[0].strip()
@@ -124,12 +134,16 @@ class SpotifyAuth:
                 token_info = oauth.validate_token(self._on_file())
             except SpotifyOauthError as e:
                 reason, description = _oauth_error(e)
-                info(f"Spotify: token refresh refused: {reason} — {description}")
-                if reason == "invalid_grant":
-                    self.refresh_error = "the refresh token is no longer valid (consent revoked)"
+                if reason != "invalid_grant":
+                    # A 5xx, a malformed answer: Spotify's side, the sign-in itself stands.
+                    info(f"Spotify: token refresh failed for now: {reason} — {description}")
+                    raise TokenUnavailable(f"token refresh failed ({reason}: {description})") from e
+                info(f"Spotify: token refresh refused: {description}")
+                self.refresh_error = "the refresh token is no longer valid (consent revoked)"
                 raise NotSignedIn(f"token refresh refused ({description}), {SIGN_IN_AGAIN_HINT}") from e
             except requests.RequestException as e:
-                raise NotSignedIn(f"Spotify's token endpoint could not be reached: {e}") from e
+                info(f"Spotify: token endpoint could not be reached: {e}")
+                raise TokenUnavailable(f"Spotify's token endpoint could not be reached: {e}") from e
             if token_info is None:
                 info("Spotify: the token on file lacks the scopes now needed — a new sign-in is required")
                 raise NotSignedIn(f"the token on file lacks the scopes now needed, {SIGN_IN_AGAIN_HINT}")
@@ -151,7 +165,7 @@ class SpotifyAuth:
         return self._state is not None
 
     def finish(self, pasted: str) -> str:
-        """Exchanges the pasted address (or code) for the tokens and stores them; "" when
+        """Exchanges the code in the pasted address for the tokens and stores them; "" when
         signed in, else why not."""
         code, state, refusal = parse_pasted(pasted)
         if refusal:
@@ -160,11 +174,12 @@ class SpotifyAuth:
         with self._lock:
             if self._state is None:
                 return "no sign-in is in progress — run spotify_login() first"
-            if state and state != self._state:
+            if not code or not state:
+                info(f"Spotify: the paste carries {'no code' if not code else 'no state'}, nothing exchanged")
+                return "no code and state in what was pasted — paste the whole address the browser landed on"
+            if state != self._state:
                 info("Spotify: sign-in pasted with a state that is not this flow's")
                 return "the pasted address belongs to another sign-in — run spotify_login() again and paste that one"
-            if not code:
-                return "no code in what was pasted — paste the whole address the browser landed on"
             oauth = self._oauth()
             try:
                 oauth.get_access_token(code, as_dict=False, check_cache=False)
@@ -176,6 +191,10 @@ class SpotifyAuth:
                 return f"Spotify answered {reason}: {description}"
             except requests.RequestException as e:
                 return f"Spotify's token endpoint could not be reached: {e}"
+            if not self.signed_in():
+                # spotipy logs and swallows a failed write; without the file the sign-in is lost at once.
+                error(f"Spotify: the exchange succeeded but no token was written to {self.path}")
+                return f"the token could not be saved to {self.path} — check that the folder is writable"
             os.chmod(self.path, 0o600)
             self._state = None
             self.refresh_error = ""

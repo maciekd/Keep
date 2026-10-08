@@ -16,7 +16,8 @@ from spotipy.exceptions import SpotifyException
 from common.logging import trace, info, error
 from common.ConfigManager import ConfigManager
 from assistant.integration.Integration import Integration
-from integrations.music.SpotifyAuth import SpotifyAuth, SignIn, NotSignedIn
+from assistant.SystemNote import system_note
+from integrations.music.SpotifyAuth import SpotifyAuth, SignIn, NotSignedIn, TokenUnavailable
 
 
 @dataclass(frozen=True)
@@ -59,16 +60,25 @@ class MusicIntegration(Integration):
 
     Plays Spotify music, playlists and favorites in the Sonos zones, with pause, skip and
     volume. Keep can search Spotify and start what it finds in any room, and once the user's
-    Spotify account is signed in, their own and followed playlists (Discover Weekly, Release
-    Radar) by name.
+    Spotify account is signed in, the playlists of their own library by name.
 
     Sonos playlists (`P-n`), Sonos favorites (`F-n`) and the user's Spotify playlists (`S-n`)
     are cached and refreshed every 30 minutes; Spotify search results get short ids the LLM
     can refer back to within the conversation. Search runs on the app's client credentials;
-    only the user's playlist library needs the user token `SpotifyAuth` keeps. A playlist is
+    only the user's playlist library needs the user token `SpotifyAuth` keeps. The library is
+    read in Spotify's order (newest added first) and only its first `SPOTIFY_PLAYLISTS_IN_PROMPT`
+    stand in the prompt — every one of them is a prompt line on every request. A playlist is
     started by its URI through the Sonos Spotify service (ShareLinkPlugin), so Sonos resolves
-    the tracks with the household's Spotify account — this app may not read the tracks of a
-    Spotify-owned playlist, and never needs to."""
+    the tracks with the household's Spotify account. Spotify-owned playlists (Discover Weekly,
+    Release Radar, the editorial ones) are left out of `/me/playlists` for an app in development
+    mode since the Web API change of November 2024 — only an app with extended quota sees them,
+    so the texts promise the user's own and followed playlists, not those; a Sonos favorite is
+    the way to reach Discover Weekly from a development-mode app. A transient Spotify failure
+    (`TokenUnavailable`, a timeout) keeps the cached library; only a sign-in the user has to
+    renew (`NotSignedIn`) empties it, and that is said once as a system note and in the health
+    check until the next `spotify_login`."""
+
+    SPOTIFY_PLAYLISTS_IN_PROMPT = 20
 
     CACHE_EXPIRY_SECONDS = 30 * 60
     REFRESH_INTERVAL_SECONDS = 30 * 60
@@ -87,6 +97,9 @@ class MusicIntegration(Integration):
         self._playlists_cache: List[str] = []
         self._favorites_cache: List[str] = []
         self._spotify_playlists_cache: List[SpotifyPlaylist] = []
+        self._spotify_playlists_total = 0
+        self._spotify_library_error = ""   # why the last library fetch failed, "" when it did not
+        self._sign_in_again_noted = False
         self._cache_lock = threading.Lock()
 
         # Cache for Spotify search results with short IDs (persists for conversation)
@@ -118,13 +131,20 @@ class MusicIntegration(Integration):
             return False
         try:
             self._get_spotify_client()
-            return True
         except Exception:
             return False
+        if self._spotify_auth.needs_sign_in_again():
+            # Raised, not returned: the monitor's last_error then names the cure in list_integrations and the console.
+            raise RuntimeError("the Spotify user sign-in was revoked, the user's playlists are gone — spotify_login()")
+        return True
 
     def _refresh_playlists_and_favorites(self):
-        """Load playlists and favorites and cache them with their indices."""
-        self._refresh_spotify_playlists()
+        """Load playlists and favorites and cache them with their indices. Each part is guarded
+        on its own, so a Spotify failure never skips the Sonos lists or the other way round."""
+        try:
+            self._refresh_spotify_playlists()
+        except Exception as e:
+            error(f"Error refreshing the user's Spotify playlists: {e}")
         try:
             # Use any available zone to fetch playlists and favorites
             zones = self._discover_sonos_zones()
@@ -140,40 +160,62 @@ class MusicIntegration(Integration):
         except Exception as e:
             error(f"Error refreshing playlists and favorites cache: {e}")
 
-    def _refresh_spotify_playlists(self):
-        """Reloads the signed-in user's playlist library; a failed fetch keeps the list it had."""
-        playlists = self._fetch_spotify_playlists()
-        if playlists is None:
-            return
+    def _refresh_spotify_playlists(self) -> bool:
+        """Reloads the signed-in user's playlist library. False when the fetch failed: the list
+        it had stands and `spotify_library_error()` says why."""
+        fetched = self._fetch_spotify_playlists()
+        if fetched is None:
+            return False
+        playlists, total = fetched
         with self._cache_lock:
             self._spotify_playlists_cache = playlists
+            self._spotify_playlists_total = total
+        return True
 
-    def _fetch_spotify_playlists(self) -> Optional[List[SpotifyPlaylist]]:
-        """The user's own and followed playlists — name and URI only, since this app may not
-        read the tracks of a Spotify-owned one and Sonos resolves them itself. None when the
-        fetch failed (the cached list stands), empty when no user is signed in."""
+    def _fetch_spotify_playlists(self) -> Optional[tuple[List[SpotifyPlaylist], int]]:
+        """The first SPOTIFY_PLAYLISTS_IN_PROMPT playlists of the user's library in Spotify's
+        order (newest added first) and the library's size — name and URI only, since Sonos
+        resolves the tracks itself. Empty when no user is signed in or the sign-in has to be
+        renewed, None when the fetch failed for now (the cached list stands)."""
         if not self._spotify_auth.signed_in():
             trace("Spotify: no user signed in, no playlist library to list (spotify_login())")
-            return []
+            self._spotify_library_error = ""
+            return [], 0
         try:
             spotify = self._get_user_client()
+            page = spotify.current_user_playlists(limit=self.SPOTIFY_PLAYLISTS_IN_PROMPT) or {}
             playlists: List[SpotifyPlaylist] = []
-            page = spotify.current_user_playlists(limit=50)
-            while page:
-                # Spotify answers a null item for a playlist this app may not see at all.
-                for item in page.get('items') or []:
-                    if item and item.get('name') and item.get('uri'):
-                        owner = (item.get('owner') or {}).get('display_name') or ""
-                        playlists.append(SpotifyPlaylist(item['name'], item['uri'], owner))
-                page = spotify.next(page) if page.get('next') else None
-            info(f"Spotify: {len(playlists)} playlists in the signed-in user's library")
-            return playlists
+            # Spotify answers a null item for a playlist this app may not see at all (a Spotify-owned one).
+            for item in page.get('items') or []:
+                if item and item.get('name') and item.get('uri'):
+                    owner = (item.get('owner') or {}).get('display_name') or ""
+                    playlists.append(SpotifyPlaylist(item['name'], item['uri'], owner))
+            total = max(int(page.get('total') or 0), len(playlists))
+            info(f"Spotify: {len(playlists)} of the {total} playlists in the signed-in user's library listed")
+            self._spotify_library_error = ""
+            self._sign_in_again_noted = False
+            return playlists, total
         except NotSignedIn as e:
             info(f"Spotify: playlist library not listed — {e}")
-            return []
+            self._spotify_library_error = str(e)
+            self._note_sign_in_again()
+            return [], 0
+        except TokenUnavailable as e:
+            info(f"Spotify: playlist library not reloaded, the cached list stands — {e}")
+            self._spotify_library_error = str(e)
+            return None
         except Exception as e:
             error(f"Error fetching the user's Spotify playlists: {e}")
+            self._spotify_library_error = f"{type(e).__name__}: {e}"
             return None
+
+    def _note_sign_in_again(self):
+        """Says once, in every chat and to the LLM, that the Spotify sign-in has to be renewed."""
+        if self._sign_in_again_noted or not self._spotify_auth.needs_sign_in_again():
+            return
+        self._sign_in_again_noted = True
+        system_note("Spotify", "Spotify: the household's Spotify sign-in is no longer valid (its consent was revoked), "
+                               "so the user's Spotify playlists (S- ids) are gone until spotify_login() is run again.")
 
     def _start_periodic_refresh(self):
         """Load playlists and favorites in the background now, then every 30 minutes."""
@@ -190,8 +232,11 @@ class MusicIntegration(Integration):
         if self._stopped.is_set():
             trace("Sonos: refresh tick after the integration was dropped, skipped")
             return
-        self._refresh_playlists_and_favorites()
-        self._schedule_refresh(self.REFRESH_INTERVAL_SECONDS)
+        try:
+            self._refresh_playlists_and_favorites()
+        finally:
+            # Whatever a refresh raises, the next one is scheduled: a stopped timer would freeze every list for good.
+            self._schedule_refresh(self.REFRESH_INTERVAL_SECONDS)
 
     def _on_reset(self):
         """A restarted or disabled integration is dropped, not destroyed: without this its
@@ -297,13 +342,23 @@ class MusicIntegration(Integration):
 
     def login_finish(self, pasted: str) -> str:
         """"" when the pasted answer signed the user in — the playlist library is then reloaded
-        at once — else why not."""
+        at once; `spotify_library_error()` says whether that worked — else why not."""
         failure = self._spotify_auth.finish(pasted)
         if failure:
             return failure
         self._user_client = None
+        self._sign_in_again_noted = False
         self._refresh_spotify_playlists()
         return ""
+
+    def spotify_library_error(self) -> str:
+        """Why the last fetch of the user's playlist library failed, "" when it did not."""
+        return self._spotify_library_error
+
+    def spotify_playlists_total(self) -> int:
+        """The size of the signed-in user's library, of which `get_spotify_playlists()` is the first part."""
+        with self._cache_lock:
+            return self._spotify_playlists_total
 
     def spotify_user_name(self) -> str:
         """The signed-in user's display name, or "" when it cannot be read (nothing depends on it)."""
