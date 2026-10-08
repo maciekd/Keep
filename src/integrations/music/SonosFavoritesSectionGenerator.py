@@ -1,3 +1,4 @@
+import threading
 import time
 from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
 from common.logging import trace, info, error
@@ -9,9 +10,11 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
 
     It reads the lists the integration caches (reloaded every 30 minutes, and the Spotify
     library again right after a sign-in) and never fetches itself: checking them once a minute
-    costs nothing, and the base loop skips the prompt rebuild when nothing changed. It reads
-    the integration the IntegrationMonitor built and never builds one; it runs only while
-    Sonos & Spotify is on, so a house without it never looks for a speaker."""
+    costs nothing, and the base loop skips the prompt rebuild when nothing changed. A reload
+    of the Spotify library wakes the check at once (the integration's library listener), so a
+    fresh sign-in's playlists are in the prompt for the next request rather than a minute
+    later. It reads the integration the IntegrationMonitor built and never builds one; it runs
+    only while Sonos & Spotify is on, so a house without it never looks for a speaker."""
     key = "sonos"
     heading = "# SONOS PLAYLISTS AND ZONES"
     intro = ("Favorites, Sonos playlists and the user's own Spotify playlists the `music` toolkit can start "
@@ -20,6 +23,19 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
 
     def __init__(self, prompt_manager):
         super().__init__(prompt_manager, "SonosFavorites")
+        self._wake = threading.Event()   # set by a library reload or stop(): ends the current wait early
+        self._on_library_reload = self._wake.set
+
+    def stop(self):
+        self._stop_event.set()   # before the wake, so the wait it ends reports the stop
+        self._wake.set()
+        super().stop()
+
+    def _wait(self, seconds: float) -> bool:
+        """The base wait, cut short by a Spotify library reload as well as by stop()."""
+        self._wake.wait(seconds)
+        self._wake.clear()
+        return self._stop_event.is_set()
 
     @property
     def playback_manager(self):
@@ -47,8 +63,13 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
 
     def _start_monitoring(self):
         """Load once the integration's data is in, then follow the cached lists."""
-        self._await_first_data()
-        self._refresh()
+        self._wake.clear()
+        MusicManager.add_library_listener(self._on_library_reload)
+        try:
+            self._await_first_data()
+            self._refresh()
+        finally:
+            MusicManager.remove_library_listener(self._on_library_reload)
 
     def _await_first_data(self):
         """Poll until playlists/favorites are loaded (with timeout)."""
@@ -69,13 +90,14 @@ class SonosFavoritesSectionGenerator(PromptSectionGenerator):
             self._wait(0.1)
 
     def _refresh(self):
-        """Follows the integration's caches: a changed list (the 30-minute reload, a Spotify
-        sign-in) reaches the prompt within a minute."""
+        """Follows the integration's caches: a changed list reaches the prompt within a minute,
+        a reloaded Spotify library (a sign-in, the 30-minute reload) at once."""
         while not self._stop_event.is_set():
             self._wait(self.CHECK_INTERVAL)
             if self._stop_event.is_set():
                 break
             if self._has_data():
+                trace("Sonos: checking the cached lists for the prompt")
                 self._update_content()
             else:
                 trace("Sonos: still no favorites or playlists, section left empty")

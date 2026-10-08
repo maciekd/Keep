@@ -134,6 +134,8 @@ class TestSpotifyLogin:
             text = commands_instance._owner("spotify_login_code")._run_spotify_login_code(PASTED)
 
         assert "signed in as Marcus" in text and "3 of the account's 3 playlists" in text and "S-0" in text
+        assert "within a minute" in text and "next request" not in text, \
+            "the section follows the cache on its own clock — the reply must not promise the ids for the next request"
         assert note.call_args.args[1] == text
         integration.login_finish.assert_called_once_with(PASTED)
 

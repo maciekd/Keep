@@ -82,6 +82,9 @@ class MusicIntegration(Integration):
 
     CACHE_EXPIRY_SECONDS = 30 * 60
     REFRESH_INTERVAL_SECONDS = 30 * 60
+    # Called (no arguments) after every reload of the user's Spotify playlist library — the
+    # sign-in's and the 30-minute one. On the class, so a listener outlives restart_integration.
+    _library_listeners: List = []
 
     def __init__(self):
         Integration.__init__(self)
@@ -161,8 +164,8 @@ class MusicIntegration(Integration):
             error(f"Error refreshing playlists and favorites cache: {e}")
 
     def _refresh_spotify_playlists(self) -> bool:
-        """Reloads the signed-in user's playlist library. False when the fetch failed: the list
-        it had stands and `spotify_library_error()` says why."""
+        """Reloads the signed-in user's playlist library and tells the listeners. False when
+        the fetch failed: the list it had stands and `spotify_library_error()` says why."""
         fetched = self._fetch_spotify_playlists()
         if fetched is None:
             return False
@@ -170,7 +173,32 @@ class MusicIntegration(Integration):
         with self._cache_lock:
             self._spotify_playlists_cache = playlists
             self._spotify_playlists_total = total
+        self._notify_library_listeners()
         return True
+
+    @classmethod
+    def add_library_listener(cls, callback):
+        """Calls `callback()` after each reload of the Spotify playlist library — how the prompt
+        section lists a fresh sign-in's playlists at once instead of on its next check."""
+        if callback not in cls._library_listeners:
+            cls._library_listeners.append(callback)
+
+    @classmethod
+    def remove_library_listener(cls, callback):
+        if callback in cls._library_listeners:
+            cls._library_listeners.remove(callback)
+
+    def _notify_library_listeners(self):
+        listeners = list(self._library_listeners)
+        if not listeners:
+            trace("Spotify: library reloaded, nobody listening for it")
+            return
+        trace(f"Spotify: library reloaded, waking {len(listeners)} listener(s)")
+        for callback in listeners:
+            try:
+                callback()
+            except Exception as e:
+                error(f"Spotify library listener {callback} failed: {e}")
 
     def _fetch_spotify_playlists(self) -> Optional[tuple[List[SpotifyPlaylist], int]]:
         """The first SPOTIFY_PLAYLISTS_IN_PROMPT playlists of the user's library in Spotify's

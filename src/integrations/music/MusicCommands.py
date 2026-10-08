@@ -129,8 +129,9 @@ class MusicCommands(CommandSet):
                      "SONOS PLAYLISTS AND ZONES once it has.")
         else:
             listed, total = len(integration.get_spotify_playlists()), integration.spotify_playlists_total()
-            text += (f"{listed} of the account's {total} playlists are listed in SONOS PLAYLISTS AND ZONES (ids S-0, "
-                     "S-1, …) from the next request and can be started with play_music.")
+            text += (f"{listed} of the account's {total} playlists appear in SONOS PLAYLISTS AND ZONES (ids S-0, "
+                     "S-1, …) within a minute — read them from the section before naming one — and can be "
+                     "started with play_music.")
         if from_chat:
             trace("spotify_login_code: a chat asked, the reply says it — no note pushed")
         else:

@@ -633,6 +633,32 @@ class TestSpotifyUserPlaylists:
         assert mm.spotify_playlists_total() == 1
         assert mm._user_client is None
 
+    def test_a_reloaded_library_wakes_the_listeners_but_a_failed_reload_does_not(self):
+        mm = make_music_manager()
+        mm._spotify_auth.finish.return_value = ""
+        woken, broken = [], Mock(side_effect=RuntimeError("listener broke"))
+        listener = lambda: woken.append(len(mm.get_spotify_playlists()))
+        MusicManager.add_library_listener(broken)
+        MusicManager.add_library_listener(listener)
+        MusicManager.add_library_listener(listener)   # registered once however often it is added
+        try:
+            mm._fetch_spotify_playlists = Mock(return_value=([SpotifyPlaylist("New", "spotify:playlist:n1")], 1))
+            assert mm.login_finish("http://127.0.0.1:8888/callback?code=AQ&state=st") == ""
+            assert woken == [1], "woken after the cache holds the new list, and once, despite the listener before it raising"
+
+            mm._fetch_spotify_playlists = Mock(return_value=None)
+            mm._refresh_spotify_playlists()
+            assert woken == [1]
+
+            MusicManager.remove_library_listener(listener)
+            mm._fetch_spotify_playlists = Mock(return_value=([], 0))
+            mm._refresh_spotify_playlists()
+            assert woken == [1]
+        finally:
+            MusicManager.remove_library_listener(listener)
+            MusicManager.remove_library_listener(broken)
+        assert MusicManager._library_listeners == []
+
     def test_a_failed_sign_in_comes_back_as_the_reason_and_touches_nothing(self):
         mm = make_music_manager()
         mm._spotify_auth.finish.return_value = "the code expired"

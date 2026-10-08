@@ -1,3 +1,5 @@
+import threading
+import time as real_time
 from unittest.mock import patch, Mock
 
 from integrations.music.MusicIntegration import SpotifyPlaylist
@@ -347,3 +349,48 @@ class TestSonosFavoritesSectionGeneratorMonitoring:
         section = SonosFavoritesSectionGenerator(None)
         result = section._fetch_content()
         assert "S-0" not in result and "Spotify playlists" not in result
+
+
+
+# ===========================================================================
+# TestSonosFavoritesSectionGeneratorWake — a Spotify sign-in reaches the prompt at once
+# ===========================================================================
+
+class TestSonosFavoritesSectionGeneratorWake:
+    def test_a_reloaded_library_ends_the_wait_early_and_only_once(self):
+        from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
+        from integrations.music.MusicIntegration import MusicManager
+        section = SonosFavoritesSectionGenerator(None)
+        MusicManager.add_library_listener(section._on_library_reload)
+        try:
+            reload = MusicManager.__new__(MusicManager)._notify_library_listeners
+            threading.Timer(0.02, reload).start()
+            started = real_time.monotonic()
+            assert section._wait(section.CHECK_INTERVAL) is False, "woken, not stopped"
+            assert real_time.monotonic() - started < 2
+        finally:
+            MusicManager.remove_library_listener(section._on_library_reload)
+
+        started = real_time.monotonic()
+        section._wait(0.02)
+        assert real_time.monotonic() - started >= 0.02, "the wake is consumed by the wait it ended"
+
+    def test_stop_ends_the_wait_as_well(self):
+        from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
+        section = SonosFavoritesSectionGenerator(None)
+        threading.Timer(0.02, section.stop).start()
+        started = real_time.monotonic()
+        assert section._wait(section.CHECK_INTERVAL) is True
+        assert real_time.monotonic() - started < 2
+
+    @patch('integrations.music.SonosFavoritesSectionGenerator.MusicManager')
+    def test_the_section_listens_only_while_it_runs(self, mock_mm_cls):
+        mock_mm_cls.peek_instance.return_value = None
+        from integrations.music.SonosFavoritesSectionGenerator import SonosFavoritesSectionGenerator
+        section = SonosFavoritesSectionGenerator(None)
+        section._stop_event.set()
+
+        section._start_monitoring()
+
+        mock_mm_cls.add_library_listener.assert_called_once_with(section._on_library_reload)
+        mock_mm_cls.remove_library_listener.assert_called_once_with(section._on_library_reload)
