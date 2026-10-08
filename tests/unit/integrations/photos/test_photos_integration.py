@@ -2510,6 +2510,49 @@ class TestProviderRefusal:
             succeeded, failed = processor.process_rows([self._row()], batched=True)
         process_one.assert_not_called()
         assert succeeded == [] and failed == ["p.heic"]
+        assert processor.refused_last_run() == ["U1"]
+
+    def test_a_row_refused_mid_batch_is_in_neither_verdict_and_the_next_run_forgets_it(self):
+        """A parallel worker's success can clear the shared outage before the batch is over,
+        so the feed cannot ask the provider afterwards — the batch itself must name the rows
+        it never described, and only for the run that refused them."""
+        from assistant.llm.AbstractLLM import LLMUnavailable
+        from integrations.photos import PhotoProcessor as module
+        processor = module.PhotoProcessor()
+        processor._llm = Mock(is_local=Mock(return_value=False), unavailable=Mock(return_value=None))
+        refused_row = dict(self._row(), uuid="U2", filename="q.heic", cloud_asset_guid="G2")
+
+        def process_one(row):
+            if row["uuid"] == "U2":
+                raise LLMUnavailable("rate limited")
+            return False
+
+        with patch.object(processor, '_process_one', side_effect=process_one), \
+             patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
+            mock_db.return_value.photo_exists.return_value = True
+            mock_db.return_value.get_photo_description.return_value = "a barn"
+            succeeded, failed = processor.process_rows([self._row(), refused_row])
+            first_run = processor.refused_last_run()
+            processor.process_rows([self._row()])
+
+        assert (succeeded, failed) == (["a barn"], [])
+        assert first_run == ["U2"]
+        assert processor._pending_icloud == {}
+        assert processor.refused_last_run() == []
+
+    def test_the_backfill_batch_switch_in_config_wins_over_the_module_default(self):
+        """`feeds.photos.backfill_batch` is the config.yaml key; the module constant is only
+        what an install without the key gets."""
+        from integrations.photos import PhotoProcessor as module
+        from common.ConfigManager import ConfigManager
+        settings = {}
+        instance = Mock()
+        instance.get.side_effect = lambda key, default=None: settings.get(key, default)
+        with patch.object(ConfigManager, 'get_instance', return_value=instance), \
+             patch.object(module, 'BACKFILL_BATCH', True):
+            assert module.PhotoProcessor._batch_enabled() is True
+            settings['feeds.photos.backfill_batch'] = False
+            assert module.PhotoProcessor._batch_enabled() is False
 
 
 @pytest.mark.unit

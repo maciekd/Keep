@@ -79,6 +79,24 @@ class TestInFtue:
         with _config({'enabled_integrations': self.ENOUGH}):
             assert FirstRun.in_ftue(**self._paths(tmp_path, setup_hours_ago=1)) is False
 
+    @pytest.mark.parametrize("enabled, installed_days_ago, setup_hours_ago", [
+        (['a', 'b'], None, None),                                              # too few integrations
+        (ENOUGH, None, 1),                                                     # established, no state file
+        (ENOUGH, 1, 1),                                                        # young and active
+        (ENOUGH, 1, FirstRun.FTUE_SETUP_GRACE_HOURS + 1),                      # young but quiet
+    ])
+    def test_the_pollers_call_traces_nothing_on_any_branch_and_keeps_the_verdict(
+            self, tmp_path, enabled, installed_days_ago, setup_hours_ago):
+        """The integrations section polls in_ftue every few seconds and logs the verdict itself
+        when it changes; the quiet call must reach the same verdict without a trace line."""
+        paths = self._paths(tmp_path, installed_days_ago=installed_days_ago, setup_hours_ago=setup_hours_ago)
+        with _config({'enabled_integrations': enabled}):
+            loud = FirstRun.in_ftue(**paths)
+            with patch.object(FirstRun, 'trace') as trace:
+                quiet = FirstRun.in_ftue(**paths, verbose=False)
+        assert quiet is loud
+        trace.assert_not_called()
+
     def test_the_activity_stamp_is_the_time_the_command_ran(self, tmp_path):
         path = tmp_path / "setup_activity.json"
         FirstRun.note_setup_activity(now=NOW, path=path)
