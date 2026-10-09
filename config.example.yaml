@@ -132,7 +132,10 @@ telegram_bot:
 
 # Feeds: integrations that pour into the history (iMessage, the personal Telegram feed). A feed
 # that has never run catches up this many months back; one that was merely stopped resumes where
-# it left off. Moving a horizon further back re-reads from there (the history dedupes).
+# it left off. Moving a horizon further back re-reads from there (the history dedupes); moving it
+# forward changes nothing — rows are never dropped. A feed that can tell (Photos: its index table)
+# also sweeps up, while live, whatever behind its cursor lost its row — a batch the provider
+# refused, rows a migration forgot — so a half-done backfill always completes by itself.
 feeds:
   imessage: { backfill_months: 60 }   # five years; chat.db rows are cheap
   telegram_feed: { backfill_months: 1 }

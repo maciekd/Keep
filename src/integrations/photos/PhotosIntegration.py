@@ -1,8 +1,9 @@
 """The Photos library as a Feed (plans/FEED_PLAN.md): `fetch` lists the assets created after the
 cursor, indexes the unindexed ones through PhotoProcessor and hands their history rows to
-FeedRunner. The `photos` table is the ledger, so re-reading a stretch of the library costs a
-query and nothing else; the cursor (an Apple creation timestamp) only decides where the next
-poll starts."""
+FeedRunner; `sweep`, asked while the feed is live, does the same for the assets behind the
+cursor that have no row (a batch the provider refused, rows a migration forgot). The `photos`
+table is the ledger, so re-reading a stretch of the library costs a query and nothing else; the
+cursor (an Apple creation timestamp) only decides where the next poll starts."""
 import os
 import sqlite3
 import threading
@@ -252,30 +253,15 @@ class PhotosIntegration(Integration, Feed):
         processor._retry_icloud_pending()
         after = float(cursor or 0)
         rows = self._assets_after(after, FETCH_BATCH_SIZE)
+        todo = []
         if rows:
             indexed = FloxyDatabase.get_instance().get_indexed_photo_guids()
             todo = [r for r in rows if r["cloud_asset_guid"] and r["cloud_asset_guid"] not in indexed]
-            if todo:
-                num_videos = sum(1 for r in todo if r["kind"] == "video")
-                info(f"Photos: {len(todo) - num_videos} photo(s) and {num_videos} video(s) to index"
-                     + (" (catching up)" if backfill else ""))
-                # The catch-up is the work nobody waits for: its stills go through the batch API.
-                processor.process_rows(todo, batched=backfill)
-                refused = processor.refused_last_run()
-            else:
+            if not todo:
                 trace(f"Photos: {len(rows)} asset(s) after the cursor, all indexed or awaiting iCloud")
-                refused = []
-        else:
-            refused = []
-        reason = processor.provider_unavailable()
-        if refused and not reason:
-            # A parallel worker's success or a lapsed backoff cleared the shared outage before
-            # the batch was over; the rows refused meanwhile still have no description.
-            reason = f"the indexing backend refused {len(refused)} asset(s) during the batch"
-        if reason:
+        if self._index(todo, " (catching up)" if backfill else "", batched=backfill, cursor=cursor):
             # The provider refused (out of credits, rate limited): the cursor stays, so the rows
             # nobody described come round again, and the batch hands over what did get stored.
-            self._provider_refused(reason, processor.provider_out_of_credits(), cursor)
             return FeedBatch(self._drain_entries(), cursor=cursor, exhausted=True)
         new_cursor, held = self.advance_cursor(after, rows, time.time())
         if held != self._held:
@@ -293,6 +279,55 @@ class PhotosIntegration(Integration, Feed):
         elif len(rows) >= FETCH_BATCH_SIZE:
             trace(f"Photos: full batch but the cursor is held at {after}, nothing more until the next poll")
         return FeedBatch(self._drain_entries(), cursor=str(new_cursor), exhausted=exhausted)
+
+    def _index(self, todo: list, why: str, batched: bool, cursor: Optional[str]) -> bool:
+        """Index `todo` (nothing to do is fine) and tell whether the provider refused: it is
+        then marked (`_provider_refused`, which pauses the feed when the credits are gone) and
+        the caller must leave the cursor where it is, so the rows nobody described come round
+        again. With `batched` the stills go through the batch API — the catch-up and the sweep
+        are the work nobody waits for."""
+        processor = self._processor
+        refused = []
+        if todo:
+            num_videos = sum(1 for r in todo if r["kind"] == "video")
+            info(f"Photos: {len(todo) - num_videos} photo(s) and {num_videos} video(s) to index{why}")
+            processor.process_rows(todo, batched=batched)
+            refused = processor.refused_last_run()
+        reason = processor.provider_unavailable()
+        if refused and not reason:
+            # A parallel worker's success or a lapsed backoff cleared the shared outage before
+            # the batch was over; the rows refused meanwhile still have no description.
+            reason = f"the indexing backend refused {len(refused)} asset(s) during the batch"
+        if reason:
+            self._provider_refused(reason, processor.provider_out_of_credits(), cursor)
+            return True
+        return False
+
+    def sweep(self, horizon_ts: float, cursor: Optional[str]) -> FeedBatch:
+        """The assets between the horizon and the cursor that have no index row: a batch the
+        provider refused halfway (a 402 or 429 before the cursor learned to hold), rows a
+        migration forgot. `fetch` reads only past the cursor and never comes back for them, so
+        the live feed indexes them in the background, oldest first, at the backfill's price.
+        Re-reading the stretch costs a query: everything with a row is left alone."""
+        processor = self._processor
+        since, until = horizon_ts - APPLE_EPOCH_OFFSET, float(cursor or 0)
+        waiting = processor.count_unindexed_photos(after_apple_ts=since, before_apple_ts=until)
+        if not waiting:
+            trace("Photos: sweep found nothing unindexed between the horizon and the cursor")
+            return FeedBatch([], cursor=cursor, exhausted=True, remaining=0)
+        rows = processor.unindexed_between(since, until, FETCH_BATCH_SIZE)
+        note(f"Photos: {waiting} asset(s) behind the cursor have no index row (back to "
+             f"{time.strftime('%Y-%m-%d', time.localtime(horizon_ts))}), indexing {len(rows)} of them now")
+        if self._index(rows, " (sweeping behind the cursor)", batched=True, cursor=cursor):
+            return FeedBatch(self._drain_entries(), cursor=cursor, exhausted=True, remaining=waiting)
+        left = processor.count_unindexed_photos(after_apple_ts=since, before_apple_ts=until)
+        if left >= waiting:
+            # nothing got a row (every download failed, the batch job is still unanswered): the
+            # same rows would come straight back, so wait for the next sweep instead
+            info(f"Photos: the sweep made no progress ({left} still unindexed), trying again later")
+            return FeedBatch(self._drain_entries(), cursor=cursor, exhausted=True, remaining=left)
+        return FeedBatch(self._drain_entries(), cursor=cursor, exhausted=left == 0 or len(rows) < FETCH_BATCH_SIZE,
+                         remaining=left)
 
     @staticmethod
     def advance_cursor(current: float, rows: list, now: float) -> tuple[float, set[str]]:

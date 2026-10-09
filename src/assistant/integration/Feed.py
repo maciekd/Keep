@@ -22,6 +22,7 @@ class FeedBatch:
     entries: list[FeedEntry] = field(default_factory=list)
     cursor: Optional[str] = None    # persisted by the runner once the entries are stored
     exhausted: bool = True          # False: more is waiting, fetch again without sleeping
+    remaining: Optional[int] = None    # what the feed knows is still waiting after this batch (a sweep's count)
 
 
 class Feed(ABC):
@@ -58,6 +59,16 @@ class Feed(ABC):
 
     def remaining(self, cursor: Optional[str]) -> Optional[int]:
         """How many items are still ahead of `cursor`, when that is cheap to know; None otherwise."""
+        return None
+
+    def sweep(self, horizon_ts: float, cursor: Optional[str]) -> Optional[FeedBatch]:
+        """A batch of the items between the horizon and `cursor` that the feed has no row for:
+        a batch the provider refused halfway, rows a migration forgot — holes `fetch` never
+        comes back to, since it reads only past the cursor. The runner asks while the feed is
+        live and idle, every `FeedRunner.SWEEP_SECONDS` and straight away after a batch that
+        was not `exhausted`; the batch's `cursor` is ignored (the cursor stays) and its
+        `remaining` is shown as the sweep's progress. None (the default): the feed cannot tell
+        a hole from a row it has, so nothing is swept."""
         return None
 
     def count_stored(self) -> Optional[int]:

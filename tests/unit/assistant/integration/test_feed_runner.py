@@ -50,6 +50,12 @@ def seed_rows(db, count, source="Scripted", role=FEED_ROLE, start=0.0):
                                   source)
 
 
+def seed_at(db, timestamps, source="Scripted", role=FEED_ROLE):
+    """A history row of `source` at each of `timestamps`: what the feed had stored at those
+    moments before a horizon move-back, so the gap trim can tell them from a hole."""
+    return db.add_history_entries([(role, f"{source} stored @{ts}", ts, None) for ts in timestamps], source)
+
+
 class ScriptedFeed(Feed):
     """Serves `pages` (each a list of timestamps) as successive batches; the cursor is the
     page index. Once the pages are gone every fetch is an empty live poll, and after
@@ -110,6 +116,21 @@ class DoublePageFeed(ScriptedFeed):
         self.calls.append((int(cursor or 0), backfill))
         entries = [FeedEntry(ts, f"msg@{ts}") for ts in self.pages[0] + self.pages[1]]
         return FeedBatch(entries, cursor="2", exhausted=False)
+
+
+class SweepingFeed(ScriptedFeed):
+    """Answers each sweep with the next of `sweeps` (a FeedBatch or None); once they are gone
+    every sweep is empty and exhausted. Records (horizon_ts, cursor) per call."""
+    def __init__(self, pages, sweeps, **kwargs):
+        super().__init__(pages, **kwargs)
+        self.sweeps = list(sweeps)
+        self.sweep_calls: list[tuple] = []
+
+    def sweep(self, horizon_ts, cursor):
+        self.sweep_calls.append((horizon_ts, cursor))
+        if self.sweeps:
+            return self.sweeps.pop(0)
+        return FeedBatch([], cursor=cursor, exhausted=True, remaining=0)
 
 
 def run(runner: FeedRunner, feed: ScriptedFeed):
@@ -371,6 +392,7 @@ class TestResume:
         # feed had left when the horizon moved (its cursor was "2").
         floxy_db.save_feed("Scripted", cursor="2", horizon=HORIZON, last_entry_ts=HORIZON + 40)
         seed_rows(floxy_db, 3)
+        seed_at(floxy_db, [HORIZON + 5])    # the straddling entry the feed had stored before the move
         older = HORIZON - 2 * SECONDS_PER_MONTH
         feed = ScriptedFeed([[older + 1], [older + 2, HORIZON + 5], [HORIZON + 50], [HORIZON + 60]])
         history = RecordingHistory()
@@ -381,7 +403,7 @@ class TestResume:
             [[older + 1], [older + 2], [HORIZON + 50], [HORIZON + 60]]
         row = floxy_db.get_feed("Scripted")
         assert (row["cursor"], row["gap_until"], row["resume_cursor"]) == ("4", None, None)
-        assert runner.status()["stored"] == 3 + 4
+        assert runner.status()["stored"] == 4 + 4
         assert runner.state == FeedState.STOPPED
 
     def test_a_quiet_gap_that_runs_dry_still_jumps_to_the_resume_cursor(self, floxy_db):
@@ -399,6 +421,7 @@ class TestResume:
     def test_gap_state_is_persisted_so_a_restart_carries_on_mid_gap(self, floxy_db):
         older = HORIZON - 2 * SECONDS_PER_MONTH
         floxy_db.save_feed("Scripted", cursor="1", horizon=older, gap_until=HORIZON, resume_cursor="3")
+        seed_at(floxy_db, [HORIZON + 5])
         feed = ScriptedFeed([[older + 1], [older + 2], [HORIZON + 5], [HORIZON + 50]])
         history = RecordingHistory()
         run(FeedRunner(feed, history, older, db=floxy_db), feed)
@@ -408,6 +431,7 @@ class TestResume:
     def test_gap_fields_survive_a_history_write_failure(self, floxy_db):
         older = HORIZON - 2 * SECONDS_PER_MONTH
         floxy_db.save_feed("Scripted", cursor="0", horizon=older, gap_until=HORIZON, resume_cursor="1")
+        seed_at(floxy_db, [HORIZON + 5])
         feed = ScriptedFeed([[older + 1, HORIZON + 5], [HORIZON + 50]])
         history = RecordingHistory()
         original = history.add_context_messages
@@ -427,9 +451,11 @@ class TestResume:
 
     def test_a_gap_keeps_entries_past_the_covered_window(self, floxy_db):
         # The feed had stored up to HORIZON+40 when the horizon moved back. The gap batch spills
-        # past the boundary into that window (dropped) and beyond it into entries never stored
-        # (kept: Photos describes those with the LLM and lists them in its ledger, a drop loses them).
+        # past the boundary into that window (dropped: the history has the row) and beyond it
+        # into entries never stored (kept: Photos describes those with the LLM and lists them in
+        # its ledger, a drop loses them).
         floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON, last_entry_ts=HORIZON + 40)
+        seed_at(floxy_db, [HORIZON + 5])
         older = HORIZON - 2 * SECONDS_PER_MONTH
         feed = ScriptedFeed([[older + 1, HORIZON + 5, HORIZON + 45], [HORIZON + 60]])
         history = RecordingHistory()
@@ -460,6 +486,7 @@ class TestResume:
         # Page 0 carries one, but the cursor is still short of the resume cursor, so the gap
         # stays open and page 1 is read instead of skipped.
         floxy_db.save_feed("Scripted", cursor="2", horizon=HORIZON, last_entry_ts=HORIZON + 40)
+        seed_at(floxy_db, [HORIZON + 20])
         older = HORIZON - 2 * SECONDS_PER_MONTH
         feed = ScriptedFeed([[older + 1, HORIZON + 20], [older + 2], [HORIZON + 50]])
         history = RecordingHistory()
@@ -470,11 +497,13 @@ class TestResume:
     def test_a_batch_that_overshoots_the_resume_cursor_is_read_again_with_the_gap_closed(self, floxy_db):
         # The feed's cursor was "1" when the horizon moved back. Page 1 is past it — rows the
         # feed never stored — but one of them is dated inside the covered window (an old
-        # message synced in at a high ROWID). The first fetch spills into page 1, so the trim
-        # drops that row; carrying on from the batch's cursor "2" would lose it for good. The
-        # cursor goes back to "1" instead and page 1 is read again with the gap closed; the
-        # entry past the window is stored twice, which the history's dedup index absorbs.
+        # message synced in at a high ROWID, whose live row the history holds). The first fetch
+        # spills into page 1, so the trim drops that row; carrying on from the batch's cursor "2"
+        # would lose it for good. The cursor goes back to "1" instead and page 1 is read again
+        # with the gap closed; the entry past the window is stored twice, which the history's
+        # dedup index absorbs.
         floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON, last_entry_ts=HORIZON + 40)
+        seed_at(floxy_db, [HORIZON + 5])
         older = HORIZON - 2 * SECONDS_PER_MONTH
         feed = DoublePageFeed([[older + 1], [HORIZON + 5, HORIZON + 45], [HORIZON + 60]])
         history = DbHistory(floxy_db)
@@ -482,8 +511,9 @@ class TestResume:
         assert feed.calls == [(0, True), (1, True), (2, True), (3, False)]
         assert [[e.timestamp for e in b] for _, b in history.batches] == \
             [[older + 1, HORIZON + 45], [HORIZON + 5, HORIZON + 45], [HORIZON + 60]]
-        assert floxy_db.count_history_entries("Scripted", FEED_ROLE) == 4
-        assert runner.status()["stored"] == 4
+        # the seeded live row plus the four backfill rows (the re-read HORIZON+5 differs in content)
+        assert floxy_db.count_history_entries("Scripted", FEED_ROLE) == 5
+        assert runner.status()["stored"] == 5
         row = floxy_db.get_feed("Scripted")
         assert (row["cursor"], row["gap_until"], row["resume_cursor"]) == ("3", None, None)
 
@@ -491,6 +521,7 @@ class TestResume:
         one_back = HORIZON - SECONDS_PER_MONTH
         two_back = HORIZON - 2 * SECONDS_PER_MONTH
         floxy_db.save_feed("Scripted", cursor="1", horizon=one_back, gap_until=HORIZON, resume_cursor="3")
+        seed_at(floxy_db, [HORIZON + 5])
         feed = ScriptedFeed([[two_back + 1], [one_back + 1], [HORIZON + 5], [HORIZON + 50]])
         history = RecordingHistory()
         run(FeedRunner(feed, history, two_back, db=floxy_db), feed)
@@ -518,6 +549,123 @@ class TestResume:
         runner = run(FeedRunner(feed, RecordingHistory(), HORIZON + SECONDS_PER_MONTH, db=floxy_db), feed)
         assert feed.calls[0] == (2, False) or feed.calls[0] == (2, True)
         assert runner.status()["horizon_ts"] == HORIZON
+        assert floxy_db.get_feed("Scripted")["horizon"] == HORIZON
+
+    def test_a_hole_inside_the_covered_window_is_kept_while_a_stored_sibling_is_dropped(self, floxy_db):
+        # Both entries sit inside the window the feed had covered (HORIZON .. HORIZON+40), but
+        # only one has a row: the other was lost to a batch the provider refused, and the
+        # move-back is its one chance to be stored. Being inside the window is no proof of a row.
+        floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON, last_entry_ts=HORIZON + 40)
+        seed_at(floxy_db, [HORIZON + 10])
+        older = HORIZON - 2 * SECONDS_PER_MONTH
+        feed = ScriptedFeed([[older + 1, HORIZON + 10, HORIZON + 20], [HORIZON + 60]])
+        history = RecordingHistory()
+        run(FeedRunner(feed, history, older, db=floxy_db), feed)
+        assert [[e.timestamp for e in b] for _, b in history.batches] == [[older + 1, HORIZON + 20], [HORIZON + 60]]
+
+    def test_a_row_of_another_feed_at_the_same_moment_does_not_cover_an_entry(self, floxy_db):
+        floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON, last_entry_ts=HORIZON + 40)
+        seed_at(floxy_db, [HORIZON + 10], source="Other")
+        older = HORIZON - 2 * SECONDS_PER_MONTH
+        feed = ScriptedFeed([[older + 1, HORIZON + 10], [HORIZON + 60]])
+        history = RecordingHistory()
+        run(FeedRunner(feed, history, older, db=floxy_db), feed)
+        assert [[e.timestamp for e in b] for _, b in history.batches] == [[older + 1, HORIZON + 10], [HORIZON + 60]]
+
+
+@pytest.mark.unit
+class TestSweep:
+    """Once live and idle the runner asks the feed to sweep for items behind the cursor it has
+    no row for; what comes back is stored without moving the cursor."""
+
+    def test_a_live_idle_feed_is_swept_and_the_cursor_stays(self, floxy_db):
+        swept = FeedBatch([FeedEntry(HORIZON - 50, "swept")], cursor="999", exhausted=True, remaining=7)
+        feed = SweepingFeed([[HORIZON + 1]], [swept])
+        history = RecordingHistory()
+        runner = run(FeedRunner(feed, history, HORIZON, db=floxy_db), feed)
+        assert [[e.timestamp for e in b] for _, b in history.batches] == [[HORIZON + 1], [HORIZON - 50]]
+        assert feed.sweep_calls == [(HORIZON, "1")]
+        assert floxy_db.get_feed("Scripted")["cursor"] == "1", "a sweep batch's cursor is ignored"
+        status = runner.status()
+        assert (status["remaining"], status["stored"]) == (7, 2)
+        assert status["live_since"] is not None
+
+    def test_an_unexhausted_sweep_is_followed_at_once_and_an_exhausted_one_waits(self, floxy_db):
+        more = FeedBatch([FeedEntry(HORIZON - 50, "a")], exhausted=False, remaining=1)
+        done = FeedBatch([FeedEntry(HORIZON - 40, "b")], exhausted=True, remaining=0)
+        feed = SweepingFeed([[HORIZON + 1]], [more, done], live_polls=4)
+        history = RecordingHistory()
+        runner = run(FeedRunner(feed, history, HORIZON, db=floxy_db), feed)
+        # four idle polls, but the sweep after `done` is not due for SWEEP_SECONDS
+        assert len(feed.sweep_calls) == 2
+        assert [[e.timestamp for e in b] for _, b in history.batches] == [[HORIZON + 1], [HORIZON - 50], [HORIZON - 40]]
+        assert runner._sweep_due > time.time() + FeedRunner.SWEEP_SECONDS - 60
+
+    def test_a_feed_that_cannot_sweep_is_asked_once(self, floxy_db):
+        feed = SweepingFeed([[HORIZON + 1]], [None], live_polls=3)
+        runner = run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert len(feed.sweep_calls) == 1
+        assert runner._sweep_due == float("inf")
+
+    def test_no_sweep_while_catching_up(self, floxy_db):
+        feed = SweepingFeed([[HORIZON + 1], [HORIZON + 2], [HORIZON + 3]], [])
+        run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        # three catch-up fetches, one live poll: the one sweep came after the catch-up, at its final cursor
+        assert feed.calls == [(0, True), (1, True), (2, True), (3, False)]
+        assert feed.sweep_calls == [(HORIZON, "3")]
+
+    def test_no_sweep_mid_gap(self, floxy_db):
+        floxy_db.save_feed("Scripted", cursor="2", horizon=HORIZON, last_entry_ts=HORIZON + 40)
+        older = HORIZON - 2 * SECONDS_PER_MONTH
+        feed = SweepingFeed([[older + 1], [older + 2], [HORIZON + 50]], [])
+        run(FeedRunner(feed, RecordingHistory(), older, db=floxy_db), feed)
+        assert feed.sweep_calls == [(older, "3")], "swept once, after the gap closed and the feed went live"
+
+    def test_a_sweep_batch_the_history_refuses_is_held_and_stored_next_pass(self, floxy_db):
+        swept = FeedBatch([FeedEntry(HORIZON - 50, "swept")], exhausted=True, remaining=0)
+        feed = SweepingFeed([[HORIZON + 1]], [swept], live_polls=3)
+        history = RecordingHistory()
+        real_add = history.add_context_messages
+        failed = []
+
+        def flaky(source, entries):
+            if entries and entries[0].content == "swept" and not failed:
+                failed.append(True)
+                raise RuntimeError("database is locked")
+            return real_add(source, entries)
+
+        history.add_context_messages = flaky
+        runner = run(FeedRunner(feed, history, HORIZON, db=floxy_db), feed)
+        assert [[e.timestamp for e in b] for _, b in history.batches] == [[HORIZON + 1], [HORIZON - 50]]
+        assert feed.sweeps == [], "the held batch was stored, not swept for again"
+        assert floxy_db.get_feed("Scripted")["cursor"] == "1"
+        assert runner.status()["stored"] == 2
+
+    def test_a_sweep_that_raises_counts_as_a_failure_and_the_feed_carries_on(self, floxy_db):
+        feed = SweepingFeed([[HORIZON + 1]], [], live_polls=3)
+        feed.sweep = Mock(side_effect=[RuntimeError("library locked"), FeedBatch([], exhausted=True, remaining=0)])
+        runner = run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert runner.state != FeedState.FAILED
+        assert runner._failures == 0, "the next clean pass clears the failure"
+        assert feed.sweep.call_count == 2, "a sweep that raised is due again at the next idle poll"
+
+
+@pytest.mark.unit
+class TestDescribeFeedStatus:
+    def _status(self, **fields):
+        base = {"state": FeedState.LIVE.value, "paused": False, "remaining": None, "progress": None,
+                "last_error": None}
+        return {**base, **fields}
+
+    def test_a_live_feed_sweeping_shows_how_many_are_left(self):
+        from assistant.integration.FeedRunner import describe_feed_status
+        text = describe_feed_status(self._status(remaining=2273))
+        assert text.startswith("live") and "2273" in text
+
+    def test_a_live_feed_with_nothing_behind_the_cursor_is_just_live(self):
+        from assistant.integration.FeedRunner import describe_feed_status
+        assert describe_feed_status(self._status(remaining=0)) == describe_feed_status(self._status(remaining=None))
+        assert not any(ch.isdigit() for ch in describe_feed_status(self._status(remaining=0)))
 
 
 @pytest.mark.unit
@@ -878,6 +1026,20 @@ class TestDatabase:
         assert floxy_db.count_history_entries("Telegram", FEED_ROLE) == 4
         assert floxy_db.count_history_entries("iMessage", FEED_ROLE) == 2
         assert floxy_db.count_history_entries("Indigo", FEED_ROLE) == 0
+
+    def test_history_timestamps_names_the_moments_the_source_has_a_row_at(self, floxy_db):
+        seed_at(floxy_db, [10.0, 20.0, 30.0])
+        seed_at(floxy_db, [40.0], source="Other")
+        floxy_db.add_history_entry("Marcus", "a chat turn", 50.0, "Scripted")
+        found = floxy_db.history_timestamps("Scripted", [10.0, 20.0, 40.0, 50.0, 60.0])
+        assert found == {10.0, 20.0, 50.0}, "any role of the source counts, another source does not"
+        assert floxy_db.history_timestamps("Scripted", []) == set()
+
+    def test_history_timestamps_spans_the_sqlite_parameter_chunks(self, floxy_db):
+        timestamps = [1000.0 + i for i in range(1200)]
+        seed_at(floxy_db, timestamps[::2])
+        found = floxy_db.history_timestamps("Scripted", timestamps)
+        assert found == set(timestamps[::2])
 
     def test_batch_insert_reports_only_new_rows(self, floxy_db):
         rows = [("system", "a", 1.0, None), ("system", "b", 2.0, "home")]

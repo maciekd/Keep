@@ -370,9 +370,10 @@ class PhotoProcessor:
             return 0
 
     def count_unindexed_photos(self, kinds: tuple[int, ...] | None = None,
-                               after_apple_ts: float | None = None) -> int:
+                               after_apple_ts: float | None = None, before_apple_ts: float | None = None) -> int:
         """Count the assets of the given kinds (default: every indexed kind) not yet indexed,
-        optionally only those created after `after_apple_ts` (the feed's cursor)."""
+        optionally only those created after `after_apple_ts` (the feed's cursor) and, with
+        `before_apple_ts` too, at or before it (the feed's sweep: the horizon up to the cursor)."""
         try:
             db = FloxyDatabase.get_instance()
             indexed_guids = db.get_indexed_photo_guids()
@@ -387,7 +388,10 @@ class PhotoProcessor:
                 params: tuple = ()
                 if after_apple_ts is not None:
                     query += " AND a.ZDATECREATED > ?"
-                    params = (after_apple_ts,)
+                    params += (after_apple_ts,)
+                if before_apple_ts is not None:
+                    query += " AND a.ZDATECREATED <= ?"
+                    params += (before_apple_ts,)
                 cursor.execute(query, params)
                 return sum(1 for (guid,) in cursor.fetchall() if guid not in indexed_guids)
             finally:
@@ -429,8 +433,18 @@ class PhotoProcessor:
         name, model = parse_llm_config('photo_indexing')
         return create_llm(name, model).is_local()
 
-    def _find_unprocessed(self, album: Optional[str] = None, limit: int = 1) -> tuple[list[dict], str]:
-        """Find unprocessed photos. Returns (rows, error_message)."""
+    def unindexed_between(self, after_apple_ts: float, before_apple_ts: float, limit: int) -> list[dict]:
+        """The oldest `limit` assets created after `after_apple_ts` and at or before
+        `before_apple_ts` that have no index row — the feed's sweep of the stretch behind its
+        cursor. Assets still without an iCloud GUID are left out, as everywhere."""
+        rows, _ = self._find_unprocessed(limit=limit, window=(after_apple_ts, before_apple_ts))
+        return rows
+
+    def _find_unprocessed(self, album: Optional[str] = None, limit: int = 1,
+                          window: tuple[float, float] | None = None) -> tuple[list[dict], str]:
+        """Find unprocessed photos, newest first — or, with `window` (Apple timestamps,
+        exclusive start, inclusive end), the ones created inside it, oldest first. Returns
+        (rows, error_message)."""
         db = FloxyDatabase.get_instance()
         indexed_guids = db.get_indexed_photo_guids()
 
@@ -462,6 +476,16 @@ class PhotoProcessor:
                       AND a.ZSAVEDASSETTYPE != {SYNDICATION_SAVED_ASSET_TYPE}
                     ORDER BY a.ZDATECREATED DESC
                 """, (album,))
+            elif window:
+                cursor.execute(f"""
+                    SELECT {ASSET_COLUMNS}
+                    FROM ZASSET a
+                    LEFT JOIN ZCLOUDMASTER m ON m.Z_PK = a.ZMASTER
+                    WHERE {kind_filter} AND a.ZTRASHEDSTATE = 0
+                      AND a.ZSAVEDASSETTYPE != {SYNDICATION_SAVED_ASSET_TYPE}
+                      AND a.ZDATECREATED > ? AND a.ZDATECREATED <= ?
+                    ORDER BY a.ZDATECREATED ASC
+                """, window)
             else:
                 cursor.execute(f"""
                     SELECT {ASSET_COLUMNS}

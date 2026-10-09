@@ -2556,6 +2556,152 @@ class TestProviderRefusal:
 
 
 @pytest.mark.unit
+class TestPhotosFeedSweep:
+    """The live feed's sweep: the assets between the horizon and the cursor without an index
+    row, indexed at the backfill's price with the cursor left where it is."""
+
+    @pytest.fixture(autouse=True)
+    def reset_singleton(self):
+        from integrations.photos.PhotosIntegration import PhotosIntegration
+        PhotosIntegration.reset_instance()
+        yield
+        PhotosIntegration.reset_instance()
+
+    HORIZON = 1_600_000_000.0
+    CURSOR = "750000000.0"
+
+    def _sweep(self, counts, rows, reason=None, refused=()):
+        integration, processor = TestPhotosFeed._opened()
+        processor.count_unindexed_photos.side_effect = list(counts)
+        processor.unindexed_between.return_value = rows
+        processor.provider_unavailable.return_value = reason
+        processor.provider_out_of_credits.return_value = False
+        processor.refused_last_run.return_value = list(refused)
+        with patch.object(integration, '_provider_refused') as refused_hook:
+            batch = integration.sweep(self.HORIZON, self.CURSOR)
+        return batch, processor, refused_hook
+
+    def test_the_window_runs_from_the_horizon_to_the_cursor_in_apple_time(self):
+        from integrations.photos.PhotoProcessor import APPLE_EPOCH_OFFSET
+        from integrations.photos.PhotosIntegration import FETCH_BATCH_SIZE
+        rows = [TestPhotosFeed._row("a", 600.0, "G-A")]
+        batch, processor, _ = self._sweep([1, 0], rows)
+        since, until = self.HORIZON - APPLE_EPOCH_OFFSET, float(self.CURSOR)
+        assert processor.count_unindexed_photos.call_args_list[0].kwargs == {"after_apple_ts": since,
+                                                                             "before_apple_ts": until}
+        processor.unindexed_between.assert_called_once_with(since, until, FETCH_BATCH_SIZE)
+        handed = processor.process_rows.call_args
+        assert handed.args[0] == rows and handed.kwargs["batched"] is True, "a sweep is backfill work"
+        assert batch.cursor == self.CURSOR
+
+    def test_the_entries_the_processor_queued_come_back_and_the_count_is_the_leftover(self):
+        from assistant.integration.Feed import FeedEntry
+        integration, processor = TestPhotosFeed._opened()
+        entries = [FeedEntry(1_600_000_500.0, "New photo taken: a barn")]
+        processor.count_unindexed_photos.side_effect = [5, 4]
+        processor.unindexed_between.return_value = [TestPhotosFeed._row("a", 600.0, "G-A")]
+        processor.process_rows.side_effect = lambda rows, batched: [integration._queue_entry(e) for e in entries]
+        batch = integration.sweep(self.HORIZON, self.CURSOR)
+        assert batch.entries == entries
+        assert batch.remaining == 4
+        assert integration._drain_entries() == []
+
+    def test_a_full_batch_with_progress_is_not_exhausted(self):
+        from integrations.photos.PhotosIntegration import FETCH_BATCH_SIZE
+        rows = [TestPhotosFeed._row(f"u{i}", float(i), f"G{i}") for i in range(FETCH_BATCH_SIZE)]
+        batch, _, _ = self._sweep([300, 200], rows)
+        assert batch.exhausted is False and batch.remaining == 200
+
+    def test_a_short_batch_or_an_emptied_window_is_exhausted(self):
+        rows = [TestPhotosFeed._row("a", 600.0, "G-A"), TestPhotosFeed._row("b", 700.0, "G-B")]
+        short, _, _ = self._sweep([2, 0], rows)
+        assert short.exhausted is True and short.remaining == 0
+
+    def test_no_progress_means_an_exhausted_batch_so_the_same_rows_do_not_spin(self):
+        rows = [TestPhotosFeed._row(f"u{i}", float(i), f"G{i}") for i in range(100)]
+        batch, _, _ = self._sweep([300, 300], rows)
+        assert batch.exhausted is True and batch.remaining == 300
+
+    def test_nothing_behind_the_cursor_touches_no_asset(self):
+        batch, processor, _ = self._sweep([0], [])
+        assert (batch.exhausted, batch.remaining, batch.entries) == (True, 0, [])
+        processor.unindexed_between.assert_not_called()
+        processor.process_rows.assert_not_called()
+
+    def test_a_provider_refusal_is_reported_and_leaves_the_whole_count_waiting(self):
+        rows = [TestPhotosFeed._row("a", 600.0, "G-A")]
+        batch, processor, refused_hook = self._sweep([40], rows, reason="prepaid credits are depleted (402)")
+        refused_hook.assert_called_once()
+        assert refused_hook.call_args.args[2] == self.CURSOR
+        assert batch.exhausted is True and batch.remaining == 40
+        assert processor.count_unindexed_photos.call_count == 1, "no progress check after a refusal"
+
+    def test_rows_refused_mid_batch_count_as_a_refusal_too(self):
+        rows = [TestPhotosFeed._row("a", 600.0, "G-A")]
+        batch, _, refused_hook = self._sweep([40], rows, reason=None, refused=["a"])
+        refused_hook.assert_called_once()
+        assert batch.exhausted is True and batch.remaining == 40
+
+
+@pytest.mark.unit
+class TestPhotoProcessorUnindexedBetween:
+    """`unindexed_between` and the bounded `count_unindexed_photos` agree on the stretch behind
+    the feed's cursor: the GUID-bearing assets inside (after, before] without an index row."""
+
+    def _library(self, tmp_path):
+        conn, db_path = TestPhotoProcessorFindUnprocessed._make_photos_db(tmp_path)
+        insert = TestPhotoProcessorFindUnprocessed._insert_asset
+        insert(conn, 1, 'uuid-before', 100.0, 'G-BEFORE')          # at the exclusive start
+        insert(conn, 2, 'uuid-indexed', 200.0, 'G-INDEXED')
+        insert(conn, 3, 'uuid-hole-late', 400.0, 'G-HOLE-LATE')
+        insert(conn, 4, 'uuid-hole-early', 300.0, 'G-HOLE-EARLY')
+        insert(conn, 5, 'uuid-pending', 350.0, None)
+        insert(conn, 6, 'uuid-synd', 360.0, 'G-SYND', saved_type=12)
+        insert(conn, 7, 'uuid-hidden', 370.0, 'G-HIDDEN', hidden=1)
+        insert(conn, 8, 'uuid-edge', 500.0, 'G-EDGE')              # at the inclusive end
+        insert(conn, 9, 'uuid-after', 600.0, 'G-AFTER')
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def _with_library(self, db_path):
+        return patch('integrations.photos.PhotoProcessor.PHOTOS_SQLITE_PATH', db_path), \
+            patch('common.FloxyDatabase.FloxyDatabase.get_instance')
+
+    def test_only_the_holes_inside_the_window_oldest_first(self, tmp_path):
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        db_path = self._library(tmp_path)
+        lib, db = self._with_library(db_path)
+        with lib, db as mock_db:
+            mock_db.return_value.get_indexed_photo_guids.return_value = {'G-INDEXED'}
+            rows = PhotoProcessor().unindexed_between(100.0, 500.0, limit=10)
+            count = PhotoProcessor().count_unindexed_photos(after_apple_ts=100.0, before_apple_ts=500.0)
+        assert [r["uuid"] for r in rows] == ['uuid-hole-early', 'uuid-hole-late', 'uuid-edge']
+        assert count == len(rows)
+
+    def test_the_limit_takes_the_oldest(self, tmp_path):
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        db_path = self._library(tmp_path)
+        lib, db = self._with_library(db_path)
+        with lib, db as mock_db:
+            mock_db.return_value.get_indexed_photo_guids.return_value = set()
+            rows = PhotoProcessor().unindexed_between(100.0, 500.0, limit=2)
+        assert [r["uuid"] for r in rows] == ['uuid-indexed', 'uuid-hole-early']
+
+    def test_the_unbounded_count_still_covers_everything_after_the_cursor(self, tmp_path):
+        from integrations.photos.PhotoProcessor import PhotoProcessor
+        db_path = self._library(tmp_path)
+        lib, db = self._with_library(db_path)
+        with lib, db as mock_db:
+            mock_db.return_value.get_indexed_photo_guids.return_value = set()
+            after = PhotoProcessor().count_unindexed_photos(after_apple_ts=500.0)
+            window = PhotoProcessor().count_unindexed_photos(after_apple_ts=100.0, before_apple_ts=500.0)
+            everything = PhotoProcessor().count_unindexed_photos()
+        assert (after, window) == (1, 4)
+        assert everything == after + window + 1, "the asset at the exclusive start is the one neither sees"
+
+
+@pytest.mark.unit
 class TestPhotosFeedProviderRefusal:
     """The feed's side of a refusal: the cursor is held, an empty prepaid account pauses the feed
     and tells the household once, and the health check brings it back with one more note."""

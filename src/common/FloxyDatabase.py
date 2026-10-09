@@ -381,15 +381,15 @@ class FloxyDatabase:
             # provider, i.e. a rate limit or an empty prepaid account — was stored as skipped and
             # never looked at again; a beta install lost 2,368 photos that way in twenty minutes.
             # A provider refusal now leaves the row unindexed, so the rows it already wrote are
-            # dropped — the feed does not come back for them (it fetches only assets after its
-            # cursor), so they wait for a manual index from the console's Photos tab. Videos
-            # keep theirs: the sub-2-second ones were re-queued above.
+            # dropped. They sit behind the feed's cursor, which fetches only assets after it;
+            # the live feed's sweep (`Feed.sweep`, every FeedRunner.SWEEP_SECONDS) is what finds
+            # them. Videos keep theirs: the sub-2-second ones were re-queued above.
             cursor.execute("DELETE FROM photos WHERE photo_type = 'skipped' "
                            "AND short_description = 'Skipped (LLM analysis failed)' AND duration_seconds IS NULL")
             if cursor.rowcount:
                 note(f"Database migration: forgot {cursor.rowcount} photos skipped when the LLM call failed "
-                     f"(a rate limit or empty credits is no longer a verdict on the photo). The feed does "
-                     f"not revisit them — index them by hand from the console's Photos tab.")
+                     f"(a rate limit or empty credits is no longer a verdict on the photo). The feed's "
+                     f"sweep indexes them again once it is live.")
         if version < SCHEMA_VERSION:
             cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             trace(f"Database schema version {version} -> {SCHEMA_VERSION}")
@@ -588,6 +588,28 @@ class FloxyDatabase:
             except sqlite3.Error as e:
                 error(f"Error counting history entries from {source}: {e}")
                 raise
+
+    def history_timestamps(self, source: str, timestamps: list[float]) -> set[float]:
+        """Which of `timestamps` already have a row under `source` — a feed's test for an
+        entry it stored before (under any role: a live row may carry a media description the
+        backfill's row for the same moment does not, so the dedup index is no test). Chunked
+        under SQLite's parameter limit."""
+        found: set[float] = set()
+        if not timestamps:
+            return found
+        with self.lock:
+            try:
+                with closing(sqlite3.connect(self.db_path)) as conn:
+                    for start in range(0, len(timestamps), 500):
+                        chunk = timestamps[start:start + 500]
+                        placeholders = ",".join("?" * len(chunk))
+                        rows = conn.execute(f'SELECT timestamp FROM history WHERE source = ? '
+                                            f'AND timestamp IN ({placeholders})', (source, *chunk)).fetchall()
+                        found.update(row[0] for row in rows)
+            except sqlite3.Error as e:
+                error(f"Error looking up {len(timestamps)} history timestamps from {source}: {e}")
+                raise
+        return found
 
     # --- feeds: FeedRunner's cursor per feed name ---
 

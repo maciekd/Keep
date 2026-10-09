@@ -5,10 +5,13 @@ where it left off; "backfill" is simply the gap between the cursor and now
 has there (counted at start, bumped per batch, recounted now and then), the catch-up's total
 is stored + remaining and progress the ratio — the same numbers before and after a restart.
 A horizon moved further back in the config reads from the new horizon until the cursor reaches
-the one the feed had, then carries on from there. Entries inside the window it had already
-covered — the old horizon up to the newest entry stored before the move — are dropped (live
-rows can carry a media description the backfill path does not, so the history's dedup index
-would not catch those); anything past that window was never stored and is kept. A batch the
+the one the feed had, then carries on from there. Inside the window it had already covered —
+the old horizon up to the newest entry stored before the move — an entry is dropped only when
+the history holds a row of this feed at its moment (live rows can carry a media description the
+backfill path does not, so the history's dedup index would not catch those); a hole in the
+window, and anything past it, was never stored and is kept. Once live and idle the runner also
+asks the feed to `sweep` for items behind the cursor it has no row for (a batch the provider
+refused, rows a migration forgot) — holes that nothing else would ever close. A batch the
 history refuses is held and stored again on the next pass, never refetched: a Photos batch's
 entries are the product of paid LLM calls its ledger will not repeat. `Feeds` is the
 process-wide registry the bootstrap start hook, `restart_integration` and the status surfaces
@@ -42,6 +45,7 @@ class FeedRunner:
     ETA_MIN_ITEMS = 5
     ETA_MIN_SECONDS = 30.0
     RECOUNT_SECONDS = 60.0      # how often the feed thread re-reads its row count from the history
+    SWEEP_SECONDS = 900.0       # how often a live, idle feed is asked for items behind its cursor it has no row for
 
     def __init__(self, feed: Feed, message_history, horizon_ts: float, db: Optional[FloxyDatabase] = None):
         self._feed = feed
@@ -78,6 +82,7 @@ class FeedRunner:
         # (a gap opened before this was recorded) drops everything past `_gap_until`.
         self._gap_covered_until: Optional[float] = None
         self._unstored: Optional[tuple[FeedBatch, bool]] = None    # a batch the history refused, stored again next pass
+        self._sweep_due: Optional[float] = None    # when the live feed is next asked to sweep; None: at the first idle poll
         self._last_error: Optional[str] = None
         self._failures = 0
 
@@ -333,6 +338,11 @@ class FeedRunner:
                                            gap_until=self._gap_until, resume_cursor=self._resume_cursor,
                                            gap_covered_until=self._gap_covered_until)
             else:
+                if stored_horizon is not None and self._horizon_ts > stored_horizon + 86400:
+                    info(f"Feed '{self.name}': the configured horizon "
+                         f"({time.strftime('%Y-%m-%d', time.localtime(self._horizon_ts))}) is newer than the stored "
+                         f"one ({time.strftime('%Y-%m-%d', time.localtime(stored_horizon))}); a horizon only moves "
+                         f"back, keeping the stored one — a shorter backfill_months never drops rows")
                 self._horizon_ts = stored_horizon if stored_horizon is not None else self._horizon_ts
                 gap = (f", mid-gap up to {time.strftime('%Y-%m-%d', time.localtime(self._gap_until))}"
                        if self._gap_until is not None else "")
@@ -377,6 +387,7 @@ class FeedRunner:
             if self._recounted_at is None or time.time() - self._recounted_at >= self.RECOUNT_SECONDS:
                 self._recount_stored()
             self._report_count()
+            swept = False
             try:
                 if self._unstored is not None:
                     batch, gap_closed = self._unstored
@@ -386,6 +397,8 @@ class FeedRunner:
                     batch, gap_closed = self._trim_to_gap(batch)
                 self._store(batch, gap_closed)
                 self._failures = 0
+                if self._state == FeedState.LIVE and batch.exhausted and not batch.entries and not gap_closed:
+                    swept = self._sweep()
             except Exception as e:
                 self._failures += 1
                 error(f"Feed '{self.name}': fetch or store failed ({self._failures}/{self.FAILURE_LIMIT}): "
@@ -409,8 +422,33 @@ class FeedRunner:
                 self._refresh_remaining()
                 if batch.exhausted:
                     self._go_live()
-            if batch.exhausted:
+            if batch.exhausted and not swept:
                 self._stop_event.wait(self._feed.poll_interval)
+
+    def _sweep(self) -> bool:
+        """Ask the feed for items behind the cursor it has no row for (`Feed.sweep`) when a
+        sweep is due, and store what it brings without moving the cursor. Returns True when
+        more is waiting, so the loop goes straight on instead of sleeping until the poll."""
+        now = time.time()
+        if self._sweep_due is not None and now < self._sweep_due:
+            return False
+        batch = self._feed.sweep(self._horizon_ts, self._cursor)
+        if batch is None:
+            self._sweep_due = float("inf")
+            trace(f"Feed '{self.name}': never sweeps (the feed cannot tell a hole from a row it has)")
+            return False
+        with self._lock:
+            self._remaining = batch.remaining
+        if batch.entries:
+            info(f"Feed '{self.name}': the sweep brought {len(batch.entries)} entries from behind the cursor"
+                 f"{f', {batch.remaining} still waiting' if batch.remaining else ''}")
+        elif batch.remaining:
+            info(f"Feed '{self.name}': the sweep stored nothing yet, {batch.remaining} waiting behind the cursor")
+        else:
+            trace(f"Feed '{self.name}': the sweep found nothing behind the cursor")
+        self._store(FeedBatch(batch.entries, cursor=self._cursor))
+        self._sweep_due = now if not batch.exhausted else now + self.SWEEP_SECONDS
+        return not batch.exhausted
 
     def _trim_to_gap(self, batch: FeedBatch) -> tuple[FeedBatch, bool]:
         """While a gap is open, drop the entries the feed already covered (`_already_covered`);
@@ -426,8 +464,13 @@ class FeedRunner:
         the history's dedup index absorbs what was stored twice. Returns (batch, gap closed)."""
         if self._gap_until is None:
             return batch, False
-        kept = [e for e in batch.entries if not self._already_covered(e.timestamp)]
+        inside = [e.timestamp for e in batch.entries if self._in_covered_window(e.timestamp)]
+        stored = self._database().history_timestamps(self.name, inside) if inside else set()
+        kept = [e for e in batch.entries if not (self._in_covered_window(e.timestamp) and e.timestamp in stored)]
         dropped = len(batch.entries) - len(kept)
+        if len(inside) > dropped:
+            info(f"Feed '{self.name}': {len(inside) - dropped} of {len(inside)} entries inside the covered window "
+                 f"have no row in the history (a hole) and are kept")
         reached = self._feed.cursor_reached(batch.cursor, self._resume_cursor)
         if not reached and not batch.exhausted:
             if dropped:
@@ -443,9 +486,11 @@ class FeedRunner:
              f"{f' (the batch reached {batch.cursor}, read again with the gap closed)' if batch.cursor != cursor else ''}")
         return FeedBatch(kept, cursor=cursor, exhausted=False), True
 
-    def _already_covered(self, timestamp: float) -> bool:
+    def _in_covered_window(self, timestamp: float) -> bool:
         """Inside the window the feed had stored before the move-back: from the boundary up
-        to the newest entry it had, or unbounded when that edge was never recorded."""
+        to the newest entry it had, or unbounded when that edge was never recorded. Being
+        inside is not being stored — a hole in the window (a batch the provider refused, rows
+        a migration forgot) is told apart by the history's own rows in `_trim_to_gap`."""
         if timestamp < self._gap_until:
             return False
         return self._gap_covered_until is None or timestamp <= self._gap_covered_until
@@ -514,7 +559,8 @@ def describe_feed_status(status: Optional[dict]) -> str:
             text += f", {status['remaining']} left"
         return paused + text
     if state == FeedState.LIVE.value:
-        return paused + "live"
+        sweeping = f", sweeping up {status['remaining']} missed" if status.get("remaining") else ""
+        return paused + "live" + sweeping
     if state in (FeedState.STOPPED.value, FeedState.FAILED.value) and status["last_error"]:
         return f"{state}: {status['last_error']}"
     return state
