@@ -35,8 +35,14 @@ You are a photo analyst for a family's personal photo library. Analyze the provi
 """ + _FAMILY_CONTEXT + """
 # Return ONLY a JSON object with these keys
 - "short_description": A concise 1-sentence description of the photo (max 50 chars)
-- "detailed_description": A RICH description covering subjects, setting, mood, colors, and notable details. Include any visible text, objects, landmarks, or activities. This will be used for search. Be verbose, detail everything in the photo with high accuracy. Around 200 words is good.
-- "thinking": Detail your thinking about how you decide on the two scores below. Don't emit your scores here, only the thinking
+- "detailed_description": A compact, search-oriented description in exactly this fixed format, one line per field, fields separated by newlines. Terse noun phrases, no full sentences, no filler; write "-" for a field with nothing to report:
+  People: who and how many (names from the people identified, else age/gender/clothing), expressions
+  Place: setting, indoor/outdoor, landmarks, scenery
+  Objects: notable objects, animals, vehicles, food
+  Text: any visible text or signs, verbatim
+  Activity: what is happening, occasion, mood
+  Date clues: season, time of day, weather, events or decorations hinting at when
+  Aim for 60-90 words in total.
 - "pretty_score": 0-100 rating of aesthetic quality (facial expressions, composition, lighting, color, sharpness). 0=average snapshot, 80+=genuinely beautiful, 90+=exceptional
 - "family_importance_score": 0-100 rating of likely importance to a family (milestones, gatherings, children, pets, holidays). 0=no family connection, 80+=significant moment, 90+=exceptional
 

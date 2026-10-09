@@ -1253,7 +1253,9 @@ class TestGeminiLLMVideo:
 
         llm.client.caches.create.assert_called_once()
         configs = [c.kwargs for c in mock_types.GenerateContentConfig.call_args_list]
-        assert configs == [{"cached_content": "cachedContents/abc"}] * 3
+        assert [c["cached_content"] for c in configs] == ["cachedContents/abc"] * 3
+        assert "thinking_config" in configs[0] and all("thinking_config" not in c for c in configs[1:]), \
+            "only the still is held to the low thinking level; clips are left as they were"
 
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
@@ -1516,7 +1518,8 @@ class TestGeminiSystemCache:
         assert llm.client.caches.create.call_args.kwargs["model"] == "gemini-3.8-flash"
         assert mock_types.CreateCachedContentConfig.call_args.kwargs["system_instruction"] == "BANK"
         configs = [c.kwargs for c in mock_types.GenerateContentConfig.call_args_list]
-        assert len(configs) == 3 and all(c == {"cached_content": "cachedContents/abc"} for c in configs)
+        assert len(configs) == 3
+        assert all(c["cached_content"] == "cachedContents/abc" and "thinking_config" in c for c in configs)
 
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
@@ -1534,7 +1537,8 @@ class TestGeminiSystemCache:
         for _ in range(2):
             llm.think(system_message="short", user_message="describe", images=[b"img"], background=True)
         llm.client.caches.create.assert_called_once()
-        assert all(c.kwargs == {"system_instruction": "short"} for c in mock_types.GenerateContentConfig.call_args_list)
+        assert all(c.kwargs["system_instruction"] == "short" and "thinking_config" in c.kwargs
+                   for c in mock_types.GenerateContentConfig.call_args_list)
 
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
@@ -1552,7 +1556,8 @@ class TestGeminiSystemCache:
             RuntimeError("403 PERMISSION_DENIED: CachedContent not found"), Mock(text="ok", usage_metadata=None)]
         assert llm.think(system_message="BANK", user_message="d", images=[b"img"], background=True) == "ok"
         configs = [c.kwargs for c in mock_types.GenerateContentConfig.call_args_list]
-        assert configs == [{"cached_content": "cachedContents/abc"}, {"system_instruction": "BANK"}]
+        assert [c.get("cached_content") for c in configs] == ["cachedContents/abc", None]
+        assert configs[1]["system_instruction"] == "BANK"
         assert llm._system_caches == {}, "the next photo makes a fresh cache instead of hitting the dead one"
 
     @patch('assistant.llm.GeminiLLM.time')
@@ -1619,7 +1624,7 @@ class TestGeminiBatchedImages:
         src = llm.client.batches.create.call_args.kwargs["src"]
         assert [r["contents"][0]["parts"][1]["text"] for r in src] == ["u1", "u2", "u3"]
         assert [r["contents"][0]["parts"][0]["inline_data"]["data"] for r in src] == [b"a", b"b", b"c"]
-        assert all(r["config"] == {"system_instruction": "SYS"} for r in src)
+        assert all(r["config"]["system_instruction"] == "SYS" and "thinking_config" in r["config"] for r in src)
 
     @patch('assistant.llm.GeminiLLM.time.sleep')
     @patch('assistant.llm.GeminiLLM.config')
@@ -1635,7 +1640,8 @@ class TestGeminiBatchedImages:
             mock_types.CreateCachedContentConfig = Mock()
             assert llm.think_batched_with_images("SYS", [("u1", b"a")]) == ["one"]
         src = llm.client.batches.create.call_args.kwargs["src"]
-        assert src[0]["config"] == {"cached_content": "cachedContents/abc"}
+        assert src[0]["config"]["cached_content"] == "cachedContents/abc"
+        assert src[0]["config"]["thinking_config"]["thinking_level"], "batched stills think at the lowest level too"
 
     @patch('assistant.llm.GeminiLLM.time.sleep')
     @patch('assistant.llm.GeminiLLM.config')

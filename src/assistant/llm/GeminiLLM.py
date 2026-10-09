@@ -335,12 +335,13 @@ class GeminiLLM(AbstractLLM):
         if reason:
             raise LLMUnavailable(reason)    # before the cache call: no cache for a key that is refused
         cache = self._cached_system(system_instruction, SYSTEM_CACHE_TTL_SECONDS) if background else None
-        response = self._generate_with_cache(gemini_messages, system_instruction, cache, background)
+        response = self._generate_with_cache(gemini_messages, system_instruction, cache, background,
+                                             low_thinking=background)
         self._log_usage(response, "image")
         return self._text_or_empty(response, "image")
 
     def _generate_with_cache(self, contents, system_instruction: str | None, cache: _SystemCache | None,
-                             background: bool = False):
+                             background: bool = False, low_thinking: bool = False):
         """generate_content through `cache` when there is one; a cache Gemini no longer knows
         (expired between the check and the call, deleted elsewhere) is dropped and the request
         repeated with the system instruction inline, so no image is lost to the cache."""
@@ -348,7 +349,7 @@ class GeminiLLM(AbstractLLM):
             try:
                 return self._request(lambda: self.client.models.generate_content(
                     model=self.model, contents=contents,
-                    config=types.GenerateContentConfig(cached_content=cache.name)), background)
+                    config=types.GenerateContentConfig(cached_content=cache.name, **self._low_thinking(low_thinking))), background)
             except LLMUnavailable:
                 raise
             except Exception as e:
@@ -357,9 +358,17 @@ class GeminiLLM(AbstractLLM):
                 info(f"Gemini: cache {cache.name} is gone ({str(e)[:80]}) — resending with the system instruction inline")
                 self._forget_cache(cache)
         config_params = {'system_instruction': system_instruction} if system_instruction else {}
+        config_params.update(self._low_thinking(low_thinking))
         return self._request(lambda: self.client.models.generate_content(
             model=self.model, contents=contents,
             config=types.GenerateContentConfig(**config_params) if config_params else None), background)
+
+    def _low_thinking(self, low: bool) -> dict:
+        """Bulk still-image work (the photo indexer) describes what is in the picture and needs no
+        reasoning: thinking tokens are priced as output, so it runs at the model's lowest level."""
+        if not low:
+            return {}
+        return {'thinking_config': types.ThinkingConfig(thinking_level=self._min_thinking_level())}
 
     @staticmethod
     def _is_missing_cache_error(e: Exception) -> bool:
@@ -433,6 +442,7 @@ class GeminiLLM(AbstractLLM):
         system_instruction = self.strip_cache_markers(system_message)
         cache = self._cached_system(system_instruction, BATCH_CACHE_TTL_SECONDS)
         request_config = {'cached_content': cache.name} if cache else {'system_instruction': system_instruction}
+        request_config['thinking_config'] = {'thinking_level': self._min_thinking_level().value}
         jobs: list[tuple[object, list[int]]] = []    # (job, indexes of `requests` it carries)
         t_start = time.time()
         for indexes in self._batch_chunks(requests):
