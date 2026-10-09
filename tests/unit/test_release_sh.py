@@ -170,3 +170,37 @@ class TestIgnoredCommits:
         result = repos.release('--dry-run', '--ignore-commits', 'zzzz')
         assert result.returncode != 0
         assert 'zzzz' in result.stderr
+
+
+class TestReachBack:
+    """Installs update nightly, so a household that gets the evening release never saw the
+    midday one: the listing and the note start from the last release tagged on an earlier day,
+    not from origin/release, and --ignore-commits reaches as far."""
+
+    def _two_releases_today(self, repos) -> list[str]:
+        """A release tagged in August, two more commits released earlier today, one commit since."""
+        repos.commits('2026.08')
+        repos.history.tag('v2026.08.1', 1, 'Release v2026.08.1', when=datetime(2026, 8, 1, 12, tzinfo=timezone.utc))
+        repos.commits('2026.09', '2026.09')
+        repos.history.branch('release', 3)
+        repos.history.tag('v2026.09.3', 3, 'Release v2026.09.3', when=datetime.now(timezone.utc))
+        repos.commits('2026.09')
+        return repos.push()
+
+    def test_the_days_second_release_covers_the_commits_of_its_first(self, repos, tmp_path):
+        self._two_releases_today(repos)
+        result = repos.release('--dry-run', env=repos.stub_claude(tmp_path))
+        assert result.returncode == 0, result.stderr
+        listing, prompt = result.stdout.split("What's new in", 1)
+        assert 'v2026.08.1' in listing
+        for text in (listing, prompt):
+            assert all(edit in text for edit in ('edit 2', 'edit 3', 'edit 4'))
+            assert 'edit 1' not in text
+
+    def test_a_commit_of_the_days_first_release_may_be_left_out_of_the_note(self, repos, tmp_path):
+        _, second, _, _ = self._two_releases_today(repos)
+        result = repos.release('--dry-run', '--ignore-commits', second[:7], env=repos.stub_claude(tmp_path))
+        assert result.returncode == 0, result.stderr
+        listing, prompt = result.stdout.split("What's new in", 1)
+        assert 'edit 2' in listing and 'left out' in listing
+        assert 'edit 2' not in prompt and 'edit 3' in prompt

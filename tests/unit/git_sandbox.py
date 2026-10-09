@@ -97,7 +97,7 @@ class History:
     def __init__(self):
         self._commits: list[tuple[datetime, str, dict[str, str]]] = []
         self._branches: dict[str, int] = {}
-        self._tags: dict[str, tuple[int, str]] = {}
+        self._tags: dict[str, tuple[int, str, datetime | None]] = {}
 
     @property
     def count(self) -> int:
@@ -112,9 +112,10 @@ class History:
     def branch(self, name: str, at: int):
         self._branches[name] = at
 
-    def tag(self, name: str, at: int, message: str = 'tagged'):
-        """An annotated tag, as `git tag -a` makes."""
-        self._tags[name] = (at, message)
+    def tag(self, name: str, at: int, message: str = 'tagged', when: datetime | None = None):
+        """An annotated tag, as `git tag -a` makes; tagged at `when`, or when the newest
+        commit was made."""
+        self._tags[name] = (at, message, when)
 
     def write(self, repo: Path) -> list[str]:
         hashes: list[str] = []
@@ -129,9 +130,10 @@ class History:
                                  f'tree {tree}\n{parent}author {who}\ncommitter {who}\n\n{message}\n'.encode()))
         refs = {'refs/heads/master': hashes[-1]}
         refs.update({f'refs/heads/{name}': hashes[at - 1] for name, at in self._branches.items()})
-        for name, (at, message) in self._tags.items():
+        for name, (at, message, when) in self._tags.items():
+            tagger = f'{NAME} <{EMAIL}> {int(when.timestamp())} +0000' if when else who
             refs[f'refs/tags/{name}'] = _store(
-                repo, 'tag', f'object {hashes[at - 1]}\ntype commit\ntag {name}\ntagger {who}\n\n{message}\n'.encode())
+                repo, 'tag', f'object {hashes[at - 1]}\ntype commit\ntag {name}\ntagger {tagger}\n\n{message}\n'.encode())
         for ref, name in refs.items():
             path = git_dir(repo) / ref
             path.parent.mkdir(parents=True, exist_ok=True)
