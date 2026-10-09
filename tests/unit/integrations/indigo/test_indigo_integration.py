@@ -223,3 +223,25 @@ class TestErrorLogs:
     def test_no_section_says_so(self, integration):
         with patch(f"{MODULE}.subprocess.run", return_value=Mock(returncode=0, stdout="## LIGHTS\n", stderr="")):
             assert integration.error_logs() == "Indigo reported no error log."
+
+
+@pytest.mark.unit
+class TestSshConfigKeys:
+    """`indigo.ssh_user`, `indigo.prompt_file` and `indigo.log_refiner` replace the built-in
+    account, state file and script, so an Indigo Mac laid out differently can be read too."""
+    OVERRIDES = {**CONFIG, "indigo.ssh_user": "frances", "indigo.prompt_file": "keep/state.txt",
+                 "indigo.log_refiner": "python3 keep/events.py"}
+
+    def test_the_configured_user_file_and_script_reach_both_ssh_commands(self, integration):
+        with patch(f"{MODULE}.config") as cfg:
+            cfg.get.side_effect = lambda key, default=None: self.OVERRIDES.get(key, default)
+            with patch(f"{MODULE}.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+                integration.fetch(None, backfill=True)
+            refiner_cmd = run.call_args.args[0]
+            with patch(f"{MODULE}.subprocess.run",
+                       return_value=Mock(returncode=0, stdout=TestSnapshot.SAMPLE, stderr="")) as run:
+                integration.snapshot()
+            prompt_cmd = run.call_args.args[0]
+        assert "frances@indigo.local" in refiner_cmd and refiner_cmd[-1] == "python3 keep/events.py"
+        assert "frances@indigo.local" in prompt_cmd and prompt_cmd[-1] == "cat keep/state.txt"
+        assert "media@indigo.local" not in refiner_cmd + prompt_cmd
