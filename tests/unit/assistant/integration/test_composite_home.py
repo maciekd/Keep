@@ -31,6 +31,7 @@ class Backend(HomeAutomation):
     def turn_off(self, name): self.calls.append(("off", name)); return ""
     def dim(self, name, level): self.calls.append(("dim", name, level)); return ""
     def execute(self, name): self.calls.append(("execute", name)); return ""
+    def stop(self, name): self.calls.append(("stop", name)); return ""
     def error_logs(self): return f"{self._name} log"
 
 
@@ -87,8 +88,9 @@ class TestRouting:
         assert home.dim("spots (hall)", 20) == ""
         assert home.turn_off("Tak (Kök) (Home Assistant)") == ""
         assert home.execute("Godnatt") == ""
+        assert home.stop("Spots (Hall)") == ""
         assert indigo.calls == [("on", "Golvlampa (Vardagsrum)"), ("execute", "Godnatt")]
-        assert ha.calls == [("dim", "Spots (Hall)", 20), ("off", "Tak (Kök)")]
+        assert ha.calls == [("dim", "Spots (Hall)", 20), ("off", "Tak (Kök)"), ("stop", "Spots (Hall)")]
 
     def test_a_shared_full_name_stays_with_the_first_backend_and_its_bare_form_is_answered_with_both(self, house):
         indigo, ha, home = house

@@ -1,5 +1,5 @@
 """Plejd as a HomeAutomation backend, over Bluetooth from the server's own Mac. The Plejd
-cloud (the app's login) gives the site — lights, rooms, scenes and the mesh key — and
+cloud (the app's login) gives the site — lights, covers, rooms, scenes and the mesh key — and
 PlejdLink keeps a link to the strongest powered unit in range on its own thread: the states
 come from the mesh's notifications and the commands are writes to it. Nothing here blocks the
 caller for long: a snapshot is a read from memory, a command waits COMMAND_TIMEOUT for the
@@ -13,7 +13,7 @@ from assistant.integration.Integration import Integration
 from common.ConfigManager import config
 from common.logging import info
 from .PlejdLink import NotConnected, PlejdLink
-from .PlejdModel import SCENE_TYPE, Unresolved, build, kind_of, to_plejd_level
+from .PlejdModel import SCENE_TYPE, Unresolved, build, is_cover, kind_of, to_plejd_level
 
 CONNECT_WAIT = 10       # seconds a snapshot, a command or the health check waits for the site to load
 MESH_WAIT = 20          # seconds of scanning the health check gives the mesh link before judging it
@@ -22,12 +22,12 @@ NO_MESH = "No Plejd unit in Bluetooth range — the mesh is not connected."
 
 
 class PlejdIntegration(Integration, HomeAutomation):
-    """Plejd lights and scenes over Bluetooth, no gateway needed.
+    """Plejd lights, covers and scenes over Bluetooth, no gateway needed.
 
-    Makes the Plejd mesh a home automation backend: Keep sees every light, relay and scene of
-    the site and switches, dims and runs them through any powered Plejd unit in Bluetooth range
-    of the server, no gateway needed. Beside Indigo or Home Assistant it is one more part of the
-    same house.
+    Makes the Plejd mesh a home automation backend: Keep sees every light, relay, cover
+    (blind, zipscreen, awning) and scene of the site and drives them through any powered Plejd
+    unit in Bluetooth range of the server. Beside Indigo or Home Assistant it is one more part
+    of the same house.
 
     pyplejd (the library behind the Home Assistant component) does the cloud call and the mesh
     protocol; PlejdLink runs its asyncio side — scanner, link, keep-alive — on a thread, and
@@ -123,6 +123,9 @@ class PlejdIntegration(Integration, HomeAutomation):
     def execute(self, name: str) -> str:
         return self._command(name, "execute")
 
+    def stop(self, name: str) -> str:
+        return self._command(name, "stop")
+
     def _command(self, name: str, verb: str, level: Optional[int] = None) -> str:
         try:
             link = self._ready_link()
@@ -156,11 +159,21 @@ class PlejdIntegration(Integration, HomeAutomation):
 
     @staticmethod
     def _action(device, display: str, verb: str, level: Optional[int]) -> Callable | str:
-        """What to run on the loop for *verb*, or the text for the LLM when the device cannot."""
+        """What to run on the loop for *verb*, or the text for the LLM when the device cannot.
+        A cover opens on turn_on, closes on turn_off, goes to *level* % open on dim (0 is
+        closed, 100 open — pyplejd's and Home Assistant's scale) and halts on stop."""
         if kind_of(device) == SCENE_TYPE:
             return device.activate if verb == "execute" else f"{display} is a scene; use execute."
+        if is_cover(device):
+            if verb == "execute":
+                return f"{display} is a cover; use turn_on (open) / turn_off (close) / dim (position) / stop."
+            if verb == "dim":
+                return lambda: device.set_position(level)
+            return {"turn_on": device.open, "turn_off": device.close, "stop": device.stop}[verb]
         if verb == "execute":
             return f"{display} is a light; use turn_on / turn_off."
+        if verb == "stop":
+            return f"{display} is a light, not a cover — nothing to stop; use turn_off."
         if verb == "dim":
             if not getattr(device, "dimmable", False):
                 return f"{display} is not dimmable."

@@ -1207,6 +1207,9 @@ class Commands:
     def cmd_turn_off(self, parameter_string: str) -> str:
         return home.active().turn_off(self._home_name(parameter_string))
 
+    def cmd_stop(self, parameter_string: str) -> str:
+        return home.active().stop(self._home_name(parameter_string))
+
     def cmd_dim(self, *args: str) -> str:
         if len(args) < 2:
             return "dim failed: expected 'name, level' parameters"
@@ -1666,6 +1669,7 @@ class Commands:
         return f"Loading the {', '.join(names[:-1])} and {names[-1]} toolkits"
     def describe_turn_on(self, p):                return f"Turning on {p.strip()}"
     def describe_turn_off(self, p):               return f"Turning off {p.strip()}"
+    def describe_stop(self, p):                   return f"Stopping {p.strip()}"
 
     def describe_dim(self, p):
         parts = [x.strip() for x in p.split(",")]

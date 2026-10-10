@@ -173,9 +173,9 @@ def assemble(core: Iterable[Toolkit], discovered: Iterable[Toolkit], order: tupl
 
 
 CORE_TOOLKITS: tuple[Toolkit, ...] = (
-    Toolkit("home", "lights, actions and the home automation log, with the current state of every "
-                    "light, action and variable of the house",
-            ("turn_on", "turn_off", "dim", "execute", "home_automation_logs"),
+    Toolkit("home", "lights, covers, actions and the home automation log, with the current state of every "
+                    "light, cover, action and variable of the house",
+            ("turn_on", "turn_off", "dim", "stop", "execute", "home_automation_logs"),
             sections=("home",), needs=HomeAutomation),
     Toolkit("cameras", "a still image from every camera of the house, or from the ones you name",
             ("fetch_camera_images",), needs=CameraProvider),

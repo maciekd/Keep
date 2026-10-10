@@ -157,5 +157,8 @@ class CompositeHome(HomeAutomation):
     def execute(self, name: str) -> str:
         return self._dispatch("execute", name, lambda b, n: b.execute(n))
 
+    def stop(self, name: str) -> str:
+        return self._dispatch("stop", name, lambda b, n: b.stop(n))
+
     def error_logs(self) -> str:
         return "\n\n".join(f"--- {b.name} ---\n{b.error_logs()}" for b in self.backends)

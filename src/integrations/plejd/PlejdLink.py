@@ -14,7 +14,7 @@ from pyplejd import PLEJD_SERVICE, AuthenticationError, PlejdManager, get_sites
 from pyplejd import ConnectionError as PlejdCloudUnreachable
 
 from common.logging import info, trace
-from .PlejdModel import mac_from_advertisement, value_of
+from .PlejdModel import COVER_TYPE, SCENE_TYPE, kind_of, mac_from_advertisement, state_text
 
 PING_INTERVAL = 180         # pyplejd's own keep-alive period: the mesh drops an idle link
 TIME_SYNC_INTERVAL = 3600   # the mesh clock drifts; Home Assistant's component syncs it hourly too
@@ -210,8 +210,9 @@ class PlejdLink:
             for device in manager.devices:
                 device.subscribe(lambda state, d=device: self._on_state(d, state))
             self.manager = manager
-            scenes = sum(1 for d in manager.devices if str(d.outputType) == "SCENE")
-            info(f"Plejd: site {site['title']} loaded — {len(manager.devices) - scenes} devices, "
+            kinds = [kind_of(d) for d in manager.devices]
+            scenes, covers = kinds.count(SCENE_TYPE), kinds.count(COVER_TYPE)
+            info(f"Plejd: site {site['title']} loaded — {len(kinds) - scenes - covers} devices, {covers} covers, "
                  f"{scenes} scenes, {len(manager.hardware)} mesh units")
             return manager
         return None
@@ -264,8 +265,8 @@ class PlejdLink:
 
     def _on_state(self, device, state: dict):
         with self._lock:
-            before = value_of(self._states.get(device.identifier, {}))
+            before = state_text(device, self._states.get(device.identifier, {}))
             self._states[device.identifier] = dict(state)
-        after = value_of(state)
+        after = state_text(device, state)
         if after != before:
             trace(f"Plejd: {device.name} is {after}")

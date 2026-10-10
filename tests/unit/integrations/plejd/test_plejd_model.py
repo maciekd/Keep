@@ -4,7 +4,8 @@ import pytest
 
 from assistant.integration.HomeAutomation import render
 from integrations.plejd.PlejdModel import (
-    MANUFACTURER_ID, NameIndex, Unresolved, build, mac_from_advertisement, to_plejd_level, value_of)
+    MANUFACTURER_ID, NameIndex, Unresolved, build, cover_value_of, mac_from_advertisement, state_text, to_plejd_level,
+    value_of)
 
 
 class Room:
@@ -58,19 +59,38 @@ class TestScales:
         assert value_of({"state": False, "dim": 204}) == "off"
         assert value_of({"available": True}) == "unknown"
 
+    def test_a_cover_reads_its_position_or_its_motion(self):
+        assert cover_value_of({"position": 100.0, "moving": False, "opening": True}) == "open"
+        assert cover_value_of({"position": 0.0, "moving": False, "opening": False}) == "closed"
+        assert cover_value_of({"position": 40.157, "moving": False, "opening": False}) == "40% open"
+        assert cover_value_of({"position": 99.6, "moving": False, "opening": True}) == "open"
+        assert cover_value_of({"position": 20.0, "moving": True, "opening": True}) == "opening"
+        assert cover_value_of({"position": 20.0, "moving": True, "opening": False}) == "closing"
+        assert cover_value_of({"position": None, "moving": False, "opening": False}) == "unknown"   # pyplejd lost track
+        assert cover_value_of({"available": True}) == "unknown"
+
+    def test_a_state_is_read_by_what_the_device_is(self):
+        state = {"state": True, "dim": 255, "position": 0.0, "moving": False}
+        assert state_text(Device("Lampa"), state) == "on 100%"
+        assert state_text(Device("Screen", kind="COVERABLE"), state) == "closed"
+
 
 @pytest.mark.unit
 class TestBuild:
     def test_visible_lights_relays_and_scenes_land_in_their_lists_sorted_with_rooms(self):
         devices = [Device("Taklampa", room="Kök"), Device("Fläkt", kind="RELAY", room="Badrum"), Scene("Kväll"),
                    Device("Spots", room="Hall", hidden=True), Device("Rörelse", kind="MOTION", room="Hall"),
-                   Scene("Gömd", hidden=True), Device("  ", room="Hall")]
-        states = {("dev", "Taklampa", "Kök"): {"state": True, "dim": 128}, ("dev", "Fläkt", "Badrum"): {"state": False}}
+                   Scene("Gömd", hidden=True), Device("  ", room="Hall"),
+                   Device("Zipscreen söder", kind="COVERABLE", room="Matsal", dimmable=False),
+                   Device("Markis", kind="COVERABLE", room="Altan", hidden=True)]
+        states = {("dev", "Taklampa", "Kök"): {"state": True, "dim": 128}, ("dev", "Fläkt", "Badrum"): {"state": False},
+                  ("dev", "Zipscreen söder", "Matsal"): {"position": 35.0, "moving": False, "opening": False}}
         snapshot, index = build(devices, states)
-        assert render(snapshot) == ('## LIGHTS\n"Fläkt [Badrum]": off\n"Taklampa [Kök]": on 50%\n\n'
+        assert render(snapshot) == ('## LIGHTS\n"Fläkt [Badrum]": off\n"Taklampa [Kök]": on 50%\n'
+                                    '"Zipscreen söder [Matsal]": 35% open\n\n'
                                     '## ACTIONS\n"Kväll": scene\n\n')
         assert snapshot.sensors == [] and snapshot.variables == []
-        assert len(index) == 3
+        assert len(index) == 4
 
     def test_a_light_without_a_room_or_a_report_yet(self):
         snapshot, _ = build([Device("Lykta"), Device("Fönster", room="  ")], {})
@@ -82,7 +102,7 @@ class TestNameIndex:
     @pytest.fixture
     def index(self):
         _, index = build([Device("Taklampa", room="Kök"), Device("Taklampa", room="Hall"), Device("Bordslampa", room="Vardagsrum"),
-                          Scene("Kväll")], {})
+                          Scene("Kväll"), Device("Zipscreen", kind="COVERABLE", room="Matsal")], {})
         return index
 
     def test_bare_name_and_display_form_both_resolve(self, index):
@@ -113,3 +133,10 @@ class TestNameIndex:
     def test_a_scene_resolves_by_name(self, index):
         device, display = index.resolve("kväll")
         assert device.outputType == "SCENE" and display == "Kväll"
+
+    def test_a_cover_resolves_like_a_light_and_is_offered_for_a_near_miss(self, index):
+        device, display = index.resolve("Zipscreen (Matsal)")
+        assert device.outputType == "COVERABLE" and display == "Zipscreen [Matsal]"
+        with pytest.raises(Unresolved) as e:
+            index.resolve("Zipscreem")
+        assert "Zipscreen [Matsal]" in str(e.value)

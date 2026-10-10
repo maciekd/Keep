@@ -90,6 +90,11 @@ class HomeAutomation(ABC):
     @abstractmethod
     def execute(self, name: str) -> str: ...
 
+    def stop(self, name: str) -> str:
+        """Halts a moving cover (a blind, a zipscreen, an awning) where it is. A backend
+        without covers keeps this answer."""
+        return f"{self.name} cannot stop anything — nothing it runs is a cover."
+
     def error_logs(self) -> str:
         return f"{self.name} has no error log."
 
@@ -141,6 +146,9 @@ class NotConfiguredHome(HomeAutomation):
         return self.hint
 
     def execute(self, name: str) -> str:
+        return self.hint
+
+    def stop(self, name: str) -> str:
         return self.hint
 
     def error_logs(self) -> str:

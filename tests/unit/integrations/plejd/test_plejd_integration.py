@@ -34,6 +34,29 @@ class Light:
         self.calls.append(("turn_off",))
 
 
+class Cover:
+    outputType = "COVERABLE"
+    hidden = False
+    dimmable = False
+
+    def __init__(self, name, room):
+        self.name, self.roomData = name, Room(room)
+        self.identifier = ("dev", name)
+        self.calls = []
+
+    async def open(self):
+        self.calls.append(("open",))
+
+    async def close(self):
+        self.calls.append(("close",))
+
+    async def stop(self):
+        self.calls.append(("stop",))
+
+    async def set_position(self, position=None, tilt=None):
+        self.calls.append(("set_position", position))
+
+
 class Scene:
     outputType = "SCENE"
     hidden = False
@@ -56,8 +79,10 @@ class FakeLink:
         self.site_title = "Villa Nyström"
         self.waiting = "the Plejd site is still loading"
         self.units_seen = 2
-        self.devices = [Light("Taklampa", "Kök"), Light("Fläkt", "Badrum", dimmable=False), Scene("Kväll")]
-        self._states = {("dev", "Taklampa"): {"state": True, "dim": 255}}
+        self.devices = [Light("Taklampa", "Kök"), Light("Fläkt", "Badrum", dimmable=False), Scene("Kväll"),
+                        Cover("Zipscreen", "Matsal")]
+        self._states = {("dev", "Taklampa"): {"state": True, "dim": 255},
+                        ("dev", "Zipscreen"): {"position": 100.0, "moving": False, "opening": True}}
         self.started = self.stopped = 0
         self.failure = None
         self.scan_left = 0.0            # seconds of the first scan window still ahead
@@ -126,7 +151,8 @@ class TestLink:
 class TestSnapshot:
     def test_the_snapshot_is_the_devices_with_their_last_states(self, integration, link):
         snapshot = integration.snapshot()
-        assert render(snapshot) == ('## LIGHTS\n"Fläkt [Badrum]": unknown\n"Taklampa [Kök]": on 100%\n\n'
+        assert render(snapshot) == ('## LIGHTS\n"Fläkt [Badrum]": unknown\n"Taklampa [Kök]": on 100%\n'
+                                    '"Zipscreen [Matsal]": open\n\n'
                                     '## ACTIONS\n"Kväll": scene\n\n')
         assert snapshot.taken_at > 0
 
@@ -164,6 +190,24 @@ class TestCommands:
         assert device(link, "Kväll").calls == [("activate",)]
         assert "use execute" in integration.turn_on("Kväll")
         assert "use turn_on" in integration.execute("Taklampa")
+
+    def test_a_cover_opens_closes_and_stops_on_the_light_verbs(self, integration, link):
+        assert integration.turn_on("Zipscreen [Matsal]") == ""
+        assert integration.turn_off("zipscreen") == ""
+        assert integration.stop("Zipscreen") == ""
+        assert device(link, "Zipscreen").calls == [("open",), ("close",), ("stop",)]
+
+    def test_dim_drives_a_cover_to_the_position_and_zero_closes_it(self, integration, link):
+        assert integration.dim("Zipscreen", 35) == ""
+        assert integration.dim("Zipscreen", 0) == ""
+        assert integration.dim("Zipscreen", 140) == ""
+        assert device(link, "Zipscreen").calls == [("set_position", 35), ("close",), ("set_position", 100)]
+
+    def test_a_cover_is_not_an_action_and_a_light_cannot_be_stopped(self, integration, link):
+        assert "use turn_on" in integration.execute("Zipscreen")
+        assert "nothing to stop" in integration.stop("Taklampa")
+        assert "use execute" in integration.stop("Kväll")
+        assert device(link, "Zipscreen").calls == [] and device(link, "Taklampa").calls == []
 
     def test_an_unknown_name_is_words_not_a_call(self, integration, link):
         answer = integration.turn_on("Poolbelysning")

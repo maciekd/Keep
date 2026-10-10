@@ -1,9 +1,11 @@
 """Plejd's site and mesh states as the HomeAutomation data model, pure functions. The MAC of
 an advertising unit comes out of Plejd's manufacturer data (CoreBluetooth never shows an
 address, and pyplejd keys its hardware by the MAC the cloud lists); a light's state reads as
-on / on 80% / off on Plejd's 0–255 dim scale; the visible lights and relays fill the LIGHTS
-list and the visible scenes the ACTIONS list; and the name index turns the names the LLM
-hands back — `name (room)` as `from_display` gives it, or the bare name — into devices."""
+on / on 80% / off on Plejd's 0–255 dim scale and a cover's (a blind, a zipscreen, an awning)
+as open / 40% open / closed / opening / closing on pyplejd's 0–100 position scale; the visible
+lights, relays and covers fill the LIGHTS list and the visible scenes the ACTIONS list; and
+the name index turns the names the LLM hands back — `name (room)` as `from_display` gives it,
+or the bare name — into devices."""
 import difflib
 import re
 from typing import Optional
@@ -12,6 +14,7 @@ from assistant.integration.HomeAutomation import Entity, HomeAutomation, HomeSna
 
 MANUFACTURER_ID = 887           # Plejd's Bluetooth SIG company id; the unit's MAC sits in that advertisement data
 LIGHT_TYPES = ("LIGHT", "RELAY")
+COVER_TYPE = "COVERABLE"        # pyplejd's outputType for a PlejdCover: a blind, a zipscreen, an awning
 SCENE_TYPE = "SCENE"
 _SPACES = re.compile(r"\s+")
 _PAREN_SUFFIX = re.compile(r"^(.*?)\s*\(([^()]*)\)\s*$")
@@ -50,9 +53,37 @@ def value_of(state: dict) -> str:
     return f"on {min(100, round(float(dim) / 255 * 100))}%"
 
 
+def cover_value_of(state: dict) -> str:
+    """How a cover reads in the prompt: "opening" / "closing" while the motor runs, else
+    "open", "closed" or "40% open" (100 is fully open, as pyplejd and Home Assistant count),
+    and "unknown" before the mesh reported it or when pyplejd lost track of the position."""
+    if "moving" not in state and "position" not in state:
+        return "unknown"
+    if state.get("moving"):
+        return "opening" if state.get("opening") else "closing"
+    position = state.get("position")
+    if position is None:
+        return "unknown"
+    position = min(100, max(0, round(float(position))))
+    if position >= 100:
+        return "open"
+    if position <= 0:
+        return "closed"
+    return f"{position}% open"
+
+
 def kind_of(device) -> str:
-    """LIGHT, RELAY, SCENE, ... — pyplejd's outputType as text."""
+    """LIGHT, RELAY, COVERABLE, SCENE, ... — pyplejd's outputType as text."""
     return str(getattr(device, "outputType", "") or "")
+
+
+def is_cover(device) -> bool:
+    return kind_of(device) == COVER_TYPE
+
+
+def state_text(device, state: dict) -> str:
+    """The device's state as the prompt shows it, by what the device is."""
+    return cover_value_of(state) if is_cover(device) else value_of(state)
 
 
 def room_of(device) -> Optional[str]:
@@ -95,7 +126,7 @@ class NameIndex:
         close = difflib.get_close_matches(key, unique, n=3, cutoff=0.6)
         suggestions = sorted({self._holders[k][0][1] for k in close})
         hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
-        raise Unresolved(f'No Plejd light, relay or scene named "{name}".{hint}')
+        raise Unresolved(f'No Plejd light, relay, cover or scene named "{name}".{hint}')
 
     @staticmethod
     def _candidates(key: str) -> list[str]:
@@ -115,9 +146,9 @@ def normalize(text: str) -> str:
 
 
 def build(devices, states: dict) -> tuple[HomeSnapshot, NameIndex]:
-    """The snapshot — the visible lights and relays with their room as LIGHTS, the visible
-    scenes as ACTIONS, each list sorted by name — and the index of what it lists. *states*
-    is keyed by the device's `identifier`; a device absent from it reads as unknown."""
+    """The snapshot — the visible lights, relays and covers with their room as LIGHTS, the
+    visible scenes as ACTIONS, each list sorted by name — and the index of what it lists.
+    *states* is keyed by the device's `identifier`; a device absent from it reads as unknown."""
     snapshot, index = HomeSnapshot(), NameIndex()
     for device in devices:
         kind = kind_of(device)
@@ -127,9 +158,9 @@ def build(devices, states: dict) -> tuple[HomeSnapshot, NameIndex]:
         if kind == SCENE_TYPE:
             snapshot.actions.append(Entity(name, "scene"))
             index.add(device, name, None)
-        elif kind in LIGHT_TYPES:
+        elif kind in LIGHT_TYPES or kind == COVER_TYPE:
             room = room_of(device)
-            snapshot.lights.append(Entity(name, value_of(states.get(device.identifier, {})), room))
+            snapshot.lights.append(Entity(name, state_text(device, states.get(device.identifier, {})), room))
             index.add(device, name, room)
     snapshot.lights.sort(key=lambda e: (e.name.lower(), e.area or ""))
     snapshot.actions.sort(key=lambda e: e.name.lower())
