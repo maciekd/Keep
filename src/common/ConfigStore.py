@@ -46,7 +46,13 @@ class ConfigStoreError(Exception):
 
 
 def is_denied(key: str) -> bool:
-    return any(key == p or key.startswith(p + ".") for p in DENIED_PREFIXES)
+    """Compared on the key's names, indexes aside: vault.key[0] and indigo.ssh_user[0].x
+    would change a denied key as surely as the plain spelling does."""
+    try:
+        names = [p for p in ConfigSchema.split_key(key) if isinstance(p, str)]
+    except ValueError:
+        return False
+    return any(names[:len(denied)] == denied for denied in (p.split(".") for p in DENIED_PREFIXES))
 
 
 def check_key(key: str) -> None:

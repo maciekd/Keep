@@ -166,6 +166,9 @@ class TestSetValue:
         ("indigo.log_refiner", "cannot be changed"),
         ("indigo.ssh_user", "cannot be changed"),
         ("photos.screen_prepare_command", "cannot be changed"),
+        ("indigo.prompt_file", "cannot be changed"),
+        ("vault.key[0]", "cannot be changed"),              # an indexed spelling still changes the key
+        ("indigo.ssh_user[0].host", "cannot be changed"),
         ("interfaces", "not a single value"),
         ("gmail.password", "not a known setting"),
         ("pager/password", "not a known setting"),
