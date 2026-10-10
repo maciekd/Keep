@@ -81,13 +81,13 @@ class TestBuild:
         devices = [Device("Taklampa", room="Kök"), Device("Fläkt", kind="RELAY", room="Badrum"), Scene("Kväll"),
                    Device("Spots", room="Hall", hidden=True), Device("Rörelse", kind="MOTION", room="Hall"),
                    Scene("Gömd", hidden=True), Device("  ", room="Hall"),
-                   Device("Zipscreen söder", kind="COVERABLE", room="Matsal", dimmable=False),
-                   Device("Markis", kind="COVERABLE", room="Altan", hidden=True)]
+                   Device("Rullgardin väst", kind="COVERABLE", room="Uterum", dimmable=False),
+                   Device("Persienn", kind="COVERABLE", room="Kontor", hidden=True)]
         states = {("dev", "Taklampa", "Kök"): {"state": True, "dim": 128}, ("dev", "Fläkt", "Badrum"): {"state": False},
-                  ("dev", "Zipscreen söder", "Matsal"): {"position": 35.0, "moving": False, "opening": False}}
+                  ("dev", "Rullgardin väst", "Uterum"): {"position": 35.0, "moving": False, "opening": False}}
         snapshot, index = build(devices, states)
-        assert render(snapshot) == ('## LIGHTS\n"Fläkt [Badrum]": off\n"Taklampa [Kök]": on 50%\n'
-                                    '"Zipscreen söder [Matsal]": 35% open\n\n'
+        assert render(snapshot) == ('## LIGHTS\n"Fläkt [Badrum]": off\n"Rullgardin väst [Uterum]": 35% open\n'
+                                    '"Taklampa [Kök]": on 50%\n\n'
                                     '## ACTIONS\n"Kväll": scene\n\n')
         assert snapshot.sensors == [] and snapshot.variables == []
         assert len(index) == 4
@@ -102,7 +102,7 @@ class TestNameIndex:
     @pytest.fixture
     def index(self):
         _, index = build([Device("Taklampa", room="Kök"), Device("Taklampa", room="Hall"), Device("Bordslampa", room="Vardagsrum"),
-                          Scene("Kväll"), Device("Zipscreen", kind="COVERABLE", room="Matsal")], {})
+                          Scene("Kväll"), Device("Markis", kind="COVERABLE", room="Uterum")], {})
         return index
 
     def test_bare_name_and_display_form_both_resolve(self, index):
@@ -135,8 +135,8 @@ class TestNameIndex:
         assert device.outputType == "SCENE" and display == "Kväll"
 
     def test_a_cover_resolves_like_a_light_and_is_offered_for_a_near_miss(self, index):
-        device, display = index.resolve("Zipscreen (Matsal)")
-        assert device.outputType == "COVERABLE" and display == "Zipscreen [Matsal]"
+        device, display = index.resolve("Markis (Uterum)")
+        assert device.outputType == "COVERABLE" and display == "Markis [Uterum]"
         with pytest.raises(Unresolved) as e:
-            index.resolve("Zipscreem")
-        assert "Zipscreen [Matsal]" in str(e.value)
+            index.resolve("Markiss")
+        assert "Markis [Uterum]" in str(e.value)

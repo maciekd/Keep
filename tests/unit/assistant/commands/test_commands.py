@@ -1015,8 +1015,8 @@ class TestCmdTurnOnOff:
 
     def test_stop_reaches_the_backend_with_the_raw_name(self, commands_instance, mock_home):
         mock_home.stop.return_value = ""
-        assert commands_instance.cmd_stop("Zipscreen [Matsal]") == ""
-        mock_home.stop.assert_called_once_with("Zipscreen (Matsal)")
+        assert commands_instance.cmd_stop("Markis [Uterum]") == ""
+        mock_home.stop.assert_called_once_with("Markis (Uterum)")
 
     def test_dim_rejects_a_non_level(self, commands_instance, mock_home):
         assert commands_instance.cmd_dim("light", "bright") == "dim failed: 'bright' is not a level"

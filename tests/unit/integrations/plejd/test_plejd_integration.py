@@ -80,9 +80,9 @@ class FakeLink:
         self.waiting = "the Plejd site is still loading"
         self.units_seen = 2
         self.devices = [Light("Taklampa", "Kök"), Light("Fläkt", "Badrum", dimmable=False), Scene("Kväll"),
-                        Cover("Zipscreen", "Matsal")]
+                        Cover("Markis", "Uterum")]
         self._states = {("dev", "Taklampa"): {"state": True, "dim": 255},
-                        ("dev", "Zipscreen"): {"position": 100.0, "moving": False, "opening": True}}
+                        ("dev", "Markis"): {"position": 100.0, "moving": False, "opening": True}}
         self.started = self.stopped = 0
         self.failure = None
         self.scan_left = 0.0            # seconds of the first scan window still ahead
@@ -151,8 +151,8 @@ class TestLink:
 class TestSnapshot:
     def test_the_snapshot_is_the_devices_with_their_last_states(self, integration, link):
         snapshot = integration.snapshot()
-        assert render(snapshot) == ('## LIGHTS\n"Fläkt [Badrum]": unknown\n"Taklampa [Kök]": on 100%\n'
-                                    '"Zipscreen [Matsal]": open\n\n'
+        assert render(snapshot) == ('## LIGHTS\n"Fläkt [Badrum]": unknown\n"Markis [Uterum]": open\n'
+                                    '"Taklampa [Kök]": on 100%\n\n'
                                     '## ACTIONS\n"Kväll": scene\n\n')
         assert snapshot.taken_at > 0
 
@@ -192,22 +192,22 @@ class TestCommands:
         assert "use turn_on" in integration.execute("Taklampa")
 
     def test_a_cover_opens_closes_and_stops_on_the_light_verbs(self, integration, link):
-        assert integration.turn_on("Zipscreen [Matsal]") == ""
-        assert integration.turn_off("zipscreen") == ""
-        assert integration.stop("Zipscreen") == ""
-        assert device(link, "Zipscreen").calls == [("open",), ("close",), ("stop",)]
+        assert integration.turn_on("Markis [Uterum]") == ""
+        assert integration.turn_off("markis") == ""
+        assert integration.stop("Markis") == ""
+        assert device(link, "Markis").calls == [("open",), ("close",), ("stop",)]
 
     def test_dim_drives_a_cover_to_the_position_and_zero_closes_it(self, integration, link):
-        assert integration.dim("Zipscreen", 35) == ""
-        assert integration.dim("Zipscreen", 0) == ""
-        assert integration.dim("Zipscreen", 140) == ""
-        assert device(link, "Zipscreen").calls == [("set_position", 35), ("close",), ("set_position", 100)]
+        assert integration.dim("Markis", 35) == ""
+        assert integration.dim("Markis", 0) == ""
+        assert integration.dim("Markis", 140) == ""
+        assert device(link, "Markis").calls == [("set_position", 35), ("close",), ("set_position", 100)]
 
     def test_a_cover_is_not_an_action_and_a_light_cannot_be_stopped(self, integration, link):
-        assert "use turn_on" in integration.execute("Zipscreen")
+        assert "use turn_on" in integration.execute("Markis")
         assert "nothing to stop" in integration.stop("Taklampa")
         assert "use execute" in integration.stop("Kväll")
-        assert device(link, "Zipscreen").calls == [] and device(link, "Taklampa").calls == []
+        assert device(link, "Markis").calls == [] and device(link, "Taklampa").calls == []
 
     def test_an_unknown_name_is_words_not_a_call(self, integration, link):
         answer = integration.turn_on("Poolbelysning")
