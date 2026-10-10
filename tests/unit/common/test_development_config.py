@@ -6,17 +6,20 @@ prompt caching, and the cache TTL controls the per-request bill on every
 voice query — so the defaults are pinned here against accidental flips.
 """
 
-import importlib
-import sys
+import importlib.util
 
 import pytest
 
 
 def _reimport_development_config():
-    """Reload DevelopmentConfig under whatever env we just set so the
-    module-level expressions re-evaluate with the current os.environ."""
-    sys.modules.pop("common.DevelopmentConfig", None)
-    return importlib.import_module("common.DevelopmentConfig")
+    """A fresh copy of DevelopmentConfig evaluated under the env just set, loaded beside the
+    imported one and never in its place: swapping it into sys.modules left every module that
+    had imported it (CodeQualityMaintainer, Telemetry) holding the old object, where a later
+    test's patch on the module name could not reach — and the copy carried this test's env."""
+    spec = importlib.util.find_spec("common.DevelopmentConfig")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture

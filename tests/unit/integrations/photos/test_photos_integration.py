@@ -933,6 +933,7 @@ class TestPhotoProcessorICloudDownload:
 
         with patch.object(processor, '_find_unprocessed', return_value=([evicted_row], "")), \
              patch.object(processor, '_process_one', return_value=True), \
+             patch.object(processor, '_indexing_backend_is_local', return_value=False), \
              patch.object(processor, '_retry_icloud_pending'):
             processor.process_bulk_unprocessed(count=10)
             assert "EVICT-1" in processor._pending_icloud
@@ -2352,6 +2353,7 @@ class TestPhotoProcessorBulkVideoThrottle:
         with patch.object(module, 'VIDEO_THREADS', 2), \
              patch.object(processor, '_find_unprocessed', return_value=(rows, "")), \
              patch.object(processor, '_process_one', side_effect=fake_process), \
+             patch.object(processor, '_indexing_backend_is_local', return_value=False), \
              patch('common.FloxyDatabase.FloxyDatabase.get_instance') as mock_db:
             mock_db.return_value.photo_exists.return_value = True
             mock_db.return_value.get_photo_description.return_value = "desc"

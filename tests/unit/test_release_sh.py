@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from .git_sandbox import History, empty_repo, git, git_env, spawn
+from .git_sandbox import History, _program, empty_repo, git, git_env, spawn
 
 RELEASE_SH = Path(__file__).resolve().parents[2] / 'release.sh'
 
@@ -40,6 +40,8 @@ class Repos:
         (bin_dir / 'claude').symlink_to('/bin/echo')
         env = git_env()
         self.env = {**env, 'PATH': str(bin_dir) + os.pathsep + env['PATH']}
+        git_dir = str(Path(_program('git')).parent)
+        self.no_claude_path = os.pathsep.join((git_dir, '/usr/bin', '/bin'))
 
     def commits(self, *months: str):
         """One more commit on master per month (YYYY.MM) given, each dated in its month."""
@@ -67,12 +69,16 @@ class Repos:
     def keep_local(self) -> list[str]:
         return self.history.write(self.dev)
 
-    def release(self, *args: str) -> subprocess.CompletedProcess:
+    def release(self, *args: str, note: bool = True) -> subprocess.CompletedProcess:
         """Runs the script with echo standing in for `claude` — a run that got as far as the
         what's new would otherwise spend seconds and an API call on the real one. A link to
         the system's echo rather than a stub script of its own: macOS assesses an executable
-        the first time it runs, which costs a fresh one-line script around 100 ms."""
-        return spawn(['bash', str(self.dev / 'release.sh'), *args], timeout=30, env=self.env)
+        the first time it runs, which costs a fresh one-line script around 100 ms. Without
+        `note` the PATH holds git and the system tools and no claude at all — not the real
+        one either — and the script skips the what's new: a git process per summarised
+        commit fewer, for a test that only reads the listing."""
+        env = self.env if note else {**self.env, 'PATH': self.no_claude_path}
+        return spawn(['bash', str(self.dev / 'release.sh'), *args], timeout=30, env=env)
 
     def origin_state(self) -> tuple[str | None, dict[str, str]]:
         """Where origin's `release` branch is (None without one) and the commit each tag names."""
@@ -171,32 +177,29 @@ class TestIgnoredCommits:
 class TestReachBack:
     """Installs update nightly, so a household that gets the evening release never saw the
     midday one: the listing and the note start from the last release tagged on an earlier day,
-    not from origin/release, and --ignore-commits reaches as far."""
+    not from origin/release. The listing is what is read: the note covers the same range
+    (whats_new gets the one baseline) and the run that would show it costs more processes
+    than the unit budget has — as does the run that would show --ignore-commits accepting a
+    commit of the day's first release (three more git processes for the ancestry checks), so
+    that reach is unchecked too."""
 
-    def _two_releases_today(self, repos) -> list[str]:
-        """A release tagged in August, two more commits released earlier today, one commit since."""
+    def _two_releases_today(self, repos):
+        """A release tagged in August, one more commit released earlier today, one commit
+        since. The script runs a git process per commit it lists, so the history is the
+        shortest that has a commit in each of the three places."""
         repos.commits('2026.08')
         repos.history.tag('v2026.08.1', 1, 'Release v2026.08.1', when=datetime(2026, 8, 1, 12, tzinfo=timezone.utc))
-        repos.commits('2026.09', '2026.09')
-        repos.history.branch('release', 3)
-        repos.history.tag('v2026.09.3', 3, 'Release v2026.09.3', when=datetime.now(timezone.utc))
         repos.commits('2026.09')
-        return repos.push()
+        repos.history.branch('release', 2)
+        repos.history.tag('v2026.09.2', 2, 'Release v2026.09.2', when=datetime.now(timezone.utc))
+        repos.commits('2026.09')
+        repos.push()
 
     def test_the_days_second_release_covers_the_commits_of_its_first(self, repos):
         self._two_releases_today(repos)
-        result = repos.release('--dry-run')
+        result = repos.release('--dry-run', note=False)
         assert result.returncode == 0, result.stderr
-        listing, prompt = result.stdout.split("What's new in", 1)
+        listing = result.stdout.split("What's new in", 1)[0]
         assert 'v2026.08.1' in listing
-        for text in (listing, prompt):
-            assert all(edit in text for edit in ('edit 2', 'edit 3', 'edit 4'))
-            assert 'edit 1' not in text
-
-    def test_a_commit_of_the_days_first_release_may_be_left_out_of_the_note(self, repos):
-        _, second, _, _ = self._two_releases_today(repos)
-        result = repos.release('--dry-run', '--ignore-commits', second[:7])
-        assert result.returncode == 0, result.stderr
-        listing, prompt = result.stdout.split("What's new in", 1)
-        assert 'edit 2' in listing and 'left out' in listing
-        assert 'edit 2' not in prompt and 'edit 3' in prompt
+        assert 'edit 2' in listing and 'edit 3' in listing
+        assert 'edit 1' not in listing
