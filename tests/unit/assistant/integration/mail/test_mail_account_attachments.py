@@ -6,7 +6,7 @@ from unittest.mock import patch, Mock
 import pytest
 
 from assistant.integration.mail.ImapMailAccount import ImapMailAccount
-from assistant.integration.mail.MailAccount import _is_junk_media, _analyze_media
+from assistant.integration.mail.MailAccount import _is_junk_media, _analyze_media, _attachment_kind, KIND_PDF
 from assistant.tools import PdfExtractor
 
 
@@ -155,11 +155,63 @@ class TestFormatEmailBodyWithAttachments:
         assert "A dog runs on a beach." in result
         mock_analyze.assert_called_once_with(b"mp4_bytes", "video/mp4", "clip.mp4")
 
-    def test_unsupported_attachment_skipped(self, account):
+    def test_unsupported_attachment_is_named_as_not_read(self, account):
         att = _make_attachment(filename="data.zip", content_type="application/zip", size=500000)
         msg = _make_message(attachments=[att])
         result = account._format_email_body(msg)
-        assert "data.zip" not in result
+        assert "[attachment data.zip not read: type application/zip" in result
+
+    def test_octet_stream_pdf_is_extracted_by_extension(self, account):
+        """A booking system's invoice arrives as application/octet-stream; the .pdf name decides."""
+        pdf_bytes = _make_minimal_pdf("Invoice INV_A_000123 total 4 990 SEK")
+        att = _make_attachment(filename="INV_A_000123.pdf", content_type="application/octet-stream",
+                               payload=pdf_bytes, size=len(pdf_bytes))
+        msg = _make_message(subject="Booking confirmation ABC123", attachments=[att])
+        result = account._format_email_body(msg)
+        assert "--- Attachment: INV_A_000123.pdf (PDF" in result
+        assert "Invoice INV_A_000123 total 4 990 SEK" in result
+        assert "not read" not in result
+
+    @patch("assistant.integration.mail.MailAccount._analyze_media")
+    def test_octet_stream_image_is_analyzed_by_extension(self, mock_analyze, account):
+        mock_analyze.return_value = "A ski slope at dawn."
+        att = _make_attachment(filename="slope.jpg", content_type="application/octet-stream",
+                               payload=b"jpg_bytes", size=300000)
+        msg = _make_message(attachments=[att])
+        result = account._format_email_body(msg)
+        assert "--- Attachment: slope.jpg (image, 293 KB) ---" in result
+        assert "A ski slope at dawn." in result
+        mock_analyze.assert_called_once_with(b"jpg_bytes", "application/octet-stream", "slope.jpg")
+
+    def test_octet_stream_without_telling_extension_is_named_as_not_read(self, account):
+        att = _make_attachment(filename="payload.bin", content_type="application/octet-stream", size=500000)
+        msg = _make_message(attachments=[att])
+        result = account._format_email_body(msg)
+        assert "[attachment payload.bin not read: type application/octet-stream" in result
+
+
+@pytest.mark.unit
+class TestAttachmentKind:
+
+    def test_pdf_mime_wins_over_a_misleading_name(self):
+        assert _attachment_kind(_make_attachment(filename="scan.dat", content_type="application/pdf")) == KIND_PDF
+
+    @pytest.mark.parametrize("content_type", ["application/octet-stream", "", None, "binary/octet-stream"])
+    def test_generic_type_falls_back_on_pdf_extension(self, content_type):
+        assert _attachment_kind(_make_attachment(filename="Invoice.PDF", content_type=content_type)) == KIND_PDF
+
+    def test_generic_type_falls_back_on_image_extension(self):
+        assert _attachment_kind(_make_attachment(filename="photo.heic", content_type="application/octet-stream")) == "image"
+
+    def test_generic_type_falls_back_on_video_extension(self):
+        assert _attachment_kind(_make_attachment(filename="clip.mov", content_type="")) == "video"
+
+    def test_specific_foreign_type_is_not_second_guessed_by_extension(self):
+        """A .pdf name under a real non-PDF type (a zip, a calendar) is the type, not the name."""
+        assert _attachment_kind(_make_attachment(filename="archive.pdf", content_type="application/zip")) is None
+
+    def test_unnamed_generic_attachment_is_unknown(self):
+        assert _attachment_kind(_make_attachment(filename=None, content_type="application/octet-stream")) is None
 
 
 @pytest.mark.unit

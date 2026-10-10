@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 from common.logging import trace, info, error
 from common.RateLimiter import RateLimiter
 from assistant.tools import PdfExtractor
-from assistant.tools.MediaAnalyzer import media_analyzer, media_kind, KIND_VIDEO
+from assistant.tools.MediaAnalyzer import media_analyzer, media_kind, is_image_mime, is_video_mime, KIND_VIDEO
 
 
 MIN_MEDIA_SIZE = 10 * 1024
@@ -33,6 +33,28 @@ EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s,]+@[^@\s,]+\.[^@\s,]+$")
 
 class FolderNotFound(Exception):
     """The backend has no folder by the name a listing or a move named."""
+
+
+# Types a sender's client uses when it does not know (or care) what the file is; the extension
+# then says more than the type does.
+GENERIC_CONTENT_TYPES = ("", "application/octet-stream", "binary/octet-stream",
+                         "application/x-download", "application/force-download")
+KIND_PDF = "pdf"
+
+
+def _attachment_kind(att) -> Optional[str]:
+    """"pdf", "image", "video" or None. Trusts the MIME type; a generic one (octet-stream, empty)
+    falls back on the filename extension."""
+    content_type = (att.content_type or "").lower()
+    if content_type == "application/pdf":
+        return KIND_PDF
+    if is_image_mime(content_type) or is_video_mime(content_type):
+        return media_kind(content_type, att.filename)
+    if content_type in GENERIC_CONTENT_TYPES:
+        if (att.filename or "").lower().endswith(".pdf"):
+            return KIND_PDF
+        return media_kind(None, att.filename)
+    return None
 
 
 def _is_junk_media(att) -> bool:
@@ -478,21 +500,23 @@ class MailAccount(ABC):
             size = att.size or 0
             size_kb = size / 1024
 
-            if content_type == "application/pdf":
-                info(f"Email attachment: extracting PDF '{filename}' ({size_kb:.0f} KB)")
+            kind = _attachment_kind(att)
+            if kind == KIND_PDF:
+                info(f"Email attachment: extracting PDF '{filename}' ({size_kb:.0f} KB, type '{content_type}')")
                 text = PdfExtractor.extract_text(att.payload)
                 sections.append(f"--- Attachment: {filename} (PDF, {size_kb:.0f} KB) ---\n{text}")
 
-            elif content_type.startswith(("image/", "video/")):
-                kind = "video" if content_type.startswith("video/") else "image"
+            elif kind is not None:
                 if _is_junk_media(att):
                     trace(f"Email attachment: skipping small/inline/unsupported {kind} '{filename}' ({size_kb:.0f} KB)")
                     continue
-                info(f"Email attachment: analyzing {kind} '{filename}' ({size_kb:.0f} KB)")
+                info(f"Email attachment: analyzing {kind} '{filename}' ({size_kb:.0f} KB, type '{content_type}')")
                 description = _analyze_media(att.payload, content_type, filename)
                 sections.append(f"--- Attachment: {filename} ({kind}, {size_kb:.0f} KB) ---\n{description}")
 
             else:
-                trace(f"Email attachment: unsupported type '{content_type}' for '{filename}'")
+                info(f"Email attachment: unsupported type '{content_type}' for '{filename}' ({size_kb:.0f} KB), "
+                     f"telling the reader it was not read")
+                sections.append(f"[attachment {filename} not read: type {content_type or 'unknown'}, {size_kb:.0f} KB]")
 
         return "\n\n".join(sections)
