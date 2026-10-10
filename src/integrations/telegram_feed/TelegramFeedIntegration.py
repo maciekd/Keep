@@ -337,7 +337,9 @@ class TelegramFeedIntegration(Integration, Feed):
             info(f"TelegramFeed: resolved '{candidate}' → {display} ({entity.id})")
             return entity, display, None
         if len(matches) > 1:
-            options = sorted({d if d != candidate else f"{d} (@{getattr(e, 'username', None) or e.id})"
+            # The lookup ignores case, so the "is this the name typed" check must too — else two
+            # chats titled Family asked for as "family" collapse to one option without a handle
+            options = sorted({d if d.lower() != candidate.lower() else f"{d} (@{getattr(e, 'username', None) or e.id})"
                               for e, d in matches.values()})
             return None, None, f"'{candidate}' is ambiguous — say the full name or @username: {', '.join(options)}"
         return None, None, f"unknown recipient: {candidate} (not among the account's chats or contacts)"

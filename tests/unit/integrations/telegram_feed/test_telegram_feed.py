@@ -894,6 +894,28 @@ class TestResolveRecipient:
         assert "Bob Example" in err and "Bob Other" in err
         assert f.resolve_recipient("Bob Other")[0] is _BOB2
 
+    def test_two_chats_of_one_title_are_told_apart_whatever_case_was_typed(self, feed_no_blacklist):
+        f = _wire(feed_no_blacklist, _SendClient(dialogs=[_FAMILY, _Entity(5, title="Family", username="fam2")]))
+        entity, _, err = f.resolve_recipient("family")
+        assert entity is None
+        assert err.count("Family") == 2 and "@fam2" in err, "each option carries a handle to pick it by"
+
+    def test_a_person_in_both_the_chats_and_the_contacts_is_one_match(self, feed_no_blacklist):
+        f = _wire(feed_no_blacklist, _SendClient(dialogs=[_BOB], contacts=[_BOB]))
+        entity, _, err = f.resolve_recipient("Bob")
+        assert entity is _BOB and err is None
+
+    def test_a_failed_contacts_read_still_resolves_the_chats_and_is_not_retried_on_every_lookup(self, feed_no_blacklist):
+        class NoContacts(_SendClient):
+            async def __call__(self, request):
+                raise RuntimeError("FLOOD_WAIT")
+
+        client = NoContacts(dialogs=[_BOB])
+        f = _wire(feed_no_blacklist, client)
+        assert f.resolve_recipient("Bob")[0] is _BOB
+        assert f.resolve_recipient("Zed")[0] is None
+        assert client.directory_builds == 1
+
     def test_unknown_names_and_empty_input_fail(self, feed_no_blacklist):
         f = _wire(feed_no_blacklist, _SendClient(dialogs=[_BOB]))
         assert f.resolve_recipient("Zed")[2].startswith("unknown recipient: Zed")
