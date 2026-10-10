@@ -3,9 +3,11 @@ the Connected Vehicle, Energy and Location APIs and cached for a minute, the cli
 commands and their invoke status, the API's refusals as VehicleErrors, and the three actions
 Volvo lacks answering Unsupported."""
 import time
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from assistant.integration.VehicleProvider import Unsupported, VehicleError, VehicleProvider, VehicleSpec
 from integrations.volvo import VolvoAuth as auth_module
@@ -333,3 +335,141 @@ class TestHealthAndSignIn:
         with _config():
             build(FakeVolvo()).on_not_configured()
         assert not token_path().exists()
+
+
+@pytest.mark.unit
+class TestTransport:
+    def test_a_timeout_is_retried_and_the_second_attempt_serves(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.transport_errors = [requests.exceptions.Timeout("slow")]
+        with _config():
+            integration = build(fake)
+            state = integration.vehicle_state(spec(integration))
+        assert state.battery_percent == 72 and fake.transport_errors == []
+
+    def test_an_api_that_stays_unreachable_is_one_error_once_the_retries_are_spent(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.transport_errors = [requests.exceptions.ConnectionError("down")] * module.RETRIES
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError, match="could not be reached"):
+                integration.vehicle_state(spec(integration))
+        assert fake.transport_errors == [] and fake.api_calls() == []
+
+    def test_a_token_volvo_no_longer_accepts_points_at_the_sign_in(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, {"error": {"message": "UNAUTHORIZED"}}, status=401)
+        with _config():
+            integration = build(fake)
+            with pytest.raises(VolvoApiError, match="volvo_login"):
+                integration.vehicle_state(spec(integration))
+
+
+@pytest.mark.unit
+class TestVehicleStateEdges:
+    def test_a_car_without_details_is_read_as_a_battery_car_and_asked_for_them_again_next_time(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        del fake.routes[("GET", CONNECTED)]
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            state = integration.vehicle_state(car)
+            with patch.object(module.time, "time", return_value=time.time() + module.STATE_TTL + 1):
+                integration.vehicle_state(car)
+        assert state.battery_percent == 72
+        paths = {c.path for c in fake.api_calls()}
+        assert ENERGY_STATE in paths and f"{CONNECTED}/fuel" not in paths
+        assert len(fake.sent("GET", CONNECTED)) == 2, "an empty answer is not cached the way details are"
+
+    def test_a_value_volvo_cannot_give_is_unknown_not_a_crash(self):
+        fake = FakeVolvo()
+        electric_car(fake, battery="N/A")
+        with _config():
+            integration = build(fake)
+            state = integration.vehicle_state(spec(integration))
+        assert state.battery_percent is None and state.range_km == 310
+
+    def test_the_data_time_is_the_newest_stamp_and_an_unreadable_one_is_skipped(self):
+        fake = FakeVolvo()
+        electric_car(fake, stamp="2026-10-09T08:15:00Z")
+        fake.route("GET", LOCATION, location(stamp="2026-10-09T09:00:00Z"))
+        fake.route("GET", f"{CONNECTED}/engine-status", {"data": {"engineStatus": value("STOPPED", "garbage")}})
+        with _config():
+            integration = build(fake)
+            state = integration.vehicle_state(spec(integration))
+        assert state.data_time == datetime(2026, 10, 9, 9, 0, tzinfo=timezone.utc).timestamp()
+
+    def test_a_hybrid_whose_energy_api_is_down_reads_its_battery_from_the_fuel_endpoint(self):
+        fake = FakeVolvo()
+        fake.route("GET", CONNECTED, details("PETROL/ELECTRIC", "XC60"))
+        fake.route("GET", f"{CONNECTED}/statistics", {"data": {"distanceToEmptyTank": value(400, unit="km")}})
+        fake.route("GET", ENERGY_STATE, {"error": {"message": "INTERNAL_ERROR"}}, status=500)
+        fake.route("GET", f"{CONNECTED}/fuel", {"data": {"fuelAmount": value(30, unit="l"),
+                                                         "batteryChargeLevel": value(55, unit="percentage")}})
+        with _config():
+            integration = build(fake)
+            state = integration.vehicle_state(spec(integration))
+        assert state.battery_percent == 55 and state.range_km == 400
+
+
+@pytest.mark.unit
+class TestCommandAnswers:
+    def test_an_answer_without_the_data_wrapper_is_read_flat_and_an_empty_one_is_no_answer(self):
+        fake = FakeVolvo()
+        fake.route("POST", f"{CONNECTED}/commands/climatization-start", {"vin": VIN, "invokeStatus": "COMPLETED"})
+        fake.route("POST", f"{CONNECTED}/commands/climatization-stop", {"data": {}})
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            assert "started" in integration.climate_on(car)
+            with pytest.raises(VolvoCommandError, match="no answer"):
+                integration.climate_off(car)
+
+    def test_a_rejected_command_keeps_the_cached_state(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        fake.route("POST", f"{CONNECTED}/commands/climatization-start", command_result("REJECTED", "Car in use"))
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            first = integration.vehicle_state(car)
+            with pytest.raises(VolvoCommandError):
+                integration.climate_on(car)
+            assert integration.vehicle_state(car) is first
+
+
+@pytest.mark.unit
+class TestHealthAndSignInEdges:
+    def test_health_without_a_car_or_a_vin_is_false_without_a_call(self):
+        fake = FakeVolvo()
+        with _config(vehicles=[]):
+            assert build(fake).check_health() is False
+        with _config(vehicles=[{"name": "nameless"}]):
+            assert build(fake).check_health() is False
+        assert fake.api_calls() == []
+
+    def test_a_finished_sign_in_drops_the_cached_states_a_failed_one_keeps_them(self):
+        fake = FakeVolvo()
+        electric_car(fake)
+        pasted = "http://localhost:18723/?code=c0de&state=st-1"
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            first = integration.vehicle_state(car)
+            integration.auth.finish = lambda p: "the pasted address belongs to another sign-in"
+            assert integration.login_finish(pasted)
+            assert integration.vehicle_state(car) is first
+            integration.auth.finish = lambda p: ""
+            assert integration.login_finish(pasted) == ""
+            assert integration.vehicle_state(car) is not first
+
+    def test_a_missing_api_key_is_an_error_even_with_the_client_set(self):
+        with _config(api_key=""):
+            assert build(FakeVolvo()).get_auth_status()["status"] == "error"
+
+    def test_an_entry_that_is_not_a_mapping_is_skipped(self):
+        with _config(vehicles=["oops", VEHICLES[0]]):
+            assert [c.id for c in build(FakeVolvo()).vehicles()] == ["family_xc40"]

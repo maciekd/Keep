@@ -2636,6 +2636,21 @@ class TestPhotosFeedSweep:
         assert batch.exhausted is True and batch.remaining == 40
         assert processor.count_unindexed_photos.call_count == 1, "no progress check after a refusal"
 
+    def test_a_refusal_partway_still_hands_back_the_entries_indexed_before_it(self):
+        from assistant.integration.Feed import FeedEntry
+        integration, processor = TestPhotosFeed._opened()
+        entries = [FeedEntry(1_600_000_500.0, "New photo taken: a barn")]
+        processor.count_unindexed_photos.side_effect = [5]
+        processor.unindexed_between.return_value = [TestPhotosFeed._row("a", 600.0, "G-A")]
+        processor.process_rows.side_effect = lambda rows, batched: [integration._queue_entry(e) for e in entries]
+        processor.provider_unavailable.return_value = "prepaid credits are depleted (402)"
+        processor.provider_out_of_credits.return_value = True
+        with patch.object(integration, '_provider_refused'):
+            batch = integration.sweep(self.HORIZON, self.CURSOR)
+        assert batch.entries == entries, "the descriptions paid for before the refusal are not lost"
+        assert batch.exhausted is True and batch.remaining == 5
+        assert integration._drain_entries() == []
+
     def test_rows_refused_mid_batch_count_as_a_refusal_too(self):
         rows = [TestPhotosFeed._row("a", 600.0, "G-A")]
         batch, _, refused_hook = self._sweep([40], rows, reason=None, refused=["a"])

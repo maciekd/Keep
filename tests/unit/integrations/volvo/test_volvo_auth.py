@@ -6,16 +6,18 @@ import hashlib
 import json
 import stat
 import time
+from datetime import datetime, timezone
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+import requests
 
 from integrations.volvo import VolvoAuth as auth_module
 from integrations.volvo.VolvoAuth import (AUTHORIZE_URL, REDIRECT_URI, SCOPES, NotSignedIn, VolvoAuth,
                                           delete_token_file, token_path)
 
-from .volvo_fakes import FakeVolvo, token_file, token_grant
+from .volvo_fakes import FakeResponse, FakeVolvo, token_file, token_grant
 
 POST = "integrations.volvo.VolvoAuth.requests.post"
 
@@ -233,3 +235,64 @@ class TestSignOut:
         token_dir.mkdir(parents=True)
         token_path().write_text("{}")
         assert delete_token_file() is True and not token_path().exists()
+
+
+@pytest.mark.unit
+class TestTokenFile:
+    def _on_disk(self, token_dir, **more):
+        token_dir.mkdir(parents=True)
+        token_path().write_text(json.dumps(token_file(**more)))
+
+    def test_an_unreadable_file_means_not_signed_in_and_no_refresh_is_tried(self, token_dir, volvo):
+        token_dir.mkdir(parents=True)
+        token_path().write_text("{not json")
+        a = auth()
+        assert not a.signed_in()
+        with pytest.raises(NotSignedIn, match="volvo_login"):
+            a.token()
+        assert volvo.calls == []
+
+    def test_expires_at_is_the_files_expiry_in_utc_and_none_without_a_file(self, token_dir):
+        assert auth().expires_at() is None
+        self._on_disk(token_dir, expires_in=600)
+        expires = auth().expires_at()
+        assert expires.tzinfo == timezone.utc
+        assert 590 < (expires - datetime.now(timezone.utc)).total_seconds() <= 600
+
+    def test_a_refresh_token_without_an_access_token_refreshes_at_once(self, token_dir, volvo):
+        self._on_disk(token_dir, expires_in=3600, access_token="")
+        volvo.answer_token(token_grant(access_token="at.new"))
+        assert auth().token() == "at.new" and len(volvo.calls) == 1
+
+
+@pytest.mark.unit
+class TestTokenEndpointFailures:
+    def _expired(self, token_dir) -> VolvoAuth:
+        token_dir.mkdir(parents=True)
+        token_path().write_text(json.dumps(token_file(expires_in=0)))
+        return auth()
+
+    def test_an_unreachable_endpoint_is_not_a_lapsed_sign_in(self, token_dir):
+        a = self._expired(token_dir)
+
+        def unreachable(*args, **kwargs):
+            raise requests.ConnectionError("dns")
+        with patch(POST, unreachable):
+            with pytest.raises(NotSignedIn, match="could not be reached"):
+                a.token()
+        assert not a.needs_sign_in_again() and a.signed_in()
+
+    def test_a_gateway_error_without_a_json_body_is_named_by_its_status_and_not_lapsed(self, token_dir, volvo):
+        a = self._expired(token_dir)
+        volvo.token_answers.append(FakeResponse(502, None))
+        with pytest.raises(NotSignedIn, match="HTTP 502"):
+            a.token()
+        assert not a.needs_sign_in_again()
+
+    @pytest.mark.parametrize("status", [400, 401, 403])
+    def test_a_refusal_the_owner_must_fix_marks_the_sign_in_lapsed(self, token_dir, volvo, status):
+        a = self._expired(token_dir)
+        volvo.answer_token({"error": "invalid_client"}, status=status)
+        with pytest.raises(NotSignedIn):
+            a.token()
+        assert a.needs_sign_in_again()

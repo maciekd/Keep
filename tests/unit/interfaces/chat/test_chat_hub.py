@@ -712,6 +712,25 @@ class TestQuestionsAreTheOwnersToAnswer:
         t.join(timeout=2)
         assert result["d"] == "deny"
 
+    def test_a_failing_owner_list_never_puts_the_question_in_the_requesters_chat(self, hub, transport):
+        other = FakeTransport(owners=[7], name="Other", source="Other")
+        hub.register(other)
+
+        def down(*args, **kwargs):
+            raise RuntimeError("owners unavailable")
+        transport.owner_conversations = down
+        result = {}
+        t = threading.Thread(target=lambda: result.update(d=hub.request_approval(
+            "send_email", timeout=2.0, source=transport.source, conversation=999)), daemon=True)
+        t.start()
+        assert wait_until(lambda: any(c[0] == "approval" for c in other.calls))
+        assert [c[1] for c in other.calls if c[0] == "approval"] == [7]
+        assert not any(c[0] == "approval" for c in transport.calls), "fail closed: the stranger is never asked"
+        token = next(c[2] for c in other.calls if c[0] == "approval")
+        hub.resolve_approval(token, "deny")
+        t.join(timeout=2)
+        assert result["d"] == "deny"
+
     def test_an_approval_with_no_owner_chat_at_all_is_unavailable(self, hub, transport):
         transport.owners = []
         assert hub.request_approval("send_email", timeout=0.1, source=transport.source, conversation=999) == "unavailable"

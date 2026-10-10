@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+import requests
 from hyundai_kia_connect_api.ApiImpl import OTPRequest
 from hyundai_kia_connect_api.const import OTP_NOTIFY_TYPE
 from hyundai_kia_connect_api.exceptions import (
@@ -438,3 +439,167 @@ def test_check_health_is_true_once_the_first_car_has_state(build):
 def _with_cars(manager):
     manager.vehicles = {"lib-ev": ev_vehicle(), "lib-ice": ice_vehicle()}
     return manager
+
+
+# --- the state mapping per engine type -----------------------------------------------------------
+
+def _vehicle(**fields):
+    base = dict(ev_battery_percentage=None, ev_driving_range=None, ev_driving_range_unit=None,
+                fuel_level=None, fuel_driving_range=None, _fuel_driving_range_unit=None,
+                total_driving_range=None, total_driving_range_unit=None, engine_is_running=False,
+                location_latitude=None, location_longitude=None, last_updated_at=None)
+    base.update(fields)
+    return SimpleNamespace(**base)
+
+
+def test_a_plug_in_hybrid_reports_battery_and_fuel_and_its_electric_range_first():
+    state = HyundaiIntegration._to_state(_vehicle(engine_type="PHEV", ev_battery_percentage=80, fuel_level=55.5,
+                                                  ev_driving_range=45, ev_driving_range_unit="km",
+                                                  fuel_driving_range=400, _fuel_driving_range_unit="km"))
+    assert (state.battery_percent, state.fuel_percent, state.range_km) == (80, 55, 45.0)
+
+
+def test_a_hybrid_without_an_electric_range_falls_back_to_the_fuel_range_whatever_the_case_of_its_type():
+    state = HyundaiIntegration._to_state(_vehicle(engine_type="phev", ev_battery_percentage=12,
+                                                  fuel_driving_range=100, _fuel_driving_range_unit="mi"))
+    assert state.battery_percent == 12 and state.range_km == pytest.approx(160.9, abs=0.05)
+
+
+def test_an_unknown_engine_type_claims_neither_charge_and_uses_the_total_range():
+    state = HyundaiIntegration._to_state(_vehicle(engine_type=None, ev_battery_percentage=50, fuel_level=50,
+                                                  total_driving_range=300, total_driving_range_unit="km"))
+    assert (state.battery_percent, state.fuel_percent, state.range_km) == (None, None, 300.0)
+
+
+# --- the token file and the sign-in's failures ----------------------------------------------------
+
+def test_a_corrupt_token_file_is_replaced_by_a_fresh_sign_in(build):
+    path = module.token_path("m@mlab.test")
+    path.parent.mkdir(parents=True)
+    path.write_text("not json")
+    integration, manager = build()
+    integration.vehicle_state(integration.vehicles()[0])
+    assert manager().token.access_token == "access-1", "a fresh login, not a token read from the file"
+    assert json.loads(path.read_text())["refresh_token"] == "refresh-1"
+
+
+def test_an_unchanged_token_is_not_rewritten_on_every_read_a_changed_one_is(build):
+    integration, manager = build()
+    spec = integration.vehicles()[0]
+    integration.vehicle_state(spec)
+    path = module.token_path("m@mlab.test")
+    path.write_text("left alone")
+    integration.clock["now"] += module.STATE_TTL + 1
+    integration.vehicle_state(spec)
+    assert path.read_text() == "left alone"
+
+    manager().token = Token(username="m@mlab.test", access_token="access-2", refresh_token="refresh-2",
+                            valid_until=datetime(2026, 10, 11, tzinfo=timezone.utc), device_id="dev-1")
+    integration.clock["now"] += module.STATE_TTL + 1
+    integration.vehicle_state(spec)
+    assert json.loads(path.read_text())["refresh_token"] == "refresh-2"
+
+
+def test_a_rate_limited_or_failed_sign_in_is_not_a_refused_one(build):
+    integration, _ = build(login_error=RateLimitingError("slow down"))
+    with pytest.raises(HyundaiError, match="rate limiting") as caught:
+        integration.vehicle_state(integration.vehicles()[0])
+    assert not isinstance(caught.value, HyundaiLoginError)
+    assert integration.get_auth_status()["status"] != "error" and not integration.needs_2fa()
+
+    broken, _ = build(login_error=APIError("backend down"))
+    with pytest.raises(HyundaiError, match="backend down") as caught:
+        broken.check_health()
+    assert not isinstance(caught.value, HyundaiLoginError)
+
+
+def test_a_verified_code_drops_the_state_cache(build):
+    integration, manager = build()
+    spec = integration.vehicles()[0]
+    integration.vehicle_state(spec)
+    manager().token = None
+    manager().otp_on_login = True
+    with pytest.raises(HyundaiLoginError):
+        integration.vehicle_state(spec)
+
+    integration.verify_otp("123456")
+
+    integration.vehicle_state(spec)
+    assert manager().cached_updates == 2, "pulled afresh after the sign-in, TTL or not"
+
+
+def test_refresh_now_pulls_the_cached_state_inside_the_ttl_without_waking_the_car(build):
+    integration, manager = build()
+    integration.vehicle_state(integration.vehicles()[0])
+    integration.refresh_now()
+    assert (manager().cached_updates, manager().force_refreshes) == (2, 0)
+
+
+def test_a_failed_read_does_not_age_the_cache_so_the_next_call_retries(build):
+    integration, manager = build()
+    spec = integration.vehicles()[0]
+    integration.vehicle_state(spec)
+
+    def fail():
+        raise APIError("backend hiccup")
+    manager().update_all_vehicles_with_cached_state = fail
+    integration.clock["now"] += module.STATE_TTL + 1
+    with pytest.raises(VehicleError, match="backend hiccup"):
+        integration.vehicle_state(spec)
+
+    del manager().update_all_vehicles_with_cached_state
+    integration.vehicle_state(spec)
+    assert manager().cached_updates == 2, "the clock has not moved: a cache stamped by the failure would serve the stale state"
+
+
+# --- the cars and the commands ---------------------------------------------------------------------
+
+def test_an_account_car_without_a_name_is_offered_by_its_vin_and_labelled_by_its_model(build):
+    config = base_config()
+    del config["vehicles"]
+    integration, manager = build(config)
+    integration.vehicles()
+    manager().vehicles["lib-ev"].name = None
+    spec = integration.vehicles()[0]
+    assert (spec.id, spec.label, spec.handle) == (EV_VIN, "Ioniq 5", EV_VIN)
+    assert integration.vehicle_state(spec).battery_percent == 64
+
+
+def test_the_configured_vin_matches_the_account_car_whatever_its_case(build):
+    integration, _ = build(base_config(vehicles=[{"name": "family_car", "vin": EV_VIN.lower()}]))
+    assert integration.vehicle_state(integration.vehicles()[0]).battery_percent == 64
+
+
+def test_a_rate_limited_command_is_a_vehicle_error_not_an_unsupported_one_and_keeps_the_cache(build):
+    integration, manager = build()
+    spec = integration.vehicles()[0]
+    integration.vehicle_state(spec)
+    manager().command_error = RateLimitingError("too many commands")
+    with pytest.raises(VehicleError, match="rate limiting") as caught:
+        integration.climate_off(spec)
+    assert not isinstance(caught.value, Unsupported)
+    integration.vehicle_state(spec)
+    assert manager().cached_updates == 1, "a command that never went out leaves the cached state valid"
+
+
+def test_a_blank_destination_is_refused_before_any_sign_in(build):
+    integration, manager = build()
+    with pytest.raises(HyundaiError, match="destination"):
+        integration.navigate_to(integration.vehicles()[0], "   ")
+    assert manager() is None
+
+
+def test_a_geocoder_outage_or_refusal_is_an_error_naming_the_place():
+    class Down:
+        def get(self, url, **kwargs):
+            raise requests.ConnectionError("dns")
+
+    class Refusing:
+        def get(self, url, **kwargs):
+            return SimpleNamespace(status_code=503, json=lambda: {"error": "busy"})
+
+    for session, reason in ((Down(), "Could not look up"), (Refusing(), "No place")):
+        integration = HyundaiIntegration(config_override=base_config(), session=session,
+                                         manager_factory=lambda **kw: _with_cars(FakeManager(**kw)))
+        with pytest.raises(HyundaiError, match=f"{reason}.*Avenyn 1"):
+            integration.navigate_to(integration.vehicles()[0], "Avenyn 1")

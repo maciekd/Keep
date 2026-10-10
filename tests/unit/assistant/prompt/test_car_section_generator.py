@@ -197,3 +197,48 @@ class TestEtaToHome:
 def test_haversine_matches_a_known_distance():
     # Gothenburg central station to Lindholmen, about 2.5 km
     assert abs(CarSectionGenerator._haversine_distance(57.7089, 11.9746, 57.7210, 11.9420) - 2500) < 500
+
+
+@pytest.mark.unit
+class TestPlacingTheCar:
+    def test_without_a_home_location_a_located_car_is_unknown_and_nothing_is_looked_up(self):
+        with patch(f"{MODULE}.config") as config:
+            config.get_home_latitude.return_value = None
+            config.get_home_longitude.return_value = None
+            section = CarSectionGenerator(None)
+        with patch(f"{MODULE}.config") as config, patch(f"{MODULE}.reverse_geocode") as geocode, \
+                patch(f"{MODULE}.requests") as requests:
+            config.get.return_value = "fake-api-key"
+            line = section._render(CAR, VehicleState(latitude=AWAY[0], longitude=AWAY[1]))
+        assert "Location unknown" in line and "from home" not in line
+        geocode.assert_not_called()
+        requests.get.assert_not_called()
+
+    def test_an_address_the_geocoder_cannot_name_is_not_home_with_the_minutes(self, section):
+        with patch(f"{MODULE}.reverse_geocode", return_value=None), \
+                patch.object(section, "_get_eta_to_home", return_value=25):
+            line = section._render(CAR, VehicleState(latitude=AWAY[0], longitude=AWAY[1]))
+        assert "Not home ~25 min from home" in line
+
+    def test_a_plug_in_hybrid_shows_its_battery_not_its_fuel(self, section):
+        line = section._render(CAR, VehicleState(latitude=HOME[0], longitude=HOME[1], battery_percent=64, fuel_percent=40))
+        assert "(64% battery)" in line and "fuel" not in line
+
+
+@pytest.mark.unit
+class TestEtaToHomeFallbacks:
+    @staticmethod
+    def _answer(element):
+        response = Mock(status_code=200)
+        response.json.return_value = {"status": "OK", "rows": [{"elements": [element]}]}
+        return response
+
+    def test_the_plain_duration_stands_in_without_traffic_and_a_non_ok_answer_is_none(self, section):
+        with patch(f"{MODULE}.config") as config, patch(f"{MODULE}.requests") as requests:
+            config.get.return_value = "fake-api-key"
+            requests.get.return_value = self._answer({"status": "OK", "duration": {"value": 1500}})
+            assert section._get_eta_to_home(*AWAY) == 25
+            requests.get.return_value = self._answer({"status": "ZERO_RESULTS"})
+            assert section._get_eta_to_home(*AWAY) is None
+            requests.get.return_value = Mock(status_code=403)
+            assert section._get_eta_to_home(*AWAY) is None

@@ -116,3 +116,8 @@ class TestNavigate:
 
     def test_describe_names_the_destination(self, commands_instance):
         assert "Storgatan 1, Stockholm" in commands_instance.describe("car_navigate", ["family", "Storgatan 1", "Stockholm"])
+
+    def test_an_empty_vehicle_argument_leaves_the_destination_to_the_default_car(self, commands_instance, fleet, tesla):
+        _run(commands_instance, "car_navigate", ["", "IKEA Kungens Kurva"])
+        spec, destination = tesla.navigate_to.call_args[0]
+        assert (spec.id, destination) == ("family", "IKEA Kungens Kurva")

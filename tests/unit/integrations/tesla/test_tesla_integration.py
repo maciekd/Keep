@@ -1,7 +1,9 @@
+from unittest.mock import Mock
+
 import pytest
 import requests
 
-from assistant.integration.VehicleProvider import VehicleSpec, VehicleState
+from assistant.integration.VehicleProvider import Fleet, VehicleSpec, VehicleState
 from integrations.tesla.TeslaIntegration import (
     TeslaIntegration,
     TeslaAPIError,
@@ -312,3 +314,44 @@ def test_navigate_to_reports_the_cars_refusal():
     api = TeslaIntegration(config=build_default_config(), session=session)
     with pytest.raises(TeslaCommandError, match="vehicle unavailable"):
         api.navigate_to(family(api), "Storgatan 1")
+
+
+@pytest.mark.unit
+class TestHealthAndConfig:
+    def _api(self, state):
+        session = FakeSession()
+        session.queue_response("GET", f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/state", DummyResponse(200, state))
+        return TeslaIntegration(config=build_default_config(), session=session)
+
+    def test_health_is_a_cabin_temperature_in_the_state(self):
+        assert self._api({"climate_state": {"inside_temp": 20}}).check_health() is True
+        assert self._api({"climate_state": {}}).check_health() is False
+
+    def test_health_of_a_car_without_a_vin_is_false_without_a_request(self):
+        session = FakeSession()
+        api = TeslaIntegration(config={"tessie_access_token": "tok", "vehicles": [{"name": "novin"}]}, session=session)
+        assert api.check_health() is False and session.calls == []
+
+    def test_health_gives_a_slow_api_one_attempt_not_the_commands_three(self):
+        session = FakeSession()
+        url = f"{TeslaIntegration.TESSIE_API_BASE}/VIN123/state"
+        session.queue_response("GET", url, lambda: (_ for _ in ()).throw(requests.exceptions.Timeout("timed out")))
+        session.queue_response("GET", url, DummyResponse(200, {"climate_state": {"inside_temp": 20}}))
+        api = TeslaIntegration(config=build_default_config(), session=session)
+        with pytest.raises(TeslaAPIError):
+            api.check_health()
+        assert len(session.calls) == 1
+
+    def test_an_empty_vehicle_list_or_a_missing_section_is_refused_at_construction(self):
+        with pytest.raises(TeslaConfigurationError, match="empty"):
+            TeslaIntegration(config={"tessie_access_token": "tok", "vehicles": []})
+        manager = Mock()
+        manager.get.side_effect = KeyError("tesla")
+        with pytest.raises(TeslaConfigurationError, match="tesla"):
+            TeslaIntegration(config_manager=manager)
+
+    def test_a_car_known_only_by_its_vin_is_addressed_by_it(self):
+        api = TeslaIntegration(config={"tessie_access_token": "tok", "vehicles": [{"vin": "VIN9"}]})
+        spec = family(api)
+        assert (spec.id, spec.label) == ("VIN9", "VIN9")
+        assert Fleet([api]).resolve("vin9")[1].handle == "VIN9"

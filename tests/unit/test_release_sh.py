@@ -167,6 +167,18 @@ class TestIgnoredCommits:
         assert result.returncode != 0
         assert 'zzzz' in result.stderr
 
+    def test_the_equals_form_takes_a_comma_separated_list(self, repos):
+        repos.commits('2026.09')
+        first, = repos.push()
+        result = repos.release('--dry-run', f'--ignore-commits={first[:7]},zzzz')
+        assert result.returncode != 0
+        assert 'zzzz' in result.stderr and f'{first[:7]},' not in result.stderr, "the list was split, not taken as one hash"
+
+    def test_an_unknown_option_or_a_bare_ignore_commits_stops_the_run_before_it_fetches(self, repos):
+        for args in (('--bogus',), ('--ignore-commits',)):
+            result = repos.release(*args)
+            assert result.returncode != 0 and args[0] in result.stderr
+
 
 class TestReachBack:
     """Installs update nightly, so a household that gets the evening release never saw the
