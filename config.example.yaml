@@ -111,6 +111,8 @@ location:
 
 # >> self_improvement: src/integrations/self_improvement/config.example.yaml
 
+# >> claude_code: src/integrations/claude_code/config.example.yaml
+
 chat:
   approval_timeout_seconds: 60  # seconds to wait for an Approve/Deny answer on sensitive commands (e.g. send_imessage) in any chat interface
   secret_request_timeout_seconds: 3600  # seconds to wait for a value after vault_request / config_request opened a masked prompt; long because the user often has to look the value up or set something up first
@@ -144,6 +146,7 @@ telegram_bot:
 feeds:
   imessage: { backfill_months: 60 }   # five years; chat.db rows are cheap
   telegram_feed: { backfill_months: 1 }
+  claude_code: { backfill_months: 1 }    # the owner's Claude Code sessions; an older session is skipped, never summarised
   whatsapp: { backfill_months: 36 }    # read at linking time: the phone uploads that much history once, when the device links
   photos: { backfill_months: 1, backfill_batch: false }   # one LLM call per photo or video, on the ai.photo_indexing tier (Gemini 3.8 Flash by default)
   # On a fresh install the first-run pipeline raises photos to 36 once the first memory bank is curated

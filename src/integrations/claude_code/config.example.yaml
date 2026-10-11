@@ -1,0 +1,14 @@
+# The "Claude Code" integration: a journal of the owner's own Claude Code sessions on this
+# machine, read from the session files Claude Code keeps under ~/.claude. Enable with
+# `enabled_integrations: [Claude Code]`. It is a feed: once a minute it reads what was appended
+# to every session file and writes the owner's prompts, the files edited and the git work
+# (commits, branches, pushes, pull requests) into the history, so the assistant can say what
+# was done in Claude Code today or in a repository last week. A session that has been quiet
+# for `idle_minutes` is over: a few sentences of summary (on the ai.smart tier) are written
+# then. Sessions the server starts itself (the Self Improvement runs, any `claude -p` script)
+# are left out. Anything that looks like a credential (API keys, tokens, passwords) is blanked
+# before a row is written. The feed's horizon is feeds.claude_code.backfill_months; a
+# session older than that is skipped, not summarised.
+claude_code:
+  # claude_dir: ~/.claude   # where Claude Code keeps its sessions (projects/<project>/<session>.jsonl); the default is ~/.claude
+  idle_minutes: 10   # a session with no new lines for this long is over and gets its summary; read at each poll, no restart needed

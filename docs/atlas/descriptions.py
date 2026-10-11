@@ -38,6 +38,7 @@ GROUPS = {
     'src/integrations/ring': ('ring', 'Ring doorbell snapshots, with the login’s 2FA.'),
     'src/integrations/unifi_protect': ('unifi_protect', 'UniFi Protect camera snapshots over the console’s local Integration API, with an API key.'),
     'src/integrations/self_improvement': ('self_improvement', 'The switch and health check for Keep working on its own code through the Claude Code CLI.'),
+    'src/integrations/claude_code': ('claude_code', 'The owner’s own Claude Code sessions as a feed: their prompts, the files edited, the git work and a summary of each session, read from the session files under ~/.claude.'),
     'src/integrations/telegram_feed': ('telegram_feed', 'The owner’s own Telegram account as a feed of their chats, and the account Keep sends Telegram messages from.'),
     'src/integrations/tesla': ('tesla', 'The Teslas through the Tessie API, a VehicleProvider: state, climate, trunk and navigation.'),
     'src/integrations/hyundai': ('hyundai', 'The Hyundais, Kias and Genesis cars through the Bluelink / Kia Connect app API, a VehicleProvider: state, climate and navigation.'),

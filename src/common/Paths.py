@@ -21,6 +21,9 @@ VOICE_ID_DIR = AISERVER_DIR / "voice_id"
 # replace, delete or close is copied to MEMORY_LOG_DIR first, for debugging.
 MEMORY_DIR = AISERVER_DIR / "memory"
 MEMORY_LOG_DIR = LOG_DIR / "memory"
+# The ids of the Claude Code sessions the server itself starts (CodeQualityMaintainer's `claude -p`
+# runs), one per line, so the Claude Code feed can leave them out of the owner's journal.
+CLAUDE_OWN_SESSIONS_PATH = LOG_DIR / "claude_code_own_sessions.txt"
 CONFIG_PATH = AISERVER_DIR / "config.yaml"
 # A developer's stand-in config: //wipe puts it in place of the wiped config.yaml when it
 # exists, so a dev install comes back with keys instead of the skeleton.

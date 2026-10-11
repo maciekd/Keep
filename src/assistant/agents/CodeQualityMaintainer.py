@@ -16,7 +16,7 @@ import common.DevelopmentConfig as DevelopmentConfig
 from common.logging import info, error, trace, note
 from ..llm import parse_llm_config
 from common.ConfigManager import ConfigManager
-from common.Paths import REPO_DIR, AISERVER_DIR as _AISERVER_PATH
+from common.Paths import REPO_DIR, AISERVER_DIR as _AISERVER_PATH, CLAUDE_OWN_SESSIONS_PATH
 from common.RequirementsChecker import RequirementsChecker
 
 WORKING_DIR = str(REPO_DIR)
@@ -691,6 +691,8 @@ class CodeQualityMaintainer:
                     summary = CodeQualityMaintainer._format_stream_line(obj)
                     if summary:
                         trace(f"CodeQualityMaintainer [{label}] {summary}")
+                    if obj.get("type") == "system" and obj.get("subtype") == "init":
+                        CodeQualityMaintainer.record_own_session(obj.get("session_id"), label)
                     if obj.get("type") == "system" and obj.get("subtype") == "init" \
                             and obj.get("permissionMode") != "auto":
                         # The CLI falls back to Manual silently when auto mode is unavailable (an
@@ -725,6 +727,23 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer [{label}] Claude Code is not logged in on this machine: {output.strip() or stderr.strip()}")
             raise ClaudeNotLoggedInError()
         return output
+
+    @staticmethod
+    def record_own_session(session_id, label):
+        """Note the id of a session this server started (the CLI's init line names it) in
+        CLAUDE_OWN_SESSIONS_PATH, so the Claude Code feed — the owner's journal of their own
+        sessions — can leave it out. Keep's runs share the repository folder with the owner's
+        own sessions in it, so the id is the one sure way to tell them apart."""
+        if not session_id:
+            trace(f"CodeQualityMaintainer [{label}] init line without a session id, nothing to record")
+            return
+        try:
+            CLAUDE_OWN_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(CLAUDE_OWN_SESSIONS_PATH, "a", encoding="utf-8") as handle:
+                handle.write(f"{session_id}\n")
+            trace(f"CodeQualityMaintainer [{label}] session {session_id} recorded as the server's own")
+        except OSError as e:
+            error(f"CodeQualityMaintainer [{label}] could not record session {session_id}: {e}")
 
     @staticmethod
     def _is_not_logged_in(text) -> bool:
