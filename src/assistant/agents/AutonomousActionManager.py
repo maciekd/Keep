@@ -27,6 +27,12 @@ USER_INTERACTION_QUIET_PERIOD_SECONDS = 60
 # periodic checks can resume. A real request lasts at most a couple minutes.
 USER_INTERACTION_STALE_COUNTER_SECONDS = 10 * 60
 
+# A wake-up that fell due while the server was down fires this long after startup — time for
+# the interfaces and integrations to come up before the check runs commands through them.
+MISSED_WAKEUP_STARTUP_GRACE_SECONDS = 30
+# Past this, a firing wake-up tells the LLM how late it is (a restart's few seconds need no note).
+WAKEUP_LATE_NOTE_THRESHOLD_SECONDS = 5 * 60
+
 # How often the background thread performs an autonomous activity check. The LLM
 # is told about this cadence (see AUTONOMOUS_ACTION_PROMPT) so it can reason about
 # how long until its next opportunity to act.
@@ -68,6 +74,13 @@ SCHEDULED_WAKEUP_NOTE_NO_REASON = """
 ## SCHEDULED WAKE-UP
 
 This check is not the periodic one: you scheduled it yourself at {scheduled_at} with schedule_wakeup, without recording why. Look for the pending timer, reminder or follow-up in the history above and act on it now."""
+
+# Appended to either note when the wake-up fires well past its time: the server was down at
+# the moment (the 09:00 reminder of 2026-10-11 was dropped on the restart that evening), so
+# the LLM should weigh whether the action still makes sense rather than act as if on time.
+SCHEDULED_WAKEUP_LATE_NOTE = """
+
+It was due at {due_at} and fires only now, {late} late: {cause}. Judge whether the action is still worth doing — a reminder for a moment that has passed may need rewording or an apology for the delay, a timer that elapsed long ago may be moot."""
 
 AUTONOMOUS_ACTION_PROMPT = """
 # AUTONOMOUS ACTION CHECK
@@ -122,11 +135,24 @@ Now analyze the conversation and system state above and respond accordingly.
 """
 
 
+def _describe_duration(seconds: float) -> str:
+    """'3 min', '2 h 15 min' or '1 d 4 h' — how late a wake-up is, in the note and the log."""
+    minutes = int(seconds // 60)
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    if days:
+        return f"{days} d {hours} h"
+    if hours:
+        return f"{hours} h {minutes} min"
+    return f"{minutes} min"
+
+
 class AutonomousActionManager:
     """Periodically asks the LLM whether Floxy should act or notify the user unprompted.
 
     Singleton with a daemon thread on PERIODIC_CHECK_INTERVAL_SECONDS; checks are suppressed
-    while a user request is in flight, and scheduled wake-ups persist in SCHEDULE_FILE.
+    while a user request is in flight, and scheduled wake-ups persist in SCHEDULE_FILE across
+    restarts — one that fell due while the server was down fires right after startup.
     """
     _instance: Optional['AutonomousActionManager'] = None
 
@@ -312,8 +338,16 @@ class AutonomousActionManager:
         scheduled_at = time.strftime("%H:%M", time.localtime(wakeup["scheduled_at"]))
         reason = wakeup.get("reason", "")
         if reason:
-            return SCHEDULED_WAKEUP_NOTE.format(scheduled_at=scheduled_at, reason=reason)
-        return SCHEDULED_WAKEUP_NOTE_NO_REASON.format(scheduled_at=scheduled_at)
+            note = SCHEDULED_WAKEUP_NOTE.format(scheduled_at=scheduled_at, reason=reason)
+        else:
+            note = SCHEDULED_WAKEUP_NOTE_NO_REASON.format(scheduled_at=scheduled_at)
+        late_seconds = time.time() - wakeup["at"]
+        if late_seconds > WAKEUP_LATE_NOTE_THRESHOLD_SECONDS:
+            due_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(wakeup["at"]))
+            cause = ("the server was down at the time" if wakeup.get("missed")
+                     else "it was held back while you were busy with the user")
+            note += SCHEDULED_WAKEUP_LATE_NOTE.format(due_at=due_at, late=_describe_duration(late_seconds), cause=cause)
+        return note
 
     def _activity_check_inner(self, prompt: str | None, wakeup: dict | None = None) -> str:
             if wakeup:
@@ -592,18 +626,49 @@ class AutonomousActionManager:
         return wakeups
 
     def _restore_scheduled_wakeups(self):
+        """The wake-ups on disk pick up where they were: a pending one waits for its time, one
+        that fell due while the server was down fires after the startup grace, oldest first.
+        A missed one stays in the file until it has fired, so a second crash still keeps it."""
         wakeups = self._load_wakeups()
         now = time.time()
         active = [w for w in wakeups if w["at"] > now]
-        expired = len(wakeups) - len(active)
-        if expired:
-            info(f"Discarding {expired} scheduled wakeup(s) that expired while the server was down")
-            self._write_wakeups(active)
+        missed = sorted((w for w in wakeups if w["at"] <= now), key=lambda w: w["at"])
+        if not wakeups:
+            trace("No scheduled wake-ups to restore")
         for wakeup in active:
             remaining = (wakeup["at"] - now) / 60
             info(f"Restoring scheduled wakeup in {remaining:.1f} minutes"
                  + (f" for: {wakeup['reason']}" if wakeup["reason"] else ""))
             self._start_wakeup_thread(wakeup)
+        if missed:
+            oldest = time.strftime("%Y-%m-%d %H:%M", time.localtime(missed[0]["at"]))
+            info(f"{len(missed)} scheduled wakeup(s) fell due while the server was down (oldest {oldest}) — "
+                 f"firing them in {MISSED_WAKEUP_STARTUP_GRACE_SECONDS} s")
+            threading.Thread(target=self._fire_missed_wakeups, args=(missed,), daemon=True,
+                             name="MissedWakeups").start()
+
+    def _fire_missed_wakeups(self, missed: list[dict]):
+        """Run the checks of *missed* one after the other, oldest first, after the startup grace
+        — the same gating as a wake-up that fires on time, and each is removed from the file as
+        its turn comes."""
+        time.sleep(MISSED_WAKEUP_STARTUP_GRACE_SECONDS)
+        for wakeup in missed:
+            if not self.running:
+                return
+            self._remove_wakeup(wakeup["at"])
+            late = _describe_duration(time.time() - wakeup["at"])
+            if self.prompt_manager.is_night_mode_active():
+                info(f"Missed wakeup ({late} late) skipped — Night mode is active")
+                continue
+            while self.running and self.is_user_interaction_active():
+                info("Missed wakeup deferred — user interaction active or recent. Retrying shortly.")
+                time.sleep(USER_INTERACTION_QUIET_PERIOD_SECONDS)
+            info(f"Firing missed wakeup {late} late"
+                 + (f" for: {wakeup['reason']}" if wakeup["reason"] else ""))
+            try:
+                self.activity_check(wakeup={**wakeup, "missed": True})
+            except Exception as e:
+                error(f"Missed wakeup check failed: {type(e).__name__}: {e}")
 
     def caffeinate(self, duration_minutes: float = CAFFEINE_DEFAULT_DURATION_MINUTES,
                    interval_minutes: float = CAFFEINE_INTERVAL_MINUTES):

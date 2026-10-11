@@ -11,6 +11,9 @@ conversation you are having now may have left your history window by then. Write
 what to do, for whom, and any time or condition to check. Example:
 `schedule_wakeup(45, "Check the launch live blog for the current T-0 and message the user 30 minutes before it")`
 
+A scheduled wake-up survives a server restart. One that fell due while the server was down fires right after it
+comes back up, and its note then says how late it is — so a wake-up is never silently lost, only possibly late.
+
 **Important — schedule the wake up, don't perform the action now.** When the user wants an action done *later*
 ("turn off the TV in 20 minutes"), issue ONLY `schedule_wakeup(20, "Turn off the living room TV")` in this turn and
 confirm to the user. Do NOT also run the action command (`execute(...)`, `play_music(...)`, etc.) in the same turn — that would perform it immediately.

@@ -926,20 +926,89 @@ class TestWakeupPersistence:
         mgr._remove_wakeup(9999.0)
         assert [w["at"] for w in self.read()] == [1000.0]
 
+    @patch('assistant.agents.AutonomousActionManager.threading.Thread')
     @patch('assistant.agents.AutonomousActionManager.time.time')
-    def test_restore_discards_expired_wakeups(self, mock_time):
+    def test_restore_fires_the_wakeups_that_fell_due_while_down_oldest_first_and_keeps_them_on_disk(self, mock_time, mock_thread):
+        """Regression for 2026-10-11: a 09:00 reminder was discarded on the evening restart.
+        A missed wake-up now fires after startup; it leaves the file only when it has."""
         mock_time.return_value = 5000.0
         with open(self.schedule_file, "w") as f:
-            json.dump([self.wakeup(1000.0), self.wakeup(2000.0), self.wakeup(3000.0)], f)
+            json.dump([self.wakeup(3000.0, "late one"), self.wakeup(1000.0, "early one"), self.wakeup(2000.0)], f)
 
         mgr, _ = make_manager()
         with patch.object(mgr, '_start_wakeup_thread') as mock_start:
             mgr._restore_scheduled_wakeups()
             mock_start.assert_not_called()
+        (missed,) = mock_thread.call_args.kwargs["args"]
+        assert [(w["at"], w["reason"]) for w in missed] == [(1000.0, "early one"), (2000.0, ""), (3000.0, "late one")]
+        mock_thread.return_value.start.assert_called_once()
+        assert sorted(w["at"] for w in self.read()) == [1000.0, 2000.0, 3000.0]
+
+    @patch('assistant.agents.AutonomousActionManager.threading.Thread')
+    @patch('assistant.agents.AutonomousActionManager.time.time')
+    def test_restore_tells_a_pending_wakeup_from_a_missed_one(self, mock_time, mock_thread):
+        mock_time.return_value = 5000.0
+        with open(self.schedule_file, "w") as f:
+            json.dump([self.wakeup(4000.0, "missed"), self.wakeup(6000.0, "pending")], f)
+
+        mgr, _ = make_manager()
+        with patch.object(mgr, '_start_wakeup_thread') as mock_start:
+            mgr._restore_scheduled_wakeups()
+            assert [c.args[0]["reason"] for c in mock_start.call_args_list] == ["pending"]
+        (missed,) = mock_thread.call_args.kwargs["args"]
+        assert [w["reason"] for w in missed] == ["missed"]
+
+    @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
+    def test_missed_wakeups_run_one_after_the_other_each_leaving_the_file_as_it_fires(self):
+        now = time.time()
+        missed = [self.wakeup(now - 7200, "first"), self.wakeup(now - 600, "second")]
+        for w in missed:
+            self._save(w)
+        mgr, _ = make_manager()
+        mgr.running = True
+        mgr.prompt_manager.is_night_mode_active.return_value = False
+        on_disk_when_fired = []
+
+        def check(wakeup=None):
+            on_disk_when_fired.append((wakeup["reason"], wakeup["missed"], [w["reason"] for w in self.read()]))
+            return ""
+
+        with patch.object(mgr, 'is_user_interaction_active', return_value=False), \
+             patch.object(mgr, 'activity_check', side_effect=check):
+            mgr._fire_missed_wakeups(missed)
+        assert on_disk_when_fired == [("first", True, ["second"]), ("second", True, [])]
+
+    @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
+    def test_a_missed_wakeup_is_dropped_at_night_like_one_on_time(self):
+        now = time.time()
+        wakeup = self.wakeup(now - 600, "nightly")
+        self._save(wakeup)
+        mgr, _ = make_manager()
+        mgr.running = True
+        mgr.prompt_manager.is_night_mode_active.return_value = True
+        with patch.object(mgr, 'activity_check') as check:
+            mgr._fire_missed_wakeups([wakeup])
+            check.assert_not_called()
         assert self.read() == []
 
+    @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
+    def test_one_failing_missed_check_does_not_stop_the_next(self):
+        now = time.time()
+        missed = [self.wakeup(now - 1200, "breaks"), self.wakeup(now - 600, "still runs")]
+        mgr, _ = make_manager()
+        mgr.running = True
+        mgr.prompt_manager.is_night_mode_active.return_value = False
+        with patch.object(mgr, 'is_user_interaction_active', return_value=False), \
+             patch.object(mgr, 'activity_check', side_effect=[RuntimeError("API down"), ""]) as check:
+            mgr._fire_missed_wakeups(missed)
+        assert [c.kwargs["wakeup"]["reason"] for c in check.call_args_list] == ["breaks", "still runs"]
+
+    def _save(self, wakeup: dict):
+        AutonomousActionManager._write_wakeups(AutonomousActionManager._load_wakeups() + [wakeup])
+
+    @patch('assistant.agents.AutonomousActionManager.threading.Thread')
     @patch('assistant.agents.AutonomousActionManager.time.time')
-    def test_restore_reschedules_active_wakeups_with_their_reason(self, mock_time):
+    def test_restore_reschedules_active_wakeups_with_their_reason(self, mock_time, _thread):
         mock_time.return_value = 5000.0
         with open(self.schedule_file, "w") as f:
             json.dump([self.wakeup(1000.0), self.wakeup(6000.0, "defrost the car"), self.wakeup(7000.0)], f)
@@ -949,7 +1018,7 @@ class TestWakeupPersistence:
             mgr._restore_scheduled_wakeups()
             restored = [(c.args[0]["at"], c.args[0]["reason"]) for c in mock_start.call_args_list]
             assert restored == [(6000.0, "defrost the car"), (7000.0, "")]
-        assert [w["at"] for w in self.read()] == [6000.0, 7000.0]
+        assert [w["at"] for w in self.read()] == [1000.0, 6000.0, 7000.0]
 
     def test_schedule_persists_the_reason_and_hands_it_to_the_wake(self):
         mgr, _ = make_manager()
@@ -959,6 +1028,33 @@ class TestWakeupPersistence:
         assert wakeup["reason"] == "message Marcus 30 minutes before the launch"
         assert 290 < wakeup["at"] - wakeup["scheduled_at"] < 310
         assert self.read()[0]["reason"] == wakeup["reason"]
+
+
+class TestWakeupLateness:
+    """A wake-up that fires long after its time tells the LLM so, and why."""
+
+    def test_an_on_time_wakeup_carries_no_lateness(self):
+        now = time.time()
+        note = AutonomousActionManager._wakeup_note({"at": now - 5, "scheduled_at": now - 605, "reason": "turn off the TV"})
+        assert "turn off the TV" in note and "late" not in note
+
+    def test_a_missed_wakeup_says_the_server_was_down_and_how_long_ago_it_was_due(self):
+        now = time.time()
+        due = now - 11 * 3600 - 20 * 60
+        note = AutonomousActionManager._wakeup_note({"at": due, "scheduled_at": due - 3600, "reason": "passport!",
+                                                     "missed": True})
+        assert "11 h 20 min late" in note and "server was down" in note
+        assert time.strftime("%Y-%m-%d %H:%M", time.localtime(due)) in note
+
+    def test_a_wakeup_held_back_by_the_user_says_so_instead(self):
+        now = time.time()
+        note = AutonomousActionManager._wakeup_note({"at": now - 900, "scheduled_at": now - 1800, "reason": ""})
+        assert "15 min late" in note and "server was down" not in note
+
+    @pytest.mark.parametrize("seconds, text", [(90, "1 min"), (3 * 3600 + 5 * 60, "3 h 5 min"), (26 * 3600 + 59, "1 d 2 h")])
+    def test_lateness_reads_in_the_largest_fitting_unit(self, seconds, text):
+        from assistant.agents.AutonomousActionManager import _describe_duration
+        assert _describe_duration(seconds) == text
 
 
 class TestScheduledWakeupReason:
