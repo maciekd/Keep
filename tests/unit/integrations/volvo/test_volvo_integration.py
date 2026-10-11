@@ -425,7 +425,10 @@ class TestTransport:
 
     def test_a_token_volvo_no_longer_accepts_points_at_the_sign_in(self):
         fake = FakeVolvo()
+        # A dead token is refused on every call, the car list included — which is how the
+        # refusal is told apart from a VIN the Volvo ID lacks (TestWrongVin).
         fake.route("GET", CONNECTED, {"error": {"message": "UNAUTHORIZED"}}, status=401)
+        fake.route("GET", CAR_LIST, {"error": {"message": "UNAUTHORIZED"}}, status=401)
         with _config():
             integration = build(fake)
             with pytest.raises(VolvoApiError, match="volvo_login"):
