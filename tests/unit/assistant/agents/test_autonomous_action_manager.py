@@ -445,13 +445,21 @@ class TestAutonomousActionManager:
             check_called.set()
             return "NO"
 
-        with patch.object(mgr, 'activity_check', side_effect=patched_activity_check):
-            mock_sleep.side_effect = lambda _: None  # Don't actually sleep
+        # The wake-up thread waits on its cancel event (so cancel_wakeup can end it early):
+        # record the wait instead of sleeping it.
+        waits = []
+
+        class ImpatientEvent(threading.Event):
+            def wait(self, timeout=None):
+                waits.append(timeout)
+                return False
+
+        with patch.object(mgr, 'activity_check', side_effect=patched_activity_check), \
+             patch('assistant.agents.AutonomousActionManager.threading.Event', ImpatientEvent):
             mgr.schedule(5)
             check_called.wait(timeout=2)
 
-        sleep_args = [call.args[0] for call in mock_sleep.call_args_list if call.args]
-        assert any(abs(arg - 300) < 1 for arg in sleep_args), f"Expected sleep(~300), got {sleep_args}"
+        assert any(arg is not None and abs(arg - 300) < 1 for arg in waits), f"Expected a wait of ~300 s, got {waits}"
         assert check_called.is_set()
 
     @patch('assistant.agents.AutonomousActionManager.time.sleep')
@@ -687,7 +695,7 @@ class TestAutonomousActionManager:
              patch.object(mgr, '_remove_wakeup'), \
              patch('assistant.agents.AutonomousActionManager.time.sleep'), \
              patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
-            mgr._start_wakeup_thread({"at": time.time() + 0.01, "scheduled_at": time.time(), "reason": ""})
+            mgr._start_wakeup_thread({"id": "w1", "at": time.time() + 0.01, "scheduled_at": time.time(), "reason": ""})
             created[0].join(timeout=2.0)
 
         assert not check_called.is_set(), "activity_check should not be called during Night mode"
@@ -746,7 +754,7 @@ class TestAutonomousActionManager:
              patch.object(mgr, '_remove_wakeup'), \
              patch('assistant.agents.AutonomousActionManager.time.sleep'), \
              patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
-            mgr._start_wakeup_thread({"at": time.time() + 0.01, "scheduled_at": time.time(), "reason": ""})
+            mgr._start_wakeup_thread({"id": "w1", "at": time.time() + 0.01, "scheduled_at": time.time(), "reason": ""})
             created[0].join(timeout=2.0)
 
         assert check_called.is_set(), "wakeup must run when live state is not Night, even with stale prompt text"
@@ -885,7 +893,7 @@ class TestWakeupPersistence:
 
     @staticmethod
     def wakeup(at: float, reason: str = "") -> dict:
-        return {"at": at, "scheduled_at": at - 600, "reason": reason}
+        return {"id": f"w{int(at)}", "at": at, "scheduled_at": at - 600, "reason": reason}
 
     def read(self) -> list:
         with open(self.schedule_file) as f:
@@ -917,13 +925,13 @@ class TestWakeupPersistence:
         mgr, _ = make_manager()
         mgr._save_wakeup(self.wakeup(1000.0))
         mgr._save_wakeup(self.wakeup(2000.0))
-        mgr._remove_wakeup(1000.0)
+        mgr._remove_wakeup("w1000")
         assert [w["at"] for w in self.read()] == [2000.0]
 
     def test_remove_wakeup_noop_when_not_found(self):
         mgr, _ = make_manager()
         mgr._save_wakeup(self.wakeup(1000.0))
-        mgr._remove_wakeup(9999.0)
+        mgr._remove_wakeup("w9999")
         assert [w["at"] for w in self.read()] == [1000.0]
 
     @patch('assistant.agents.AutonomousActionManager.time.time')
@@ -960,6 +968,83 @@ class TestWakeupPersistence:
         assert 290 < wakeup["at"] - wakeup["scheduled_at"] < 310
         assert self.read()[0]["reason"] == wakeup["reason"]
 
+    def test_load_wakeups_gives_an_entry_written_without_an_id_the_same_id_on_every_load(self):
+        """The file of an install from before wake-ups had ids: cancel_wakeup must find by the
+        id list_wakeups showed a moment earlier, so the derived id cannot change between loads."""
+        with open(self.schedule_file, "w") as f:
+            json.dump([6000.0, {"at": 7000.0, "scheduled_at": 6500.0, "reason": "ping Marcus"}], f)
+        first = [w["id"] for w in AutonomousActionManager._load_wakeups()]
+        second = [w["id"] for w in AutonomousActionManager._load_wakeups()]
+        assert first == second and len(set(first)) == 2 and all(first)
+
+    def test_schedule_returns_the_entry_with_an_id_no_pending_wakeup_shares(self):
+        mgr, _ = make_manager()
+        with patch.object(mgr, '_start_wakeup_thread'):
+            ids = {mgr.schedule(5, "a")["id"], mgr.schedule(6, "b")["id"], mgr.schedule(7, "c")["id"]}
+        assert len(ids) == 3
+        assert {w["id"] for w in self.read()} == ids
+
+    def test_pending_wakeups_lists_soonest_first(self):
+        mgr, _ = make_manager()
+        mgr._save_wakeup(self.wakeup(3000.0, "late"))
+        mgr._save_wakeup(self.wakeup(1000.0, "early"))
+        assert [w["reason"] for w in mgr.pending_wakeups()] == ["early", "late"]
+
+    def test_cancel_removes_the_entry_from_disk_and_returns_it(self):
+        mgr, _ = make_manager()
+        mgr._save_wakeup(self.wakeup(1000.0, "read the meter"))
+        mgr._save_wakeup(self.wakeup(2000.0))
+        cancelled = mgr.cancel("w1000")
+        assert cancelled["reason"] == "read the meter"
+        assert [w["id"] for w in self.read()] == ["w2000"]
+
+    def test_cancel_of_an_unknown_id_changes_nothing(self):
+        mgr, _ = make_manager()
+        mgr._save_wakeup(self.wakeup(1000.0))
+        assert mgr.cancel("w9999") is None
+        assert [w["id"] for w in self.read()] == ["w1000"]
+
+    def test_cancel_ends_the_sleeping_thread_without_a_check(self):
+        """The 2026-10-11 water-meter case: the task was closed hours before the wake-up fired
+        and the user was reminded twice. Cancelling must stop the thread, not only the file."""
+        mgr, _ = make_manager()
+        wakeup = self.wakeup(time.time() + 30, "remind Marcus to read the water meter")
+        mgr._save_wakeup(wakeup)
+        created = []
+        real_thread_cls = threading.Thread
+
+        def capture_thread(*args, **kwargs):
+            t = real_thread_cls(*args, **kwargs)
+            created.append(t)
+            return t
+
+        with patch.object(mgr, 'activity_check') as check, \
+             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
+            mgr._start_wakeup_thread(wakeup)
+            assert mgr.cancel(wakeup["id"])["id"] == wakeup["id"]
+            created[0].join(timeout=2.0)
+            assert not created[0].is_alive(), "the wake-up thread must end as soon as it is cancelled"
+            check.assert_not_called()
+        assert self.read() == []
+        assert wakeup["id"] not in mgr._wakeup_cancels
+
+    def test_a_fired_wakeup_forgets_its_cancel_event(self):
+        mgr, _ = make_manager()
+        wakeup = self.wakeup(time.time() + 0.01, "turn off the TV")
+        created = []
+        real_thread_cls = threading.Thread
+
+        def capture_thread(*args, **kwargs):
+            t = real_thread_cls(*args, **kwargs)
+            created.append(t)
+            return t
+
+        with patch.object(mgr, 'activity_check', return_value="NO"), \
+             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
+            mgr._start_wakeup_thread(wakeup)
+            created[0].join(timeout=2.0)
+        assert wakeup["id"] not in mgr._wakeup_cancels
+
 
 class TestScheduledWakeupReason:
     """The check a scheduled wake-up triggers is told what it was scheduled for: the exchange
@@ -969,7 +1054,7 @@ class TestScheduledWakeupReason:
     def test_wake_thread_passes_its_entry_to_the_check(self, mock_claude):
         mock_claude.return_value = Mock()
         mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=False), test_mode=True)
-        wakeup = {"at": time.time() + 0.01, "scheduled_at": time.time(), "reason": "turn off the TV"}
+        wakeup = {"id": "w1", "at": time.time() + 0.01, "scheduled_at": time.time(), "reason": "turn off the TV"}
         seen = {}
 
         def capture(*args, **kwargs):

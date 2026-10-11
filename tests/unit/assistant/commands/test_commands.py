@@ -775,29 +775,82 @@ class TestCmdRemember:
 
 class TestCmdScheduleAndCaffeinate:
     def test_schedule_wakeup(self, commands_instance):
-        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
-            mock_instance = Mock()
-            mock_aam.get_instance.return_value = mock_instance
+        with patch.object(commands_instance, "background_command") as bg:
             commands_instance.cmd_schedule_wakeup("5.5")
-            mock_instance.schedule.assert_called_once_with(5.6, "")
+            bg.assert_called_once_with(commands_instance._run_schedule_wakeup, [5.6, ""])
 
     def test_schedule_wakeup_carries_the_reason(self, commands_instance):
-        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
-            mock_instance = Mock()
-            mock_aam.get_instance.return_value = mock_instance
+        with patch.object(commands_instance, "background_command") as bg:
             commands_instance.cmd_schedule_wakeup("30", "turn off the TV")
-            mock_instance.schedule.assert_called_once_with(30.1, "turn off the TV")
+            bg.assert_called_once_with(commands_instance._run_schedule_wakeup, [30.1, "turn off the TV"])
 
     def test_schedule_wakeup_rejoins_an_unquoted_reason_split_on_its_commas(self, commands_instance):
-        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
-            mock_instance = Mock()
-            mock_aam.get_instance.return_value = mock_instance
+        with patch.object(commands_instance, "background_command") as bg:
             commands_instance.cmd_schedule_wakeup("10", "check the T-0", "then message Marcus")
-            mock_instance.schedule.assert_called_once_with(10.1, "check the T-0, then message Marcus")
+            bg.assert_called_once_with(commands_instance._run_schedule_wakeup, [10.1, "check the T-0, then message Marcus"])
+
+    def test_schedule_wakeup_refuses_a_non_numeric_delay_without_scheduling(self, commands_instance):
+        with patch.object(commands_instance, "background_command") as bg:
+            result = commands_instance.cmd_schedule_wakeup("soon", "turn off the TV")
+        assert "failed" in result and "soon" in result
+        bg.assert_not_called()
+
+    def test_schedule_reply_carries_the_id_and_the_reason(self, commands_instance):
+        """The id in the reply is the handle for cancel_wakeup, so it must be there verbatim."""
+        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
+            mock_aam.get_instance.return_value.schedule.return_value = {
+                "id": "3f2a", "at": time.time() + 1800, "scheduled_at": time.time(), "reason": "turn off the TV"}
+            reply = commands_instance._run_schedule_wakeup(30.1, "turn off the TV")
+            mock_aam.get_instance.return_value.schedule.assert_called_once_with(30.1, "turn off the TV")
+        assert "3f2a" in reply and "turn off the TV" in reply and "30 min" in reply
+
+    def test_list_wakeups_shows_each_pending_wakeup_with_id_time_and_reason(self, commands_instance):
+        now = time.time()
+        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
+            mock_aam.get_instance.return_value.pending_wakeups.return_value = [
+                {"id": "3f2a", "at": now + 600, "scheduled_at": now, "reason": "turn off the TV"},
+                {"id": "9c01", "at": now + 86400, "scheduled_at": now, "reason": ""},
+            ]
+            reply = commands_instance._run_list_wakeups()
+        lines = [l for l in reply.splitlines() if l.startswith("- ")]
+        assert len(lines) == 2
+        assert "3f2a" in lines[0] and "turn off the TV" in lines[0] and "10 min" in lines[0]
+        assert "9c01" in lines[1] and "no reason" in lines[1]
+        assert time.strftime("%Y-%m-%d", time.localtime(now + 86400)) in lines[1], "a wake-up not due today is dated"
+
+    def test_list_wakeups_says_when_nothing_is_pending(self, commands_instance):
+        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
+            mock_aam.get_instance.return_value.pending_wakeups.return_value = []
+            reply = commands_instance._run_list_wakeups()
+        assert "No pending" in reply
+
+    def test_cancel_wakeup_hands_the_id_to_the_manager(self, commands_instance):
+        with patch.object(commands_instance, "background_command") as bg:
+            commands_instance.cmd_cancel_wakeup("'3f2a'")
+            bg.assert_called_once_with(commands_instance._run_cancel_wakeup, "3f2a")
+
+    def test_cancel_wakeup_without_an_id_is_refused(self, commands_instance):
+        with patch.object(commands_instance, "background_command") as bg:
+            assert "failed" in commands_instance.cmd_cancel_wakeup("")
+        bg.assert_not_called()
+
+    def test_cancel_reply_names_the_cancelled_wakeup_or_the_miss(self, commands_instance):
+        with patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam:
+            cancel = mock_aam.get_instance.return_value.cancel
+            cancel.return_value = {"id": "3f2a", "at": time.time() + 600, "scheduled_at": time.time(),
+                                   "reason": "read the water meter"}
+            hit = commands_instance._run_cancel_wakeup("3f2a")
+            cancel.return_value = None
+            miss = commands_instance._run_cancel_wakeup("zzzz")
+        assert "3f2a" in hit and "read the water meter" in hit and "failed" not in hit
+        assert "failed" in miss and "zzzz" in miss
 
     def test_describe_schedule_wakeup_shows_the_reason(self, commands_instance):
         text = commands_instance.describe("schedule_wakeup", ["20", "turn off the TV"])
         assert "20" in text and "turn off the TV" in text
+
+    def test_describe_cancel_wakeup_names_the_id(self, commands_instance):
+        assert "3f2a" in commands_instance.describe("cancel_wakeup", ["3f2a"])
 
 # ---------------------------------------------------------------------------
 # TestCmdSelfAnalysis

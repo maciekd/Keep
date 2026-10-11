@@ -195,7 +195,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit("calendar", "create a calendar event; the coming week of a calendar the prompt does not show",
             ("create_event", "load_calendar"), needs=CalendarSource),
     Toolkit("timers", "anything the user wants done LATER, or watched for until it happens",
-            ("schedule_wakeup", "caffeinate")),
+            ("schedule_wakeup", "list_wakeups", "cancel_wakeup", "caffeinate")),
     Toolkit("history", "search everything that ever happened, when long-term memory does not cover it",
             ("search_history", "show_history")),
     Toolkit("vault", "store a secret the user has said, or ask them for one you must never see",

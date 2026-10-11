@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import secrets
 import threading
 import time
 from datetime import timedelta
@@ -163,6 +164,8 @@ class AutonomousActionManager:
         self._caffeine_until: float = 0.0
         self._caffeine_interval_minutes: float = CAFFEINE_INTERVAL_MINUTES
         self._caffeine_thread: Optional[threading.Thread] = None
+        # One event per pending wake-up, by id: cancel() sets it and the sleeping thread ends.
+        self._wakeup_cancels: dict[str, threading.Event] = {}
         self.thread = threading.Thread(target=self._run_periodic_check, daemon=True)
         if not test_mode:
             self.thread.start()
@@ -528,24 +531,60 @@ class AutonomousActionManager:
         if parts:
             self.prompt_manager.update_history(None, None, "\n".join(parts))
 
-    def schedule(self, minutes: float, reason: str = "") -> None:
+    def schedule(self, minutes: float, reason: str = "") -> dict:
         """Wake in *minutes*; *reason* is what the wake is for, carried into the check's prompt
-        because the conversation that scheduled it may be trimmed away by then."""
+        because the conversation that scheduled it may be trimmed away by then. Returns the
+        entry, whose `id` is what list_wakeups shows and cancel_wakeup takes."""
         wake_at = time.time() + minutes * 60
-        info(f"Scheduling Autonomous Action Manager to wake in {minutes} minutes"
+        pending = self._load_wakeups()
+        wakeup = {"id": self._new_wakeup_id({w["id"] for w in pending}), "at": wake_at,
+                  "scheduled_at": time.time(), "reason": reason}
+        info(f"Scheduling Autonomous Action Manager to wake in {minutes} minutes (wake-up {wakeup['id']})"
              + (f" for: {reason}" if reason else " (no reason given)") + "...")
-        wakeup = {"at": wake_at, "scheduled_at": time.time(), "reason": reason}
-        self._save_wakeup(wakeup)
+        self._write_wakeups(pending + [wakeup])
         self._start_wakeup_thread(wakeup)
+        return wakeup
+
+    @staticmethod
+    def _new_wakeup_id(taken: set[str]) -> str:
+        while (wakeup_id := secrets.token_hex(2)) in taken:
+            pass
+        return wakeup_id
+
+    def pending_wakeups(self) -> list[dict]:
+        """The wake-ups still to fire, soonest first."""
+        return sorted(self._load_wakeups(), key=lambda w: w["at"])
+
+    def cancel(self, wakeup_id: str) -> Optional[dict]:
+        """Drop the pending wake-up with *wakeup_id*: its thread ends without a check. Returns
+        the entry, or None when no pending wake-up has that id."""
+        pending = self._load_wakeups()
+        match = next((w for w in pending if w["id"] == wakeup_id), None)
+        if match is None:
+            info(f"cancel wake-up {wakeup_id}: no pending wake-up has that id")
+            return None
+        self._write_wakeups([w for w in pending if w["id"] != wakeup_id])
+        event = self._wakeup_cancels.pop(wakeup_id, None)
+        if event is not None:
+            event.set()
+        info(f"Cancelled wake-up {wakeup_id} due {time.strftime('%H:%M', time.localtime(match['at']))}"
+             + (f" for: {match['reason']}" if match["reason"] else ""))
+        return match
 
     def _start_wakeup_thread(self, wakeup: dict):
-        wake_at = wakeup["at"]
+        wake_at, wakeup_id = wakeup["at"], wakeup["id"]
+        cancelled = threading.Event()
+        self._wakeup_cancels[wakeup_id] = cancelled
 
         def _delayed_check():
             remaining = wake_at - time.time()
-            if remaining > 0:
-                time.sleep(remaining)
-            self._remove_wakeup(wake_at)
+            if remaining > 0 and cancelled.wait(remaining):
+                info(f"Wake-up {wakeup_id} thread ending: cancelled before it fired")
+                return
+            if cancelled.is_set():
+                return
+            self._wakeup_cancels.pop(wakeup_id, None)
+            self._remove_wakeup(wakeup_id)
             if self.prompt_manager.is_night_mode_active():
                 info("Scheduled wakeup skipped — Night mode is active")
                 return
@@ -562,8 +601,8 @@ class AutonomousActionManager:
     def _save_wakeup(self, wakeup: dict):
         self._write_wakeups(self._load_wakeups() + [wakeup])
 
-    def _remove_wakeup(self, wake_at: float):
-        self._write_wakeups([w for w in self._load_wakeups() if w["at"] != wake_at])
+    def _remove_wakeup(self, wakeup_id: str):
+        self._write_wakeups([w for w in self._load_wakeups() if w["id"] != wakeup_id])
 
     @staticmethod
     def _write_wakeups(wakeups: list[dict]):
@@ -576,7 +615,9 @@ class AutonomousActionManager:
     @staticmethod
     def _load_wakeups() -> list[dict]:
         """The pending wake-ups on disk. A bare timestamp (the file's shape before wake-ups
-        carried a reason) is read as a wake-up with no reason, scheduled at an unknown time."""
+        carried a reason) is read as a wake-up with no reason, scheduled at an unknown time;
+        an entry written before wake-ups had ids gets one derived from its fire time, so it
+        reads the same on every load."""
         try:
             with open(SCHEDULE_FILE, "r") as f:
                 raw = json.load(f)
@@ -585,10 +626,12 @@ class AutonomousActionManager:
         wakeups = []
         for entry in raw:
             if isinstance(entry, dict):
-                wakeups.append({"at": entry["at"], "scheduled_at": entry.get("scheduled_at", entry["at"]),
-                                "reason": entry.get("reason", "")})
+                at = entry["at"]
+                wakeups.append({"id": entry.get("id") or f"{int(at * 1000) % 0x10000:04x}", "at": at,
+                                "scheduled_at": entry.get("scheduled_at", at), "reason": entry.get("reason", "")})
             else:
-                wakeups.append({"at": float(entry), "scheduled_at": float(entry), "reason": ""})
+                at = float(entry)
+                wakeups.append({"id": f"{int(at * 1000) % 0x10000:04x}", "at": at, "scheduled_at": at, "reason": ""})
         return wakeups
 
     def _restore_scheduled_wakeups(self):
@@ -601,7 +644,7 @@ class AutonomousActionManager:
             self._write_wakeups(active)
         for wakeup in active:
             remaining = (wakeup["at"] - now) / 60
-            info(f"Restoring scheduled wakeup in {remaining:.1f} minutes"
+            info(f"Restoring scheduled wakeup {wakeup['id']} in {remaining:.1f} minutes"
                  + (f" for: {wakeup['reason']}" if wakeup["reason"] else ""))
             self._start_wakeup_thread(wakeup)
 

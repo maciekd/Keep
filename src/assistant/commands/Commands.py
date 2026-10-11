@@ -101,7 +101,7 @@ class Commands:
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
-    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
+    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar", "list_wakeups"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
     # The footer is on unless config.yaml says ai_message_footer: false — read at each send.
     AI_FOOTER_KEY = "ai_message_footer"
@@ -413,14 +413,58 @@ class Commands:
     def cmd_schedule_wakeup(self, *args: str):
         """schedule_wakeup(in_minutes, reason): the reason travels with the wake-up so the check
         it triggers knows what it is for even after the history window has moved on. Unquoted
-        reasons split on their commas; re-joining them keeps the whole sentence."""
+        reasons split on their commas; re-joining them keeps the whole sentence. The reply
+        carries the wake-up's id, the handle cancel_wakeup takes."""
         if not args:
             return "schedule_wakeup failed: expected 'in_minutes, reason' parameters"
-        minutes = float(args[0]) + 0.1  # just AFTER the wanted time, otherwise the AI may see it as not yet due
+        try:
+            minutes = float(args[0]) + 0.1  # just AFTER the wanted time, otherwise the AI may see it as not yet due
+        except ValueError:
+            return f"schedule_wakeup failed: in_minutes must be a number, got '{args[0]}'"
         reason = ", ".join(a for a in args[1:]).strip()
         if not reason:
             info("schedule_wakeup: the LLM gave no reason — the wake-up will have to find its purpose in the history")
-        AutonomousActionManager.get_instance().schedule(minutes, reason)
+        self.background_command(self._run_schedule_wakeup, [minutes, reason])
+
+    @staticmethod
+    def _run_schedule_wakeup(minutes: float, reason: str) -> str:
+        wakeup = AutonomousActionManager.get_instance().schedule(minutes, reason)
+        return f"Scheduled wake-up {wakeup['id']} for {Commands._wakeup_due(wakeup)}" + (f": {reason}" if reason else "")
+
+    def cmd_list_wakeups(self, parameter_string: str):
+        self.background_command(self._run_list_wakeups, parameter_string)
+
+    @staticmethod
+    def _run_list_wakeups(_: str = "") -> str:
+        """Every pending wake-up, soonest first: id, fire time and reason."""
+        pending = AutonomousActionManager.get_instance().pending_wakeups()
+        if not pending:
+            info("list_wakeups: no pending wake-ups")
+            return "No pending wake-ups."
+        lines = [f"- {w['id']}: {Commands._wakeup_due(w)}" + (f" — {w['reason']}" if w["reason"] else " — (no reason recorded)")
+                 for w in pending]
+        return f"Pending wake-ups ({len(pending)}):\n" + "\n".join(lines)
+
+    def cmd_cancel_wakeup(self, parameter_string: str):
+        wakeup_id = self._first_argument(parameter_string).strip().strip("'\"")
+        if not wakeup_id:
+            return "cancel_wakeup failed: expected the wake-up's id (see list_wakeups)"
+        self.background_command(self._run_cancel_wakeup, wakeup_id)
+
+    @staticmethod
+    def _run_cancel_wakeup(wakeup_id: str) -> str:
+        wakeup = AutonomousActionManager.get_instance().cancel(wakeup_id)
+        if wakeup is None:
+            return f"cancel_wakeup failed: no pending wake-up has id {wakeup_id} (see list_wakeups)"
+        return f"Cancelled wake-up {wakeup_id}, which was due {Commands._wakeup_due(wakeup)}" + (f": {wakeup['reason']}" if wakeup["reason"] else "")
+
+    @staticmethod
+    def _wakeup_due(wakeup: dict) -> str:
+        """The fire time as the LLM should read it: the clock time, dated when it is not today,
+        with the minutes left."""
+        at, now = wakeup["at"], time.time()
+        fmt = "%H:%M" if time.localtime(at)[:3] == time.localtime(now)[:3] else "%a %Y-%m-%d %H:%M"
+        return f"{time.strftime(fmt, time.localtime(at))} (in {max(0.0, (at - now) / 60):.0f} min)"
 
     def cmd_caffeinate(self, parameter_string: str):
         AutonomousActionManager.get_instance().caffeinate()
@@ -1630,6 +1674,10 @@ class Commands:
     def describe_schedule_wakeup(self, p):
         minutes, _, reason = p.partition(",")
         return f"Scheduling wakeup in {minutes.strip()} min" + (f": {reason.strip()}" if reason.strip() else "")
+    def describe_list_wakeups(self, p):           return "Listing scheduled wake-ups"
+    def describe_cancel_wakeup(self, p):
+        wakeup_id = self._first_argument(p).strip()
+        return f"Cancelling wake-up {wakeup_id}" if wakeup_id else "Cancelling a wake-up"
     def describe_caffeinate(self, p):             return "Staying awake"
     def describe_send_email(self, p):
         recipient = p.split(",", 1)[0].strip() if p else ""
