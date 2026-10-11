@@ -1220,6 +1220,20 @@ class TestReferenceResults:
     def test_what_was_read_for_the_user_stays(self, body):
         assert not is_reference_result(body)
 
+    def test_every_answer_server_logs_gives_is_reference_text(self, tmp_path):
+        """The filter knows a log dump by the header the command writes, so the two must agree
+        for every answer the command has — the tail, a window from a time, nothing at that
+        time, and a missing log — or the dumps come back into the transcript and the hits."""
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text("2026-03-01 09:40:00.000 [INFO] booted\n2026-03-01 09:41:00.000 [INFO] ready\n")
+        with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file)):
+            answers = [Commands._fetch_server_logs(None), Commands._fetch_server_logs("2026-03-01 09:41"),
+                       Commands._fetch_server_logs("2026-03-02")]
+        with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(tmp_path / "nope.out")):
+            answers.append(Commands._fetch_server_logs(None))
+        assert len({a for a in answers}) == 4
+        assert all(is_reference_result(a) for a in answers)
+
     def test_search_history_leaves_the_reference_rows_to_the_database(self):
         """The toolkit a search term happens to match must not take a hit's place: the
         predicate goes to the query, which drops the rows before its limit."""

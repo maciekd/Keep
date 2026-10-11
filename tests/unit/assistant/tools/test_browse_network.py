@@ -280,6 +280,17 @@ class TestReport:
         assert not report.startswith('ERROR')
         assert 'browse_open' in report
 
+    def test_the_listing_is_what_the_history_filter_drops_filtered_or_not(self):
+        """The memory curator and search_history know a network listing by its opening words;
+        the report and the filter must agree, or the listings fill the transcript and the hits
+        again. The whole session and a url-filtered part of it are both listings."""
+        from assistant.commands.Commands import is_reference_result
+        wa = bare_wa()
+        self.captured(wa, 'first', 'https://pay.example/api/start', body='{"status": "ok"}')
+        self.captured(wa, 'second', 'https://pay.example/api/poll', body='{"status": "pending"}')
+        assert is_reference_result(run(wa._async_browse_network('')))
+        assert is_reference_result(run(wa._async_browse_network('api/poll')))
+
     def test_entries_are_listed_oldest_first_with_bodies(self):
         wa = bare_wa()
         self.captured(wa, 'first', 'https://pay.example/api/start', post='{"order":\n  "KEP47L"}')

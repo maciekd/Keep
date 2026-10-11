@@ -181,6 +181,13 @@ class TestSetValue:
         with pytest.raises(ConfigStoreError, match=reason):
             ConfigStore.set_value(key, "x")
 
+    def test_a_denied_key_bars_its_own_names_and_not_a_sibling_that_begins_the_same(self, files):
+        """`vault.key` is denied in every spelling; `vault.keyring` only shares its letters and
+        stays the assistant's to set — a key the example lacks under a known section, kept as text."""
+        ConfigStore.set_value("vault.keyring", "login")
+        assert _load(files)["vault"]["keyring"] == "login"
+        assert _load(files)["vault"]["key"] == "real-passphrase"
+
     def test_a_key_the_example_lacks_under_a_known_section_is_stored_as_text(self, files):
         ConfigStore.set_value("pager.imap_host", "imap.example.org")
         assert _load(files)["pager"]["imap_host"] == "imap.example.org"

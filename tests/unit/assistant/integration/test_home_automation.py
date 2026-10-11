@@ -63,6 +63,17 @@ class TestContract:
         assert HomeAutomation.from_display("Tak [Kök]") == "Tak (Kök)"
         assert HomeAutomation.from_display(HomeAutomation.to_display("Tak (Kök) (2)")) == "Tak (Kök) (2)"
 
+    def test_stop_is_not_a_verb_a_backend_has_to_bring(self):
+        """Covers came with Plejd; Indigo and Home Assistant predate them. A backend that
+        implements the abstract verbs alone still constructs, and asked to stop something it
+        refuses in its own name instead of raising or claiming success (an empty answer)."""
+        answer = FakeHome().stop("Markis (Uterum)")
+        assert answer and "Fake Home" in answer
+
+    def test_the_not_configured_stand_in_answers_stop_with_the_same_hint_as_every_verb(self):
+        home = NotConfiguredHome("set home.url first")
+        assert home.stop("Markis") == home.turn_on("Markis") == home.execute("Markis")
+
 
 @pytest.mark.unit
 class TestSnapshot:
