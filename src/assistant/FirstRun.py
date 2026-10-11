@@ -5,9 +5,10 @@ photo library in full.
 
 Setup is in progress (`in_ftue`) while fewer than `FTUE_INTEGRATION_THRESHOLD` integrations
 are enabled, or while the install is younger than `FTUE_INSTALL_DAYS` — the pipeline's state
-file dates it — and a setup command (`config_help`, `config_set`, `config_request`,
-`enable_integration`, `restart_integration`…, see `note_setup_activity`) ran in the last
-`FTUE_SETUP_GRACE_HOURS`. The count alone is no measure: the first beta install had six by
+file dates it — and a command that changes the setup (`config_set`, `config_request`,
+`enable_integration`, `restart_integration`, a sign-in — every command on the config lane,
+see `Commands.background_command` and `note_setup_activity`; `config_help` and the other
+read-only ones do not count) ran in the last `FTUE_SETUP_GRACE_HOURS`. The count alone is no measure: the first beta install had six by
 the second hour and was still mid-setup, so the first week keeps setup open as long as the
 user keeps at it; and a week-old install that has gone quiet, or a veteran adding one more
 integration, is not being set up — neither pays for the setup toolkit. While setup is in
@@ -180,8 +181,9 @@ def in_ftue(now: float = None, state_path: Path = None, activity_path: Path = No
 
 
 def note_setup_activity(now: float = None, path: Path = None):
-    """Record that a setup command ran, so `in_ftue` holds for `FTUE_SETUP_GRACE_HOURS` more
-    while the install is young. A failed write is logged and costs only this stamp."""
+    """Record that a command changing the setup ran, so `in_ftue` holds for
+    `FTUE_SETUP_GRACE_HOURS` more while the install is young. A failed write is logged and
+    costs only this stamp."""
     path = path or SETUP_ACTIVITY_FILE
     now = now if now is not None else time.time()
     try:

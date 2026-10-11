@@ -1330,3 +1330,24 @@ class TestPullAndRestart:
         assert kwargs["stdout"] == subprocess.DEVNULL
         assert kwargs["stderr"] == subprocess.DEVNULL
         assert kwargs["stdin"] == subprocess.DEVNULL
+
+
+class TestReportOutcome:
+    """What cmd_self_improvement reads off a Claude Code report: the PR and the title line."""
+
+    def test_the_pr_url_gives_number_and_url(self):
+        report = "## Fix\n\nOpened https://github.com/example/keep/pull/49 with the change."
+        assert CodeQualityMaintainer.pull_request_in(report) == (49, "https://github.com/example/keep/pull/49")
+
+    def test_a_bare_mention_gives_the_number_only(self):
+        assert CodeQualityMaintainer.pull_request_in("Created pull request #7 and pushed.") == (7, None)
+        assert CodeQualityMaintainer.pull_request_in("PR #8 is up.") == (8, None)
+
+    def test_a_report_without_a_pr(self):
+        assert CodeQualityMaintainer.pull_request_in("Declined: too vague. See issue #3.") == (None, None)
+        assert CodeQualityMaintainer.pull_request_in("") == (None, None)
+
+    def test_the_first_line_is_undressed_markdown(self):
+        assert CodeQualityMaintainer.first_line("\n\n## **Timers keep their reason**\nbody") == "Timers keep their reason"
+        assert CodeQualityMaintainer.first_line("- *done*: fixed `it`\n") == "done: fixed it"
+        assert CodeQualityMaintainer.first_line("   \n") == "(empty report)"

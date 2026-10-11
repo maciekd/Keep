@@ -811,6 +811,33 @@ class CodeQualityMaintainer:
         finally:
             CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
 
+    _PR_URL = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)")
+    _PR_NUMBER = re.compile(r"\bPR\s*#(\d+)|\bpull request\s*#(\d+)", re.IGNORECASE)
+
+    @classmethod
+    def pull_request_in(cls, report: str) -> tuple[int | None, str | None]:
+        """(number, URL) of the pull request a self-improvement report names — the URL when
+        the report has one, else a "PR #N" mention without a URL; (None, None) for a report
+        that opened none (a declined request, a failed run)."""
+        match = cls._PR_URL.search(report or "")
+        if match:
+            return int(match.group(1)), match.group(0)
+        match = cls._PR_NUMBER.search(report or "")
+        if match:
+            return int(match.group(1) or match.group(2)), None
+        trace("CodeQualityMaintainer: the report names no pull request")
+        return None, None
+
+    @staticmethod
+    def first_line(report: str) -> str:
+        """The report's first line of text, its markdown dressing (heading marks, emphasis,
+        list bullets) stripped — the title line of a PR report."""
+        for line in (report or "").splitlines():
+            text = re.sub(r"[*_`]+", "", line.strip().lstrip("#-*> ")).strip()
+            if text:
+                return text
+        return "(empty report)"
+
     @staticmethod
     def _current_branch() -> str:
         """The branch this checkout follows — `release` on an install, `master` on the

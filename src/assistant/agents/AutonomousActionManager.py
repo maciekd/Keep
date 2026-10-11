@@ -555,9 +555,23 @@ class AutonomousActionManager:
                 info("Scheduled wakeup deferred — user interaction active or recent. Retrying shortly.")
                 time.sleep(USER_INTERACTION_QUIET_PERIOD_SECONDS)
             self.activity_check(wakeup=wakeup)
+            self._note_wakeup_done(wakeup)
 
         thread = threading.Thread(target=_delayed_check, daemon=True)
         thread.start()
+
+    def _note_wakeup_done(self, wakeup: dict):
+        """A short pinned row (MessageHistory.PINNED_SOURCES) saying the wakeup ran: the check's
+        own reply is trimmed with the conversation, and without this the LLM takes a timer it
+        set for still pending and re-schedules it."""
+        reason = (wakeup.get("reason") or "").strip()
+        ran_at = time.strftime("%H:%M", time.localtime())
+        text = (f"The scheduled wakeup for \"{reason}\" ran at {ran_at}." if reason
+                else f"The scheduled wakeup set at {time.strftime('%H:%M', time.localtime(wakeup['scheduled_at']))} "
+                     f"ran at {ran_at}.")
+        self.prompt_manager.message_history.add_context_message("system", text, time.time(),
+                                                                source=MessageHistory.SOURCE_WAKEUP)
+        info(f"Scheduled wakeup done — noted in the history: {text}")
 
     def _save_wakeup(self, wakeup: dict):
         self._write_wakeups(self._load_wakeups() + [wakeup])

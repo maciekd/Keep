@@ -992,6 +992,54 @@ class TestScheduledWakeupReason:
             created[0].join(timeout=2.0)
         assert seen["wakeup"] is wakeup
 
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_wakeup_that_ran_leaves_a_pinned_row(self, mock_claude):
+        """The check's reply is trimmed with the conversation; the short row under the wakeup
+        source (MessageHistory.PINNED_SOURCES) is what later tells the LLM the timer fired."""
+        from assistant.prompt.MessageHistory import MessageHistory
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=False), test_mode=True)
+        wakeup = {"at": time.time() + 0.01, "scheduled_at": time.time(), "reason": "turn off the TV"}
+        created = []
+        real_thread_cls = threading.Thread
+
+        def capture_thread(*args, **kwargs):
+            t = real_thread_cls(*args, **kwargs)
+            created.append(t)
+            return t
+
+        with patch.object(mgr, 'activity_check', return_value="NO"), \
+             patch.object(mgr, '_remove_wakeup'), \
+             patch('assistant.agents.AutonomousActionManager.time.sleep'), \
+             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
+            mgr._start_wakeup_thread(wakeup)
+            created[0].join(timeout=2.0)
+        add = mgr.prompt_manager.message_history.add_context_message
+        add.assert_called_once()
+        role, text, _ts = add.call_args.args
+        assert role == "system" and "turn off the TV" in text and "ran at" in text
+        assert add.call_args.kwargs["source"] in MessageHistory.PINNED_SOURCES
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_wakeup_skipped_by_night_mode_leaves_no_row(self, mock_claude):
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
+        created = []
+        real_thread_cls = threading.Thread
+
+        def capture_thread(*args, **kwargs):
+            t = real_thread_cls(*args, **kwargs)
+            created.append(t)
+            return t
+
+        with patch.object(mgr, 'activity_check', return_value="NO"), \
+             patch.object(mgr, '_remove_wakeup'), \
+             patch('assistant.agents.AutonomousActionManager.time.sleep'), \
+             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
+            mgr._start_wakeup_thread({"at": time.time() + 0.01, "scheduled_at": time.time(), "reason": "x"})
+            created[0].join(timeout=2.0)
+        mgr.prompt_manager.message_history.add_context_message.assert_not_called()
+
     @staticmethod
     def manager_recording_its_prompt():
         """A manager whose LLM answers NO and whose saved prompt (what was sent) is captured."""

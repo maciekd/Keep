@@ -22,6 +22,7 @@ from common.ConfigStore import ConfigStoreError
 from assistant.ChannelProfile import AUTONOMOUS
 from assistant.Notifier import SecretRejected, notifier
 from assistant.SystemNote import system_note
+from assistant.prompt.MessageHistory import MessageHistory
 from assistant.Telemetry import Telemetry
 from .CommandEcho import describe_completion
 from assistant.integration import CameraProvider as cameras
@@ -690,6 +691,10 @@ class Commands:
                     prompt_manager.update_history(None, None, f"[Self-analysis complete]{delivery} {html_report}")
                 else:
                     info("Self-analysis: no AutonomousActionManager yet, the report is not in the history")
+                # The report row above is trimmed with the conversation; this one stays all day.
+                system_note(MessageHistory.SOURCE_SELF_ANALYSIS,
+                            f"[Self-analysis complete]{delivery} {CodeQualityMaintainer.first_line(report)}",
+                            push=False)
             except Exception as e:
                 error(f"Self-analysis failed: {e}")
 
@@ -708,15 +713,32 @@ class Commands:
                 fine(f"Report: {report}")
                 html_report = notifier().markdown_to_html(report)
                 sent = notifier().send_message(f"Self-improvement report:\n\n{html_report}")
-                outcome = "report sent to user" if sent else f"{NO_NOTIFICATION_CHANNEL}; report: {report}"
-
-                aam = AutonomousActionManager.get_instance()
-                if aam and aam.prompt_manager:
-                    aam.prompt_manager.update_history(None, None, f"[Self-improvement complete — {outcome}]")
+                system_note(MessageHistory.SOURCE_SELF_IMPROVEMENT, self._improvement_outcome(report, sent), push=False)
             except Exception as e:
                 error(f"Self-improvement failed: {e}")
 
         self.fire_and_forget(_run_and_deliver, parameter_string)
+
+    @staticmethod
+    def _improvement_outcome(report: str, sent: bool) -> str:
+        """The history row a finished self-improvement job leaves — the PR it opened (number,
+        title line, URL) or that none was, so the LLM knows the outcome without the report:
+        the "report sent" marker it left before told it nothing, and on 2026-10-11 it took a
+        job for still running two hours after the PR was open. Without a chat to deliver
+        to, the row carries the whole report. "[Self-improvement complete]" is the tag the
+        LLM keys off; keep it first."""
+        number, url = CodeQualityMaintainer.pull_request_in(report)
+        title = CodeQualityMaintainer.first_line(report)
+        delivery = "" if sent else f" ({NO_NOTIFICATION_CHANNEL})"
+        if number is not None:
+            text = f"[Self-improvement complete]{delivery} PR #{number} open: {title}"
+            if url:
+                text += f"\n{url}"
+        else:
+            text = f"[Self-improvement complete]{delivery} no PR was created: {title}"
+        if not sent:
+            text += f"\n\nReport:\n{report}"
+        return text
 
     def cmd_restart_server(self, parameter_string: str):
         def _run(_params):
@@ -834,9 +856,13 @@ class Commands:
                      "unknown": "not checked yet"}
     @staticmethod
     def _setup_activity():
-        """A setup command ran: on a young install setup is in progress for
-        FTUE_SETUP_GRACE_HOURS more (FirstRun.in_ftue) — the setup toolkit stays preloaded and
-        the INTEGRATIONS section stays in the prompt."""
+        """A command that changes the setup ran — every command on the CONFIG_LANE (config_set,
+        config_request, enable / disable / restart_integration, the sign-ins and pairings of the
+        integration folders), see background_command: on a young install setup is in progress
+        for FTUE_SETUP_GRACE_HOURS more (FirstRun.in_ftue) — the setup toolkit stays preloaded
+        and the INTEGRATIONS section stays in the prompt. A read-only command (config_help,
+        list_integrations) is not setup activity: the assistant reading the schema a week in
+        kept the ~10 KB setup reference in every request for two more days."""
         FirstRun.note_setup_activity()
 
     # Integrations that are not Integration classes but follow the same switch, with their keys.
@@ -921,7 +947,6 @@ class Commands:
         self.background_command(self._run_config_help, parameter_string.strip().strip('"\''))
 
     def _run_config_help(self, section: str = "") -> str:
-        self._setup_activity()
         if not section:
             lines = []
             for name in ConfigSchema.sections():
@@ -958,7 +983,6 @@ class Commands:
         self.background_command(self._run_config_request, (key, source, conversation), lane=self.CONFIG_LANE)
 
     def _run_config_request(self, key: str, source=None, conversation=None) -> str:
-        self._setup_activity()
         outcome: dict = {}
         replaces = ConfigStore.is_set(key)
 
@@ -1042,7 +1066,6 @@ class Commands:
         self.background_command(self._run_config_set, [key, value], lane=self.CONFIG_LANE)
 
     def _run_config_set(self, key: str, value: str) -> str:
-        self._setup_activity()
         interface = ConfigStore.interface_flag(key)
         before = ConfigStore.interface_enabled(interface) if interface else None
         try:
@@ -1067,7 +1090,6 @@ class Commands:
         self.background_command(self._run_restart_integration, name, lane=self.CONFIG_LANE)
 
     def _run_restart_integration(self, name: str) -> str:
-        self._setup_activity()
         monitor = self._integration_monitor()
         result = monitor.restart(name)
         if result is None:
@@ -1098,7 +1120,6 @@ class Commands:
 
     def _switch_integration(self, name: str, enable: bool) -> str:
         """Edit enabled_integrations, then restart the integration so the list takes effect now."""
-        self._setup_activity()
         verb = "enable" if enable else "disable"
         canonical = self._canonical_integration_name(name)
         if canonical is None:
@@ -1272,6 +1293,8 @@ class Commands:
     # Runs on: command worker thread. Hands the work to a lane thread.
     def background_command(self, function, params, lane: str = IO_LANE):
         echo, self._current_echo = self._current_echo, None
+        if lane == self.CONFIG_LANE:
+            self._setup_activity()
         with self.bg_lock:
             seq = self._bg_seq
             self._bg_seq += 1

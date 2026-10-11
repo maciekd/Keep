@@ -64,6 +64,26 @@ class MessageHistory:
     # from memory and guesses at names (a live run emitted browse_go for browse_open). The
     # stub goes when the toolkit is loaded again, at the next trim, or with the day's wipe.
     SOURCE_TOOLKIT_EVICTED = "toolkit_evicted"
+    # Before the cut moves the window head, the toolkit reference rows in the window go
+    # first (superseded copies, then oldest first, the fresh-row rule above applying): a
+    # reference is reloadable with load_toolkit, the conversation rows the cut would drop
+    # instead are not, and the head stays while the references alone bring the window under
+    # the high watermark — a 7 KB home reference is a fifth of it. An
+    # evicted row stays in floxy.db and the TUI; the window hides it (_evicted_rows) and
+    # leaves its stub, and loaded_toolkits no longer counts it so the preloader sends it again.
+    # The first row of a trimmed window is the trim note, "N older entries before HH:MM were
+    # trimmed — use show_history for that period", frozen at the trim like the cutoff, so the
+    # LLM reaches for show_history instead of trusting a note the trim took the context of.
+    SOURCE_TRIM_NOTE = "trim_note"
+    # The short row a background job leaves when it finishes — self_improvement (its PR),
+    # self_analysis (its first line), a scheduled wakeup — is exempt from the trim for the
+    # rest of the day (the window only holds today's rows): on 2026-10-11 the assistant
+    # believed a self-improvement job was still running two hours after its completion row
+    # had been trimmed away. A pinned row older than the window head stands in front of it.
+    SOURCE_SELF_IMPROVEMENT = "self_improvement"
+    SOURCE_SELF_ANALYSIS = "self_analysis"
+    SOURCE_WAKEUP = "wakeup"
+    PINNED_SOURCES = frozenset({SOURCE_SELF_IMPROVEMENT, SOURCE_SELF_ANALYSIS, SOURCE_WAKEUP})
 
     def __init__(self):
         self.history = []
@@ -90,6 +110,12 @@ class MessageHistory:
         # when the window exceeds trim_high_bytes (see _hysteresis_trim).
         self._trim_cutoff = 0.0
         self._deferred_trim_at = 0    # window size whose trim was last deferred, so the deferral logs once
+        # Timestamps of the toolkit reference rows a trim evicted ahead of the cut (SOURCE_TRIM_NOTE above).
+        self._evicted_rows: set[float] = set()
+        # What the trim note says, frozen at the last trim: how many rows are out of the window
+        # and the oldest one's time. Counted once so the note's bytes, the window's first, stay put.
+        self._trimmed_count = 0
+        self._trimmed_from = 0.0
         # Section keys whose prompt-delta notes a trim evicted. The notes are the only
         # thing telling the LLM the section moved on from the system prompt's baseline, so
         # PromptManager drains this set before every send and puts one fresh note back.
@@ -138,6 +164,8 @@ class MessageHistory:
         deleted = FloxyDatabase.get_instance().delete_todays_history()
         self.transient_entries = []
         self._trim_cutoff = 0.0
+        self._evicted_rows = set()
+        self._trimmed_count = 0
         self._load_history()
         self.wipes += 1
         info(f"MessageHistory: wiped today's history ({deleted} rows), {len(self.history)} older entries remain")
@@ -265,18 +293,28 @@ class MessageHistory:
         KV cache — survives turn-to-turn: the head only moves once per
         ~(high - low) bytes of new conversation instead of on every exchange.
 
-        Between high and trim_ceiling_bytes the cut waits while the newest row it would
-        drop is younger than trim_fresh_seconds (see TRIM_CEILING_BYTES); the age is
-        checked after snapping, since the snap can move the cut and with it that row.
+        Over the high watermark the toolkit reference rows go first (_evict_toolkit_rows);
+        the cut moves the head only when they alone do not bring the window back under it. Between high and
+        trim_ceiling_bytes the cut waits while the newest row it would drop is younger than
+        trim_fresh_seconds (see TRIM_CEILING_BYTES); the age is checked after snapping, since
+        the snap can move the cut and with it that row. The pinned rows (PINNED_SOURCES) and
+        the eviction stubs are outside the budget and the cut, and are put back by _assemble.
         """
         stubs = [item for item in rendered if self._is_eviction_stub(item[0])]
-        rendered = [item for item in rendered if not self._is_eviction_stub(item[0])]
-        kept = [item for item in rendered if item[0]["timestamp"] >= self._trim_cutoff]
+        pinned = [item for item in rendered if self._is_pinned(item[0])]
+        rows = [item for item in rendered
+                if not self._is_eviction_stub(item[0]) and not self._is_pinned(item[0])]
+        rows = [item for item in rows if not self._is_evicted(item[0])]
+        kept = [item for item in rows if item[0]["timestamp"] >= self._trim_cutoff]
         total = sum(len(content.encode("utf-8")) for _, _, content in kept)
         if total <= self.trim_high_bytes:
-            return self._with_eviction_stubs(stubs, kept, dropped=[])
+            return self._assemble(stubs, pinned, kept, dropped=[])
 
-        # Over the high watermark: walk newest→oldest to find the low-watermark cut.
+        evicted, kept, total = self._evict_toolkit_rows(kept, total)
+        if evicted and total <= self.trim_high_bytes:
+            return self._assemble(stubs, pinned, kept, dropped=evicted)
+
+        # Still over the high watermark: walk newest→oldest to find the low-watermark cut.
         keep_from = len(kept)
         kept_bytes = 0
         for i in range(len(kept) - 1, -1, -1):
@@ -288,7 +326,7 @@ class MessageHistory:
         keep_from = self._snap_to_boundary(kept, keep_from, self.trim_high_bytes)
         if keep_from == 0:
             trace("MessageHistory: window over high watermark but nothing trimmable — leaving it")
-            return self._with_eviction_stubs(stubs, kept, dropped=[])
+            return self._assemble(stubs, pinned, kept, dropped=evicted)
         newest_dropped_age = time.time() - kept[keep_from - 1][0]["timestamp"]
         fresh = newest_dropped_age < self.trim_fresh_seconds
         if fresh and total <= self.trim_ceiling_bytes:
@@ -298,7 +336,7 @@ class MessageHistory:
                       f"the newest row a trim would drop is {newest_dropped_age / 60:.1f}m old — waiting for it to "
                       f"age past {self.trim_fresh_seconds // 60}m or the window to hit the "
                       f"{self.trim_ceiling_bytes // 1024}KB ceiling")
-            return self._with_eviction_stubs(stubs, kept, dropped=[])
+            return self._assemble(stubs, pinned, kept, dropped=evicted)
         kept_bytes = sum(len(content.encode("utf-8")) for _, _, content in kept[keep_from:])
 
         dropped = kept[:keep_from]
@@ -316,7 +354,99 @@ class MessageHistory:
             self.dropped_delta_sections |= sections
             info(f"MessageHistory: trim dropped {len(dropped_notes)} prompt-delta note(s) of "
                  f"{sorted(sections)} — PromptManager restates those sections before the next send")
-        return self._with_eviction_stubs(stubs, kept, dropped)
+        self._freeze_trim_note(rows, self._trim_cutoff)
+        return self._assemble(stubs, pinned, kept, evicted + dropped)
+
+    def _evict_toolkit_rows(self, kept: list[tuple[dict, str, str]], total: int):
+        """The first pass of a trim over the high watermark: the toolkit reference rows of the
+        window until it is back under the high watermark — the superseded copies (a toolkit
+        with a newer row in the window) always, then the newest copies oldest first. Between
+        high and the ceiling a row younger than trim_fresh_seconds stays (the toolkit a task
+        loaded a minute ago is the one it is using). When the references alone do not bring
+        the window under the watermark the cut follows, and it keeps the tail — so the newest
+        copies are left to it rather than evicted for nothing. Returns (evicted, kept, total)."""
+        candidates = [item for item in kept if self._toolkit_names(item[0])]
+        if total <= self.trim_ceiling_bytes:
+            now = time.time()
+            candidates = [item for item in candidates if now - item[0]["timestamp"] >= self.trim_fresh_seconds]
+        if not candidates:
+            trace("MessageHistory: window over high watermark and no toolkit reference row to evict ahead of the cut")
+            return [], kept, total
+        newest = {}
+        for entry, _, _ in kept:
+            for name in self._toolkit_names(entry):
+                newest[name] = max(newest.get(name, 0.0), entry["timestamp"])
+        size = lambda item: len(item[2].encode("utf-8"))
+        superseded = [item for item in candidates
+                      if all(newest[name] > item[0]["timestamp"] for name in self._toolkit_names(item[0]))]
+        latest = sorted((item for item in candidates if item not in superseded), key=lambda item: item[0]["timestamp"])
+        evicted = list(superseded)
+        total -= sum(size(item) for item in superseded)
+        for item in latest:
+            if total <= self.trim_high_bytes:
+                break
+            evicted.append(item)
+            total -= size(item)
+        if total > self.trim_high_bytes and len(evicted) > len(superseded):
+            total += sum(size(item) for item in evicted[len(superseded):])
+            evicted = superseded
+        if not evicted:
+            trace("MessageHistory: the toolkit references alone would not bring the window under the high "
+                  "watermark — left to the cut")
+            return [], kept, total
+        self._evicted_rows |= {item[0]["timestamp"] for item in evicted}
+        kept = [item for item in kept if item not in evicted]
+        names = sorted({name for entry, _, _ in evicted for name in self._toolkit_names(entry)})
+        info(f"MessageHistory: window over high watermark — evicted {len(evicted)} toolkit reference row(s) "
+             f"({', '.join(names)}) ahead of the cut, {total / 1024:.1f}KB left"
+             + (", the cut follows" if total > self.trim_high_bytes else ", the head stays"))
+        return evicted, kept, total
+
+    def _is_evicted(self, entry: dict) -> bool:
+        return entry["role"] == self.ROLE_COMMAND and entry["timestamp"] in self._evicted_rows
+
+    @classmethod
+    def _is_pinned(cls, entry: dict) -> bool:
+        return entry.get("source") in cls.PINNED_SOURCES
+
+    # --- the trim note (see SOURCE_TRIM_NOTE) ----------------------------------------------
+
+    def _freeze_trim_note(self, rows: list[tuple[dict, str, str]], cutoff: float):
+        """Count the rows before the cutoff once the cut has moved it, so the note keeps saying
+        the same thing until the next trim (an evicted toolkit row has its stub instead)."""
+        out = [entry for entry, _, _ in rows if entry["timestamp"] < cutoff]
+        self._trimmed_count = len(out)
+        self._trimmed_from = min((entry["timestamp"] for entry in out), default=cutoff)
+        trace(f"MessageHistory: the trim note now covers {self._trimmed_count} row(s) since "
+              f"{datetime.fromtimestamp(self._trimmed_from).strftime('%H:%M:%S')}")
+
+    def _trim_note(self) -> tuple[dict, str, str] | None:
+        """The window's first row once a trim has happened, dated just before the head."""
+        if not self._trimmed_count:
+            return None
+        cutoff = datetime.fromtimestamp(self._trim_cutoff)
+        since = datetime.fromtimestamp(self._trimmed_from)
+        noun = "entry" if self._trimmed_count == 1 else "entries"
+        text = (f"{self._trimmed_count} older {noun} before {cutoff.strftime('%H:%M')} were trimmed from this "
+                f"conversation — use show_history(\"{since.strftime('%Y-%m-%d %H:%M')}\", "
+                f"\"{cutoff.strftime('%Y-%m-%d %H:%M')}\") for that period.")
+        entry = {"role": "system", "content": text, "timestamp": self._trim_cutoff - 0.001,
+                 "source": self.SOURCE_TRIM_NOTE, "location": None, "section": None}
+        return (entry, *self._render_entry(entry, self.max_render_chars))
+
+    def _assemble(self, stubs: list[tuple[dict, str, str]], pinned: list[tuple[dict, str, str]],
+                  kept: list[tuple[dict, str, str]], dropped: list[tuple[dict, str, str]]) -> list[tuple[dict, str, str]]:
+        """The window in order: the trim note, then the stubs and pinned rows merged into the
+        kept rows by time — those older than the head in front of it."""
+        window = self._with_eviction_stubs(stubs, kept, dropped)
+        if pinned:
+            window = sorted(window + pinned, key=lambda item: item[0]["timestamp"])
+        # An orphaned reply at the head (its query cut, see _snap_to_boundary) goes before the
+        # note is put in front of it — _finalize_messages would no longer pop it.
+        while window and window[0][1] != "user":
+            window.pop(0)
+        note = self._trim_note()
+        return [note] + window if note else window
 
     # --- toolkit-eviction stubs (see SOURCE_TOOLKIT_EVICTED) ------------------------------
 
@@ -339,7 +469,7 @@ class MessageHistory:
 
     def _with_eviction_stubs(self, stubs: list[tuple[dict, str, str]], kept: list[tuple[dict, str, str]],
                              dropped: list[tuple[dict, str, str]]) -> list[tuple[dict, str, str]]:
-        """The window with its toolkit-eviction stubs in front. A stub whose toolkit is back in
+        """The window with its toolkit-eviction stubs at their rows' places. A stub whose toolkit is back in
         the window is retired; a trim (`dropped` non-empty) retires the earlier trim's stubs —
         a toolkit not reloaded within one window's worth of conversation is not in use — and
         leaves a fresh one for every toolkit row it evicted."""
@@ -370,7 +500,7 @@ class MessageHistory:
             stubs = stubs + [(entry, *self._render_entry(entry, self.max_render_chars)) for entry in new_stubs]
         if not stubs:
             return kept
-        return stubs + kept
+        return sorted(stubs + kept, key=lambda item: item[0]["timestamp"])
 
     @staticmethod
     def _snap_to_boundary(kept: list[tuple[dict, str, str]], keep_from: int, high_bytes: int) -> int:
@@ -549,21 +679,11 @@ class MessageHistory:
         compressed, trimmed), so every body is byte for byte what the LLM receives —
         a superseded browse snapshot shows collapsed, a long turn shows cut. Each row
         gets an h3 header (name/time/source) so MarkdownTabView colours it; the
-        entries before the trim cutoff are summarised in a single leading note.
+        entries out of the window are what the trim note at its head says they are.
         """
-        entries = self.get_merged_entries()
-        if not entries:
+        if not self.get_merged_entries():
             return "_No conversation history yet._"
-
-        window = self._window()
-        trimmed = sum(1 for e in entries if e["timestamp"] < self._trim_cutoff and not self._is_eviction_stub(e))
-        blocks = []
-        if trimmed:
-            cutoff = datetime.fromtimestamp(self._trim_cutoff).strftime('%H:%M:%S')
-            blocks.append(f"_{trimmed} older entries (before {cutoff}) trimmed from the window — not sent._")
-        for entry, _, content in window:
-            blocks.append(f"### {self._display_header(entry)}\n{content}")
-        return "\n\n".join(blocks)
+        return "\n\n".join(f"### {self._display_header(entry)}\n{content}" for entry, _, content in self._window())
 
     @classmethod
     def _display_header(cls, entry: dict) -> str:
@@ -651,7 +771,7 @@ class MessageHistory:
         one the model still sees instead of sending it again."""
         loaded = {}
         for entry in self.get_merged_entries():
-            if entry["timestamp"] < self._trim_cutoff:
+            if entry["timestamp"] < self._trim_cutoff or self._is_evicted(entry):
                 continue
             for name in self._toolkit_names(entry):
                 loaded[name] = entry["timestamp"]

@@ -13,6 +13,15 @@ def _make_history_section():
         return MessageHistory()
 
 
+def _conversation_bytes(section, msgs) -> int:
+    """The window's bytes without the trim note at its head, which is outside the budget."""
+    joined = "\n".join(m["content"] for m in msgs)
+    note = section._trim_note()
+    if note:
+        joined = joined.replace(note[2], "")
+    return len(joined.encode("utf-8"))
+
+
 # ===========================================================================
 # TestFormatTimeAgo
 # ===========================================================================
@@ -241,7 +250,7 @@ class TestHysteresisTrim:
         assert "m029" in joined, "newest entry must survive the trim"
         assert "m000" not in joined, "oldest entries must be trimmed"
         # Window content (minus coalescing separators) must respect the low watermark.
-        assert len(joined.encode("utf-8")) <= 1_000 + len(msgs) * 2
+        assert _conversation_bytes(section, msgs) <= 1_000 + len(msgs) * 2
         assert section._trim_cutoff > 1000.0, "cutoff must advance on trim"
 
     def test_head_stays_frozen_between_watermarks(self):
@@ -465,7 +474,7 @@ class TestFreshRowsDeferTheTrim:
         msgs = section.get_history_messages()
         joined = "\n".join(m["content"] for m in msgs)
         assert "m000" not in joined and "m044" in joined
-        assert len(joined.encode("utf-8")) <= 1_000 + len(msgs) * 2, "a ceiling trim still cuts back to low"
+        assert _conversation_bytes(section, msgs) <= 1_000 + len(msgs) * 2, "a ceiling trim still cuts back to low"
 
     def test_it_is_the_dropped_rows_age_that_counts_not_the_kept_ones(self):
         """Old rows ahead of a fresh burst: the cut drops only old rows, so it goes ahead even
@@ -535,20 +544,23 @@ class TestRenderForDisplay:
         assert long_text not in out
         assert sent in out
 
-    def test_hides_entries_before_trim_cutoff_with_note(self):
+    def test_hides_entries_before_trim_cutoff_behind_the_trim_note(self):
+        """The Prompt tab shows the window the LLM gets: the trimmed rows are gone and the
+        trim note at the head says how many — the same row the request sends."""
         section = _make_history_section()
+        section.trim_high_bytes = 600
+        section.trim_low_bytes = 300
         section.history = [
-            {"role": "user", "content": "old question", "timestamp": 1000.0},
+            {"role": "Marcus", "content": "old question " + "o" * 300, "timestamp": 1000.0},
             {"role": "assistant", "content": "old answer", "timestamp": 1001.0},
-            {"role": "user", "content": "new question", "timestamp": 2000.0},
+            {"role": "Marcus", "content": "new question " + "n" * 250, "timestamp": 2000.0},
         ]
-        section._trim_cutoff = 2000.0
         out = section.render_for_display()
         assert "old question" not in out
         assert "old answer" not in out
         assert "new question" in out
-        assert out.startswith("_2 older entries (before ")
-        assert "trimmed from the window" in out
+        assert out.startswith("### System (")
+        assert "2 older entries before" in out and "show_history(" in out
 
 
 # ===========================================================================
@@ -1063,6 +1075,248 @@ class TestToolkitEvictionStubs:
     def test_the_prompt_tab_shows_the_stub(self):
         section, _ = self._section_after_eviction()
         assert self.STUB in section.render_for_display()
+
+
+class TestTrimNote:
+    """A trimmed window opens with a row telling the LLM what is out of it and that
+    show_history has it: the model otherwise trusts a watch note the trim took the
+    context of (2026-10-11, a job taken for still running two hours after it finished)."""
+
+    @staticmethod
+    def _rows(n, start_ts=1_760_000_000.0, size=100):
+        return [{"role": "Marcus", "content": f"m{i:03d}" + "x" * size, "timestamp": start_ts + i,
+                 "source": None, "location": None} for i in range(n)]
+
+    @staticmethod
+    def _trimmed(section):
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        section.history = TestTrimNote._rows(30)
+        return section.get_history_messages()
+
+    def test_no_note_while_nothing_was_trimmed(self):
+        section = _make_history_section()
+        section.history = self._rows(5)
+        assert "older entr" not in "\n".join(m["content"] for m in section.get_history_messages())
+
+    def test_the_note_counts_the_rows_out_of_the_window_and_points_at_show_history(self):
+        from datetime import datetime
+        section = _make_history_section()
+        msgs = self._trimmed(section)
+        head = msgs[0]["content"]
+        assert head.startswith("System (")
+        out_of_window = sum(1 for e in section.history if e["timestamp"] < section._trim_cutoff)
+        assert out_of_window > 0
+        cutoff = datetime.fromtimestamp(section._trim_cutoff)
+        oldest = datetime.fromtimestamp(section.history[0]["timestamp"])
+        assert f"{out_of_window} older entries before {cutoff.strftime('%H:%M')} were trimmed" in head
+        assert f'show_history("{oldest.strftime("%Y-%m-%d %H:%M")}", "{cutoff.strftime("%Y-%m-%d %H:%M")}")' in head
+        assert "m029" in "\n".join(m["content"] for m in msgs)
+
+    def test_the_note_is_byte_stable_between_trims(self):
+        """New rows under the high watermark change neither the count nor the time: the note
+        is the window's first bytes, and a change there invalidates the whole history cache."""
+        section = _make_history_section()
+        first = self._trimmed(section)[0]["content"]
+        section.history.append({"role": "Marcus", "content": "one more", "timestamp": 1_760_000_100.0,
+                                "source": None, "location": None})
+        section.history.append({"role": "Marcus", "content": "an old row landing late",
+                                "timestamp": 1_760_000_000.5, "source": None, "location": None})
+        note = section._trim_note()[2]
+        assert first.startswith(note)
+        assert section.get_history_messages()[0]["content"].startswith(note)
+
+    def test_the_note_moves_with_the_next_trim(self):
+        section = _make_history_section()
+        before = self._trimmed(section)[0]["content"]
+        section.history += self._rows(30, start_ts=1_760_000_100.0)
+        after = section.get_history_messages()[0]["content"]
+        assert after != before and "older entries before" in after
+        assert str(sum(1 for e in section.history if e["timestamp"] < section._trim_cutoff)) in after
+
+    def test_the_note_goes_with_the_days_wipe(self):
+        section = _make_history_section()
+        self._trimmed(section)
+        with patch("assistant.prompt.MessageHistory.FloxyDatabase") as db, \
+                patch.object(section, "_load_history"):
+            db.get_instance.return_value.delete_todays_history.return_value = 30
+            section.history = []
+            section.wipe_today()
+        assert section._trim_note() is None
+
+    def test_an_orphaned_reply_at_the_head_is_not_rescued_by_the_note(self):
+        """The cut can leave a reply whose query is gone at the head; without the note
+        _finalize_messages popped it, and the note in front must not keep it."""
+        section = _make_history_section()
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        rows = []
+        for i in range(15):
+            rows.append({"role": "Marcus", "content": f"q{i:03d}" + "x" * 80, "timestamp": 1_760_000_000.0 + i * 2,
+                         "source": None, "location": None})
+            rows.append({"role": "assistant", "content": f"a{i:03d}" + "y" * 80, "timestamp": 1_760_000_001.0 + i * 2})
+        section.history = rows
+        msgs = section.get_history_messages()
+        assert msgs[0]["role"] == "user" and msgs[1]["role"] == "assistant"
+        reply = msgs[1]["content"][:4]
+        assert reply.replace("a", "q") in msgs[0]["content"], "the first reply's query is in the head turn"
+
+
+class TestPinnedCompletionRows:
+    """The short row a background job leaves when it finishes outlives the trim for the day:
+    it is what tells the LLM the job is over once the conversation around it is gone."""
+
+    DONE = "[Self-improvement complete] PR #49 open: timers keep their reason"
+
+    def _section(self, source="self_improvement"):
+        from assistant.prompt.MessageHistory import MessageHistory
+        section = _make_history_section()
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        rows = TestTrimNote._rows(30)
+        rows.insert(3, {"role": "system", "content": self.DONE, "timestamp": rows[2]["timestamp"] + 0.5,
+                        "source": source, "location": None})
+        section.history = rows
+        assert source in MessageHistory.PINNED_SOURCES or source == "iMessage"
+        return section
+
+    def test_a_completion_row_older_than_the_head_survives_the_trim(self):
+        section = self._section()
+        msgs = section.get_history_messages()
+        joined = "\n".join(m["content"] for m in msgs)
+        assert section._trim_cutoff > section.history[3]["timestamp"], "the cut moved past the row"
+        assert self.DONE in joined and "m002" not in joined
+        assert joined.index(self.DONE) < joined.index("m029"), "it stands in front of the window"
+        assert "older entries before" in msgs[0]["content"] and self.DONE in msgs[0]["content"]
+
+    def test_it_survives_every_later_trim_of_the_day(self):
+        section = self._section()
+        section.get_history_messages()
+        section.history += TestTrimNote._rows(30, start_ts=1_760_000_100.0)
+        section.history += TestTrimNote._rows(30, start_ts=1_760_000_200.0)
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert self.DONE in joined and "m000" not in joined
+
+    def test_a_system_row_of_another_source_is_trimmed_like_any(self):
+        section = self._section(source="iMessage")
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert self.DONE not in joined
+
+    def test_a_pinned_row_inside_the_window_keeps_its_place(self):
+        section = _make_history_section()
+        rows = TestTrimNote._rows(5)
+        rows.insert(2, {"role": "system", "content": self.DONE, "timestamp": rows[1]["timestamp"] + 0.5,
+                        "source": "wakeup", "location": None})
+        section.history = rows
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert joined.index("m001") < joined.index(self.DONE) < joined.index("m002")
+
+    def test_pinned_rows_are_outside_the_budget(self):
+        """Ten pinned rows must not push a small conversation over the watermark."""
+        section = _make_history_section()
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        rows = TestTrimNote._rows(8)
+        rows += [{"role": "system", "content": f"[Self-analysis complete] finding {i} " + "z" * 300,
+                  "timestamp": 1_760_000_050.0 + i, "source": "self_analysis", "location": None} for i in range(10)]
+        section.history = rows
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert "m000" in joined and section._trim_cutoff == 0.0
+
+
+class TestToolkitRowsGoFirst:
+    """Over the high watermark the toolkit reference rows are evicted before the cut moves
+    the head: a reference comes back with load_toolkit (or the next preload), the
+    conversation rows the cut drops instead do not."""
+
+    @staticmethod
+    def _toolkit_row(name, timestamp, size=800):
+        return {"role": "command", "content": f"result: \n# Toolkit: {name}\n" + "z" * size,
+                "timestamp": timestamp, "source": None, "location": None}
+
+    @staticmethod
+    def _section(high=2_000, low=1_000):
+        section = _make_history_section()
+        section.trim_high_bytes = high
+        section.trim_low_bytes = low
+        return section
+
+    def test_the_reference_goes_and_the_head_stays(self):
+        section = self._section()
+        turns = TestTrimNote._rows(12)          # ~1.4KB of conversation
+        section.history = turns[:2] + [self._toolkit_row("home", turns[1]["timestamp"] + 0.5)] + turns[2:]
+        msgs = section.get_history_messages()
+        joined = "\n".join(m["content"] for m in msgs)
+        assert "# Toolkit: home" not in joined
+        assert all(f"m{i:03d}" in joined for i in range(12)), "no conversation row was dropped"
+        assert section._trim_cutoff == 0.0, "the head did not move"
+        assert 'load_toolkit("home")' in joined, "its stub stands in its place"
+        assert joined.index("m001") < joined.index('load_toolkit("home")') < joined.index("m002")
+        assert section.loaded_toolkits() == {}, "the preloader sends it again"
+        assert "older entries before" not in joined, "nothing is out of the window the note would cover"
+
+    def test_the_window_is_byte_stable_after_the_eviction(self):
+        section = self._section()
+        turns = TestTrimNote._rows(12)
+        section.history = turns[:2] + [self._toolkit_row("home", turns[1]["timestamp"] + 0.5)] + turns[2:]
+        first = section.get_history_messages()
+        section.history.append({"role": "Marcus", "content": "one more", "timestamp": 1_760_000_100.0,
+                                "source": None, "location": None})
+        second = section.get_history_messages()
+        assert second[:len(first) - 1] == first[:-1]
+        assert second[-1]["content"].startswith(first[-1]["content"])
+
+    def test_the_cut_follows_when_the_references_alone_are_not_enough(self):
+        section = self._section()
+        turns = TestTrimNote._rows(30)          # ~3.6KB of conversation alone
+        section.history = [self._toolkit_row("home", 1_759_999_000.0)] + turns
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert "# Toolkit: home" not in joined and "m000" not in joined and "m029" in joined
+        assert section._trim_cutoff > 0.0
+        assert 'load_toolkit("home")' in joined
+
+    def test_a_toolkits_newest_copy_is_left_to_the_cut(self):
+        """When the cut follows anyway it keeps the tail, so the copy at the tail would be
+        evicted for nothing — and re-preloaded on the next request."""
+        section = self._section()
+        turns = TestTrimNote._rows(30)
+        newest = self._toolkit_row("home", turns[-1]["timestamp"] + 0.5, size=10)
+        section.history = [self._toolkit_row("home", 1_759_999_000.0)] + turns + [newest]
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert joined.count("# Toolkit: home") == 1
+        assert 'load_toolkit("home")' not in joined
+        assert section.loaded_toolkits() == {"home": newest["timestamp"]}
+
+    def test_a_fresh_reference_stays_between_high_and_ceiling(self):
+        """The toolkit a task loaded a minute ago is the one it is using (2026-10-05)."""
+        section = self._section()
+        section.trim_ceiling_bytes = 4_000
+        section.trim_fresh_seconds = 900
+        now = time.time()
+        turns = [{"role": "Marcus", "content": f"m{i:03d}" + "x" * 100, "timestamp": now - 3_000 + i,
+                  "source": None, "location": None} for i in range(12)]
+        section.history = turns + [self._toolkit_row("browser", now - 60)]
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert "# Toolkit: browser" in joined and section.loaded_toolkits() == {"browser": now - 60}
+        assert "m000" not in joined, "the cut went ahead of it instead"
+
+    def test_at_the_ceiling_a_fresh_reference_goes_too(self):
+        section = self._section()
+        section.trim_ceiling_bytes = 2_100
+        section.trim_fresh_seconds = 900
+        now = time.time()
+        turns = [{"role": "Marcus", "content": f"m{i:03d}" + "x" * 100, "timestamp": now - 3_000 + i,
+                  "source": None, "location": None} for i in range(12)]
+        section.history = turns + [self._toolkit_row("browser", now - 60)]
+        joined = "\n".join(m["content"] for m in section.get_history_messages())
+        assert "# Toolkit: browser" not in joined and all(f"m{i:03d}" in joined for i in range(12))
+
+    def test_the_prompt_tab_shows_the_window_without_the_evicted_row(self):
+        section = self._section()
+        turns = TestTrimNote._rows(12)
+        section.history = turns[:2] + [self._toolkit_row("home", turns[1]["timestamp"] + 0.5)] + turns[2:]
+        out = section.render_for_display()
+        assert "# Toolkit: home" not in out and 'load_toolkit("home")' in out and "m011" in out
 
 
 class TestRemoveFromUserTurns:

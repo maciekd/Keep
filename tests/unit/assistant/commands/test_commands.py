@@ -10,6 +10,7 @@ from assistant.commands.CommandParser import CommandParser
 from assistant import Procedures
 from assistant.commands import Toolkits, ToolkitPreloader
 from assistant.commands.Commands import Commands, is_reference_result
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from assistant.tools.WebAccess import WebAccess
 
 
@@ -800,6 +801,60 @@ class TestCmdScheduleAndCaffeinate:
         assert "20" in text and "turn off the TV" in text
 
 # ---------------------------------------------------------------------------
+# TestCmdSelfImprovement
+# ---------------------------------------------------------------------------
+
+class TestCmdSelfImprovement:
+    """A finished job leaves a row the LLM can act on — the PR it opened — pinned for the day
+    under the self_improvement source. Before, the row said only that a report was sent, and
+    on 2026-10-11 the assistant took the job for still running two hours after its PR was up."""
+
+    REPORT = ("## Timers keep their reason across a restart\n\n"
+              "Changed `AutonomousActionManager.py` and its test.\n\n"
+              "PR: https://github.com/example/keep/pull/49")
+
+    def _run(self, commands_instance, report, sent=True):
+        from assistant.prompt.MessageHistory import MessageHistory
+        chat = Mock()
+        chat.markdown_to_html.side_effect = lambda md: md
+        chat.send_message.return_value = sent
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch("assistant.commands.Commands.system_note") as noted, \
+             patch("assistant.Notifier._notifier", chat), \
+             patch.object(commands_instance, "fire_and_forget", side_effect=lambda fn, p: fn(p)):
+            mock_cqm.unavailable_reason.return_value = None
+            mock_cqm.improve_code.return_value = report
+            mock_cqm.pull_request_in.side_effect = CodeQualityMaintainer.pull_request_in
+            mock_cqm.first_line.side_effect = CodeQualityMaintainer.first_line
+            commands_instance.cmd_self_improvement("fix the timers")
+        noted.assert_called_once()
+        source, text = noted.call_args.args
+        assert source in MessageHistory.PINNED_SOURCES and noted.call_args.kwargs == {"push": False}
+        return text, chat
+
+    def test_the_row_names_the_pr_its_title_and_its_url(self, commands_instance):
+        text, chat = self._run(commands_instance, self.REPORT)
+        assert text.startswith("[Self-improvement complete] PR #49 open: Timers keep their reason across a restart")
+        assert "https://github.com/example/keep/pull/49" in text
+        assert "Changed" not in text, "the row is the outcome, not the report"
+        chat.send_message.assert_called_once()
+
+    def test_a_pr_number_without_a_url_is_still_the_outcome(self, commands_instance):
+        text, _ = self._run(commands_instance, "Opened PR #12 with the fix.\n\nDetails follow.")
+        assert "PR #12 open: Opened PR #12 with the fix." in text
+
+    def test_no_pr_says_so_with_the_reports_first_line(self, commands_instance):
+        text, _ = self._run(commands_instance, "**Declined**: the request is too vague to act on.\nAsk for the file.")
+        assert text.startswith("[Self-improvement complete] no PR was created: Declined: the request is too vague to act on.")
+        assert "PR #" not in text
+
+    def test_without_a_chat_the_row_carries_the_report(self, commands_instance):
+        text, _ = self._run(commands_instance, self.REPORT, sent=False)
+        assert text.startswith("[Self-improvement complete] (failed: no notification channel")
+        assert "PR #49 open" in text and "Changed `AutonomousActionManager.py`" in text
+
+
+# ---------------------------------------------------------------------------
 # TestCmdSelfAnalysis
 # ---------------------------------------------------------------------------
 
@@ -826,6 +881,24 @@ class TestCmdSelfAnalysis:
             commands_instance.run(name, params)
         fire.assert_called_once()
         assert fire.call_args.args[1] == request
+
+    def test_a_short_pinned_row_outlives_the_report_row(self, commands_instance):
+        """The full report is trimmed with the conversation; the one-line row under the
+        self_analysis source is pinned for the day (MessageHistory.PINNED_SOURCES)."""
+        from assistant.prompt.MessageHistory import MessageHistory
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as mock_cqm, \
+             patch("assistant.commands.Commands.AutonomousActionManager") as mock_aam, \
+             patch("assistant.commands.Commands.system_note") as noted:
+            mock_cqm.unavailable_reason.return_value = None
+            mock_cqm.analyze_code.return_value = "## Findings\n- Bug X at file.py:42"
+            mock_cqm.first_line.side_effect = CodeQualityMaintainer.first_line
+            mock_aam.get_instance.return_value = Mock(prompt_manager=Mock())
+            self._run_sync(commands_instance, "params")
+        noted.assert_called_once()
+        source, text = noted.call_args.args
+        assert source in MessageHistory.PINNED_SOURCES
+        assert text.startswith("[Self-analysis complete]") and "Findings" in text and "Bug X" not in text
+        assert noted.call_args.kwargs == {"push": False}
 
     """The self-analysis command is fire-and-forget (background thread). We
     run the inner callable synchronously by intercepting fire_and_forget
@@ -1766,11 +1839,27 @@ class TestCmdConfigHelp:
             commands_instance.run("config_help", ['"email"'])
         bg.assert_called_once_with(commands_instance._run_config_help, "email")
 
-    def test_a_setup_command_notes_setup_activity(self, commands_instance):
+    def test_reading_the_schema_is_not_setup_activity(self, commands_instance):
+        """config_help changes nothing: it must not keep the 48-hour setup grace (and with it
+        the ~10 KB setup reference in every request) alive on an install that is done."""
         with patch("assistant.commands.Commands.FirstRun.note_setup_activity") as noted, \
                 patch.object(ConfigStore, "summary", return_value=""):
             commands_instance._run_config_help("email")
+            commands_instance.run("config_help", ['"email"'])
+            commands_instance.wait_for_background(2)
+        noted.assert_not_called()
+
+    def test_a_command_on_the_config_lane_is_setup_activity(self, commands_instance):
+        """config_set, enable_integration, every sign-in: whatever changes the setup runs on
+        the config lane, and the lane is what stamps the activity — not each command."""
+        with patch("assistant.commands.Commands.FirstRun.note_setup_activity") as noted:
+            commands_instance.background_command(lambda _p: "ok", "x", lane=Commands.CONFIG_LANE)
+            commands_instance.wait_for_background(2)
         noted.assert_called_once()
+        with patch("assistant.commands.Commands.FirstRun.note_setup_activity") as noted:
+            commands_instance.background_command(lambda _p: "ok", "x")
+            commands_instance.wait_for_background(2)
+        noted.assert_not_called()
 
     def test_section_text_with_comments_and_the_set_flags(self, commands_instance):
         with patch.object(ConfigStore, "summary", return_value="email.address: not set, email.password: not set"):
