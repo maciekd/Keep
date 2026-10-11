@@ -1,17 +1,25 @@
 import subprocess
-from typing import List
+from typing import List, Optional
 
 from common.ConfigManager import config
 from assistant.integration.Integration import Integration
 from common.logging import error
+from integrations.reminders.RemindersStore import RemindersStore
+
+DEFAULT_LIST_NAME = "Michelle"
 
 
 class RemindersIntegration(Integration):
-    """Apple Reminders lists, such as the shopping list, added to when asked.
+    """Apple Reminders: the shopping list, and Keep's own alarmed reminders.
 
-    Adds items to Apple Reminders lists, such as the shopping list, when asked.
+    Adds items to the family's shopping list when asked, and keeps reminders of its own in a
+    Reminders list that syncs to the user's iPhone: one with a due time rings there at that
+    time, one with a place rings on arriving at or leaving it, and Keep sees which were done.
 
-    Goes through AppleScript."""
+    The shopping list goes through AppleScript (`add_reminder_item`, unchanged); the own list
+    (`reminders.list_name`, created on first use) through EventKit in `RemindersStore`, since
+    AppleScript cannot set a location alarm. The health check is the AppleScript side; the
+    EventKit side reports its own permission state through the command replies."""
     sensitive = True
 
     @property
@@ -21,6 +29,21 @@ class RemindersIntegration(Integration):
     @property
     def config_keys(self) -> List[str]:
         return ["reminders"]
+
+    def __init__(self):
+        super().__init__()
+        self._store: Optional[RemindersStore] = None
+
+    @property
+    def list_name(self) -> str:
+        return config.get("reminders.list_name") or DEFAULT_LIST_NAME
+
+    @property
+    def store(self) -> RemindersStore:
+        """The EventKit side, on Keep's own list; rebuilt when the configured name changes."""
+        if self._store is None or self._store.list_name != self.list_name:
+            self._store = RemindersStore(self.list_name)
+        return self._store
 
     def check_health(self) -> bool:
         result = subprocess.run(

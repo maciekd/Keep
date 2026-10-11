@@ -1,2 +1,6 @@
 reminders:
   shopping_list_name: Shoppinglista
+  # The Reminders list Keep's own reminders go to (create_reminder, list_reminders): made in
+  # the iCloud account on first use when no list has that name. It syncs to the phones, so a
+  # reminder with a due time or a place rings there.
+  list_name: Michelle
