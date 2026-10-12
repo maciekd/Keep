@@ -147,6 +147,78 @@ class TestSelfImprovementIntegration:
         assert "Self Improvement" in ConfigSchema._lines()[0:12].__str__()
 
 
+STATUS_MODULE = "integrations.self_improvement.SelfImprovementIntegration"
+ON_KEY = ClaudeStatus("/opt/bin/claude", True, "no login, using api_keys.anthropic (billed per token)", api_key=True)
+ON_LOGIN = ClaudeStatus("/opt/bin/claude", True, "logged in as me@example.com (max)")
+
+
+@pytest.mark.unit
+class TestApiKeyWarning:
+    """The health check warns the household when the runs are billed on the API key, once per
+    change of credentials, and says so when a login is back."""
+
+    def setup_method(self):
+        SelfImprovementIntegration.reset_instance()
+
+    def teardown_method(self):
+        SelfImprovementIntegration.reset_instance()
+
+    @staticmethod
+    def _checks(*statuses):
+        integration = SelfImprovementIntegration()
+        with patch(f"{STATUS_MODULE}.claude_status", side_effect=list(statuses)), \
+                patch(f"{STATUS_MODULE}.system_note") as note:
+            for _ in statuses:
+                assert integration.check_health()
+        return [call.args for call in note.call_args_list]
+
+    def test_key_standing_in_is_told_once(self):
+        notes = self._checks(ON_KEY, ON_KEY, ON_KEY)
+        assert len(notes) == 1
+        source, text = notes[0]
+        assert source == "Self Improvement"
+        assert "api_keys.anthropic" in text and "/login" in text   # the remedy is in the note, not only the cost
+
+    def test_login_from_the_start_says_nothing(self):
+        assert self._checks(ON_LOGIN, ON_LOGIN) == []
+
+    def test_login_lost_then_back_is_told_both_ways(self):
+        notes = self._checks(ON_LOGIN, ON_KEY, ON_KEY, ON_LOGIN, ON_LOGIN)
+        assert len(notes) == 2
+        assert "api_keys.anthropic" in notes[0][1]
+        assert "me@example.com" in notes[1][1] and "no longer" in notes[1][1]
+
+    def test_a_failed_check_in_between_does_not_repeat_the_warning(self):
+        integration = SelfImprovementIntegration()
+        broken = ClaudeStatus("/opt/bin/claude", False, "`claude auth status` timed out after 30s")
+        with patch(f"{STATUS_MODULE}.claude_status", side_effect=[ON_KEY, broken, ON_KEY]), \
+                patch(f"{STATUS_MODULE}.system_note") as note:
+            assert integration.check_health()
+            with pytest.raises(RuntimeError, match="timed out"):
+                integration.check_health()
+            assert integration.check_health()
+        assert note.call_count == 1
+
+    def test_the_note_reaches_the_history_and_the_chats(self):
+        """The warning goes through system_note (a history row the LLM reads plus a push to the
+        chats), not a plain chat message the assistant would never know about."""
+        integration = SelfImprovementIntegration()
+        history = Mock()
+        from assistant import SystemNote
+        SystemNote.set_history(history)
+        try:
+            with patch(f"{STATUS_MODULE}.claude_status", return_value=ON_KEY), \
+                    patch("assistant.SystemNote.notifier") as notifier:
+                notifier.return_value.send_message.return_value = True
+                integration.check_health()
+        finally:
+            SystemNote.set_history(None)
+        row = history.add_context_message.call_args
+        assert row.args[0] == "system" and "api_keys.anthropic" in row.args[1]
+        assert row.kwargs["source"] == "Self Improvement"
+        assert notifier.return_value.send_message.called
+
+
 @pytest.mark.unit
 class TestGating:
     def test_disabled_reason(self):

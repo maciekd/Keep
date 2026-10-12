@@ -10,6 +10,8 @@
 #      API price of ai.code_quality.model (a self_improvement run is a few dollars on a Fable
 #      model, well under a dollar on a Sonnet one). The CLI is never run interactively, so no
 #      login and no workspace-trust prompt stands in the way.
+#      While the key stands in for a login the health check says so once in the chats (a
+#      system note), so a logged-out CLI is noticed before the bill, not on it.
 #   2. Optional: a claude.ai subscription (Pro/Max) instead of the key — open a terminal ON the
 #      server machine, run `claude` and complete /login. Do not log in over SSH — a login made
 #      in an SSH session is not seen by the server process. A login takes precedence over the key.
