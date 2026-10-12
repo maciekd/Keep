@@ -1,9 +1,13 @@
 """The Google tab: the accounts table, the selection, the link shown on Ctrl-L, the pasted
 address taken on Ctrl-E and handed to the integration, and the sign-out."""
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import pytest
+
+from interfaces.console.framework.TUIScreen import TUIScreen
+from interfaces.console.widgets import Board
 
 from assistant.integration.OAuthPaste import SignIn
 from integrations.google.GoogleAuth import REDIRECT_URI
@@ -45,6 +49,17 @@ def cells(tab):
 def type_text(tab, text):
     for ch in text:
         tab.handle_input(ch)
+
+
+def draw(tab, width, height=40) -> TUIScreen:
+    screen = TUIScreen(width, height)
+    tab._last_check_time = time.time() + 1e6   # no background check during the test
+    tab.draw(screen, 0)
+    return screen
+
+
+def screen_rows(screen) -> list:
+    return ["".join(c.char for c in row) for row in screen.next_frame]
 
 
 @pytest.mark.unit
@@ -90,6 +105,24 @@ class TestSignIn:
         assert fields[0].value == "Family"
         assert "".join(f.value for f in fields if f.label in ("Open", "")) == URL
         assert any("paste" in f.value for f in fields) and "Waiting" in tab._status_message
+
+    @pytest.mark.parametrize("width", [80, Board.SIDE_BY_SIDE_MIN + 10])
+    def test_the_link_wraps_to_the_sign_in_tile_whether_it_stands_under_or_beside_the_table(self, width):
+        """The Google tab has a table, so its Sign-in tile sits beside it on a wide screen and
+        under it on a narrow one — neither is the Volvo tab's table-less form. In both layouts
+        every row of the link stands whole on the screen (a cut row cannot be copied) and the
+        rows together are the link."""
+        tab, _ = make_tab(_account("Personal", "marcus@example.com", signed_in=False))
+        tab.handle_input("\x0c")
+
+        screen = draw(tab, width)
+
+        link_rows = [f.value for f in tab._fields() if f.label in ("Open", "")]
+        assert "".join(link_rows) == URL
+        assert len(link_rows) == -(-len(URL) // tab._value_w) and len(link_rows[0]) == tab._value_w
+        drawn = screen_rows(screen)
+        assert all(any(row in line for line in drawn) for row in link_rows)
+        assert not any("…" in line for line in drawn if "accounts.google.com" in line or "client_id" in line)
 
     def test_ctrl_e_takes_the_pasted_address_however_long_and_enter_hands_it_to_the_integration(self):
         tab, api = make_tab(_account("Personal", "a@example.com", signed_in=False))

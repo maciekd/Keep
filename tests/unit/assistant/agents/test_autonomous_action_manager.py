@@ -1003,6 +1003,47 @@ class TestWakeupPersistence:
             mgr._fire_missed_wakeups(missed)
         assert [c.kwargs["wakeup"]["reason"] for c in check.call_args_list] == ["breaks", "still runs"]
 
+    @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
+    @patch('assistant.agents.AutonomousActionManager.USER_INTERACTION_QUIET_PERIOD_SECONDS', 0)
+    def test_a_missed_wakeup_waits_until_the_user_is_done_like_one_on_time(self):
+        """Startup is when the user is likely talking to the server: a missed wake-up goes through
+        the same gate as a timely one — held back while a request is in flight or just ended, then
+        fired once, not skipped."""
+        now = time.time()
+        wakeup = self.wakeup(now - 600, "say the oven is done")
+        mgr, _ = make_manager()
+        mgr.running = True
+        mgr.prompt_manager.is_night_mode_active.return_value = False
+        busy = iter([True, True, False])
+        with patch.object(mgr, 'is_user_interaction_active', side_effect=lambda: next(busy)) as asked, \
+             patch.object(mgr, 'activity_check', return_value="") as check:
+            mgr._fire_missed_wakeups([wakeup])
+        assert asked.call_count == 3
+        check.assert_called_once()
+        assert check.call_args.kwargs["wakeup"]["reason"] == "say the oven is done"
+
+    @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
+    def test_a_shutdown_between_two_missed_wakeups_leaves_the_unfired_one_for_the_next_start(self):
+        """Each missed wake-up leaves the file only as its own turn comes, so a stop after the
+        first has fired keeps the second on disk — the next startup finds it and fires it."""
+        now = time.time()
+        missed = [self.wakeup(now - 1200, "fired before the stop"), self.wakeup(now - 600, "kept for the next start")]
+        for w in missed:
+            self._save(w)
+        mgr, _ = make_manager()
+        mgr.running = True
+        mgr.prompt_manager.is_night_mode_active.return_value = False
+
+        def check_then_stop(wakeup=None):
+            mgr.running = False
+            return ""
+
+        with patch.object(mgr, 'is_user_interaction_active', return_value=False), \
+             patch.object(mgr, 'activity_check', side_effect=check_then_stop) as check:
+            mgr._fire_missed_wakeups(missed)
+        assert [c.kwargs["wakeup"]["reason"] for c in check.call_args_list] == ["fired before the stop"]
+        assert [w["reason"] for w in self.read()] == ["kept for the next start"]
+
     def _save(self, wakeup: dict):
         AutonomousActionManager._write_wakeups(AutonomousActionManager._load_wakeups() + [wakeup])
 
