@@ -18,3 +18,6 @@ Any open reminder, in the shopping list or another Reminders list, is marked as 
 `text` is the reminder's title as the user says it; the match is case-insensitive against the open reminders. Exactly
 one match is completed. Several matches (the same title in more than one list) are refused and named back to you with
 their lists — nothing is completed, tell the user. No match is reported as such.
+
+Reading the open reminders of every list takes a while: emit the command and stop generating; the result arrives in
+the next round.

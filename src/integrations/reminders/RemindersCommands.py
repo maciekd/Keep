@@ -10,7 +10,9 @@ class RemindersCommands(CommandSet):
 
     def describe_add_shopping_list_item(self, p): return f"Adding {p.strip()} to the shopping list"
 
-    def cmd_complete_reminder(self, parameter_string: str) -> str:
-        return complete_reminder(parameter_string)
+    # Reading the open reminders of a full house takes Reminders the better part of a
+    # minute, so the dialog is not held for it.
+    def cmd_complete_reminder(self, parameter_string: str):
+        self.background_command(complete_reminder, parameter_string)
 
     def describe_complete_reminder(self, p): return f"Completing the reminder {p.strip()}"

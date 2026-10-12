@@ -1,6 +1,7 @@
 import subprocess
+import time
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 from common.ConfigManager import config
 from assistant.integration.Integration import Integration
@@ -9,25 +10,64 @@ from common.logging import error, info, trace
 
 @dataclass(frozen=True)
 class OpenReminder:
-    """One reminder that is not completed yet, with the list it lives in."""
+    """One reminder that is not completed yet, with the list it lives in. Lists are addressed
+    by id: two lists may share a name (a local and a shared "Shoppinglista", say), and a
+    name then always resolves to the first of them."""
+    list_id: str
     list_name: str
     name: str
 
 
-# One line per open reminder, `<list>\t<name>`; a reminder named with a tab or a newline is
-# rare enough that the parser simply skips a line without the separator.
-_OPEN_REMINDERS_SCRIPT = '''
+# Reminders answers any property read of a list in about 10-20 ms per reminder, completed
+# ones included, so a list of a thousand takes a dozen seconds and a `whose` over the
+# application as a whole never comes back on a full house. One osascript call per list keeps
+# each within budget and names the list that failed.
+_SCRIPT_TIMEOUT = 120
+
+# One line per list, `<id>\t<name>`.
+_LISTS_SCRIPT = '''
 tell application "Reminders"
     set out to ""
-    repeat with l in lists
-        set ln to name of l
-        repeat with rn in (name of every reminder of l whose completed is false)
-            set out to out & ln & tab & rn & linefeed
-        end repeat
+    set allLists to every list
+    repeat with i from 1 to count of allLists
+        set l to item i of allLists
+        set out to out & (id of l) & tab & (name of l) & linefeed
     end repeat
     return out
 end tell
 '''
+
+# One line per open reminder of the list, its name. The names are fetched into a plain list
+# before they are read: iterating a `whose` reference directly hands back references that
+# osascript cannot coerce to text (error -1700).
+_LIST_OPEN_SCRIPT = '''
+tell application "Reminders"
+    set openNames to name of (every reminder of list id "{list_id}" whose completed is false)
+    set out to ""
+    repeat with j from 1 to count of openNames
+        set out to out & (item j of openNames) & linefeed
+    end repeat
+    return out
+end tell
+'''
+
+
+def parse_lists(output: str) -> List[Tuple[str, str]]:
+    """The lists script's output as (id, name) pairs; a line without the separator is skipped."""
+    lists = []
+    for line in output.splitlines():
+        list_id, sep, name = line.partition("\t")
+        if sep and list_id:
+            lists.append((list_id, name))
+        elif line:
+            trace(f"Skipping unparsable lists line: {line!r}")
+    return lists
+
+
+def parse_open_reminders(output: str, list_id: str, list_name: str) -> List[OpenReminder]:
+    """The listing script's output for one list as reminders, blank lines dropped. A title
+    with a newline in it comes out as two reminders — rare enough to leave."""
+    return [OpenReminder(list_id, list_name, line) for line in output.splitlines() if line.strip()]
 
 
 def _escape(text: str) -> str:
@@ -80,21 +120,37 @@ class RemindersIntegration(Integration):
             error(f"Failed to add reminder: {e}")
             return f"Failed to add reminder: {e}"
 
-    def open_reminders(self) -> List[OpenReminder]:
-        """Every reminder not completed yet, across all lists. Raises when Reminders cannot
-        be asked."""
-        result = subprocess.run(
-            ["osascript", "-e", _OPEN_REMINDERS_SCRIPT],
-            capture_output=True, text=True, timeout=30
-        )
+    def _run_script(self, script: str, what: str) -> str:
+        """The script's stdout; raises with the reason when osascript fails or hangs."""
+        started = time.time()
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=_SCRIPT_TIMEOUT
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Reminders did not answer within {_SCRIPT_TIMEOUT}s reading {what}")
+        trace(f"Reminders answered {what} in {time.time() - started:.1f}s")
         if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "osascript failed")
+            raise RuntimeError(f"{result.stderr.strip() or 'osascript failed'} (reading {what})")
+        return result.stdout
+
+    def lists(self) -> List[Tuple[str, str]]:
+        """Every Reminders list as (id, name). Raises when Reminders cannot be asked."""
+        lists = parse_lists(self._run_script(_LISTS_SCRIPT, "the lists"))
+        trace(f"Reminders lists: {[name for _, name in lists]}")
+        return lists
+
+    def open_reminders(self) -> List[OpenReminder]:
+        """Every reminder not completed yet, across all lists, one query per list. Raises
+        when Reminders cannot be asked, naming the list that failed."""
         found = []
-        for line in result.stdout.splitlines():
-            list_name, sep, name = line.partition("\t")
-            if sep and name:
-                found.append(OpenReminder(list_name, name))
-        trace(f"Open reminders: {len(found)} across all lists")
+        for list_id, list_name in self.lists():
+            script = _LIST_OPEN_SCRIPT.replace("{list_id}", _escape(list_id))
+            in_list = parse_open_reminders(self._run_script(script, f'list "{list_name}"'), list_id, list_name)
+            trace(f"Open reminders in '{list_name}': {len(in_list)}")
+            found.extend(in_list)
+        info(f"Open reminders: {len(found)} across all lists")
         return found
 
     def complete_reminder(self, text: str) -> str:
@@ -120,13 +176,13 @@ class RemindersIntegration(Integration):
 
         target = candidates[0]
         script = (
-            f'tell application "Reminders" to tell list "{_escape(target.list_name)}" '
+            f'tell application "Reminders" to tell list id "{_escape(target.list_id)}" '
             f'to set completed of (first reminder whose name is "{_escape(target.name)}" and completed is false) to true'
         )
         try:
             result = subprocess.run(
                 ["osascript", "-e", script],
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=_SCRIPT_TIMEOUT
             )
             if result.returncode != 0:
                 error(f"osascript failed: {result.stderr.strip()}")
