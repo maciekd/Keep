@@ -20,6 +20,7 @@ from .sections.HomeSectionGenerator import HomeSectionGenerator
 from .sections.WebSectionGenerator import WebSectionGenerator
 from .sections.CalendarSectionGenerator import CalendarSectionGenerator
 from .sections.CarSectionGenerator import CarSectionGenerator
+from assistant import Destinations
 from .MessageHistory import MessageHistory, THINKING_TAG_INSTRUCTION
 from common.FloxyDatabase import FloxyDatabase
 from common.ConfigManager import config
@@ -121,6 +122,13 @@ class PromptManager:
                 section.start()
             self._assemble_prompt()
             self._monitor().add_listener(self._on_integrations_changed)
+            Destinations.add_listener(self._on_destinations_changed)
+
+    def _on_destinations_changed(self):
+        """An interface registered or dropped a destination: the {DESTINATIONS} line of the
+        command block follows. Rare — at start and when the allow list changes — so the cached
+        prompt is not churned by it."""
+        self._assemble_prompt("destinations changed")
 
     # Where each section stands in `self.sections`: the order they are started and stopped in,
     # and the order of the {INTEGRATION_DATA} block. A section a new folder brings comes after
@@ -728,7 +736,8 @@ class PromptManager:
     def _substitute(self, text: str, sections: dict[str, str], photo_count: str | None = None) -> str:
         """Fill every placeholder the templates and toolkit files use: the sections given — by
         their own placeholder, or in the {INTEGRATION_DATA} block for the ones with a heading —
-        then {TOOLKITS} (assistant.commands.Toolkits, the toolkits offered now), {PHOTO_COUNT}
+        then {TOOLKITS} (assistant.commands.Toolkits, the toolkits offered now), {DESTINATIONS}
+        (assistant.Destinations, where post_message can reach), {PHOTO_COUNT}
         (`photo_count` if given, else the DB's, refreshed at most daily), {WAKE_WORD},
         {WAKE_INTERVAL_MINUTES} and {EMOTION_TAGS} (config-driven)."""
         from assistant.commands import Toolkits
@@ -738,6 +747,8 @@ class PromptManager:
             text = text.replace(self.DATA_BLOCK, self._render_data_block(sections))
         if "{TOOLKITS}" in text:
             text = text.replace("{TOOLKITS}", Toolkits.render_index(self._monitor()))
+        if "{DESTINATIONS}" in text:
+            text = text.replace("{DESTINATIONS}", Destinations.describe())
         if "{PHOTO_COUNT}" in text:
             text = text.replace("{PHOTO_COUNT}", photo_count or f"~{self._get_photo_count()}")
         if self.EMOTION_TAGS in text:

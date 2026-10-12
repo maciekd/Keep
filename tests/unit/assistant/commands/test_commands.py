@@ -779,6 +779,48 @@ class TestCmdRemember:
 
 
 # ---------------------------------------------------------------------------
+# TestCmdPostMessage
+# ---------------------------------------------------------------------------
+
+class TestCmdPostMessage:
+    @pytest.fixture(autouse=True)
+    def registry(self):
+        from assistant import Destinations
+        Destinations.clear()
+        self.sent = []
+        Destinations.register(Destinations.Destination(
+            "Marcus & Alice - board", Destinations.KIND_GROUP, lambda text: self.sent.append(text) or True,
+            aliases=("-5342761890",)))
+        yield
+        Destinations.clear()
+
+    def test_run_puts_an_under_quoted_text_back_together_and_is_silent_on_success(self, commands_instance):
+        """post_message is a multi-parameter command: a text with commas arrives in pieces."""
+        result = commands_instance.run("post_message", ["Marcus & Alice - board", "Apotea moved the button", " retry once"])
+        assert result is None or result == ""
+        assert self.sent == ["Apotea moved the button, retry once"]
+
+    def test_the_destination_may_come_quoted_and_by_alias(self, commands_instance):
+        commands_instance.cmd_post_message('"-5342761890"', "hi")
+        assert self.sent == ["hi"]
+
+    def test_an_unknown_destination_comes_back_as_the_error_naming_the_known_ones(self, commands_instance):
+        result = commands_instance.cmd_post_message("garage", "hi")
+        assert "garage" in result and "Marcus & Alice - board" in result
+        assert self.sent == []
+
+    def test_a_missing_text_is_refused_with_the_destinations(self, commands_instance):
+        result = commands_instance.cmd_post_message("Marcus & Alice - board")
+        assert result.startswith("post_message failed") and "Marcus & Alice - board" in result
+
+    def test_the_text_is_vault_redacted_before_it_leaves_the_house(self, commands_instance):
+        with patch("assistant.commands.Commands.redact_for_storage",
+                   side_effect=lambda text: text.replace("4111 1111 1111 1111", "[card:primary]")):
+            commands_instance.cmd_post_message("Marcus & Alice - board", "pay with 4111 1111 1111 1111")
+        assert self.sent == ["pay with [card:primary]"]
+
+
+# ---------------------------------------------------------------------------
 # TestCmdScheduleAndCaffeinate
 # ---------------------------------------------------------------------------
 

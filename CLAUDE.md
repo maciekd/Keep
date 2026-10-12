@@ -98,6 +98,8 @@ source .venv/bin/activate && python <script.py>
 
 **Request Flow**: `interfaces/*` build a `RequestContext` → `Assistant.stream()` → `RequestProcessor` → `DialogManager` → LLM; commands run through `assistant/commands/CommandProcessor` and each round's result is persisted as a `command` history row (`MessageHistory.add_command_result`, rendered verbatim on the user side so the next turn still sees it); the events stream back to the interface (HTTP renders them with `WireFormat`; chat interfaces — Telegram and the TUI Home chat — through `interfaces/chat/ChatSession` → the transport's `Draft`).
 
+**Destinations**: a reply goes back to whoever asked; `post_message(destination, text)` says something somewhere else. `src/assistant/Destinations.py` is the registry the interfaces fill at start — the chat hub registers `owner` (the proactive route, `notify_chat_ids` on Telegram), the Telegram transport one destination per group on `allowed_chat_ids` (by title, the id as alias), the voice interface a room (planned) — and the `{DESTINATIONS}` line of the prompt follows it. The autonomous check emits commands only and speaks through `post_message`; stray text after its commands is dropped. The plan: `docs/plans/POST_MESSAGE_PLAN.md`.
+
 ## Testing Strategy
 
 Unit tests are pytest under `tests/unit`.

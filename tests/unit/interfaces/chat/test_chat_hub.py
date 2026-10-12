@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from assistant import Destinations
 from assistant.AssistantEvents import RoundEnd, Token
 from assistant.Notifier import Notifier
 from interfaces.chat.ChatHub import ChatHub
@@ -15,8 +16,10 @@ from .fakes import FakeAssistant, FakeTransport, wait_until
 @pytest.fixture(autouse=True)
 def reset_singleton():
     ChatHub.reset_instance()
+    Destinations.clear()
     yield
     ChatHub.reset_instance()
+    Destinations.clear()
 
 
 @pytest.fixture
@@ -157,6 +160,34 @@ class TestSendMessage:
         broken.owner_conversations = down
         hub.send_command_notification("Still…", ephemeral=True)
         assert transport.status_calls()[-1] == ("status", 111, " • <i>Still…</i>")
+
+
+@pytest.mark.unit
+class TestOwnerDestination:
+    """`post_message("owner", ...)` is the proactive route: what send_message pushes to."""
+
+    def test_the_first_transport_brings_the_owner_destination(self, hub, transport):
+        assert Destinations.names() == ["owner"]
+
+    def test_a_post_to_owner_lands_on_the_notification_route_not_every_owner(self, hub, transport):
+        transport.owners = [111, 222]
+        transport.notify = [222]
+        assert Destinations.send("owner", "<b>Pasta</b> is done") == ""
+        assert [c[1] for c in transport.calls if c[0] == "text"] == [222]
+        assert transport.calls[0][2] == "<b>Pasta</b> is done"
+
+    def test_the_command_reaches_the_owner_through_the_registry(self, hub, transport):
+        from unittest.mock import Mock
+        from assistant.commands.Commands import Commands
+        assert Commands(Mock()).cmd_post_message("owner", "hi there") is None
+        assert [c[2] for c in transport.calls if c[0] == "text"] == ["hi there"]
+
+    def test_the_destination_leaves_with_the_last_transport_and_on_stop(self, hub, transport):
+        hub.unregister(transport)
+        assert Destinations.names() == []
+        hub.register(transport)
+        hub.stop()
+        assert Destinations.names() == []
 
 
 @pytest.mark.unit

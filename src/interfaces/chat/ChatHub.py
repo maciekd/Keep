@@ -23,6 +23,7 @@ import uuid
 from html import escape
 from typing import Any, Callable, Optional
 
+from assistant import Destinations
 from assistant.Notifier import SecretRejected
 from assistant.Telemetry import Telemetry
 from assistant.integration.SingletonMixin import SingletonMixin
@@ -87,6 +88,7 @@ class ChatHub(SingletonMixin):
                 return
             self._transports.append(transport)
         info(f"Chat transport {transport.name} registered (source={transport.source}).")
+        self._register_owner_destination()
 
     def unregister(self, transport: ChatTransport):
         with self._lock:
@@ -99,6 +101,8 @@ class ChatHub(SingletonMixin):
         for session in sessions:
             session.cancel()
         info(f"Chat transport {transport.name} unregistered ({len(sessions)} session(s) dropped).")
+        if not self.transports:
+            Destinations.unregister(self.OWNER_DESTINATION)
 
     @property
     def transports(self) -> list[ChatTransport]:
@@ -164,6 +168,17 @@ class ChatHub(SingletonMixin):
             self._sessions.clear()
         for session in sessions:
             session.cancel()
+        Destinations.unregister(self.OWNER_DESTINATION)
+
+    # The destination `post_message("owner", ...)` reaches: the proactive route, exactly what
+    # `send_message` pushes to (each transport's notification_conversations — Telegram's
+    # notify_chat_ids), not every owner chat. Registered with the first transport, dropped
+    # with the last.
+    OWNER_DESTINATION = "owner"
+
+    def _register_owner_destination(self):
+        Destinations.register(Destinations.Destination(
+            self.OWNER_DESTINATION, Destinations.KIND_CHAT, lambda text: self.send_message(text)))
 
     # --- transcript -----------------------------------------------------------------------
 

@@ -1,6 +1,6 @@
 # Plan: `post_message` and destinations — the autonomous check emits commands only
 
-Written 2026-10-12. Status: agreed, not started.
+Written 2026-10-12. Status: phase 1 in review, phase 2 not started.
 
 ## What we want
 

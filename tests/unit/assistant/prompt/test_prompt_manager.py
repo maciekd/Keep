@@ -1458,6 +1458,39 @@ def test_testsuite_wake_word_placeholder_substituted_from_config(tmp_path, monke
 
 
 @pytest.mark.unit
+def test_destinations_placeholder_follows_the_registry(tmp_path, monkeypatch):
+    """{DESTINATIONS} is filled from assistant.Destinations, and a registration after the
+    manager is up rebuilds the prompt so the new destination is in it."""
+    from assistant import Destinations
+    Destinations.clear()
+    template = (
+        "Post to: {DESTINATIONS}\n"
+        "{PROCEDURES}\n{WATCHLIST}\n{HOME}\n{MEMORY}\n"
+        "{CALENDAR}\n{INTEGRATIONS}\n{WHISPER}\n{CAR_INFO}\n"
+    )
+    res_dir = tmp_path / "res"
+    res_dir.mkdir()
+    (res_dir / "prompt.md").write_text(template)
+    (tmp_path / "testsuite_prompt.md").write_text(template)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(PromptManager, "_get_photo_count", lambda self: 0)
+    try:
+        manager = PromptManager(test_suite=True)
+        manager.sections = {key: DummySection(f"{key}_content") for key in
+                            ["procedures", "watchlist", "home", "memory",
+                             "calendar", "integrations", "whisper", "car_info"]}
+        manager._assemble_prompt(force=True)
+        assert f"Post to: {Destinations.NONE_YET}" in manager.prompt
+
+        Destinations.register(Destinations.Destination("kitchen", Destinations.KIND_VOICE, lambda text: True))
+        manager._assemble_prompt(force=True)   # the live manager's listener rebuilds the same way
+        assert "Post to: kitchen (speakers)" in manager.prompt
+        assert "{DESTINATIONS}" not in manager.prompt
+    finally:
+        Destinations.clear()
+
+
+@pytest.mark.unit
 def test_live_assembly_wake_word_placeholder_substituted_from_config(tmp_path, monkeypatch):
     """The live _assemble_prompt path replaces {WAKE_WORD} the same way."""
     template = (

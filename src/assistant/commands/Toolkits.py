@@ -232,7 +232,7 @@ TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)
 trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)} from integration folders")
 
 # Documented in the prompt itself, outside any toolkit.
-CORE_COMMANDS = frozenset({"load_toolkit", "remember",
+CORE_COMMANDS = frozenset({"load_toolkit", "remember", "post_message",
                            "load_watch", "save_watch", "checked_watch", "delete_watch",
                            "load_procedure", "save_procedure", "delete_procedure"})
 # Runnable but deliberately offered nowhere (Commands.py carries the todo asking whether to keep it).

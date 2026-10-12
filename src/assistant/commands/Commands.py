@@ -14,7 +14,7 @@ from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess, NETWORK_LOG_HEADER
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
-from assistant import FirstRun, MemoryFile, Procedures, WatchList
+from assistant import Destinations, FirstRun, MemoryFile, Procedures, WatchList
 from common.logging import trace, info, note, error, fine
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from common.ConfigManager import ConfigManager
@@ -29,6 +29,7 @@ from assistant.integration import CameraProvider as cameras
 from assistant.integration import VehicleProvider as vehicles
 from common.FloxyDatabase import FloxyDatabase
 from common.vault.Vault import Vault, VaultError, DuplicateSecret, KINDS
+from common.vault.Redactor import redact_for_storage
 
 
 def normalize_llm_escapes(text: str) -> str:
@@ -105,7 +106,7 @@ class Commands:
         "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit", "pr_feedback",
         "load_watch", "save_watch", "delete_watch",
-        "load_procedure", "save_procedure", "delete_procedure",
+        "load_procedure", "save_procedure", "delete_procedure", "post_message",
         "create_event", "delete_event", "move_event", "load_calendar", "fetch_camera_images", "car_navigate",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
@@ -1366,6 +1367,23 @@ class Commands:
     def cmd_remember(self, parameter_string: str):
         MemoryFile.append(parameter_string)
 
+    def cmd_post_message(self, destination: str = "", *text_parts: str):
+        """Say something somewhere other than the asking chat: the owner's chats, a group the
+        bot is in, a room. Synchronous and silent on success — the command echo in the owner's
+        chat is the audit trail, and a result would cost the model another round; a failure
+        comes back as the error so the model can correct the destination in the same turn.
+        The text is vault-redacted first: a group or a speaker is not the owner's eyes, and
+        VaultLLM may have restored a real value in the reply."""
+        destination = destination.strip().strip("\"'`")
+        # An under-quoted text with commas arrives in pieces: put it back together.
+        text = ", ".join(part.strip() for part in text_parts if part.strip())
+        if not destination or not text:
+            return "post_message failed: expected 'destination, text' — available destinations: " + Destinations.describe()
+        redacted = redact_for_storage(text)
+        if redacted != text:
+            trace(f"post_message: {len(text) - len(redacted)} chars of vault values redacted before sending")
+        return Destinations.send(destination, redacted) or None
+
     # The watch list and the procedures: the argument handling lives with the stores
     # (the memory curator's command block runs the same commands through them).
     def cmd_load_watch(self, *names: str):
@@ -1903,6 +1921,7 @@ class Commands:
     def describe_enable_integration(self, p):  return f"Enabling {p.strip()}" if p.strip() else "Enabling an integration"
     def describe_disable_integration(self, p): return f"Disabling {p.strip()}" if p.strip() else "Disabling an integration"
     def describe_remember(self, p):               return f"Saving to memory: {p.strip()}" if p.strip() else "Saving to memory"
+    def describe_post_message(self, p):           return f"Posting to {self._first_argument(p)}" if p.strip() else "Posting a message"
     def describe_load_watch(self, p):             return f"Looking at: {self._first_argument(p)}" if p.strip() else "Looking at a watch item"
     def describe_save_watch(self, p):             return f"Watching: {self._first_argument(p)}" if p.strip() else "Saving a watch item"
     def describe_checked_watch(self, p):          return f"Checked: {self._first_argument(p)}" if p.strip() else "Marking a watch item checked"

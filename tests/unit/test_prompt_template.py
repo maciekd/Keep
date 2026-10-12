@@ -107,6 +107,14 @@ def test_prompt_carries_the_toolkit_placeholders(prompt_text):
 
 
 @pytest.mark.unit
+def test_prompt_carries_the_destinations_placeholder_beside_post_message(prompt_text):
+    """Contract with PromptManager._substitute: the command block lists where post_message can
+    reach through {DESTINATIONS}, filled from assistant.Destinations."""
+    assert "{DESTINATIONS}" in prompt_text
+    assert prompt_text.index("`post_message(") < prompt_text.index("{DESTINATIONS}")
+
+
+@pytest.mark.unit
 def test_carried_sections_have_no_placeholder_in_the_template(prompt_text):
     """A section a toolkit carries reaches the LLM through load_toolkit; a placeholder in
     res/prompt.md would put the data in every prompt again."""

@@ -10,9 +10,8 @@ from .LongTermMemoryCurator import LongTermMemoryCurator
 from ..llm import create_llm, parse_llm_config, messages_contain_images
 from ..llm.AbstractLLM import LLMRefusalError
 from common.logging import trace, info, note, error, fine
-from assistant import MemoryFile, Procedures, WatchList
+from assistant import Destinations, MemoryFile, Procedures, WatchList
 from assistant.Telemetry import Telemetry
-from assistant.Notifier import notifier
 from ..prompt.PromptManager import PromptManager
 from ..prompt.MessageHistory import MessageHistory
 
@@ -59,7 +58,7 @@ CAFFEINE_DEFAULT_DURATION_MINUTES = 60
 THINKING_TAG_INSTRUCTION = (
     'Start your reply with a <thinking> tag and put your entire thinking and analysis in this tag. '
     'ALL reasoning must stay inside the <thinking> tag — once you close </thinking> you may only emit '
-    'commands or the final Telegram message (or "NO").\n\n')
+    'commands.\n\n')
 
 # Appended after the autonomous instruction when the check is a scheduled wake-up. The note
 # states the fact and nothing more: a wake-up once carried an instruction to the model's future
@@ -135,9 +134,11 @@ The WATCH LIST above is only an index. These are the items whose poll is due, wi
 
 ## Response Format
 
-{thinking_tag_instruction}If you should execute commands: output any commands you need to execute (using proper command syntax). Feel free to do chains of commands (send one command, get reply back then send another command and so on). Feel free to use commands if needed - just running commands does not create noise for the user.
+{thinking_tag_instruction}Output only commands (using proper command syntax). Feel free to do chains of commands (send one command, get reply back then send another command and so on) — just running commands does not create noise for the user.
 
-Lastly, if you want a Telegram message to be sent to user: output the message (after any commands). Make sure to use the formatting rules from the "Text Chat" section. If no message should be sent then output "NO" (after any commands).
+Anything you want said goes through `post_message(destination, text)`: to `owner` for the user's chats (formatted by the rules of the "Text Chat" section), to a group by its name, to a room by its name when someone is there and the matter is worth a spoken line (a request made by voice, about something in the room, is answered by voice). The destinations now: {destinations}. Text outside a command is delivered nowhere.
+
+Nothing to say and nothing to do: output nothing.
 
 Now analyze the conversation and system state above and respond accordingly.
 """
@@ -221,6 +222,7 @@ class AutonomousActionManager:
         return AUTONOMOUS_ACTION_PROMPT.format(
             interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
             watch_list=WatchList.render_due(tolerance=WATCH_POLL_TOLERANCE),
+            destinations=Destinations.describe(),
             thinking_tag_instruction="" if internal else THINKING_TAG_INSTRUCTION)
 
     def _llm_for(self, messages):
@@ -335,7 +337,7 @@ class AutonomousActionManager:
         watcher runs it: the instruction says so (SCHEDULED_WAKEUP_NOTE, DUE_ITEMS_NOTE)."""
         if not self.activity_check_lock.acquire(timeout=120):
             error("Could not acquire activity_check_lock — another check is stuck")
-            return "NO"
+            return ""
         try:
             return self._activity_check_inner(prompt, wakeup, due)
         finally:
@@ -414,7 +416,7 @@ class AutonomousActionManager:
 
             from assistant.commands.CommandProcessor import CommandProcessor
             command_processor = CommandProcessor(self.test_mode)
-            filtered = self._run_commands_and_extract_message(result, command_processor)
+            stray = self._run_commands(result, command_processor)
 
             # Wait for queued commands to be picked up and processed
             # (prevents race where we check flags before the worker thread sets them)
@@ -493,8 +495,7 @@ class AutonomousActionManager:
                 # Add assistant response to messages for potential next iteration
                 messages.append({"role": "assistant", "content": result})
 
-                # Only the LAST iteration's text matters for Telegram
-                filtered = self._run_commands_and_extract_message(result, command_processor)
+                stray = self._run_commands(result, command_processor)
 
                 # Wait for queued follow-up commands to be picked up and processed
                 self._join_queue_with_timeout(command_processor.command_queue, timeout=30)
@@ -509,41 +510,35 @@ class AutonomousActionManager:
                     else:
                         trace("Follow-up command completed.")
 
-            if ran_commands:
-                if not follow_up_saved:
-                    self._save_autonomous_result_to_history(result)
-                result_cleaned = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL)
-                result_cleaned = re.sub(r'<[^>]*>', '', result_cleaned)
-                result_cleaned = re.sub(r'\[[^\]]*\]', '', result_cleaned).strip()
-            else:
-                result_cleaned = self.clean_result_and_potentially_add_to_history(result)
-
-            if not re.sub(r'[^A-Za-z]', '', result_cleaned).upper().endswith('NO') and not self.test_mode:
-                # Clean filtered output for the Telegram message: drop thinking blocks and
-                # bracket markers, but KEEP newlines and Telegram HTML (<b>, <i>, ...) —
-                # the Text Chat prompt rules tell the model to format with them, and
-                # the chat transport strips any unsupported tags at send time (RichText.sanitize).
-                filtered_cleaned = re.sub(r'<thinking>.*?</thinking>', '', filtered, flags=re.DOTALL)
-                filtered_cleaned = re.sub(r'\[[^\]]*\]', '', filtered_cleaned).strip()
-
-                if filtered_cleaned and not filtered_cleaned.startswith("NO "):  # one more extra check for flakey LLMs...
-                    notifier().send_message(filtered_cleaned)
-
+            if ran_commands and not follow_up_saved:
+                self._save_autonomous_result_to_history(result)
+            elif not ran_commands:
+                self.clean_result_and_potentially_add_to_history(result)
+            # The check emits commands only; what it wants said goes through post_message. Text
+            # left over is delivered nowhere — the trace is there to see it in the log if the
+            # model ever strays from the format.
+            self._drop_stray_text(stray)
             return result
 
     @staticmethod
-    def _run_commands_and_extract_message(result: str, command_processor) -> str:
-        """Feed the LLM reply through the CommandProcessor as one whitespace-preserving
-        chunk (mirroring DialogManager's stream feed) so commands execute while the
-        remaining text keeps its newlines and formatting for Telegram. The reply used
-        to be .split() into words and re-joined with single spaces, which collapsed
-        every newline the model emitted."""
+    def _run_commands(result: str, command_processor) -> str:
+        """Feed the LLM reply (thinking stripped) through the CommandProcessor as one
+        whitespace-preserving chunk, as DialogManager's stream feed does, so the commands in it
+        run. Returns the text the processor did not consume — only for `_drop_stray_text`."""
         result_no_thinking = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL)
-        filtered = command_processor.process(result_no_thinking.replace("`", ""), None) or ""
+        stray = command_processor.process(result_no_thinking.replace("`", ""), None) or ""
         remaining = command_processor.flush_buffer(None)
         if remaining:
-            filtered += remaining
-        return filtered
+            stray += remaining
+        return stray
+
+    @staticmethod
+    def _drop_stray_text(stray: str) -> None:
+        text = re.sub(r'<thinking>.*?</thinking>', '', stray or "", flags=re.DOTALL)
+        text = re.sub(r'\[[^\]]*\]', '', text).strip()
+        if text:
+            trace(f"Autonomous check left {len(text)} chars of text after its commands — dropped, post_message is "
+                  f"how to say something: {text[:120]!r}")
 
     @staticmethod
     def _join_queue_with_timeout(q, timeout: float):
@@ -558,7 +553,7 @@ class AutonomousActionManager:
         result_cleaned = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL)
         result_cleaned = re.sub(r'<[^>]*>', '', result_cleaned)
         result_cleaned = re.sub(r'\[[^\]]*\]', '', result_cleaned).strip()
-        if result_cleaned.lower() != "no":
+        if result_cleaned:
             self.prompt_manager.update_history(None, None, result_cleaned)
         return result_cleaned
 
@@ -578,7 +573,7 @@ class AutonomousActionManager:
             # model then mimicked in fresh responses — an unclosed prefix the
             # streaming parser couldn't strip.
             parts.append(f"<thinking>{thinking_text}</thinking>")
-        if visible and visible.upper() != "NO":
+        if visible:
             parts.append(visible)
 
         if parts:

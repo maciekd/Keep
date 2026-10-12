@@ -23,6 +23,7 @@ from typing import Any, List, Optional
 import requests
 from telegram.error import RetryAfter
 
+from assistant import Destinations
 from assistant.ChannelProfile import SOURCE_TELEGRAM
 from assistant.integration.Integration import Integration
 from common import ConfigStore
@@ -228,6 +229,8 @@ class TelegramTransport(Integration, ChatTransport):
         # chat_id → (message_id, token, title HTML) of the open secret prompt: while present,
         # the next text in that chat is an answer, not chat.
         self._secret_prompts: dict[int, tuple[int, str, str]] = {}
+        # The group destinations this bot registered (post_message by group title or id).
+        self._group_destinations: list[str] = []
 
     # --- Integration ----------------------------------------------------------------------
 
@@ -275,6 +278,7 @@ class TelegramTransport(Integration, ChatTransport):
 
     def stop(self):
         self._running = False
+        self._drop_group_destinations()
         if self._loop and self._stop_event:
             self._loop.call_soon_threadsafe(self._stop_event.set)
         if self._thread and self._thread.is_alive():
@@ -354,6 +358,7 @@ class TelegramTransport(Integration, ChatTransport):
         await self._application.start()
         await self._application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
         self._release_held()
+        await self._register_group_destinations()
 
         self._stop_event = asyncio.Event()
         if self._running:
@@ -417,10 +422,48 @@ class TelegramTransport(Integration, ChatTransport):
         every write, so a config_set is in force at the next message. A change is logged once."""
         ids = self._parse_chat_ids(config.get(key, []), key)
         if ids != self._seen_chat_ids.get(key):
-            if key in self._seen_chat_ids:
+            changed = key in self._seen_chat_ids
+            if changed:
                 info(f"{key} changed to {ids or 'empty'} — in force from now, no bot restart needed")
             self._seen_chat_ids[key] = ids
+            if changed and key == 'telegram_bot.allowed_chat_ids' and self._available("group destinations"):
+                self._schedule(self._register_group_destinations(), "group destinations")
         return ids
+
+    # --- destinations: one per group on the allow list --------------------------------------
+
+    async def _register_group_destinations(self):
+        """A `post_message` destination per group on allowed_chat_ids, named by the group's
+        title (one get_chat per group) with the id as alias; by the id alone when Telegram
+        does not answer. Run at start and again when the allow list changes."""
+        groups = [c for c in self._allowed_chat_ids if c < 0]
+        self._drop_group_destinations()
+        for chat_id in groups:
+            try:
+                chat = await self._application.bot.get_chat(chat_id)
+                title = (getattr(chat, 'title', None) or '').strip()
+            except Exception as e:
+                info(f"Telegram [{chat_id}]: get_chat failed ({type(e).__name__}: {e}) — destination by id only")
+                title = ''
+            name = title or str(chat_id)
+            Destinations.register(Destinations.Destination(
+                name, Destinations.KIND_GROUP, lambda text, cid=chat_id: self._post_to_chat(cid, text),
+                aliases=(str(chat_id),) if title else ()))
+            self._group_destinations.append(name)
+        if not groups:
+            trace("Telegram: no group on allowed_chat_ids, no group destination")
+
+    def _drop_group_destinations(self):
+        for name in self._group_destinations:
+            Destinations.unregister(name)
+        self._group_destinations = []
+
+    def _post_to_chat(self, chat_id: int, text: str) -> bool:
+        """A post_message to one of the bot's chats: split like the hub's pushes, sent as HTML."""
+        accepted = False
+        for chunk in RichText.split(text, self.max_message_length) if self.max_message_length else [text]:
+            accepted = self.send_text(chat_id, chunk) or accepted
+        return accepted
 
     def owner_conversations(self) -> list:
         """The owners' private chats: the positive ids of the allow list. A group (a negative

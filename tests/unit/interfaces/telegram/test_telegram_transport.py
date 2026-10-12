@@ -152,6 +152,69 @@ class TestConfigAndAuth:
 
 
 @pytest.mark.unit
+class TestGroupDestinations:
+    """One post_message destination per group on the allow list, by title with the id as alias."""
+
+    @pytest.fixture(autouse=True)
+    def registry(self):
+        from assistant import Destinations
+        Destinations.clear()
+        yield
+        Destinations.clear()
+
+    @staticmethod
+    def _get_chat(titles: dict):
+        async def get_chat(chat_id):
+            if chat_id not in titles:
+                raise RuntimeError("chat not found")
+            return MagicMock(title=titles[chat_id])
+        return get_chat
+
+    def test_every_group_is_registered_by_title_and_a_private_chat_is_not(self):
+        from assistant import Destinations
+        t = _make_transport(allowed=(111, -5, -7))
+        t._application.bot.get_chat = self._get_chat({-5: "Marcus & Alice - board", -7: "Family"})
+        asyncio.run(t._register_group_destinations())
+        assert Destinations.names() == ["Marcus & Alice - board", "Family"]
+        assert Destinations.find("-7").name == "Family"
+        assert Destinations.find("111") is None
+
+    def test_a_group_telegram_cannot_describe_is_reached_by_its_id(self):
+        from assistant import Destinations
+        t = _make_transport(allowed=(-5,))
+        t._application.bot.get_chat = self._get_chat({})
+        asyncio.run(t._register_group_destinations())
+        assert Destinations.names() == ["-5"]
+
+    def test_a_post_goes_to_the_group_as_html_split_at_telegrams_limit(self):
+        from assistant import Destinations
+        t = _make_transport(allowed=(-5,))
+        t._application.bot.get_chat = self._get_chat({-5: "Family"})
+        asyncio.run(t._register_group_destinations())
+        sent = []
+        with patch.object(t, "send_text", side_effect=lambda cid, html, **kw: sent.append((cid, html)) or True):
+            assert Destinations.send("family", "a" * 5000) == ""
+        assert [cid for cid, _ in sent] == [-5, -5]
+        assert "".join(html for _, html in sent) == "a" * 5000
+
+    def test_a_changed_allow_list_registers_the_groups_again_and_stop_drops_them(self):
+        from assistant import Destinations
+        t = _make_transport(allowed=(-5,))
+        t._application.bot.get_chat = self._get_chat({-5: "Family", -9: "Board"})
+        asyncio.run(t._register_group_destinations())
+        scheduled = []
+        with patch.object(t, "_schedule", side_effect=lambda coro, what: scheduled.append(what) or coro.close() or True):
+            t.config_values['telegram_bot.allowed_chat_ids'] = [-5, -9]
+            t._allowed_chat_ids
+            t._allowed_chat_ids
+        assert scheduled == ["group destinations"]
+        asyncio.run(t._register_group_destinations())
+        assert Destinations.names() == ["Family", "Board"]
+        t.stop()
+        assert Destinations.names() == []
+
+
+@pytest.mark.unit
 class TestLifecycle:
     @staticmethod
     def _mock_application():

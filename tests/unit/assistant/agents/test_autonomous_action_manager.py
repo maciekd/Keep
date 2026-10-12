@@ -6,7 +6,7 @@ import time
 import pytest
 from unittest.mock import Mock, patch
 
-from assistant import WatchList
+from assistant import Destinations, WatchList
 from assistant.llm.AbstractLLM import LLMRefusalError
 
 from assistant.agents.AutonomousActionManager import (
@@ -22,8 +22,16 @@ from assistant.agents.AutonomousActionManager import (
 FORMATTED_AUTONOMOUS_ACTION_PROMPT = AUTONOMOUS_ACTION_PROMPT.format(
     interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
     watch_list=WatchList.NOTHING_DUE,
+    destinations=Destinations.NONE_YET,
     thinking_tag_instruction=THINKING_TAG_INSTRUCTION,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_destinations():
+    Destinations.clear()
+    yield
+    Destinations.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -169,98 +177,66 @@ class TestAutonomousActionManager:
         assert not result.strip()
         mock_llm.think_with_messages.assert_called_once()
 
-    @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_activity_check_sends_telegram_when_action(self, mock_claude):
-        mock_llm = Mock()
-        mock_llm.think_with_messages.return_value = "<thinking>check</thinking>\nYour car is low on battery"
-        mock_claude.return_value = mock_llm
-        pm = make_mock_prompt_manager()
-        mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
+    @staticmethod
+    def _owner_destination():
+        sent = []
+        Destinations.register(Destinations.Destination("owner", Destinations.KIND_CHAT,
+                                                       lambda text: sent.append(text) or True))
+        return sent
 
-        with patch('assistant.commands.CommandProcessor.CommandProcessor') as mock_cp, \
-             patch('assistant.Notifier._notifier', Mock()) as mock_tg_inst:
-            mock_cp_inst = Mock()
-            mock_cp_inst.command_queue = queue.Queue()
-            mock_cp_inst.command_being_processed = False
-            mock_cp_inst.command_running_in_background = False
-            mock_cp_inst.command_reply = None
-            mock_cp_inst.flush_buffer.return_value = None
-            mock_cp_inst.process.return_value = "Your car is low on battery "
-            mock_cp.return_value = mock_cp_inst
-            mgr.test_mode = False
-
-            result = mgr.activity_check(prompt="test prompt")
-
-            mock_tg_inst.send_message.assert_called_once()
-            mgr.test_mode = True  # restore
+    @staticmethod
+    def _processor(mock_cp, process):
+        inst = Mock()
+        inst.command_queue = queue.Queue()
+        inst.command_being_processed = False
+        inst.command_running_in_background = False
+        inst.command_reply = None
+        inst.flush_buffer.return_value = None
+        inst.process.side_effect = process
+        mock_cp.return_value = inst
+        return inst
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_activity_check_preserves_newlines_and_telegram_html(self, mock_claude):
-        """Regression: the reply used to be .split() into words and re-joined with
-        spaces, collapsing every newline, and all HTML tags were stripped — Telegram
-        messages arrived as one unformatted line. Newlines and the Telegram HTML the
-        prompt asks for (<b>, <i>) must survive to send_message."""
-        reply = (
-            "<thinking>check</thinking>\n"
-            "<b>📋 Läget:</b> Kollade listan —\n"
-            "\n"
-            "• <b>Punkt ett: klar!</b> ✅ gjord 1 jan\n"
-            "• <b>Punkt två:</b> två väntar nu."
-        )
+    def test_a_reply_of_commands_only_is_fed_whole_to_the_processor_and_pushes_nothing_itself(self, mock_claude):
+        """The check speaks through post_message; the manager delivers nothing on its own."""
+        reply = '<thinking>check</thinking>\npost_message("owner", """<b>Car</b> at 80%\n\n• plugged in""")'
         mock_llm = Mock()
         mock_llm.think_with_messages.return_value = reply
         mock_claude.return_value = mock_llm
         pm = make_mock_prompt_manager()
         mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
+        sent = self._owner_destination()
 
-        with patch('assistant.commands.CommandProcessor.CommandProcessor') as mock_cp, \
-             patch('assistant.Notifier._notifier', Mock()) as mock_tg_inst:
-            mock_cp_inst = Mock()
-            mock_cp_inst.command_queue = queue.Queue()
-            mock_cp_inst.command_being_processed = False
-            mock_cp_inst.command_running_in_background = False
-            mock_cp_inst.command_reply = None
-            mock_cp_inst.flush_buffer.return_value = None
-            mock_cp_inst.process.side_effect = lambda content, dm: content
-            mock_cp.return_value = mock_cp_inst
+        with patch('assistant.commands.CommandProcessor.CommandProcessor') as mock_cp:
+            inst = self._processor(mock_cp, lambda content, dm: "")   # the processor consumed the command
             mgr.test_mode = False
-
             mgr.activity_check(prompt="test prompt")
-
-            # The whole reply is fed as ONE whitespace-preserving chunk, not word-split
-            fed = mock_cp_inst.process.call_args[0][0]
-            assert "\n" in fed
-
-            sent_text = mock_tg_inst.send_message.call_args[0][0]
-            assert "\n\n" in sent_text
-            assert "• <b>Punkt ett: klar!</b> ✅ gjord 1 jan\n" in sent_text
-            assert "<thinking>" not in sent_text
             mgr.test_mode = True
 
+        fed = inst.process.call_args[0][0]
+        assert "<thinking>" not in fed and "\n\n• plugged in" in fed, "one whitespace-preserving chunk, thinking stripped"
+        assert sent == []
+
     @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_activity_check_skips_telegram_when_filtered_empty(self, mock_claude):
+    def test_text_left_after_the_commands_is_delivered_nowhere_but_stays_in_the_history(self, mock_claude):
         mock_llm = Mock()
-        mock_llm.think_with_messages.return_value = "<thinking>check</thinking>\n"
+        mock_llm.think_with_messages.return_value = "<thinking>check</thinking>\nYour car is low on battery"
         mock_claude.return_value = mock_llm
         pm = make_mock_prompt_manager()
         mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
+        sent = self._owner_destination()
+        traced = []
 
         with patch('assistant.commands.CommandProcessor.CommandProcessor') as mock_cp, \
-             patch('assistant.Notifier._notifier', Mock()) as mock_tg_inst:
-            mock_cp_inst = Mock()
-            mock_cp_inst.command_queue = queue.Queue()
-            mock_cp_inst.command_being_processed = False
-            mock_cp_inst.command_running_in_background = False
-            mock_cp_inst.command_reply = None
-            mock_cp_inst.flush_buffer.return_value = None
-            mock_cp_inst.process.return_value = ""
-            mock_cp.return_value = mock_cp_inst
+             patch('assistant.agents.AutonomousActionManager.trace', side_effect=lambda msg: traced.append(msg)):
+            self._processor(mock_cp, lambda content, dm: content)   # nothing in it was a command
             mgr.test_mode = False
-
             mgr.activity_check(prompt="test prompt")
-
-            mock_tg_inst.send_message.assert_not_called()
             mgr.test_mode = True
+
+        assert sent == []
+        assert any("dropped" in msg and "low on battery" in msg for msg in traced)
+        assert "Your car is low on battery" in pm.update_history.call_args[0][2]
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_activity_check_uses_prompt_manager_when_none(self, mock_claude):
@@ -420,13 +396,13 @@ class TestAutonomousActionManager:
             mgr.clean_result_and_potentially_add_to_history("Important update")
             pm.update_history.assert_called_once()
 
-    def test_result_does_not_add_to_history_when_no(self):
+    def test_a_reply_with_nothing_left_after_the_tags_adds_nothing_to_history(self):
         with patch('assistant.agents.AutonomousActionManager.create_llm') as mock_claude:
             mock_claude.return_value = Mock()
             pm = make_mock_prompt_manager()
             mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
 
-            mgr.clean_result_and_potentially_add_to_history("NO")
+            mgr.clean_result_and_potentially_add_to_history("<thinking>all quiet</thinking>")
             pm.update_history.assert_not_called()
 
     @patch('assistant.agents.AutonomousActionManager.time.sleep')
@@ -791,8 +767,8 @@ class TestAutonomousActionManager:
         assert "looks" in all_text or "good" in all_text
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
-    def test_activity_check_returns_no_when_lock_held(self, mock_claude):
-        """activity_check returns 'NO' when the lock can't be acquired."""
+    def test_activity_check_yields_nothing_when_lock_held(self, mock_claude):
+        """A check that cannot get the lock does nothing — an empty result, no commands."""
         mock_claude.return_value = Mock()
         pm = make_mock_prompt_manager()
         mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
@@ -801,7 +777,7 @@ class TestAutonomousActionManager:
         mock_lock.acquire.return_value = False
         mgr.activity_check_lock = mock_lock
         result = mgr.activity_check(prompt="test")
-        assert result == "NO"
+        assert result == ""
 
     def test_join_queue_with_timeout_returns_on_undrained_queue(self):
         q = queue.Queue()
@@ -1426,19 +1402,14 @@ class TestAutonomousActionPromptInvariant:
             "inside <thinking>; without this, untagged prose leaks to Telegram"
         )
 
-    def test_prompt_constrains_post_thinking_content(self):
-        # The fix also adds an explicit post-tag constraint: once </thinking>
-        # is closed, only commands / final Telegram message / "NO" are
-        # allowed. Pin the three allowed outputs by name.
+    def test_prompt_allows_only_commands_after_thinking_and_names_post_message_as_the_voice(self):
+        # Once </thinking> is closed only commands are allowed: anything the check wants said
+        # goes through post_message, and the old "NO" sentinel is gone with the text reply.
         text = FORMATTED_AUTONOMOUS_ACTION_PROMPT
-        low = text.lower()
         assert "</thinking>" in text, "prompt must reference the closing tag"
-        assert "commands" in low, "post-tag rule must permit commands"
-        # The literal "NO" sentinel is what _save_autonomous_result_to_history
-        # checks for — quoting it in the prompt keeps that contract aligned.
-        assert '"NO"' in text or "'NO'" in text, (
-            "prompt must explicitly allow the 'NO' sentinel after </thinking>"
-        )
+        assert "post_message" in text
+        assert Destinations.NONE_YET in text, "the destinations the check can post to are listed"
+        assert '"NO"' not in text and "Telegram message" not in text
 
 
 class TestSaveAutonomousResultToHistory:
@@ -1454,19 +1425,15 @@ class TestSaveAutonomousResultToHistory:
         assert "<thinking>Humidity was 41%, below threshold</thinking>" in saved
         assert "All good." in saved
 
-    def test_saves_thinking_only_when_visible_is_no(self):
+    def test_saves_the_thinking_alone_when_nothing_follows_it(self):
         mgr, _ = make_manager()
-        mgr._save_autonomous_result_to_history(
-            "<thinking>Checked sensors, everything fine</thinking>\nNO"
-        )
-        call_args = mgr.prompt_manager.update_history.call_args
-        saved = call_args[0][2]
-        assert "<thinking>Checked sensors, everything fine</thinking>" in saved
-        assert "NO" not in saved
+        mgr._save_autonomous_result_to_history("<thinking>Checked sensors, everything fine</thinking>\n")
+        saved = mgr.prompt_manager.update_history.call_args[0][2]
+        assert saved == "<thinking>Checked sensors, everything fine</thinking>"
 
-    def test_no_history_when_no_thinking_and_result_is_no(self):
+    def test_no_history_for_an_empty_reply(self):
         mgr, _ = make_manager()
-        mgr._save_autonomous_result_to_history("NO")
+        mgr._save_autonomous_result_to_history("")
         mgr.prompt_manager.update_history.assert_not_called()
 
     def test_saves_visible_text_without_thinking(self):
@@ -1495,7 +1462,7 @@ class TestThinkingTagInstruction:
         llm.handles_thinking_internally.return_value = True
         prompt = AutonomousActionManager._action_prompt(llm)
         assert "<thinking>" not in prompt and "thinking" not in prompt.lower().split("## response format")[1]
-        assert "## Response Format\n\nIf you should execute commands:" in prompt
+        assert "## Response Format\n\nOutput only commands" in prompt
         assert str(PERIODIC_CHECK_INTERVAL_MINUTES) in prompt or f"{PERIODIC_CHECK_INTERVAL_MINUTES:.0f}" in prompt
 
     def test_a_bare_mock_counts_as_not_internal(self):
