@@ -8,9 +8,11 @@ runs on the base requirements alone)."""
 import asyncio
 import threading
 
+from assistant.ChannelProfile import SOURCE_VOICE
 from common.ConfigManager import config
 from common.logging import info, trace
 from interfaces.Interface import Interface
+from interfaces.voice.Announcer import Announcer, register_room, unregister_room
 from interfaces.voice.ios.TextStreamRegistry import TextStreamRegistry
 from interfaces.voice.microphones.FalsePositiveFlood import report_false_positive_flood
 from interfaces.voice.microphones.local_outposts import start_local_outposts
@@ -47,6 +49,8 @@ class VoiceInterface(Interface):
         self.local_outpost_manager = None
         self.microphone_routes = None
         self._outpost_server_task = None
+        self.announcer: Announcer | None = None
+        self._room: str | None = None   # the destination name the speakers are registered under
 
     # --- RequestProcessor wiring ------------------------------------------------------
 
@@ -92,7 +96,21 @@ class VoiceInterface(Interface):
             volume_controller=self.volume_controller,
         ))
         register_ios_routes(app, self.text_stream)
+        self._register_room(assistant)
         info("Voice interface started.")
+
+    def _register_room(self, assistant):
+        """The server speakers as a `post_message` destination, named by the outposts' location.
+        Busy means a voice turn is being served or a reply still holds the outpost mute
+        (speaking) — not any request: a post_message from a Telegram turn runs inside that
+        turn, and waiting for it would wait for itself."""
+        if self.running_as_testsuite or self.local_outpost_manager is None:
+            trace("Voice: no local outposts, the speakers are not a destination")
+            return
+        self.announcer = Announcer(
+            self.playback_factory, create_voice,
+            busy=lambda: assistant.is_busy(SOURCE_VOICE) or ServerPlayback._active_mute_generation != 0)
+        self._room = register_room(self.announcer)
 
     @staticmethod
     def _init_speaker_identifier():
@@ -128,6 +146,10 @@ class VoiceInterface(Interface):
 
     def stop(self) -> None:
         """Stop all audio streams before Python teardown to prevent CoreAudio callback crashes."""
+        if self.announcer is not None:
+            self.announcer.stop()
+        unregister_room(self._room)
+        self._room = None
         import sounddevice as sd
         try:
             sd.stop()

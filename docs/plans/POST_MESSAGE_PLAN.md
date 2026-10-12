@@ -1,6 +1,6 @@
 # Plan: `post_message` and destinations — the autonomous check emits commands only
 
-Written 2026-10-12. Status: phase 1 in review, phase 2 not started.
+Written 2026-10-12. Status: phases 1 and 2 built, in review.
 
 ## What we want
 
@@ -194,11 +194,13 @@ group's messages arrive as `telegramfeedloop` rows.
   CLAUDE.md's Request Flow gets one line on destinations.
 
 **Phase 2 — the voice destination.**
-- `VoiceInterface.announce`, its registration, the outpost mute, the gate wait.
-- The prompt rule that a voice request about the room is answered by voice.
-- Tests with the stubbed synthesizer and playback (`tests/unit/interfaces/voice/`); a real listen
-  on the development machine before release — "let me know when the pasta is done" from the
-  kitchen mic is the acceptance test.
+- [x] `interfaces/voice/Announcer.py` (the method grew past the interface, so it is a module of
+  its own): the announcement, its registration under `local_outposts.location`, the outpost mute,
+  the wait for a quiet house (`Assistant.is_busy()` or a reply holding the outpost mute).
+- [x] The prompt rule that a voice request about the room is answered by voice (phase 1).
+- [x] Tests with stand-in synthesizer and playback (`tests/unit/interfaces/voice/test_announcer.py`).
+- [ ] A real listen on the development machine before release — "let me know when the pasta is
+  done" from the kitchen mic is the acceptance test.
 
 ## Out of scope, maybe later
 

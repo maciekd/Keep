@@ -5,6 +5,7 @@ import time
 from unittest.mock import Mock, patch
 
 import pytest
+from types import SimpleNamespace
 
 from assistant.RequestProcessor import RequestData
 from assistant.Assistant import Assistant, AssistantBusy, AssistantStream
@@ -231,6 +232,19 @@ class TestDispatch:
         first.kill("test")
         a.stream(ctx(user="Bob", guest=True))
         assert len(a.running_handlers()) == 1
+
+    def test_busy_for_a_channel_sees_only_that_channel_s_turn(self):
+        # An announcement waits for a voice turn, not for the Telegram turn whose post_message
+        # it is — that turn is in flight while its own command runs, so it must not count.
+        a = make_assistant(pool_size=2)
+        a.stream(ctx())
+        handler = a.running_handlers()[0]
+        handler.ctx = SimpleNamespace(source="Telegram")
+        assert a.is_busy() is True
+        assert a.is_busy("Telegram") is True
+        assert a.is_busy("VoiceToVoice") is False
+        handler.is_performing_request = False
+        assert a.is_busy() is False
 
     def test_an_owner_request_still_supersedes_a_running_one(self):
         a = make_assistant(pool_size=2)
