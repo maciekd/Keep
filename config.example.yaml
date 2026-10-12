@@ -321,6 +321,13 @@ wake_word_near_misses: [mission, missions, we shall]
 #    llm: OllamaLLM
 #    # batch: false           # the nightly run goes through Anthropic's batch API (half price, the answer
 #    # batch_wait_minutes: 90 # minutes to an hour later); false, or no answer within the wait → the ordinary call
+#    # tips_destination: "Our Keeps"   # where the nightly run posts tips for other households' Keeps: a
+#                           # post_message destination — the title (or the id as text) of a Telegram group the bot
+#                           # is in and that is on telegram_bot.allowed_chat_ids. The curator goes over the period
+#                           # for what another Keep would want to know (a site, a service, a device, Keep itself)
+#                           # and posts each as "Tip from <owner>'s Keep: …", never the household's own people,
+#                           # places or accounts. The other Keeps read the group through their owners' Telegram
+#                           # Feed. Unset: no tips are posted.
 #  cache_auditor:
 #    llm: OllamaLLM
 #  photo_indexing:         # indexes Apple Photos stills and videos, one call each (thousands on a backfill).

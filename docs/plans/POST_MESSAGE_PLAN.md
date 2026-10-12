@@ -156,19 +156,32 @@ prompt says so.
 
 ### The board, once the above exists
 
-Two watch items, created by talking to her — no config, no code:
+The curator posts, a watch item receives. The split keeps the curator's addition to one thing — it
+is complex enough — and puts the reading where searching is cheap.
+
+**Posting — the curator** (`ai.memory_curator.tips_destination`, the group's title). The nightly
+run is the one component that reads a whole day without a window: the autonomous check sees the
+last 15–35 KB of history, on prod an hour or two of a busy evening, while a day is 200–500 KB.
+With the key set, the curator's prompt gains one paragraph — go over the period for what another
+household's Keep would find useful and post each as `post_message("<group>", """Tip from
+<owner>'s Keep: ...""")`, never the household's own people, places, accounts or vault — and
+`post_message` joins the commands its block may run, routed to `Destinations.send` with the text
+vault-redacted and the destination forced to the configured group. Unset, the paragraph is absent
+and a `post_message` line is skipped like any other command that is not the curator's.
+
+**Receiving — a daily watch item**, created by talking to her. Both bots are called Michelle and
+the feed journals our own bot's group posts too, so the "Tip from <owner>'s Keep" prefix is what
+tells the households apart:
 
 ```
-save_watch("board-tips", """Every evening: look at today's history for anything another household's
-Keep would want to know — a site, a service, a device, Keep itself. Post it as a short plain-language
-tip with post_message("Maciek & Erik - Michelle test", ...). Never this household's people, places,
-accounts or schedules. Nothing worth posting: do nothing.""", "2026-10-13 21:00", "1d")
-
-save_watch("board-digest", """Every morning: read what the other Keeps posted in 'Maciek & Erik -
-Michelle test' yesterday (Telegram Feed rows in the history). Save what this household could use:
-remember(...) for a one-liner, save_procedure(...) for a how-to. Tell the owner only what you kept.""",
-"2026-10-13 06:30", "1d")
+save_watch("board-digest", """Every morning: search_history("Michelle test", sort="newest") for the
+tips other Keeps posted in the group since yesterday (they start with "Tip from <name>'s Keep",
+skip our own). Save what this household could use: remember(...) for a one-liner,
+save_procedure(...) for a how-to. Tell the owner only what you kept.""", "2026-10-14 06:30", "1d")
 ```
+
+The feed rows read `From Michelle to Maciek & Erik - Michelle test: ...`, so the group's title is
+in the content the history search indexes.
 
 Prerequisite on prod: `telegram_feed.blacklist` holds `michelle`, which matches the group's title
 and Erik's bot's name, so today the board never reaches the history. The entry exists so the bot's
