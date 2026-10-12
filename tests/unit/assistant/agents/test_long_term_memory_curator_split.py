@@ -1,7 +1,7 @@
 """The memory curator and the three-part memory: its reply is the bank plus a command block that
 tidies the watch list and adds to the procedures, and `propose_split` / `apply_split` move an
 old one-file bank into the three parts."""
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -380,3 +380,71 @@ class TestApplySplit:
         with pytest.raises(RuntimeError):
             curator.apply_split(tmp_path / "nothing")
         assert MemoryFile.read(curator.memory_file_path) == OLD_BANK
+
+
+def _config(tips: str) -> Mock:
+    """A config whose only setting is the tips destination (owner Marcus, as the conftest pins)."""
+    cfg = Mock()
+    cfg.get.side_effect = lambda key, default=None: tips if key == curator_mod.TIPS_KEY else default
+    cfg.get_owner_name.return_value = "Marcus"
+    return cfg
+
+
+@pytest.fixture
+def board():
+    """A registered group destination that records what it is sent; the registry is emptied after."""
+    from assistant.Destinations import Destination, KIND_GROUP
+    sent = []
+    curator_mod.Destinations.register(Destination("Marcus & Alice board", KIND_GROUP,
+                                                  send=lambda text: sent.append(text) or True))
+    yield sent
+    curator_mod.Destinations.clear()
+
+
+@pytest.mark.unit
+class TestTips:
+    """The one message the curator may send: a tip for other households' Keeps, to the configured group."""
+
+    def test_a_tip_goes_to_the_configured_group_vault_redacted(self, tmp_path, dirs, board, monkeypatch):
+        monkeypatch.setattr(curator_mod, "redact_for_storage", lambda text: text.replace("4111 1111", "[card]"))
+        curator = make_curator(tmp_path, dirs)
+        with patch.object(curator_mod.ConfigManager, "get_instance", return_value=_config("Marcus & Alice board")):
+            results, _ = curator.run_commands(
+                'post_message("Marcus & Alice board", """Tip from Marcus\'s Keep: shop.example takes card 4111 1111, '
+                'skip the guest checkout""")')
+        assert board == ["Tip from Marcus's Keep: shop.example takes card [card], skip the guest checkout"]
+        assert len(results) == 1 and results[0].startswith("post_message(")
+
+    def test_the_destination_the_model_names_is_overridden_by_the_configured_one(self, tmp_path, dirs, board):
+        curator = make_curator(tmp_path, dirs)
+        with patch.object(curator_mod.ConfigManager, "get_instance", return_value=_config("Marcus & Alice board")):
+            results, _ = curator.run_commands('post_message("owner", "Tip from Marcus\'s Keep: a tip")')
+        assert board == ["Tip from Marcus's Keep: a tip"]
+        assert not results[0].startswith("FAILED")
+
+    def test_without_a_destination_a_post_is_skipped_and_nothing_is_sent(self, tmp_path, dirs, board):
+        curator = make_curator(tmp_path, dirs)
+        with patch.object(curator_mod.ConfigManager, "get_instance", return_value=_config("")):
+            results, _ = curator.run_commands('post_message("Marcus & Alice board", "a tip")\ndelete_watch("x", "y")')
+        assert board == []
+        assert results[0].startswith("SKIPPED (tips are off)")
+        assert len(results) == 2   # the command after it still runs
+
+    def test_an_unknown_configured_group_is_a_failure_in_the_run_log(self, tmp_path, dirs, board):
+        curator = make_curator(tmp_path, dirs)
+        with patch.object(curator_mod.ConfigManager, "get_instance", return_value=_config("Nowhere")):
+            results, _ = curator.run_commands('post_message("Nowhere", "a tip")')
+        assert board == []
+        assert results[0].startswith("FAILED") and "unknown destination" in results[0]
+
+    @pytest.mark.parametrize("tips", ["Marcus & Alice board", ""])
+    def test_the_prompt_asks_for_tips_only_when_a_destination_is_set(self, tmp_path, dirs, tips):
+        curator = make_curator(tmp_path, dirs, replies=["# Memory"])
+        with patch.object(curator_mod.ConfigManager, "get_instance", return_value=_config(tips)):
+            curator.curate_memory_with_data(interaction_history="", calendar_data="", current_memory="")
+        prompt = curator.llm.think.call_args.kwargs['system_message']
+        assert "{TIPS}" not in prompt
+        assert ("Tips for other Keeps" in prompt) is bool(tips)
+        if tips:
+            assert 'post_message("Marcus & Alice board"' in prompt
+            assert "Tip from Marcus's Keep" in prompt

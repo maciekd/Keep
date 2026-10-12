@@ -7,7 +7,7 @@ import threading
 from datetime import datetime, timedelta, date
 from pathlib import Path
 
-from .. import MemoryFile, Procedures, WatchList
+from .. import Destinations, MemoryFile, Procedures, WatchList
 from ..llm import create_llm, parse_llm_config
 from common.ConfigManager import ConfigManager
 from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
@@ -35,6 +35,12 @@ BATCH_WAIT_MINUTES = 90
 # only by the assistant that has the working flow in front of it, or by the user.
 # Not `checked_watch`: only a real check may stamp an item as looked at.
 CURATOR_COMMANDS = ("save_watch", "delete_watch", "save_procedure", "procedure_note")
+# The one message the curator may send: a tip for other households' Keeps, posted to the group
+# `ai.memory_curator.tips_destination` names (a post_message destination). Unset, the command
+# is skipped like any other that is not the curator's. The destination the model writes is
+# ignored in favour of the configured one, so a run can never post anywhere else.
+TIPS_COMMAND = "post_message"
+TIPS_KEY = 'ai.memory_curator.tips_destination'
 
 PROMPT = """
 You are a long-term memory curator for a state of the art home automation AI system serving a family. Your role is to maintain a
@@ -124,6 +130,18 @@ The commands:
 - `save_procedure("name", "when to load it, one line", \"\"\"the full text\"\"\")` — a NEW procedure; the text in a
   triple-quoted block
 - `procedure_note("name", "the lesson")` — append a lesson to an existing procedure
+{TIPS}"""
+
+# Appended to the prompt only while `ai.memory_curator.tips_destination` is set.
+TIPS_PROMPT = """
+## Tips for other Keeps
+Other households run their own Keep, and the Keeps share tips in the Telegram group "{TIPS_DESTINATION}". Go over the
+period for what another household's Keep would find useful — something learnt about a site, a service, a device, or
+about Keep itself (a command that behaves unexpectedly, a configuration that took work) — and post each one as a short
+plain-language tip, in the command block:
+`post_message("{TIPS_DESTINATION}", \"\"\"Tip from {OWNER}'s Keep: ...\"\"\")` — the prefix names whose Keep it comes from.
+Never the household's people, places, accounts, schedules or anything from the vault: the group is read by other
+households. Nothing worth posting is the normal outcome of a run.
 """
 
 # Only worth the LLM's attention when a microphone is actually feeding the assistant.
@@ -581,7 +599,8 @@ class LongTermMemoryCurator:
             .replace("{MEMORY_SIZE}", self.memory_size_note(word_count)) \
             .replace("{WORD_LIMIT}", str(MEMORY_WORD_LIMIT)) \
             .replace("{PERIOD}", period_text) \
-            .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "")
+            .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "") \
+            .replace("{TIPS}", self._tips_prompt())
 
         # Send to LLM with thinking enabled for complex reasoning
         info("Rem: deep in REM — consolidating the period's memories with the AI...")
@@ -861,7 +880,42 @@ class LongTermMemoryCurator:
         return {'source': str(source), 'backup': str(backup), 'watch_items': copied['watchlist'],
                 'procedures': copied['procedures'], 'kept': already}
 
-    _COMMAND_START = re.compile(r'^[`\-*•\s]*(' + '|'.join(CURATOR_COMMANDS) + r')\s*\(', re.IGNORECASE)
+    _COMMAND_START = re.compile(r'^[`\-*•\s]*(' + '|'.join(CURATOR_COMMANDS + (TIPS_COMMAND,)) + r')\s*\(',
+                                re.IGNORECASE)
+
+    @staticmethod
+    def tips_destination() -> str:
+        """The group the run posts tips to (`ai.memory_curator.tips_destination`), '' when off."""
+        return str(ConfigManager.get_instance().get(TIPS_KEY, '') or '').strip()
+
+    def _tips_prompt(self) -> str:
+        destination = self.tips_destination()
+        if not destination:
+            trace("Rem: no tips destination configured, the prompt says nothing about tips")
+            return ""
+        return TIPS_PROMPT.replace("{TIPS_DESTINATION}", destination) \
+            .replace("{OWNER}", ConfigManager.get_instance().get_owner_name())
+
+    def _post_tip(self, params: list[str]) -> str:
+        """Deliver a `post_message` of the command block to the configured tips group. Returns ''
+        or the reason it was refused. The text is vault-redacted first — the bank's write
+        redacts on its own, a post leaves the house."""
+        destination = self.tips_destination()
+        if not destination:
+            return "tips are off (ai.memory_curator.tips_destination is not set)"
+        if len(params) < 2:
+            return "post_message failed: expected 'destination, text'"
+        # An under-quoted text with commas arrives in pieces: put it back together.
+        text = ", ".join(part.strip() for part in params[1:] if part.strip())
+        if not text:
+            return "post_message failed: the text is empty"
+        asked = params[0].strip().strip("\"'`")
+        if asked.lower() != destination.lower():
+            info(f"Rem: the tip named {asked!r} as its destination — posted to the configured {destination!r} instead")
+        failure = Destinations.send(destination, redact_for_storage(text))
+        if not failure:
+            info(f"Rem: tip posted to {destination!r} ({len(text)} chars)")
+        return failure
 
     @classmethod
     def _command_chunks(cls, block: str) -> tuple[list[str], list[tuple[str, str]]]:
@@ -960,7 +1014,13 @@ class LongTermMemoryCurator:
         for command, raw in chunks:
             params = self._split_arguments(raw)
             shown = f"{command}({', '.join(p if len(p) <= 120 else p[:120] + '…' for p in params)})"
-            if command in WatchList.COMMANDS:
+            if command == TIPS_COMMAND and not self.tips_destination():
+                info(f"Rem: skipped a post_message — tips are off: {shown[:120]}")
+                results.append(f"SKIPPED (tips are off): {shown[:200]}")
+                continue
+            if command == TIPS_COMMAND:
+                failure = self._post_tip(params)
+            elif command in WatchList.COMMANDS:
                 failure = WatchList.run(command, params, watchlist_dir, log_dir, looked=False)
             else:
                 failure = Procedures.run(command, params, procedures_dir, log_dir, allow_replace=False)
