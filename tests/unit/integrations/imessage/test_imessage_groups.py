@@ -58,6 +58,12 @@ class TestGroupResolution:
         assert "Alice Smith, Bob Jones, Carol King" in err
         assert "Charlotte" not in err
 
+    def test_a_member_list_no_group_contains_at_all_is_refused_without_a_hint(self, integration):
+        handle, err = integration.resolve_recipient("Dave, Carol")
+        assert handle is None
+        assert "dave" in err.lower() and "carol" in err.lower()
+        assert "groups with them" not in err and "Carol King" not in err
+
     def test_a_single_unknown_name_is_still_an_unknown_contact(self, integration):
         handle, err = integration.resolve_recipient("Zelda")
         assert handle is None and "unknown contact" in err

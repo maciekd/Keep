@@ -61,6 +61,18 @@ def test_carried_sections_are_real_sections_with_a_heading():
 
 
 @pytest.mark.unit
+def test_a_carried_section_has_no_heading_of_its_own_so_the_prompt_does_not_carry_it_too():
+    """The toolkit brings the data on load_toolkit and the heading comes from SECTION_HEADINGS;
+    a generator with a heading would stand in every prompt's data block as well, and the LLM
+    would read the data twice — once stale, once current."""
+    from assistant.prompt.PromptManager import PromptManager
+    with patch("assistant.prompt.PromptSectionGenerator.PromptSectionGenerator.start"):
+        classes = PromptManager(test_suite=True).section_classes()
+    for key in Toolkits.CARRIED_SECTIONS:
+        assert classes[key].heading == "", f"section '{key}' is carried by a toolkit and also has a prompt heading"
+
+
+@pytest.mark.unit
 def test_by_name_is_tolerant():
     assert Toolkits.by_name("Email").name == "email"
     assert Toolkits.by_name('"email"').name == "email"

@@ -395,6 +395,30 @@ class TestDelete:
         assert "Dentist Charlotte" in message and "Dentist Frances" in message and "11:00" in message and "16:00" in message
         assert account.deleted == []
 
+    def test_a_whole_title_wins_over_the_longer_titles_that_contain_it(self):
+        """'Dentist' is also a part of 'Dentist Frances': the exact match is the one meant, not an
+        ambiguity — and the quotes an LLM wraps the title in are not part of it."""
+        day = date(2025, 6, 15)
+        account = _Account(calendars={"Home": [_event("Dentist", day, 9), _event("Dentist Frances", day, 14)]},
+                           shown=("Home",))
+        CalendarAccess([account]).delete("'dentist'", "2025-06-15")
+        (_, event), = account.deleted
+        assert event.id == "dentist"
+
+    def test_an_account_that_only_creates_refuses_a_delete_and_a_move_naming_itself(self):
+        class _CreateOnly(_Account):
+            delete_event = CalendarAccount.delete_event
+            move_event = CalendarAccount.move_event
+
+        account = _CreateOnly(calendars={"Home": [_event("Dentist Frances", date(2025, 6, 15), 14)]}, shown=("Home",))
+        access = CalendarAccess([account])
+        with pytest.raises(ValueError, match="not supported") as raised:
+            access.delete("Dentist Frances", "2025-06-15")
+        assert account.name in str(raised.value) and account.service in str(raised.value)
+        with pytest.raises(ValueError, match="not supported"):
+            access.move("Dentist Frances", "2025-06-15", "2025-06-16")
+        assert account.deleted == [] and account.moved == []
+
     def test_an_all_day_event_is_found_on_each_of_its_days(self):
         account = _day_account()
         CalendarAccess([account]).delete("Sports camp", "2025-06-16")

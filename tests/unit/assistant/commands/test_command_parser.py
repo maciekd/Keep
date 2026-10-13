@@ -580,6 +580,15 @@ class TestCommandParser:
         assert result == ("self_analysis", [question])
         assert remainder == " then more"
 
+    @pytest.mark.parametrize("command", ["improve_integration", "report_issue"])
+    def test_the_other_prose_commands_take_their_request_whole_too(self, command):
+        """improve_integration splits its leading integration name off itself; the parser must
+        hand it the whole payload, commas and apostrophes included, like self_improvement."""
+        request = "Tesla, the trunk didn't close at 10:46 (Oct 8), see the log; it's the second time"
+        result, remainder = CommandParser([command]).extract_command_and_params(f"{command}({request})")
+        assert result == (command, [request])
+        assert remainder == ""
+
     def test_self_improvement_find_complete_command(self, parser):
         """find_complete_command should recognize the deeply nested self_improvement"""
         content = (

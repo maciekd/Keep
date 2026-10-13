@@ -173,6 +173,19 @@ class TestDeleteAndMove:
             account().delete_event("Family", _read(id=""))
         assert not [c for c in google.calls if c.method in ("DELETE", "PATCH") and c.path != FAMILY_PATH + "/gone"]
 
+    def test_a_410_is_a_gone_event_but_another_error_stays_the_backends(self, google):
+        """Only "not there any more" is the user's business; a backend failure must surface as
+        one, not be reported as the event having been deleted by someone else."""
+        google.route("DELETE", FAMILY_PATH + "/ev-1", {"error": {"code": 410, "message": "Resource has been deleted"}}, status=410)
+        with pytest.raises(ValueError, match="no longer"):
+            account().delete_event("Family", _read())
+
+        google.route("PATCH", FAMILY_PATH + "/ev-1", {"error": {"code": 500, "message": "Backend Error"}}, status=500)
+        with pytest.raises(GoogleCalendarError, match="Backend Error") as raised:
+            account().move_event("Family", _read(), datetime(2026, 6, 18, 8, 0, tzinfo=pytz.UTC),
+                                 datetime(2026, 6, 18, 9, 30, tzinfo=pytz.UTC), all_day=False)
+        assert raised.value.status == 500
+
 
 @pytest.mark.unit
 class TestFailures:

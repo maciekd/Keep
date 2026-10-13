@@ -166,6 +166,18 @@ class TestDueColumn:
     def test_today_and_tomorrow_are_named_not_counted(self):
         assert "today" in self.cell(0)[0] and "tomorrow" in self.cell(1)[0]
 
+    def test_a_due_time_today_shows_the_hour_and_how_far_off_it_is(self):
+        at = lambda hours: WatchList.Item("parcel", "order 4711", due=(NOW + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M"))
+        ahead = WatchListTab._cell("due", assess(at(2), NOW), NOW)[0]
+        assert "14:00" in ahead and ahead.endswith("in 2h") and "today" not in ahead
+        reached = WatchListTab._cell("due", assess(at(-3), NOW), NOW)[0]
+        assert "09:00" in reached and reached.endswith("3h ago")
+
+    def test_a_due_time_on_another_day_keeps_the_day_count_not_the_hours(self):
+        at = WatchList.Item("parcel", "order 4711", due=(NOW + timedelta(hours=26)).strftime("%Y-%m-%d %H:%M"))
+        text = WatchListTab._cell("due", assess(at, NOW), NOW)[0]
+        assert "14:00" in text and text.endswith("tomorrow") and "26h" not in text
+
     def test_a_date_the_tab_cannot_read_is_shown_as_written(self):
         entry = assess(WatchList.Item("parcel", "order 4711", due="when the shop reopens"), NOW)
         assert WatchListTab._cell("due", entry, NOW)[0] == "when the shop reopens"

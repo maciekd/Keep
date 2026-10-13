@@ -6,7 +6,7 @@ import pytest
 
 from assistant.integration.Feed import Feed
 from assistant.integration.Integration import Integration, IntegrationState
-from assistant.integration.IntegrationMonitor import IntegrationMonitor
+from assistant.integration.IntegrationMonitor import IntegrationMonitor, DisabledIntegration
 
 
 class FakeIntegration(Integration):
@@ -504,6 +504,32 @@ class TestRegisterClass:
         mock_config.register(FakeIntegration("iCloud Email"))
         assert mock_config.find("icloud email").name == "iCloud Email"
         assert mock_config.find("gmail") is None
+
+    def test_folder_named_knows_the_folder_of_a_disabled_integration_too(self, mock_config):
+        """improve_integration asks for the folder of the integration the user names; a disabled
+        one is never built, but a fix to it must still land in its folder and not be opened
+        as a new integration."""
+        class FolderedIntegration(FakeIntegration, SingletonMixin):
+            def __init__(self):
+                super().__init__("Tesla", keys=["tesla"])
+
+            @property
+            def name(self) -> str:
+                return "Tesla"   # constant, so the name is known before an instance exists
+        FolderedIntegration.__module__ = "integrations.tesla.TeslaIntegration"
+
+        mock_config.register_class(FolderedIntegration)
+        assert mock_config.folder_named("tesla") == "tesla"
+
+        disabled = IntegrationMonitor()
+        disabled._config_manager = Mock()
+        with patch.object(Integration, "enabled", classmethod(lambda cls, config: False)):   # the suite stubs it on
+            placeholder = disabled.register_class(FolderedIntegration)
+        assert isinstance(placeholder, DisabledIntegration)
+        assert disabled.folder_named("TESLA") == "tesla"
+        assert disabled.folder_named("ring") is None
+        mock_config.register(FakeIntegration())
+        assert mock_config.folder_named("FakeService") is None, "a class outside src/integrations has no folder"
 
 
 class TestRestart:

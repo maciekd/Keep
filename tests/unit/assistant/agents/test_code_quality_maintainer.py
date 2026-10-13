@@ -581,6 +581,14 @@ class TestImproveCode:
         mock_sub.assert_called_with(["git", "checkout", "master"], "git checkout", GIT_TIMEOUT)
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=RuntimeError("claude exited 137"))
+    def test_a_crashed_run_is_the_result_and_the_starting_branch_comes_back(self, mock_claude, mock_sub):
+        mock_sub.return_value = Mock(stdout="release\n", returncode=0)
+        result = CodeQualityMaintainer._pr_job("prompt", "self-improvement")
+        assert result.startswith("Self-improvement failed") and "exited 137" in result
+        assert mock_sub.call_args_list[-1] == call(["git", "checkout", "release"], "git checkout", GIT_TIMEOUT)
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
     def test_returns_fallback_on_no_output(self, mock_claude, mock_sub):
         mock_sub.return_value = Mock(stdout="", returncode=0)

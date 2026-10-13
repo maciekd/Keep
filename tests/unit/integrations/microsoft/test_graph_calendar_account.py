@@ -9,7 +9,7 @@ import pytz
 
 from assistant.integration.calendar.Event import Event
 from integrations.microsoft.GraphCalendarAccount import GraphCalendarAccount
-from integrations.microsoft.GraphClient import BASE_URL, GraphClient
+from integrations.microsoft.GraphClient import BASE_URL, GraphClient, GraphError
 
 from .graph_fakes import FakeGraph, StubAuth
 
@@ -188,3 +188,10 @@ class TestDeleteAndMove:
         with pytest.raises(ValueError, match="no event id"):
             account().move_event("Calendar", _read(id=""), datetime(2026, 6, 18, tzinfo=pytz.UTC), datetime(2026, 6, 18, tzinfo=pytz.UTC), True)
         assert not [c for c in graph.calls if c.method == "PATCH"]
+
+    def test_a_backend_error_is_not_reported_as_a_gone_event(self, graph):
+        graph.route("GET", "/me/calendars", CALENDARS)
+        graph.route("DELETE", "/me/events/ev-1", {"error": {"code": "InternalServerError", "message": "boom"}}, status=500)
+        with pytest.raises(GraphError, match="boom") as raised:
+            account().delete_event("Calendar", _read())
+        assert raised.value.status == 500

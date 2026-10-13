@@ -257,6 +257,17 @@ class TestCompleteReminder:
         plumber.setCompleted_.assert_called_once_with(True)
         lawn.setCompleted_.assert_called_once_with(True)
 
+    def test_a_title_equal_but_for_its_case_wins_over_the_titles_that_merely_contain_it(self, integration, eventkit):
+        """'milk' is a part of both 'Milk' and 'Milk powder'; as a fragment it would be ambiguous,
+        but it is 'Milk' whatever the case, so that one is ticked off."""
+        shopping = a_list("Shopping")
+        milk, powder = a_reminder("Milk", shopping), a_reminder("Milk powder", shopping)
+        store = a_store([shopping], reminders=[milk, powder])
+        with patch.object(integration, "_event_store", return_value=store):
+            assert complete_reminder("milk", "Shopping") == ""
+        milk.setCompleted_.assert_called_once_with(True)
+        powder.setCompleted_.assert_not_called()
+
     def test_an_ambiguous_fragment_is_refused_naming_the_candidates(self, integration, eventkit):
         chores = a_list("Chores")
         reminders = [a_reminder("Call the plumber", chores), a_reminder("Pay the plumber", chores)]

@@ -191,6 +191,15 @@ class TestStart:
         assert "couldn't find remote ref" in result
         self.restart.assert_not_called()
 
+    def test_a_failed_checkout_does_not_sync_or_restart(self):
+        self.git.side_effect = lambda cmd, label, timeout: Mock(
+            returncode=1 if cmd[1] == "checkout" else 0, stdout="release\n" if cmd[1] == "rev-parse" else "",
+            stderr="error: your local changes would be overwritten")
+        result = PullRequestTrial.start(204)
+        assert "would be overwritten" in result and result.startswith("Cannot try PR #204")
+        self.sync.assert_not_called()
+        self.restart.assert_not_called()
+
     def test_packages_that_do_not_install_put_the_previous_branch_back(self):
         self.sync.return_value = ("pip exited 1 (no matching distribution)", "")
         result = PullRequestTrial.start(204)
@@ -249,6 +258,21 @@ class TestRollbackNote:
     def test_no_note_without_a_rollback(self, tmp_path):
         with patch.object(module, "ROLLBACK_NOTE_PATH", tmp_path / "missing.txt"):
             assert PullRequestTrial.take_rollback_note() is None
+
+    def test_a_long_note_keeps_its_tail_where_the_error_is(self, tmp_path):
+        path = tmp_path / "trial_rollback.txt"
+        path.write_text("HEAD " + "x" * (3 * module.ROLLBACK_NOTE_CHARS) + " TAIL")
+        with patch.object(module, "ROLLBACK_NOTE_PATH", path):
+            note = PullRequestTrial.take_rollback_note()
+        assert note.endswith("TAIL") and "HEAD" not in note
+        assert len(note) < module.ROLLBACK_NOTE_CHARS + 50
+
+    def test_a_blank_note_is_nothing_to_tell_and_is_removed_all_the_same(self, tmp_path):
+        path = tmp_path / "trial_rollback.txt"
+        path.write_text("  \n\n")
+        with patch.object(module, "ROLLBACK_NOTE_PATH", path):
+            assert PullRequestTrial.take_rollback_note() is None
+        assert not path.exists()
 
 
 @pytest.mark.parametrize("text, number", [("204", 204), ("#204", 204), (" PR 204 ", 204), ("pr#204", 204),

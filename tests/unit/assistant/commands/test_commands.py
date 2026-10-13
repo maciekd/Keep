@@ -2265,14 +2265,14 @@ class TestCmdImproveIntegration:
 @pytest.mark.unit
 class TestCmdReportIssue:
     @staticmethod
-    def _run(commands_instance, report):
+    def _run(commands_instance, report, delivered=True):
         with patch("assistant.commands.Commands.CodeQualityMaintainer", wraps=CodeQualityMaintainer) as mock_cqm, \
              patch.object(commands_instance, "fire_and_forget") as fire, \
              patch("assistant.commands.Commands.notifier") as notifier, \
              patch("assistant.commands.Commands.AutonomousActionManager") as aam:
             mock_cqm.unavailable_reason.return_value = ""
             mock_cqm.report_issue.return_value = report
-            notifier.return_value.send_message.return_value = True
+            notifier.return_value.send_message.return_value = delivered
             notifier.return_value.markdown_to_html.side_effect = lambda text: text
             commands_instance.cmd_report_issue("the lights stayed on at 23:10")
             fire.call_args.args[0](fire.call_args.args[1])
@@ -2295,6 +2295,14 @@ class TestCmdReportIssue:
         sent, row = self._run(commands_instance, "Too vague to investigate: no time and no symptom.")
         assert "live here" not in sent and "Too vague" in sent
         assert row.startswith("[Issue report complete]") and "no issue was filed" in row
+
+    def test_without_a_chat_to_deliver_to_the_row_carries_the_whole_report(self, commands_instance):
+        url = "https://github.com/example/keep/issues/7"
+        body = "The lights stay on after the scene ends.\nSeen three nights running in the log."
+        _, row = self._run(commands_instance, f"{url}\n{body}", delivered=False)
+        assert row.startswith("[Issue reported]") and url in row and body in row
+        _, delivered_row = self._run(commands_instance, f"{url}\n{body}")
+        assert "Seen three nights" not in delivered_row, "a delivered report is not repeated in the history"
 
 
 # ---------------------------------------------------------------------------

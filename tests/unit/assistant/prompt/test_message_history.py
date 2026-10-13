@@ -1031,6 +1031,17 @@ class TestToolkitEvictionStubs:
         assert not msgs[0]["content"].startswith("System (")
         assert self._stubs(section) == []
 
+    def test_the_next_trims_stub_names_only_what_that_trim_evicted(self):
+        """A toolkit not loaded again within one window's worth of conversation is not in use:
+        the second trim's stub names the toolkit it evicted and the first trim's name is gone."""
+        section, _ = self._section_after_eviction()
+        section.history += [self._toolkit_row("web", 1100.0)] + self._turns(20, 1110.0)
+        msgs = section.get_history_messages()
+        head = msgs[0]["content"].split("\n")[0]
+        assert head.startswith("System (") and "web" in head and "browser" not in head
+        assert [(e["toolkits"], e["timestamp"]) for e in self._stubs(section)] == [(["web"], 1100.0)]
+        assert section.loaded_toolkits() == {}
+
     def test_no_stub_while_a_newer_row_of_the_toolkit_is_in_the_window(self):
         section = _make_history_section()
         section.trim_high_bytes = 2_000
