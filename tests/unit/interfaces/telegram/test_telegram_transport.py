@@ -1476,6 +1476,41 @@ class TestGroupsAndGuests:
         update.message.reply_text.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_reaction_in_a_group_is_ignored_while_the_allow_list_is_empty(self):
+        # With no allow list everyone is an owner: a reaction in a group the bot was dragged
+        # into would start an owner's turn with one tap, as a text there used to.
+        transport, hub = _bot_in_group(allowed=())
+        update = TestInboundReaction._reaction_update(chat_id=-5001, new=["👍"])
+        update.effective_user.id = 8
+        await transport._handle_reaction(update, MagicMock())
+        hub.receive.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_guests_reaction_in_the_group_is_a_guest_turn_of_that_group(self):
+        transport, hub = _bot_in_group()
+        transport._track_message_text(-5001, 10, "dinner is pasta")
+        update = TestInboundReaction._reaction_update(chat_id=-5001, new=["👍"])
+        update.effective_user.id = 8
+        update.effective_user.is_bot = False
+        update.effective_chat.title = "Family"
+        await transport._handle_reaction(update, MagicMock())
+        msg = received(hub)
+        assert msg.kind == KIND_REACTION and msg.guest is True and msg.chat_name == "Family"
+        assert msg.reaction_target_text == "dinner is pasta"
+
+    @pytest.mark.asyncio
+    async def test_a_guests_voice_reply_to_the_bot_is_marked_a_guest_turn_too(self):
+        # A guest's turn runs no commands; the mark must survive every kind of message, not
+        # only text (a captioned photo once lost it).
+        transport, hub = _bot_in_group()
+        update = _update(chat_id=-5001, reply=_bubble_of(777), user_id=8, title="Family")
+        update.message.voice = MagicMock(file_id="v1", mime_type="audio/ogg")
+        await transport._handle_voice(update, _file_context(b"OggS"))
+        msg = received(hub)
+        assert msg.kind == KIND_VOICE and msg.guest is True and msg.sender_is_bot is False
+        assert msg.chat_name == "Family" and msg.conversation == -5001
+
+    @pytest.mark.asyncio
     async def test_a_secret_reply_from_a_guest_is_deleted_not_taken(self):
         transport, hub = _bot_in_group()
         transport._secret_prompts[-5001] = (99, "tok", "body")

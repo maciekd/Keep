@@ -718,6 +718,12 @@ class TelegramTransport(Integration, ChatTransport):
         if not self._is_authorized(chat_id):
             fine(f"Telegram: reaction from unauthorized chat_id {chat_id}")
             return
+        if chat_id < 0 and not self._allowed_chat_ids:
+            # The same rule as _admit: with an empty allow list everyone is an owner, which in
+            # a group would let any member start an owner's turn with one tap.
+            info(f"Telegram [{chat_id}]: a group reaction while allowed_chat_ids is empty — ignored, a group "
+                 f"is served only when its id is on the list")
+            return
 
         old_emojis = {r.emoji for r in (reaction.old_reaction or []) if hasattr(r, 'emoji')}
         new_emojis = [r.emoji for r in (reaction.new_reaction or []) if hasattr(r, 'emoji')]
