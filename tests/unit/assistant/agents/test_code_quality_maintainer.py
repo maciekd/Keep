@@ -573,6 +573,16 @@ class TestAnalyzeCode:
 
 @pytest.mark.unit
 class TestImproveCode:
+    @pytest.fixture(autouse=True)
+    def gh_logged_in(self):
+        """improve_code first asks `gh auth status` and reads the version and the trial state
+        from git — real subprocesses on the developer's machine, ~250 ms each test and a
+        different answer on a machine without gh. These tests are about the job itself."""
+        with patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
+                patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
+                patch.object(CodeQualityMaintainer, "_trial_instructions", return_value=""):
+            yield
+
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=ClaudeNotLoggedInError())
     def test_explains_missing_login(self, mock_claude, mock_sub):

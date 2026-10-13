@@ -24,10 +24,14 @@ def reset_singleton():
 
 @pytest.fixture
 def integration():
+    """The instance under test, and the one `IMessageIntegration.get_instance()` hands the
+    command set — a second instance would start with a stale cache and read the machine's
+    AddressBook and chat.db."""
     m = IMessageIntegration()
     m._contact_cache_time = 1e18        # the contact cache is fresh, never refreshed from disk
     m._name_to_handle = {"alice": "+12345678901"}
-    with patch.object(IMessageIntegration, "_load_group_chats", return_value=list(GROUPS)):
+    with patch.object(IMessageIntegration, "_load_group_chats", return_value=list(GROUPS)), \
+            patch.object(IMessageIntegration, "get_instance", return_value=m):
         yield m
 
 

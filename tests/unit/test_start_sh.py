@@ -67,6 +67,7 @@ class StartShHarness:
         # cli_start.sh does. `osascript` records its arguments and swallows the script.
         self.env_file.write_text(
             'sleep() { :; }\n'
+            'date() { echo "2026-10-13 03:00:00"; }\n'   # every rlog line forks one otherwise
             f'lsof() {{ cat "{tmp_path}/lsof_out" 2>/dev/null; return 0; }}\n'
             f'pgrep() {{ cat "{tmp_path}/pgrep_out" 2>/dev/null; return 0; }}\n'
             f'open() {{ echo "$@" >> "{self.open_calls}"; '
@@ -232,7 +233,10 @@ class TestTrialFallback:
 
     def _arm(self, harness, boots: bool):
         up = harness.dir / 'up'
-        extra = (f'git() {{ echo "$@" >> "{harness.dir}/git_calls"; }}\n'
+        # Each second of the wait is a subshell for lsof; three are enough to see the
+        # loop give up (the default 120 would run 16 before the pgrep check ends it).
+        extra = ('TRIAL_TIMEOUT=3\n'
+                 f'git() {{ echo "$@" >> "{harness.dir}/git_calls"; }}\n'
                  f'lsof() {{ [ -f "{up}" ] && echo 4242; cat "{harness.dir}/lsof_out" 2>/dev/null; return 0; }}\n')
         if boots:
             extra += f'open() {{ echo "$@" >> "{harness.open_calls}"; touch "{up}"; }}\n'
