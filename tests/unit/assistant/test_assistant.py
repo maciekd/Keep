@@ -246,6 +246,17 @@ class TestDispatch:
         handler.is_performing_request = False
         assert a.is_busy() is False
 
+    def test_busy_leaves_out_the_turn_that_asks(self):
+        # A phone outpost's voice turn posting to the speakers is itself a voice turn in flight:
+        # asked with its own context it does not count, another voice turn's context still does.
+        a = make_assistant(pool_size=2)
+        a.stream(ctx())
+        handler = a.running_handlers()[0]
+        handler.ctx = SimpleNamespace(source="VoiceToVoice")
+        assert a.is_busy("VoiceToVoice") is True
+        assert a.is_busy("VoiceToVoice", except_ctx=handler.ctx) is False
+        assert a.is_busy("VoiceToVoice", except_ctx=SimpleNamespace(source="VoiceToVoice")) is True
+
     def test_an_owner_request_still_supersedes_a_running_one(self):
         a = make_assistant(pool_size=2)
         a.stream(ctx())

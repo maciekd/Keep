@@ -1382,7 +1382,9 @@ class Commands:
         redacted = redact_for_storage(text)
         if redacted != text:
             trace(f"post_message: {len(text) - len(redacted)} chars of vault values redacted before sending")
-        return Destinations.send(destination, redacted) or None
+        # The room's speakers must not wait for the very turn that is posting (a spoken
+        # "tell the kitchen…" would wait on itself): the context says which turn that is.
+        return Destinations.send(destination, redacted, sender=self._current_context) or None
 
     # The watch list and the procedures: the argument handling lives with the stores
     # (the memory curator's command block runs the same commands through them).

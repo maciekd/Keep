@@ -158,11 +158,14 @@ class Assistant:
         tells; one killed before its turn began never cleared it, hence the second test."""
         return any(h.is_performing_request and not h.is_killed for h in self.running_handlers())
 
-    def is_busy(self, source: str | None = None) -> bool:
+    def is_busy(self, source: str | None = None, except_ctx=None) -> bool:
         """Whether a request is being served right now, or with *source* one from that channel
         (ChannelProfile.SOURCE_*). An announcement through the speakers waits for a voice turn
-        (interfaces.voice.Announcer), not for the Telegram turn whose post_message it is."""
+        (interfaces.voice.Announcer), not for the Telegram turn whose post_message it is — nor
+        for the voice turn whose post_message it is: *except_ctx* is that turn's RequestContext,
+        and the handler serving it does not count, else the announcement waits on itself."""
         return any(h.is_performing_request and not h.is_killed
+                   and (except_ctx is None or getattr(h, "ctx", None) is not except_ctx)
                    and (source is None or getattr(getattr(h, "ctx", None), "source", None) == source)
                    for h in self.running_handlers())
 

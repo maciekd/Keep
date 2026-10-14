@@ -813,6 +813,17 @@ class TestCmdPostMessage:
         result = commands_instance.cmd_post_message("Marcus & Alice - board")
         assert result.startswith("post_message failed") and "Marcus & Alice - board" in result
 
+    def test_the_asking_request_travels_with_the_message_to_the_speakers(self, commands_instance):
+        # The room's speakers wait for the house to be quiet; the turn posting must not count.
+        from assistant import Destinations
+        seen = []
+        Destinations.register(Destinations.Destination(
+            "kitchen", Destinations.KIND_VOICE, lambda text, sender: seen.append(sender) or True, sender_aware=True))
+        turn = object()
+        commands_instance._current_context = turn
+        assert commands_instance.cmd_post_message("kitchen", "The pasta is done") is None
+        assert seen == [turn]
+
     def test_the_text_is_vault_redacted_before_it_leaves_the_house(self, commands_instance):
         with patch("assistant.commands.Commands.redact_for_storage",
                    side_effect=lambda text: text.replace("4111 1111 1111 1111", "[card:primary]")):
