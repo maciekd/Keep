@@ -327,7 +327,9 @@ class TelegramFeedIntegration(Integration, Feed):
     @staticmethod
     async def _replies_to_the_bot(msg, bot_id: Optional[int]) -> bool:
         """A reply to one of the bot's own bubbles reaches the bot through the Bot API even in
-        privacy mode (TelegramInterface serves it), so the feed must not hand it over too."""
+        privacy mode (TelegramInterface serves it), so the feed must not hand it over too.
+        Only a person's reply, though: the Bot API never delivers another bot's messages, so
+        another Keep replying to our bubble reaches us through the feed alone."""
         if bot_id is None or not getattr(msg, 'reply_to_msg_id', None):
             return False
         try:
@@ -356,9 +358,6 @@ class TelegramFeedIntegration(Integration, Feed):
         if bot_id is not None and msg.sender_id == bot_id:
             trace("TelegramFeed: the bot's own reply names the assistant — not woken by herself")
             return False
-        if await self._replies_to_the_bot(msg, bot_id):
-            trace("TelegramFeed: the message replies to the bot's own bubble — the bot receives it itself, not woken twice")
-            return False
         is_from_me = msg.sender_id == self._me.id
         if is_from_me:
             sender_name, is_bot, guest = config.get_owner_name(), False, False
@@ -372,6 +371,10 @@ class TelegramFeedIntegration(Integration, Feed):
                 info(f"TelegramFeed: {sender_name} named the assistant in a group, but the message looks "
                      f"like a prompt injection — not woken")
                 return False
+        if not is_bot and await self._replies_to_the_bot(msg, bot_id):
+            trace(f"TelegramFeed: {sender_name} replies to the bot's own bubble — the bot receives it itself, "
+                  f"not woken twice")
+            return False
         if is_bot and not self._bot_wake_allowed(chat_id):
             info(f"TelegramFeed: {sender_name} (a bot) named the assistant, but bots woke her {BOT_WAKE_CAP} "
                  f"times this hour in [{chat_id}] — not woken (loop brake)")

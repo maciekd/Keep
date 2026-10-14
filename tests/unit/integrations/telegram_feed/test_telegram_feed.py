@@ -551,6 +551,15 @@ class TestWakeAssistant:
         await say("Michelle, and the garage?", reply_to_sender=123)   # a reply to a human's message
         fake.receive_chat_message.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_another_bots_reply_to_the_bots_bubble_is_the_feeds_alone(self, wake):
+        # The Bot API never delivers another bot's messages, so another household's Keep
+        # replying to our bubble reaches us through the owner's account or not at all.
+        m, say, fake = wake
+        await say("Michelle, same here", sender_id=888, bot=True, name="Erik's Keep", reply_to_sender=777)
+        fake.receive_chat_message.assert_called_once()
+        assert fake.receive_chat_message.call_args.kwargs["sender_is_bot"] is True
+
     def test_no_wake_word_wakes_on_nothing(self, wake, monkeypatch):
         m, _, _ = wake
         monkeypatch.setitem(self.CONFIG, 'wake_word', '')
