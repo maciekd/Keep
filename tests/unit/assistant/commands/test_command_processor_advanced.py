@@ -1571,10 +1571,22 @@ class TestCommandProcessorSensitiveGate:
         dm.web_request_handler.ctx = Mock(source="TextChat", conversation=4242)
         return dm
 
+    @staticmethod
+    def _imessage():
+        # describe_send_imessage resolves the recipient through the iMessage integration, which
+        # reads this machine's Messages database and AddressBook — a stub keeps the gate test
+        # off them (and ~100 ms of contact-cache refresh out of the first test to run).
+        imessage = Mock()
+        imessage.resolve_recipient.side_effect = lambda recipient: (recipient, None)
+        imessage.is_group_guid.return_value = False
+        return imessage
+
     def _run_with_decision(self, decision: str, monkeypatch, params=None, command="send_imessage"):
         if params is None:
             params = ["Anna, are you home?"]
         monkeypatch.setattr('assistant.commands.CommandProcessor.LOCAL_DEVELOPMENT_MODE', False)
+        monkeypatch.setattr('integrations.imessage.IMessageIntegration.IMessageIntegration.get_instance',
+                            lambda: self._imessage())
 
         processor = CommandProcessor(test_suite_mode=False)
         run_calls = []
