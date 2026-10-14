@@ -497,7 +497,9 @@ class PromptManager:
             # is from before a restart), or a pointer note ended the tracking. Either way the
             # LLM's copy is stale while the reference is in its window, so one pointer note —
             # not one per change — tells it to load again.
-            if toolkit not in self.message_history.loaded_toolkits():
+            # In any window: a toolkit voice preloaded is in voice's window alone, and its
+            # notes are rendered for that window alone (MessageHistory.visible).
+            if toolkit not in self.message_history.loaded_toolkits(window=None):
                 trace(f"Section '{section_name}' changed but was never sent (no load_toolkit yet) — no delta note")
                 return None
             if key in self._carried_pointer_out:
@@ -509,7 +511,7 @@ class PromptManager:
             return self._resolved_messages_locked()
         if new_content == prev:
             return None
-        if toolkit not in self.message_history.loaded_toolkits():
+        if toolkit not in self.message_history.loaded_toolkits(window=None):
             info(f"Section '{section_name}' changed but the {toolkit} toolkit left the window — tracking stops")
             self._section_current.pop(key)
             return None

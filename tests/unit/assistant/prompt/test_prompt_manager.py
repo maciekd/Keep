@@ -978,6 +978,32 @@ def test_delta_pre_heat_messages_include_the_transient_note(prompt_test_environm
     assert "procedures" in rendered_tail, "pre-heat payload must contain the delta note"
 
 
+@pytest.mark.unit
+def test_the_pre_heat_warms_the_window_of_the_last_request(prompt_test_environment):
+    """The next request is most likely on the channel of the last one, so the pre-heat after
+    a delta note renders that channel's window: voice's (with the rows voice preloaded)
+    after a voice request, the text window (without them) after a chat request."""
+    from assistant.prompt.MessageHistory import MessageHistory
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    manager.test_suite = False
+    manager.message_history.history = [
+        {"role": "command", "content": "result: \n# Toolkit: home\nhome text", "timestamp": time.time(),
+         "source": MessageHistory.preload_source("voice")}]
+    received = []
+    manager.on_prompt_assembled(lambda msgs: received.append("".join(m["content"] for m in msgs[1:])))
+
+    manager.get_messages(window="voice")
+    sections["procedures"]._content = "procedures_content_2"
+    manager.on_section_updated("procedures")
+    manager.get_messages(window="text")
+    sections["procedures"]._content = "procedures_content_3"
+    manager.on_section_updated("procedures")
+
+    assert len(received) == 2, "one pre-heat per note"
+    assert "home text" in received[0], "after the voice request the voice window is warmed"
+    assert "home text" not in received[1], "after the chat request the text window is"
+
+
 def _trim_away_the_notes(manager):
     """Make the history window evict every transient note: date the notes before a run of
     large turns and set the watermarks so the trim cuts between them. The returned
@@ -1690,7 +1716,7 @@ def _carried_manager(prompt_test_environment, in_window=("home",)):
     manager.sections = {"home": DummySection('## LIGHTS\n"Lamp [Kök]": off', section_name="HomeData"),
                         "procedures": DummySection("Sunny", section_name="Procedures")}
     manager._section_positions = manager._compute_section_positions()
-    manager.message_history.loaded_toolkits = lambda: {name: 1.0 for name in in_window}
+    manager.message_history.loaded_toolkits = lambda window=None: {name: 1.0 for name in in_window}
     manager._assemble_prompt()
     return manager
 
@@ -1756,6 +1782,32 @@ def test_carried_section_changes_become_notes_while_the_toolkit_is_in_the_window
 
 
 @pytest.mark.unit
+def test_a_toolkit_voice_preloaded_is_in_the_window_for_the_tracking_too(prompt_test_environment):
+    """Voice preloads home with its data: a row stamped for the voice window, the send
+    recorded as the baseline. A home change after it is a delta note like after any load —
+    not "the toolkit left the window", which would end the tracking and make every voice
+    request after a change send the whole data again. The note is the voice window's alone."""
+    from assistant.commands import Toolkits
+    from assistant.prompt.MessageHistory import MessageHistory
+    manager = _carried_manager(prompt_test_environment, in_window=())
+    del manager.message_history.loaded_toolkits      # the real one: the stamped row decides
+    manager.message_history.history = [
+        {"role": "command", "content": "result: \n# Toolkit: home\nhome text", "timestamp": time.time(),
+         "source": MessageHistory.preload_source("voice")}]
+    manager.carried_data(Toolkits.by_name("home"), record=True)
+    assert manager.untracked_sections(Toolkits.by_name("home")) == []
+
+    manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": on'
+    manager.on_section_updated("HomeData")
+
+    assert _notes(manager) == ['HOME AUTOMATION DATA updated:\n-"Lamp [Kök]": off\n+"Lamp [Kök]": on']
+    assert manager.untracked_sections(Toolkits.by_name("home")) == [], "the tracking goes on from the note"
+    voice = "\n".join(m["content"] for m in manager.message_history.get_history_messages(window="voice"))
+    text = "\n".join(m["content"] for m in manager.message_history.get_history_messages(window="text"))
+    assert '+"Lamp [Kök]": on' in voice and '+"Lamp [Kök]": on' not in text
+
+
+@pytest.mark.unit
 def test_carried_notes_survive_a_full_rebuild_and_a_new_send_restarts_the_budget(prompt_test_environment, monkeypatch):
     from assistant.commands import Toolkits
     monkeypatch.setattr(PromptManager, "_CARRIED_NOTES_BUDGET", 120)
@@ -1789,7 +1841,7 @@ def test_carried_section_stops_tracking_when_the_toolkit_leaves_the_window(promp
     assert len(_notes(manager)) == 1
 
     notes = _notes(manager)
-    manager.message_history.loaded_toolkits = lambda: {}
+    manager.message_history.loaded_toolkits = lambda window=None: {}
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": 50'
     manager.on_section_updated("HomeData")
     assert _notes(manager) == notes and "home" not in manager._section_current
