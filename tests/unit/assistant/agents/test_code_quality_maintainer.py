@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -26,6 +26,22 @@ def self_improvement_enabled():
 @pytest.fixture(autouse=True)
 def claude_installed():
     with patch("assistant.agents.CodeQualityMaintainer.claude_path", return_value=CLAUDE_PATH):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def no_real_processes():
+    """A test that reaches Popen unpatched would start Claude Code (or start.sh) on this machine
+    for real — one did, when a new step was added without patching it here. A test that wants
+    Popen patches it itself; that inner patch wins over this one."""
+    real_popen = subprocess.Popen
+
+    def guard(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if cmd and os.path.basename(str(cmd[0])) in ("claude", "bash"):
+            raise AssertionError(f"a unit test tried to start a real process: {cmd}")
+        return real_popen(*args, **kwargs)   # git and gh in a subprocess.run are harmless and some tests run them
+    with patch("assistant.agents.CodeQualityMaintainer.subprocess.Popen", side_effect=guard):
         yield
 
 
@@ -530,6 +546,37 @@ class TestStepBugAnalysis:
     def test_returns_empty_on_error(self, mock_claude, maintainer):
         result = maintainer._step_bug_analysis()
         assert result == ""
+
+
+@pytest.mark.unit
+class TestStepLogTriage:
+    def test_the_prompt_asks_for_the_configured_window_and_the_logs_and_the_fix_list(self):
+        with patch.object(CodeQualityMaintainer, '_run_claude', return_value="report") as run:
+            assert CodeQualityMaintainer._step_log_triage() == "report"
+        prompt, label = run.call_args[0]
+        assert f"last {LOG_TRIAGE_HOURS} hours" in prompt
+        assert "log/floxy.log" in prompt and "log/raw-floxy.log" in prompt   # the files the server writes
+        assert "runs commit" in prompt   # the start marker that tells which code was running
+        assert "fix list" in prompt and "critical and major rows" in prompt   # what the fix step reads
+        assert label == "log-triage"
+
+    @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude failed"))
+    def test_returns_empty_on_error(self, mock_claude):
+        assert CodeQualityMaintainer._step_log_triage() == ""
+
+
+@pytest.mark.unit
+class TestFixInput:
+    def test_both_reports_stand_under_their_headings_in_the_nights_order(self):
+        text = CodeQualityMaintainer.fix_input({"bugs": "B", "logs": "L", "tests": "ignored"})
+        assert text.index("# Bug Analysis") < text.index("B") < text.index("# Log Triage") < text.index("L")
+        assert "ignored" not in text
+
+    def test_a_missing_report_leaves_only_the_other_and_none_leaves_nothing(self):
+        only_logs = CodeQualityMaintainer.fix_input({"bugs": "", "logs": "L"})
+        assert "# Log Triage" in only_logs and "Bug Analysis" not in only_logs
+        assert CodeQualityMaintainer.fix_input({}) == ""
+        assert CodeQualityMaintainer.fix_input({"bugs": "", "logs": ""}) == ""
 
 
 @pytest.mark.unit
@@ -1133,17 +1180,19 @@ class TestNightlySkipReason:
 class TestExecuteNightlyRun:
     @pytest.fixture(autouse=True)
     def later_steps(self):
-        with patch.object(CodeQualityMaintainer, '_step_fix_bugs', return_value="") as fix, \
+        with patch.object(CodeQualityMaintainer, '_step_log_triage', return_value="") as logs, \
+                patch.object(CodeQualityMaintainer, '_step_fix_bugs', return_value="") as fix, \
                 patch.object(CodeQualityMaintainer, '_step_test_health', return_value="") as health, \
                 patch.object(CodeQualityMaintainer, '_step_auto_merge', return_value="") as merge:
-            self.fix, self.health, self.merge = fix, health, merge
+            self.logs, self.fix, self.health, self.merge = logs, fix, health, merge
             yield
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_runs_the_five_steps_in_order_with_the_fix_after_the_analysis_and_the_auto_merge_last(
+    def test_runs_the_six_steps_in_order_with_the_fix_after_both_reviews_and_the_auto_merge_last(
             self, mock_sub, mock_commits, maintainer):
         call_order = []
+        self.logs.side_effect = lambda: call_order.append('logs') or ''
         self.fix.side_effect = lambda analysis: call_order.append('fix') or ''
         self.health.side_effect = lambda: call_order.append('health') or ''
         self.merge.side_effect = lambda: call_order.append('merge') or ''
@@ -1151,21 +1200,37 @@ class TestExecuteNightlyRun:
             with patch.object(CodeQualityMaintainer, '_step_generate_tests', side_effect=lambda: call_order.append('tests') or ''):
                 with patch.object(CodeQualityMaintainer, '_send_email'):
                     maintainer._execute_nightly_run()
-        assert call_order == ['bugs', 'fix', 'tests', 'health', 'merge']
-        assert list(NIGHTLY_STEPS) == ['bugs', 'fix', 'tests', 'health', 'merge']   # //nightly names them the same way
+        assert call_order == ['bugs', 'logs', 'fix', 'tests', 'health', 'merge']
+        assert list(NIGHTLY_STEPS) == call_order   # //nightly names them the same way
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_the_fix_step_reads_the_nights_bug_analysis(self, mock_sub, mock_commits, maintainer):
+    def test_the_fix_step_reads_the_nights_bug_analysis_and_log_triage_under_their_headings(
+            self, mock_sub, mock_commits, maintainer):
+        self.logs.return_value = "| Critical | bar.py:9 | traceback at startup |"
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value="| Major | foo.py:3 | off by one |"), \
                 patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""), \
                 patch.object(CodeQualityMaintainer, '_send_email'):
             maintainer._execute_nightly_run()
-        self.fix.assert_called_once_with("| Major | foo.py:3 | off by one |")
+        self.fix.assert_called_once()
+        text = self.fix.call_args[0][0]
+        bugs, logs = text.index("| Major | foo.py:3 |"), text.index("| Critical | bar.py:9 |")
+        assert text.index("# Bug Analysis") < bugs < text.index("# Log Triage") < logs
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_a_crashed_bug_analysis_leaves_the_fix_step_nothing_to_read(self, mock_sub, mock_commits, maintainer):
+    def test_a_crashed_bug_analysis_leaves_the_fix_step_only_the_log_triage(self, mock_sub, mock_commits, maintainer):
+        self.logs.return_value = "| Major | bar.py:9 | a feed stalled |"
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', side_effect=Exception("boom")), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_send_email'):
+            maintainer._execute_nightly_run()
+        text = self.fix.call_args[0][0]
+        assert "| Major | bar.py:9 |" in text and "Bug Analysis" not in text
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_two_reports_without_content_leave_the_fix_step_nothing_to_read(self, mock_sub, mock_commits, maintainer):
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', side_effect=Exception("boom")), \
                 patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""), \
                 patch.object(CodeQualityMaintainer, '_send_email'):
@@ -1174,13 +1239,15 @@ class TestExecuteNightlyRun:
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=False)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_the_fix_step_alone_runs_the_bug_analysis_first(self, mock_sub, mock_commits, maintainer):
+    def test_the_fix_step_alone_runs_the_bug_analysis_and_the_log_triage_first(self, mock_sub, mock_commits, maintainer):
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value="Critical: x") as bugs, \
                 patch.object(CodeQualityMaintainer, '_step_generate_tests') as tests, \
                 patch.object(CodeQualityMaintainer, '_send_email'):
             maintainer._execute_nightly_run(only="fix")
         bugs.assert_called_once()
-        self.fix.assert_called_once_with("Critical: x")
+        self.logs.assert_called_once()
+        self.fix.assert_called_once()
+        assert "Critical: x" in self.fix.call_args[0][0]
         tests.assert_not_called()
         self.merge.assert_not_called()
 
@@ -1254,13 +1321,19 @@ class TestExecuteNightlyRun:
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=False)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_a_night_without_recent_commits_only_auto_merges(self, mock_sub, mock_commits, maintainer):
-        with patch.object(CodeQualityMaintainer, '_step_bug_analysis') as mock_bugs:
-            with patch.object(CodeQualityMaintainer, '_step_generate_tests') as mock_tests:
-                maintainer._execute_nightly_run()
-                mock_bugs.assert_not_called()
-                mock_tests.assert_not_called()
+    def test_a_night_without_recent_commits_skips_the_steps_about_the_commits(self, mock_sub, mock_commits, maintainer):
+        """The logs are about the running system, so the triage, the fix it feeds and the
+        auto-merge still run; the review, the tests and the test health of the commits do not."""
+        self.logs.return_value = "| Major | bar.py:9 | a feed stalled |"
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis') as mock_bugs, \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests') as mock_tests, \
+                patch.object(CodeQualityMaintainer, '_send_email'):
+            maintainer._execute_nightly_run()
+        mock_bugs.assert_not_called()
+        mock_tests.assert_not_called()
         self.health.assert_not_called()
+        self.logs.assert_called_once()
+        assert "| Major | bar.py:9 |" in self.fix.call_args[0][0]
         self.merge.assert_called_once()
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=False)

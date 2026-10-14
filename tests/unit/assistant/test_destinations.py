@@ -33,6 +33,16 @@ class TestLookup:
         assert Destinations.send("-5342761890", "again") == ""
         assert sent == ["hi", "again"]
 
+    def test_the_sender_reaches_a_sender_aware_destination_only(self):
+        seen = []
+        Destinations.register(Destination("kitchen", KIND_VOICE, lambda text, sender: seen.append((text, sender)) or True,
+                                          sender_aware=True))
+        plain = recording("owner", KIND_CHAT)
+        turn = object()
+        assert Destinations.send("kitchen", "hi", sender=turn) == ""
+        assert Destinations.send("owner", "hi", sender=turn) == ""
+        assert seen == [("hi", turn)] and plain == ["hi"]
+
     def test_registering_the_same_name_again_replaces_the_old_sender(self):
         old = recording("owner", KIND_CHAT)
         new = recording("Owner", KIND_CHAT)

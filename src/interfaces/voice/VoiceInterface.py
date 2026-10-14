@@ -101,15 +101,17 @@ class VoiceInterface(Interface):
 
     def _register_room(self, assistant):
         """The server speakers as a `post_message` destination, named by the outposts' location.
-        Busy means a voice turn is being served or a reply still holds the outpost mute
-        (speaking) — not any request: a post_message from a Telegram turn runs inside that
-        turn, and waiting for it would wait for itself."""
+        Busy means a voice turn other than the one posting is being served, or a reply still
+        holds the outpost mute (speaking) — not any request: a post_message from a Telegram
+        turn runs inside that turn, and one from a phone outpost's voice turn inside that
+        voice turn; waiting for either would wait for itself."""
         if self.running_as_testsuite or self.local_outpost_manager is None:
             trace("Voice: no local outposts, the speakers are not a destination")
             return
         self.announcer = Announcer(
             self.playback_factory, create_voice,
-            busy=lambda: assistant.is_busy(SOURCE_VOICE) or ServerPlayback._active_mute_generation != 0)
+            busy=lambda sender: (assistant.is_busy(SOURCE_VOICE, except_ctx=sender)
+                                 or ServerPlayback._active_mute_generation != 0))
         self._room = register_room(self.announcer)
 
     @staticmethod

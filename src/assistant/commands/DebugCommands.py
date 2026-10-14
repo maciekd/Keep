@@ -16,7 +16,7 @@ A command returns a human-readable string that is relayed back as the reply.
     //feed <pause|resume> <all|name> - hold / carry on filling the history from a feed; bare //feed lists them
     //memory_curate <start> [end]    - curate the long-term memory over a span of days (YYYYMMDD, end inclusive), in 4-day chunks
     //memory_split [apply]           - propose the split of an old one-file bank into bank / watch list / procedures; apply the latest proposal
-    //nightly [bugs|fix|tests|health|merge] - run the nightly code-quality run now, or one step of it (fix runs the bug analysis first)
+    //nightly [bugs|logs|fix|tests|health|merge] - run the nightly code-quality run now, or one step of it (fix runs the bug analysis and the log triage first)
     //first_run [stage <name>|reset] - the first-run pipeline's state; force a stage or delete the state (FTUE testing)
     //toolkits      - the toolkits with their size and whether each is in the LLM's history window
     //toolkit <name> - the reference of one toolkit as the LLM receives it
@@ -217,7 +217,7 @@ class DebugCommands:
         """The toolkits: size, commands, and when each was loaded into today's history window."""
         from . import Toolkits
         from assistant.integration.IntegrationMonitor import IntegrationMonitor
-        loaded = self.history.loaded_toolkits() if self.history is not None else {}
+        loaded = self.history.loaded_toolkits(window=None) if self.history is not None else {}
         monitor = IntegrationMonitor.get_instance()
         lines = [f"Toolkits ({len(Toolkits.TOOLKITS)}):"]
         width = max(len(t.name) for t in Toolkits.TOOLKITS)
@@ -407,7 +407,7 @@ class DebugCommands:
     # --- //nightly ------------------------------------------------------------------------
 
     def cmd_NIGHTLY(self, args: str) -> str:
-        """//nightly [bugs|fix|tests|health|merge]: run the nightly code-quality run now (bug analysis, a PR fixing its Critical and Major findings, test generation, test health, auto-merge), or one step alone (fix runs the bug analysis first, it reads from it) — in the background, also with self_improvement.nightly_runs off; the report is emailed."""
+        """//nightly [bugs|logs|fix|tests|health|merge]: run the nightly code-quality run now (bug analysis, log triage, a PR fixing the Critical and Major findings of both, test generation, test health, auto-merge), or one step alone (fix runs the bug analysis and the log triage first, it reads from them) — in the background, also with self_improvement.nightly_runs off; the report is emailed."""
         from assistant.agents import CodeQualityMaintainer as cqm
         only = args.strip().lower() or None
         if only and only not in cqm.NIGHTLY_STEPS:

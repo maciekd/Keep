@@ -561,6 +561,46 @@ class TestCmdServerLogs:
             result = Commands._fetch_server_logs(None)
         assert "Log file not found" in result
 
+    def test_tail_is_read_backwards_in_blocks_without_the_rest_of_the_file(self, tmp_path):
+        # The tail of a log many times the block size is assembled from the blocks at the end
+        # alone: lines straddling a block boundary — and a multi-byte character split by one —
+        # come out whole, and the file is never read as a whole.
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text("".join(f"rad{i} å{'x' * (i % 7)}\n" for i in range(500)), encoding="utf-8")
+        reads = []
+        real_open = open
+
+        def counting_open(path, *args, **kwargs):
+            f = real_open(path, *args, **kwargs)
+            if "b" in (args[0] if args else kwargs.get("mode", "r")):
+                real_read = f.read
+                f.read = lambda size=-1: reads.append(size) or real_read(size)
+            return f
+
+        with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file)), \
+             patch("assistant.commands.Commands.SERVER_LOG_TAIL_BLOCK", 100), \
+             patch("builtins.open", counting_open):
+            result = Commands._fetch_server_logs(None)
+        body = result.split("\n", 1)[1]
+        assert body == "".join(f"rad{i} å{'x' * (i % 7)}\n" for i in range(100, 500))
+        assert reads and all(size == 100 for size in reads)
+        assert sum(reads) < log_file.stat().st_size
+
+    def test_tail_of_a_log_shorter_than_the_window_is_the_whole_log(self, tmp_path):
+        log_file = tmp_path / "floxy.out"
+        log_file.write_text("only\ntwo lines")
+        with patch("assistant.commands.Commands.SERVER_LOG_PATH", str(log_file)), \
+             patch("assistant.commands.Commands.SERVER_LOG_TAIL_BLOCK", 4):
+            result = Commands._fetch_server_logs(None)
+        assert result.endswith("(last 2 lines)\nonly\ntwo lines")
+
+    def test_from_time_stops_reading_once_the_window_is_full(self, tmp_path):
+        from datetime import datetime
+        self._stamped_log(tmp_path, count=2000)
+        lines, first, read = Commands._log_lines_from(str(tmp_path / "floxy.out"), datetime(2026, 3, 1, 8, 10), 5)
+        assert first == 11 and len(lines) == 5
+        assert read == 15
+
     def test_a_stray_non_utf8_byte_does_not_break_the_command(self, tmp_path):
         # floxy.out is redirected process output; a subprocess can write anything into it.
         log_file = tmp_path / "floxy.out"
@@ -812,6 +852,17 @@ class TestCmdPostMessage:
     def test_a_missing_text_is_refused_with_the_destinations(self, commands_instance):
         result = commands_instance.cmd_post_message("Marcus & Alice - board")
         assert result.startswith("post_message failed") and "Marcus & Alice - board" in result
+
+    def test_the_asking_request_travels_with_the_message_to_the_speakers(self, commands_instance):
+        # The room's speakers wait for the house to be quiet; the turn posting must not count.
+        from assistant import Destinations
+        seen = []
+        Destinations.register(Destinations.Destination(
+            "kitchen", Destinations.KIND_VOICE, lambda text, sender: seen.append(sender) or True, sender_aware=True))
+        turn = object()
+        commands_instance._current_context = turn
+        assert commands_instance.cmd_post_message("kitchen", "The pasta is done") is None
+        assert seen == [turn]
 
     def test_the_text_is_vault_redacted_before_it_leaves_the_house(self, commands_instance):
         with patch("assistant.commands.Commands.redact_for_storage",

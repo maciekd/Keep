@@ -198,7 +198,12 @@ class ServerPlayback:
                 # Closing its stream from here would block on the same wedge — leave
                 # cleanup to the daemon worker's finally if it ever unwedges.
                 error("Audio playback worker did not exit within 1s (wedged in CoreAudio?) "
-                      "— skipping stream close so this thread doesn't hang too.")
+                      "— skipping stream close so this thread doesn't hang too. "
+                      "Capturing forensics in background.")
+                # Recover at the first sign: left to a later reply's drain wait, the wedge
+                # was only diagnosed once that reply had stalled for PLAYBACK_STALL_TIMEOUT
+                # (35 minutes of silent replies on the incident that showed it).
+                self._start_stall_forensics()
                 self.audio_thread = None
                 return
 
@@ -285,11 +290,16 @@ class ServerPlayback:
                       f"{ServerPlayback.PLAYBACK_STALL_TIMEOUT:.0f}s with "
                       f"{self.audio_queue.qsize()} chunks queued — abandoning playback "
                       f"(CoreAudio output wedge?). Capturing forensics in background.")
-                threading.Thread(target=self._capture_playback_stall_forensics,
-                                 name="PlaybackStallForensics", daemon=True).start()
+                self._start_stall_forensics()
                 return False
             time.sleep(0.1)
         return True
+
+    def _start_stall_forensics(self):
+        """Diagnose a wedged worker — and restart the process when the wedge is ours — off
+        the calling thread, which must not block on the same CoreAudio hang."""
+        threading.Thread(target=self._capture_playback_stall_forensics,
+                         name="PlaybackStallForensics", daemon=True).start()
 
     @staticmethod
     def _capture_playback_stall_forensics():

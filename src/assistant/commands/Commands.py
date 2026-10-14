@@ -1,4 +1,6 @@
 import inspect
+import io
+import os
 import queue
 import re
 import threading
@@ -49,6 +51,9 @@ SERVER_LOG_PATH = "log/floxy.out"
 # Opens every server_logs result; is_reference_result knows the dumps by it.
 SERVER_LOG_HEADER = "# Keep AI Server Logs"
 SERVER_LOG_TAIL_LINES = 400
+# The tail is read backwards in blocks of this size: the log runs to hundreds of MB and reading it
+# whole for 400 lines took seconds and a GB of memory (the mics dropped audio while it was freed).
+SERVER_LOG_TAIL_BLOCK = 1 << 20
 
 
 def is_reference_result(body: str) -> bool:
@@ -232,26 +237,60 @@ class Commands:
             return (f"server_logs failed: cannot read the time '{from_time}'; "
                     "use YYYY-MM-DD HH:MM[:SS], YYYY-MM-DD or HH:MM[:SS] (today).")
         try:
-            # The log is redirected process output; a stray non-UTF-8 byte must not take the
-            # assistant's own diagnostics down with it.
-            with open(SERVER_LOG_PATH, "r", errors="replace") as f:
-                lines = f.readlines()
+            if start is None:
+                chunk = Commands._tail_log_lines(SERVER_LOG_PATH, SERVER_LOG_TAIL_LINES)
+                window = f"last {len(chunk)} lines"
+            else:
+                chunk, first, total = Commands._log_lines_from(SERVER_LOG_PATH, start, SERVER_LOG_TAIL_LINES)
+                if first is None:
+                    info(f"Server logs: nothing logged at or after {start} ({total} lines)")
+                    return f"{SERVER_LOG_HEADER}\nNothing logged at or after {start}; the log has {total} lines."
+                window = f"{len(chunk)} lines from {start} (line {first})"
         except FileNotFoundError:
             error(f"Server log {SERVER_LOG_PATH} not found")
             return f"{SERVER_LOG_HEADER}\nLog file not found."
-        if start is None:
-            chunk = lines[-SERVER_LOG_TAIL_LINES:]
-            window = f"last {len(chunk)} lines"
-        else:
-            first = Commands._first_log_line_at(lines, start)
-            if first is None:
-                info(f"Server logs: nothing logged at or after {start} ({len(lines)} lines)")
-                return f"{SERVER_LOG_HEADER}\nNothing logged at or after {start}; the log has {len(lines)} lines."
-            chunk = lines[first:first + SERVER_LOG_TAIL_LINES]
-            window = f"{len(chunk)} lines from {start} (line {first + 1})"
         text = re.sub(r'\x1b\[[0-9;]*m', '', "".join(chunk))
-        info(f"Server logs fetched: {window} of {len(lines)}, {len(text)} chars")
+        info(f"Server logs fetched: {window}, {len(text)} chars")
         return f"{SERVER_LOG_HEADER} ({window})\n{text}"
+
+    @staticmethod
+    def _tail_log_lines(path: str, count: int) -> list[str]:
+        """The last `count` lines, read backwards block by block from the end, so the cost is
+        the tail's and never the file's. The log is redirected process output; a stray
+        non-UTF-8 byte must not take the assistant's own diagnostics down with it."""
+        blocks, newlines = [], 0
+        with open(path, "rb") as f:
+            position = f.seek(0, os.SEEK_END)
+            # count + 1 newlines guarantee `count` whole lines before the trailing one.
+            while position > 0 and newlines <= count:
+                size = min(SERVER_LOG_TAIL_BLOCK, position)
+                position -= size
+                f.seek(position)
+                block = f.read(size)
+                blocks.append(block)
+                newlines += block.count(b"\n")
+        text = b"".join(reversed(blocks)).decode("utf-8", errors="replace")
+        return io.StringIO(text).readlines()[-count:]
+
+    @staticmethod
+    def _log_lines_from(path: str, start, count: int) -> tuple[list[str], Optional[int], int]:
+        """Stream the log and return (window, first line number, lines read): the first `count`
+        lines from the first one stamped at or after `start`. Continuation lines (tracebacks)
+        carry no stamp and are skipped when seeking but kept in the window. Nothing but the
+        window is held, and the read stops as soon as it is full."""
+        key = start.strftime("%Y-%m-%d %H:%M:%S")
+        window, first, total = [], None, 0
+        with open(path, "r", errors="replace") as f:
+            for total, line in enumerate(f, 1):
+                if first is None:
+                    match = _LOG_TIMESTAMP.search(line)
+                    if not (match and match.group() >= key):
+                        continue
+                    first = total
+                window.append(line)
+                if len(window) >= count:
+                    break
+        return window, first, total
 
     @staticmethod
     def _parse_log_time(text: str):
@@ -264,16 +303,6 @@ class Commands:
             if "%Y" not in fmt:
                 parsed = datetime.combine(datetime.now().date(), parsed.time())
             return parsed
-        return None
-
-    @staticmethod
-    def _first_log_line_at(lines: list, start) -> Optional[int]:
-        """Index of the first line stamped at or after `start`; continuation lines (tracebacks) carry no stamp and are skipped."""
-        key = start.strftime("%Y-%m-%d %H:%M:%S")
-        for index, line in enumerate(lines):
-            match = _LOG_TIMESTAMP.search(line)
-            if match and match.group() >= key:
-                return index
         return None
 
     def cmd_open_url(self, parameter_string: str):
@@ -1382,7 +1411,9 @@ class Commands:
         redacted = redact_for_storage(text)
         if redacted != text:
             trace(f"post_message: {len(text) - len(redacted)} chars of vault values redacted before sending")
-        return Destinations.send(destination, redacted) or None
+        # The room's speakers must not wait for the very turn that is posting (a spoken
+        # "tell the kitchen…" would wait on itself): the context says which turn that is.
+        return Destinations.send(destination, redacted, sender=self._current_context) or None
 
     # The watch list and the procedures: the argument handling lives with the stores
     # (the memory curator's command block runs the same commands through them).

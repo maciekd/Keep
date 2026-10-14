@@ -80,8 +80,12 @@ NIGHTLY_UPDATE_KEY = "nightly_update"
 RELEASE_BRANCH = "release"
 DEVELOPER_BRANCH = "master"
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
-NIGHTLY_STEPS = ("bugs", "fix", "tests", "health", "merge")   # what //nightly takes to run one step alone
+NIGHTLY_STEPS = ("bugs", "logs", "fix", "tests", "health", "merge")   # what //nightly takes to run one step alone
+FIX_STEP_INPUTS = ("bugs", "logs")       # the reports the fix step reads, under the headings REPORT_TITLES gives them
 FIX_SEVERITIES = ("critical", "major")   # the findings the nightly fix step takes on
+LOG_TRIAGE_HOURS = 24                    # how far back the log triage reads
+REPORT_TITLES = dict(zip(NIGHTLY_STEPS, ("Bug Analysis", "Log Triage", "Bug Fixes", "Test Generation", "Test Health",
+                                         "Auto-Merge Test PRs")))   # the headings of the night's email
 GH_NOT_LOGGED_IN_MESSAGE = (
     "GitHub CLI is not logged in on the server, so nothing can be filed on the repository. "
     "Run `gh auth login` in a terminal on the server machine with an account that has write access "
@@ -224,10 +228,52 @@ Run the /check skill with the target "last 24h" to review the last day's commits
 IMPORTANT: Your entire analysis must be in your final message. Do not ask follow-up questions or offer to implement fixes.
 """
 
+LOG_TRIAGE_PROMPT = """
+Go through the server's logs of the last {hours} hours for problems that actually happened while it ran, and judge
+each one: is it serious, and has a commit already fixed it?
+
+The logs are under log/, huge and appended to across runs — never read one whole. Narrow to the window first by
+the timestamp that starts every line (`grep -n -m1 '^<date> <hour>'` finds the first line of the window, then
+tail from there), then grep inside it:
+- log/floxy.log — the plain log, `<timestamp> +<delta> [LEVEL] message`; levels ERROR, NOTE, INFO, FINE, TRACE.
+  Start with the [ERROR] lines, then the lines that say something failed, retried, timed out, stalled, was skipped
+  or restarted.
+- log/verbose-floxy.out — ALL logs including fine(), formatted with colors codes that you'll need to strip.
+- log/raw-floxy.log — the process's own stderr: the tracebacks of crashes and of exceptions nothing caught.
+- log/restart.log — when and why the server restarted.
+A line `CodeQualityMaintainer: this process runs commit <sha>` marks a start of the server on that commit, so you
+can tell which code was running when a problem occurred.
+
+For each problem you find:
+1. Has a commit already fixed it? List the commits since its first occurrence (`git log --since=... --format='%h
+   %ad %s' --date=iso`) and read the diffs of those that touch the code around it. A commit that removes the cause
+   is a fix only when the problem did not come back on a server start that carried that commit (the "runs commit"
+   markers after it say which starts did). Name the fixing commit and leave the problem out of the fix list.
+2. Otherwise find the cause: read the code the log lines come from, cite file:line, separate what is a fact from
+   what is a guess, and propose the fix when it is obvious.
+
+Severity: critical — a crash, data loss, a user's request lost or answered wrong, a security or privacy hole;
+major — a feature does not work or an integration is down; minor — degraded, noisy or slow but working; nit —
+cosmetic.
+
+Privacy: quote log lines trimmed to what matters, with a phone number, an email address, a name, an address, a
+token or a key replaced by a placeholder like <name> — the fix list ends up in a pull request on GitHub.
+
+Final report, concise (it is read over a chat on a phone):
+- One short section per problem: what, when and how often, the code it comes from, "fixed by <commit>" or the
+  cause.
+- The last table is the fix list: the unfixed problems only, one row each, with the columns Severity
+  (critical/major/minor/nit), Where (file:line), What and Proposed fix. An automated fix step reads this table and
+  takes on the critical and major rows. When nothing needs fixing, say so plainly and leave the table empty.
+
+IMPORTANT: Your entire analysis must be in your final message. Do not ask follow-up questions or offer to implement fixes.
+"""
+
 FIX_BUGS_PROMPT = """
-The nightly bug analysis of this code base just finished; its report is below. Your job is to fix the items of its
-fix list (the last table, what the analysis itself says needs fixing) whose finding is tagged Critical or Major —
-and only those. Leave every Minor and Nit item alone.
+The nightly reviews of this code base just finished — the bug analysis of the day's commits and the triage of the
+server's logs, whichever ran tonight; their reports are below, each under its own heading. Your job is to fix the
+items of each report's fix list (its last table, what the report itself says needs fixing) whose finding is tagged
+Critical or Major — and only those. Leave every Minor and Nit item alone.
 
 Steps:
 1. Prepare for PR: create a branch.
@@ -243,7 +289,7 @@ If nothing was fixed, open no PR and say so.
 IMPORTANT: Your entire response to the user must be in your final message: the PR link, a table of the items you fixed and
 a table of the items you left with the reason for each. Keep it concise — it will be read over a chat on a phone.
 
-The analysis:
+The reports:
 
 {analysis}
 """
@@ -422,11 +468,15 @@ IMPORTANT: Your entire response must be in your final message. Do not ask follow
 
 
 class CodeQualityMaintainer:
-    """Runs the nightly Claude Code jobs on the repo, one after another: bug analysis, test generation,
-    test health (flaky and slow tests), then the auto-merge of test-only PRs — one email for the night.
+    """Runs the nightly Claude Code jobs on the repo, one after another: bug analysis of the day's
+    commits, triage of the server's logs (what actually went wrong, and whether a commit fixed it
+    since), a PR fixing the Critical and Major items of both, test generation, test health (flaky
+    and slow tests), then the auto-merge of test-only PRs — one email for the night.
 
     A daemon thread fires the run at RUN_HOUR while `self_improvement.nightly_runs` is on (off by
-    default, read at each fire); a night without recent commits only auto-merges. Once the run is
+    default, read at each fire); a night without recent commits skips the steps about the commits
+    (bug analysis, test generation, test health) and keeps the log triage, the fix and the
+    auto-merge. Once the run is
     over — or at RUN_HOUR itself when it is off — the nightly update pulls the branch
     `developer_release` names and restarts the server if the code changed (`nightly_update`, on
     by default). Also exposes the ad-hoc analyze_code / improve_code / restart helpers behind the
@@ -542,24 +592,26 @@ class CodeQualityMaintainer:
         note(f"CodeQualityMaintainer: starting nightly run{f' ({only} only)' if only else ''}...")
         self._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
         reports = {}
-        steps = dict(zip(NIGHTLY_STEPS, [("Bug Analysis", self._step_bug_analysis),
-                                         ("Bug Fixes", lambda: self._step_fix_bugs(reports.get("bugs", ""))),
-                                         ("Test Generation", self._step_generate_tests),
-                                         ("Test Health", self._step_test_health),
-                                         ("Auto-Merge Test PRs", self._step_auto_merge)]))
+        steps = dict(zip(NIGHTLY_STEPS, [self._step_bug_analysis,
+                                         self._step_log_triage,
+                                         lambda: self._step_fix_bugs(self.fix_input(reports)),
+                                         self._step_generate_tests,
+                                         self._step_test_health,
+                                         self._step_auto_merge]))
         if only == "fix":
-            info("CodeQualityMaintainer: the fix step reads the bug analysis, so that runs first.")
-            keys = ["bugs", "fix"]
+            info("CodeQualityMaintainer: the fix step reads the bug analysis and the log triage, so those run first.")
+            keys = [*FIX_STEP_INPUTS, "fix"]
         elif only:
             keys = [only]
         elif self._has_recent_commits():
             keys = list(steps)
         else:
-            info("CodeQualityMaintainer: no recent commits, only the auto-merge runs tonight.")
-            keys = ["merge"]
+            info("CodeQualityMaintainer: no recent commits — the log triage, the fix step and the auto-merge "
+                 "run tonight, the steps about the commits are skipped.")
+            keys = ["logs", "fix", "merge"]
         sections = []
         for key in keys:
-            title, step = steps[key]
+            title, step = REPORT_TITLES[key], steps[key]
             try:
                 report = step()
                 reports[key] = report
@@ -578,6 +630,15 @@ class CodeQualityMaintainer:
         else:
             info("CodeQualityMaintainer: nothing to report, skipping email.")
         info("CodeQualityMaintainer: nightly run complete.")
+
+    @staticmethod
+    def fix_input(reports: dict) -> str:
+        """What the fix step reads: the night's bug analysis and log triage, each under the heading
+        the email gives it, the ones that produced nothing left out — "" when neither did."""
+        present = [(REPORT_TITLES[key], reports.get(key, "")) for key in FIX_STEP_INPUTS if reports.get(key)]
+        if not present:
+            trace("CodeQualityMaintainer: neither the bug analysis nor the log triage left a report for the fix step")
+        return "\n\n".join(f"# {title}\n\n{body}" for title, body in present)
 
     def _nightly_update(self):
         """After the night's run (at RUN_HOUR itself when that is off or skipped): check out the
@@ -967,6 +1028,21 @@ class CodeQualityMaintainer:
             return ""
 
     @staticmethod
+    def _step_log_triage() -> str:
+        """The problems the server actually had in the last LOG_TRIAGE_HOURS, from its logs, each
+        judged serious or noise and fixed since or still open — its fix list feeds the fix step
+        beside the bug analysis'. Runs every night: the logs are about the running system, not
+        the day's commits."""
+        try:
+            info(f"CodeQualityMaintainer: log triage of the last {LOG_TRIAGE_HOURS} hours...")
+            report = CodeQualityMaintainer._run_claude(LOG_TRIAGE_PROMPT.format(hours=LOG_TRIAGE_HOURS), "log-triage")
+            info("CodeQualityMaintainer: log triage complete.")
+            return report
+        except Exception as e:
+            error(f"CodeQualityMaintainer: log triage failed: {e}")
+            return ""
+
+    @staticmethod
     def fixable_severities(analysis: str) -> list[str]:
         """The severities of FIX_SEVERITIES the analysis mentions at all — a cheap screen so a
         night without a Critical or Major finding costs no Claude Code run. A report that only
@@ -976,19 +1052,20 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _step_fix_bugs(analysis: str) -> str:
-        """Fixes the Critical and Major items of the bug analysis' fix list as one PR, through
-        `_pr_job`; the auto-merge leaves that PR alone, since it touches more than tests/."""
+        """Fixes the Critical and Major items of the fix lists of *analysis* — the bug analysis and
+        the log triage as `fix_input` joins them — as one PR, through `_pr_job`; the auto-merge
+        leaves that PR alone, since it touches more than tests/."""
         if not analysis:
-            info("CodeQualityMaintainer: no bug analysis to fix from, skipping the fix step.")
+            info("CodeQualityMaintainer: no bug analysis or log triage to fix from, skipping the fix step.")
             return ""
         severities = CodeQualityMaintainer.fixable_severities(analysis)
         if not severities:
-            info("CodeQualityMaintainer: the bug analysis names nothing Critical or Major, nothing to fix.")
-            return "The bug analysis names nothing Critical or Major — nothing to fix tonight."
+            info("CodeQualityMaintainer: the reports name nothing Critical or Major, nothing to fix.")
+            return "The bug analysis and the log triage name nothing Critical or Major — nothing to fix tonight."
         reason = CodeQualityMaintainer._github_unavailable()
         if reason:
             return reason
-        info(f"CodeQualityMaintainer: the bug analysis mentions {', '.join(severities)} findings, fixing...")
+        info(f"CodeQualityMaintainer: the reports mention {', '.join(severities)} findings, fixing...")
         prompt = FIX_BUGS_PROMPT.format(analysis=analysis, label=NIGHTLY_FIX_LABEL,
                                         version=CodeQualityMaintainer._version())
         return CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), "nightly-fix")

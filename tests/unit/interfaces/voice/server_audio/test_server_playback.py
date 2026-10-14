@@ -75,6 +75,31 @@ class TestStop:
         mock_close.assert_not_called()
         assert playback.audio_thread is None
 
+    def test_stop_starts_the_stall_forensics_when_worker_wedged(self, playback):
+        """A wedge found by stop() is diagnosed (and the process restarted when it is ours)
+        right away — not once a later reply has stalled for the whole playback timeout."""
+        wedged = Mock()
+        wedged.is_alive.return_value = True
+        playback.audio_thread = wedged
+
+        with patch.object(playback, "_close_audio_stream"), \
+             patch.object(playback, "_start_stall_forensics") as forensics, \
+             patch(f"{MOD}.error"):
+            playback.stop()
+
+        forensics.assert_called_once_with()
+
+    def test_stop_of_a_worker_that_exits_starts_no_forensics(self, playback):
+        worker = Mock()
+        worker.is_alive.side_effect = [True, False]
+        playback.audio_thread = worker
+
+        with patch.object(playback, "_close_audio_stream"), \
+             patch.object(playback, "_start_stall_forensics") as forensics:
+            playback.stop()
+
+        forensics.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # TestCloseAudioStream

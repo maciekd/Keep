@@ -33,8 +33,12 @@ NONE_YET = "none yet — no interface has registered one"
 class Destination:
     name: str                       # what the LLM writes: "owner", "Maciek & Erik - Michelle test", "kitchen"
     kind: str                       # KIND_CHAT | KIND_GROUP | KIND_VOICE — decides the rendering
-    send: Callable[[str], bool]     # delivers the rendered text; True when the platform took it
+    send: Callable[..., bool]       # delivers the rendered text; True when the platform took it
     aliases: tuple[str, ...] = field(default_factory=tuple)
+    # True when `send` takes the sender as a second argument — the RequestContext of the turn
+    # whose post_message it is, None for an autonomous run. A room's speakers wait for the
+    # house to be quiet, and that turn must not count as the house being busy.
+    sender_aware: bool = False
 
     def answers_to(self, name: str) -> bool:
         wanted = name.strip().lower()
@@ -92,8 +96,10 @@ def describe() -> str:
     return ", ".join(parts)
 
 
-def send(name: str, text: str) -> str:
-    """Deliver *text* to the destination called *name*. Returns '' or the reason it failed."""
+def send(name: str, text: str, sender=None) -> str:
+    """Deliver *text* to the destination called *name*. Returns '' or the reason it failed.
+    *sender* is the RequestContext of the turn posting it (None outside a turn), handed on
+    to a sender-aware destination only."""
     destination = find(name)
     if destination is None:
         info(f"post_message: no destination answers to {name!r} (registered: {', '.join(names()) or 'none'})")
@@ -103,7 +109,7 @@ def send(name: str, text: str) -> str:
         return "post_message failed: the text is empty"
     info(f"post_message: {len(rendered)} chars to {destination.name!r} ({destination.kind})")
     try:
-        taken = destination.send(rendered)
+        taken = destination.send(rendered, sender) if destination.sender_aware else destination.send(rendered)
     except Exception as e:
         error(f"post_message: {destination.name!r} raised {type(e).__name__}: {e}")
         return f"post_message failed: {destination.name!r} could not take the message ({type(e).__name__})"

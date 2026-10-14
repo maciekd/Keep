@@ -62,7 +62,7 @@ class FakeVoice:
         self.closed = True
 
 
-def make(busy=lambda: False, voice=None, wait=0.05, poll=0.005):
+def make(busy=lambda sender: False, voice=None, wait=0.05, poll=0.005):
     playbacks: list[FakePlayback] = []
 
     def playback_factory(is_killed):
@@ -103,7 +103,7 @@ class TestAnnounce:
     def test_a_live_turn_makes_it_wait_and_then_speak(self):
         state = {"busy": 2}
 
-        def busy():
+        def busy(sender):
             state["busy"] -= 1
             return state["busy"] >= 0
 
@@ -112,10 +112,25 @@ class TestAnnounce:
         assert playbacks[0].chunks
 
     def test_a_turn_that_never_ends_gives_up_without_playing(self):
-        announcer, playbacks, voice = make(busy=lambda: True, wait=0.02)
+        announcer, playbacks, voice = make(busy=lambda sender: True, wait=0.02)
         assert announcer.announce("Hello") is False
         assert playbacks == []
         assert voice.spoken == []
+
+    def test_the_turn_posting_the_message_is_not_the_house_being_busy(self):
+        # A spoken "tell the kitchen…" runs post_message inside its own voice turn: the busy
+        # signal is asked about everyone but that turn, so it speaks instead of waiting on itself.
+        turn = object()
+        asked = []
+
+        def busy(sender):
+            asked.append(sender)
+            return sender is not turn
+
+        announcer, playbacks, _ = make(busy=busy, wait=0.02)
+        assert announcer.announce("Hello", sender=turn) is True
+        assert playbacks[0].chunks and asked == [turn]
+        assert announcer.announce("Hello") is False, "outside a turn the busy house still wins"
 
     def test_outposts_are_restored_when_synthesis_raises(self):
         announcer, playbacks, _ = make(voice=FakeVoice(fail=True))
@@ -129,7 +144,7 @@ class TestAnnounce:
         assert not any(isinstance(c, tuple) and c[0] == "finish" for c in playbacks[0].calls)
 
     def test_no_tts_engine_means_nothing_is_said(self):
-        announcer = Announcer(lambda k: FakePlayback(k), lambda lang: None, lambda: False, lang="en-US")
+        announcer = Announcer(lambda k: FakePlayback(k), lambda lang: None, lambda sender: False, lang="en-US")
         assert announcer.announce("Hello") is False
 
     def test_empty_text_is_refused(self):

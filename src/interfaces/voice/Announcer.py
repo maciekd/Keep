@@ -32,10 +32,12 @@ class Announcer:
     """One room's speakers as a destination: synthesizes a text and plays it when the house is quiet."""
 
     def __init__(self, playback_factory: Callable[[Callable[[], bool]], object],
-                 voice_factory: Callable[[Optional[str]], object], busy: Callable[[], bool],
+                 voice_factory: Callable[[Optional[str]], object], busy: Callable[[object], bool],
                  lang: Optional[str] = None, wait_for_quiet: float = WAIT_FOR_QUIET, poll: float = QUIET_POLL):
         """*playback_factory* and *voice_factory* are the voice interface's (the ones every
-        handler gets); *busy* says whether a request is being served or a reply is speaking."""
+        handler gets); *busy(sender)* says whether a request other than *sender* — the
+        RequestContext of the turn posting, None outside a turn — is being served or a reply
+        is speaking."""
         self._playback_factory = playback_factory
         self._voice_factory = voice_factory
         self._busy = busy
@@ -48,14 +50,15 @@ class Announcer:
     def stop(self):
         self._stopping = True
 
-    def announce(self, text: str) -> bool:
+    def announce(self, text: str, sender=None) -> bool:
         """Say *text* through the speakers. True once it played to the end; False, logged, for
-        everything else — never raises into the command."""
+        everything else — never raises into the command. *sender* is the turn posting it: a
+        voice turn's own post_message does not wait for that turn to end."""
         if not text or not text.strip():
             trace("Announcer: empty text, nothing to say")
             return False
         with self._lock:
-            if not self._wait_for_quiet_house():
+            if not self._wait_for_quiet_house(sender):
                 info(f"Announcer: the house was busy for {self._wait_for_quiet:.0f}s, not announcing: {text[:80]!r}")
                 return False
             if self._stopping:
@@ -63,10 +66,10 @@ class Announcer:
                 return False
             return self._play(text)
 
-    def _wait_for_quiet_house(self) -> bool:
+    def _wait_for_quiet_house(self, sender) -> bool:
         deadline = time.time() + self._wait_for_quiet
         waited = False
-        while self._busy():
+        while self._busy(sender):
             if self._stopping or time.time() >= deadline:
                 return False
             if not waited:
@@ -136,7 +139,7 @@ def register_room(announcer: Announcer) -> Optional[str]:
     name = destination_name()
     if name is None:
         return None
-    register(Destination(name=name, kind=KIND_VOICE, send=announcer.announce, aliases=ALIASES))
+    register(Destination(name=name, kind=KIND_VOICE, send=announcer.announce, aliases=ALIASES, sender_aware=True))
     return name
 
 
