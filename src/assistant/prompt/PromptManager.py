@@ -484,7 +484,7 @@ class PromptManager:
     def _on_carried_section_updated_locked(self, section_name: str, key: str, new_content: str) -> list | None:
         """A section a toolkit carries is never in the prompt: its baseline is what the last
         `load_toolkit` sent (carried_data) and a note goes out only while that toolkit is in
-        the LLM's window. A change too big for one note, or one that would push the section's
+        the LLM's window — any window, a voice preload's row included. A change too big for one note, or one that would push the section's
         notes past _CARRIED_NOTES_BUDGET, becomes a single "load it again" pointer and ends the
         tracking until the next load. Caller holds _prompt_lock; returns the messages to
         pre-heat after a note, else None."""
@@ -497,7 +497,7 @@ class PromptManager:
             # is from before a restart), or a pointer note ended the tracking. Either way the
             # LLM's copy is stale while the reference is in its window, so one pointer note —
             # not one per change — tells it to load again.
-            if toolkit not in self.message_history.loaded_toolkits():
+            if toolkit not in self.message_history.loaded_toolkits(window=None):
                 trace(f"Section '{section_name}' changed but was never sent (no load_toolkit yet) — no delta note")
                 return None
             if key in self._carried_pointer_out:
@@ -509,8 +509,8 @@ class PromptManager:
             return self._resolved_messages_locked()
         if new_content == prev:
             return None
-        if toolkit not in self.message_history.loaded_toolkits():
-            info(f"Section '{section_name}' changed but the {toolkit} toolkit left the window — tracking stops")
+        if toolkit not in self.message_history.loaded_toolkits(window=None):
+            info(f"Section '{section_name}' changed but the {toolkit} toolkit left every window — tracking stops")
             self._section_current.pop(key)
             return None
         diff = self._compute_section_delta(prev, new_content)

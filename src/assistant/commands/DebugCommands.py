@@ -217,7 +217,7 @@ class DebugCommands:
         """The toolkits: size, commands, and when each was loaded into today's history window."""
         from . import Toolkits
         from assistant.integration.IntegrationMonitor import IntegrationMonitor
-        loaded = self.history.loaded_toolkits() if self.history is not None else {}
+        loaded = self.history.loaded_toolkits(window=None) if self.history is not None else {}
         monitor = IntegrationMonitor.get_instance()
         lines = [f"Toolkits ({len(Toolkits.TOOLKITS)}):"]
         width = max(len(t.name) for t in Toolkits.TOOLKITS)

@@ -1690,7 +1690,7 @@ def _carried_manager(prompt_test_environment, in_window=("home",)):
     manager.sections = {"home": DummySection('## LIGHTS\n"Lamp [Kök]": off', section_name="HomeData"),
                         "procedures": DummySection("Sunny", section_name="Procedures")}
     manager._section_positions = manager._compute_section_positions()
-    manager.message_history.loaded_toolkits = lambda: {name: 1.0 for name in in_window}
+    manager.message_history.loaded_toolkits = lambda *_, **__: {name: 1.0 for name in in_window}
     manager._assemble_prompt()
     return manager
 
@@ -1780,6 +1780,26 @@ def test_carried_notes_survive_a_full_rebuild_and_a_new_send_restarts_the_budget
 
 
 @pytest.mark.unit
+def test_a_toolkit_preloaded_for_voice_keeps_its_delta_tracking(prompt_test_environment):
+    """A home preloaded for a spoken request is a `preload:voice` row: in no text window, yet its
+    data was sent. A change must become a delta note there, not end the tracking — which made
+    the next spoken request re-send the whole house instead of a note."""
+    from assistant.commands import Toolkits
+    from assistant.prompt.MessageHistory import MessageHistory
+    manager = _carried_manager(prompt_test_environment)
+    del manager.message_history.loaded_toolkits      # the real one, over the real rows
+    manager.message_history.add_command_result("result: \n# Toolkit: home\nhome text", cap=False,
+                                               source=MessageHistory.preload_source("voice"))
+    assert "home" not in manager.message_history.loaded_toolkits("text")
+    manager.carried_data(Toolkits.by_name("home"))
+    manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": on'
+    manager.on_section_updated("HomeData")
+    assert len(_notes(manager)) == 1 and POINTER not in _notes(manager)
+    assert manager._section_current["home"] == '## LIGHTS\n"Lamp [Kök]": on', "the tracking goes on"
+    assert not manager.untracked_sections(Toolkits.by_name("home")), "the next preload sends no full copy"
+
+
+@pytest.mark.unit
 def test_carried_section_stops_tracking_when_the_toolkit_leaves_the_window(prompt_test_environment):
     from assistant.commands import Toolkits
     manager = _carried_manager(prompt_test_environment)
@@ -1789,7 +1809,7 @@ def test_carried_section_stops_tracking_when_the_toolkit_leaves_the_window(promp
     assert len(_notes(manager)) == 1
 
     notes = _notes(manager)
-    manager.message_history.loaded_toolkits = lambda: {}
+    manager.message_history.loaded_toolkits = lambda *_, **__: {}
     manager.sections["home"]._content = '## LIGHTS\n"Lamp [Kök]": 50'
     manager.on_section_updated("HomeData")
     assert _notes(manager) == notes and "home" not in manager._section_current

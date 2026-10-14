@@ -917,6 +917,7 @@ class TestCommandResults:
         assert "lights off" in text and "Done" in text, "the conversation itself is every window's"
         assert set(section.loaded_toolkits("voice")) == {"home", "web"}
         assert set(section.loaded_toolkits("text")) == {"web"}
+        assert set(section.loaded_toolkits(None)) == {"home", "web"}, "any window: the delta tracking's view"
 
     def test_a_carried_delta_note_follows_its_toolkits_reference(self):
         """Home's delta notes diff against the data the last load sent: a window without

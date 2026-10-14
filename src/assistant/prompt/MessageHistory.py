@@ -681,20 +681,22 @@ class MessageHistory:
         self._notify_changed()
         return stored
 
-    def loaded_toolkits(self, window: str = WINDOW_TEXT) -> dict[str, float]:
+    def loaded_toolkits(self, window: str | None = WINDOW_TEXT) -> dict[str, float]:
         """Toolkit name → timestamp of the `command` rows inside `window` (at or after the
         trim cutoff, not preloaded for another window) that carry a toolkit reference, so
-        load_toolkit can point back at one the model still sees instead of sending it again."""
+        load_toolkit can point back at one the model still sees instead of sending it again.
+        `window=None` counts the rows of every window: the delta tracking of a carried
+        section follows the reference wherever it is, a voice preload included."""
         loaded = {}
         for entry in self.get_merged_entries():
             if entry["timestamp"] < self._trim_cutoff:
                 continue
             preloaded_for = self.preload_window(entry)
-            if preloaded_for is not None and preloaded_for != window:
+            if window is not None and preloaded_for is not None and preloaded_for != window:
                 continue
             for name in self._toolkit_names(entry):
                 loaded[name] = entry["timestamp"]
-        trace(f"MessageHistory: toolkits in the {window} window: {sorted(loaded) or 'none'}")
+        trace(f"MessageHistory: toolkits in the {window or 'any'} window: {sorted(loaded) or 'none'}")
         return loaded
 
     def add_command_result(self, result: str, cap: bool = True, source: str | None = None):
