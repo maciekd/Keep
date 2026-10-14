@@ -960,6 +960,25 @@ class TestWakeupPersistence:
         assert on_disk_when_fired == [(first, True, [second]), (second, True, [])]
 
     @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
+    @patch('assistant.agents.AutonomousActionManager.SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS', 0.01)
+    def test_a_missed_wakeup_waits_for_the_request_in_flight_not_the_periodic_quiet_period(self):
+        """A missed wake-up fired after a restart holds like a scheduled one: while the user's
+        request is in flight and seconds after it, not the minute the periodic checks keep."""
+        wakeup = self.wakeup(time.time() - 600)
+        self._save(wakeup)
+        mgr, _ = make_manager()
+        mgr.running = True
+        mgr.prompt_manager.is_night_mode_active.return_value = False
+        mgr.notify_user_interaction_started()
+        threading.Timer(0.05, mgr.notify_user_interaction_ended).start()
+        started = time.time()
+        with patch.object(mgr, 'activity_check', return_value="") as check:
+            mgr._fire_missed_wakeups([wakeup])
+        check.assert_called_once()
+        assert 0.05 <= time.time() - started < 1.0, "fired once the request ended, not a minute later"
+        assert self.read() == []
+
+    @patch('assistant.agents.AutonomousActionManager.MISSED_WAKEUP_STARTUP_GRACE_SECONDS', 0)
     def test_a_missed_wakeup_is_dropped_at_night_like_one_on_time(self):
         now = time.time()
         wakeup = self.wakeup(now - 600)
