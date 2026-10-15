@@ -1600,7 +1600,9 @@ class TestCommandProcessorSensitiveGate:
             approval_calls.append({"title": title, "details": details, "source": source,
                                    "conversation": conversation, "cancelled": cancelled})
             if callable(decision):
-                return decision(processor)
+                # The card is open: what the user does meanwhile, with the request's dialog
+                # manager and the kill probe the hub would poll.
+                return decision(processor, dialog_manager, cancelled)
             return decision
 
         fake_bot.request_approval = fake_request_approval
@@ -1642,11 +1644,34 @@ class TestCommandProcessorSensitiveGate:
     def test_approve_into_a_killed_request_does_not_run(self, monkeypatch):
         # The user tapped Approve, but a newer message had already killed the request the
         # card belonged to: the command it would have run is theirs no more.
-        def approve_after_kill(processor):
+        def approve_after_kill(processor, dialog_manager, probe):
             processor.is_killed = True
             return "approve"
 
         _, run_calls, _, _ = self._run_with_decision(approve_after_kill, monkeypatch)
+        assert run_calls == []
+
+    def test_the_kill_probe_says_alive_while_the_request_is(self, monkeypatch):
+        # The hub polls the probe every second; were it true for a live request, every card
+        # would be withdrawn a second after it was shown.
+        seen = []
+
+        def deny_after_probing(processor, dialog_manager, probe):
+            seen.append(probe())
+            return "deny"
+
+        self._run_with_decision(deny_after_probing, monkeypatch)
+        assert seen == [False]
+
+    def test_a_request_killed_through_its_dialog_manager_withdraws_the_approved_command(self, monkeypatch):
+        # A newer message kills the dialog manager, not the processor: the probe sees it and
+        # an Approve that lands after it runs nothing.
+        def approve_after_the_dialog_is_killed(processor, dialog_manager, probe):
+            dialog_manager.is_killed = True
+            assert probe() is True
+            return "approve"
+
+        _, run_calls, _, _ = self._run_with_decision(approve_after_the_dialog_is_killed, monkeypatch)
         assert run_calls == []
 
     def test_approval_details_normalizes_literal_escape_sequences(self, monkeypatch):

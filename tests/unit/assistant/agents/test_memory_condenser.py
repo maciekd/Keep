@@ -92,3 +92,10 @@ class TestCondense:
         with pytest.raises(RuntimeError):
             MemoryCondenser(llm, word_limit=100).condense("# People\n* Marcus\n", cut=1)
         assert llm.set_prompt_cache.call_args_list == [call(True), call(False)]
+
+
+def test_an_empty_bank_makes_no_call_and_counts_zero_words():
+    llm = _llm([])
+    _, outcome = MemoryCondenser(llm, 100).condense("", cut=5)
+    llm.think.assert_not_called()
+    assert outcome['sections'] == 0 and outcome['to'] == 0

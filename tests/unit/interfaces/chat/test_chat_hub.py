@@ -879,3 +879,28 @@ class TestReceiveChatMessage:
     def test_no_transport_for_the_source_drops_it(self, hub):
         hub.receive = lambda t, m: pytest.fail("nothing should be received")
         assert hub.receive_chat_message("Carrier Pigeon", 1, "Erik", "hi") is False
+
+
+@pytest.mark.unit
+class TestApprovalAnswerAndKillInOnePollWindow:
+    def test_a_tap_noticed_together_with_the_kill_wins_and_the_card_is_closed_once(self, hub, transport):
+        """The kill probe turns true in the same poll window the tap landed in: the future is
+        already done, so the answer stands and the card is not also closed as cancelled."""
+        hub.APPROVAL_POLL_SECONDS = 0.01
+
+        def tapped_then_killed():
+            token = next((c[2] for c in transport.calls if c[0] == "approval"), None)
+            if token is None:
+                return False
+            hub.resolve_approval(token, "approve")
+            return True
+
+        result = {}
+        t = threading.Thread(target=lambda: result.update(
+            d=hub.request_approval("x", timeout=5.0, cancelled=tapped_then_killed)), daemon=True)
+        t.start()
+        t.join(timeout=2)
+        assert result["d"] == "approve"
+        closes = [c for c in transport.calls if c[0] == "close"]
+        assert len(closes) == 1 and "ancelled" not in closes[0][3]
+        assert hub.pending_approvals() == 0

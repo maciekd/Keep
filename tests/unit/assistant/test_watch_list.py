@@ -536,3 +536,31 @@ class TestPending:
         WatchList.save("Car", "x", None, wl, log, every="3m", looked=False)
         pending = WatchList.pending(datetime.now(), within=timedelta(minutes=55), directory=wl)
         assert [(item.name, moment) for item, moment in pending] == [("car", WatchList.stamp(WatchList.get("car", wl).created))]
+
+
+@pytest.mark.unit
+class TestIndexExcerpt:
+    """The index line carries the start of the note: whole when it fits, cut at a word when not."""
+
+    def _lines(self, wl):
+        return {line.split("`")[1]: line for line in WatchList.render_index(wl, TODAY).splitlines()}
+
+    def test_a_note_that_just_fits_is_whole_and_one_character_more_is_cut_at_the_word(self, wl, log):
+        fits = "x" * 10 + " " + "y" * (WatchList.INDEX_NOTE_CHARS - 11)   # exactly the limit
+        WatchList.save("Fits", fits, None, wl, log)
+        WatchList.save("Over", fits + "z", None, wl, log)
+        lines = self._lines(wl)
+        assert lines["fits"].endswith(fits)
+        assert lines["over"].endswith("x" * 10 + "…")
+
+    @pytest.mark.xfail(strict=True, reason="_note_start cuts first[:INDEX_NOTE_CHARS] at its last space even when the "
+                                           "last character is the end of a whole word, so a word ending exactly at the "
+                                           "limit is dropped")
+    def test_a_word_that_ends_exactly_at_the_limit_is_kept(self, wl, log):
+        second = "y" * (WatchList.INDEX_NOTE_CHARS - 11)
+        WatchList.save("Edge", "x" * 10 + " " + second + " more words follow", None, wl, log)
+        assert second in self._lines(wl)["edge"]
+
+    def test_a_bare_date_reached_today_reads_due_today_with_no_time(self, wl, log):
+        WatchList.save("Plumber", "x", TODAY.isoformat(), wl, log)
+        assert "(due today)" in self._lines(wl)["plumber"]

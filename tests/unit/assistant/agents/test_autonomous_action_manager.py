@@ -1706,3 +1706,54 @@ class TestWatchListInTheInstruction:
         WatchList.save("Dentist for Charlotte", "12:30, bring the referral", "2026-03-12")
         prompt = AutonomousActionManager._action_prompt(Mock())
         assert "bring the referral" not in prompt and WatchList.NOTHING_DUE in prompt
+
+@pytest.mark.unit
+class TestCurationSlotAcrossTheHour:
+    """The curation slot is claimed for the day only once the hour has come: a tick before
+    CURATION_HOUR must not use the day up, and the new day starts no run before its own hour."""
+
+    @staticmethod
+    def _run_ticks(mgr, times, last_run):
+        clock = iter(times)
+
+        class SteppingDatetime:
+            @staticmethod
+            def now():
+                return next(clock)
+
+        ticks = [0]
+
+        def patched_sleep(seconds):
+            ticks[0] += 1
+            if ticks[0] >= len(times):
+                mgr.running = False
+
+        with patch('assistant.agents.AutonomousActionManager.datetime', SteppingDatetime), \
+             patch('assistant.FirstRun.curation_pending', return_value=False) as pending, \
+             patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=patched_sleep), \
+             patch('assistant.agents.AutonomousActionManager.LongTermMemoryCurator.last_run_at',
+                   return_value=last_run), \
+             patch.object(mgr, '_run_memory_curation') as curation:
+            mgr._run_periodic_check()
+            for thread in threading.enumerate():
+                if thread.name == "MemoryCuration":
+                    thread.join()
+        mgr.running = True
+        return curation.call_count, pending.call_count
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_tick_before_the_hour_does_not_use_the_day_up(self, mock_claude):
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
+        ran, consulted = self._run_ticks(
+            mgr, [datetime(2026, 9, 15, 3, 30), datetime(2026, 9, 15, 4, 5), datetime(2026, 9, 15, 4, 55)],
+            last_run=datetime(2026, 9, 14, 4, 31))
+        assert (ran, consulted) == (1, 1), "nothing at 03:30, the run at 04:05, nothing more at 04:55"
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_a_late_run_does_not_carry_into_the_new_day_before_its_hour(self, mock_claude):
+        mock_claude.return_value = Mock()
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
+        ran, _ = self._run_ticks(mgr, [datetime(2026, 9, 15, 23, 30), datetime(2026, 9, 16, 0, 30)],
+                                 last_run=datetime(2026, 9, 14, 4, 31))
+        assert ran == 1, "a process up again at 23:30 curates the missed day; 00:30 is before the new day's hour"

@@ -298,3 +298,41 @@ class TestEtaToHomeFallbacks:
             assert section._get_eta_to_home(*AWAY) is None
             requests.get.return_value = Mock(status_code=403)
             assert section._get_eta_to_home(*AWAY) is None
+
+
+@pytest.mark.unit
+class TestParkedEtaEdges:
+    """The hold is per car and the dead band is measured against the value shown, so a slow
+    drift surfaces once it adds up to the band."""
+
+    def _line(self, section, spec, state, eta, at):
+        with patch(f"{MODULE}.reverse_geocode", return_value="Avenyn"), \
+                patch.object(section, "_get_eta_to_home", return_value=eta) as fetch, \
+                patch(f"{MODULE}.time.time", return_value=at):
+            line = section._render(spec, state)
+        return line, fetch.call_count
+
+    def test_each_parked_car_holds_its_own_eta(self, section):
+        work = VehicleSpec("work", "Work Model 3", "VIN2")
+        parked = VehicleState(latitude=AWAY[0], longitude=AWAY[1])
+        self._line(section, CAR, parked, 19, at=1000)
+        line, calls = self._line(section, work, parked, 40, at=1001)
+        assert "~40 min from home" in line and calls == 1, "the second car is asked, not given the first's hold"
+        line, calls = self._line(section, CAR, parked, 25, at=1002)
+        assert "~19 min from home" in line and calls == 0, "and the first car's hold is untouched"
+
+    def test_a_move_of_exactly_the_dead_band_is_shown(self, section):
+        parked = VehicleState(latitude=AWAY[0], longitude=AWAY[1])
+        self._line(section, CAR, parked, 19, at=1000)
+        line, _ = self._line(section, CAR, parked, 19 + CarSectionGenerator.PARKED_ETA_DEAD_BAND_MIN,
+                             at=1000 + CarSectionGenerator.PARKED_ETA_REFRESH_S)
+        assert f"~{19 + CarSectionGenerator.PARKED_ETA_DEAD_BAND_MIN} min from home" in line
+
+    def test_a_slow_drift_is_measured_against_the_shown_value_not_the_last_fetch(self, section):
+        parked = VehicleState(latitude=AWAY[0], longitude=AWAY[1])
+        refresh = CarSectionGenerator.PARKED_ETA_REFRESH_S
+        self._line(section, CAR, parked, 19, at=1000)
+        line, _ = self._line(section, CAR, parked, 18, at=1000 + refresh)
+        assert "~19 min from home" in line
+        line, calls = self._line(section, CAR, parked, 17, at=1000 + 2 * refresh)
+        assert "~17 min from home" in line and calls == 1, "two wobbles the same way add up to a change"

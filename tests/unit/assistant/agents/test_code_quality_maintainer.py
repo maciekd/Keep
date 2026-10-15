@@ -1828,3 +1828,35 @@ class TestFixBugsStep:
         assert CodeQualityMaintainer.fixable_severities("MAJOR: x\nminor: y") == ["major"]
         assert CodeQualityMaintainer.fixable_severities("a critical path; a majority vote") == ["critical"]
         assert CodeQualityMaintainer.fixable_severities("critically slow") == []
+
+
+@pytest.mark.unit
+class TestNightlyUpdateFailures:
+    """What a git process that hangs past GIT_TIMEOUT at 03:00 costs: _pull_target handles a
+    failing exit code (the night runs on the old code), a raise must not cost more."""
+
+    @pytest.mark.xfail(strict=True, reason="a nightly update that raises (git pull past GIT_TIMEOUT) is caught by _run's "
+                                           "catch-all after _last_run_date was set — the whole night's run is skipped")
+    @patch('assistant.agents.CodeQualityMaintainer.time.sleep')
+    @patch('assistant.agents.CodeQualityMaintainer.datetime')
+    def test_an_update_that_raises_still_leaves_the_night_to_run_on_the_old_code(self, mock_dt, mock_sleep, maintainer):
+        mock_dt.now.return_value = datetime(2026, 2, 19, 3, 0, 0)
+        mock_sleep.side_effect = lambda *_: setattr(maintainer, '_running', False)
+        hung = subprocess.TimeoutExpired(["git", "pull"], GIT_TIMEOUT)
+        with patch.object(maintainer, '_execute_nightly_run') as run, \
+                patch.object(maintainer, '_nightly_update', side_effect=hung):
+            maintainer._running = True
+            maintainer._run()
+        run.assert_called_once()
+
+    @pytest.mark.xfail(strict=True, reason="_merge_test_prs runs outside _step_generate_tests' try/except: a git checkout "
+                                           "that times out in its finally raises out of the step, and the fix list Claude "
+                                           "wrote never reaches the fix step")
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="| Major | baz.py:7 | test_x pins it | guard None |")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_a_merge_that_raises_after_the_test_generation_keeps_the_fix_list(self, mock_run, mock_claude, maintainer):
+        mock_run.return_value = Mock(stdout="master\n", returncode=0)
+        hung = subprocess.TimeoutExpired(["git", "checkout", "master"], GIT_TIMEOUT)
+        with patch.object(CodeQualityMaintainer, '_merge_test_prs', side_effect=hung):
+            report = maintainer._step_generate_tests()
+        assert "baz.py:7" in report

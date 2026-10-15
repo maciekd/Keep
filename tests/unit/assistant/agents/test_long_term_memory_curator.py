@@ -757,3 +757,49 @@ def test_size_note_demands_condensing_only_when_over_the_limit_by_a_tenth():
     severe = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + MEMORY_WORD_LIMIT // 10 + 1)
     assert "words shorter" in mild and "REQUIRED" not in mild
     assert "REQUIRED" in severe
+
+
+@pytest.mark.unit
+class TestCondensingPassFailure:
+    @pytest.mark.xfail(strict=True, reason="_curate_with_data calls _condense unguarded: an LLM error in the condensing "
+                                           "pass raises past the finished curation (a batch call of up to 90 minutes) "
+                                           "and the night saves nothing")
+    def test_a_condensing_pass_that_raises_keeps_the_curated_bank(self):
+        curated = _bank(int(MEMORY_WORD_LIMIT * 1.3))
+        llm = Mock()
+        llm.last_stop_reason = None
+        llm.think.side_effect = [f"<memory>{curated}</memory>", RuntimeError("overloaded")]
+        curator = LongTermMemoryCurator(llm=llm, test_mode=True)
+        memory, metadata = curator.curate_memory_with_data("history", "", _bank(3000))
+        assert memory.rstrip("\n") == curated
+        assert metadata['new_memory_size'] == len(memory)
+
+
+@pytest.mark.unit
+class TestLastRunAt:
+    """The dream journal's name is the one record of a run that survives a restart: the
+    nightly trigger reads it back, so the writer and the reader must agree."""
+
+    @pytest.fixture
+    def journal_dir(self, tmp_path, monkeypatch):
+        import assistant.agents.LongTermMemoryCurator as curator_mod
+        monkeypatch.setattr(curator_mod, "MEMORY_LOG_DIR", tmp_path / "memory")
+        return tmp_path / "memory"
+
+    def test_the_newest_journal_wins_whatever_the_glob_order_and_odd_names_are_skipped(self, journal_dir):
+        journal_dir.mkdir()
+        for name in ("20260914_043100_ab_memory.md", "20260915_020000_cd_memory.md", "notes_memory.md",
+                     "20260916_050000_ef_other.md"):
+            (journal_dir / name).write_text("x")
+        assert LongTermMemoryCurator.last_run_at() == datetime(2026, 9, 15, 2, 0)
+
+    def test_no_journal_folder_yet_means_no_run_yet(self, journal_dir):
+        assert LongTermMemoryCurator.last_run_at() is None
+
+    def test_the_journal_save_debug_log_writes_is_the_run_last_run_at_reads_back(self, journal_dir):
+        before = datetime.now().replace(microsecond=0)
+        LongTermMemoryCurator.save_debug_log("# Memory\n", {
+            'period_start': '', 'period_end': '', 'interaction_count': 0, 'calendar_events_count': 0,
+            'old_memory_size': 0, 'new_memory_size': 9, 'llm_duration_seconds': 0.0, 'truncated': False,
+            'condense': None, 'timestamp': 0.0, 'old_memory': '', 'full_prompt': ''})
+        assert before <= LongTermMemoryCurator.last_run_at() <= datetime.now()

@@ -580,3 +580,23 @@ class TestPlayThinkingFiller:
              patch("common.Language.configured_language", return_value="en-US"):
             playback.play_thinking_filler(None)
         mock_ps.get_instance.return_value.playsound_thinking.assert_called_once_with("en")
+
+
+@pytest.mark.unit
+class TestStopAfterAWedge:
+    @pytest.mark.xfail(strict=True, reason="the first stop() on a wedged worker clears audio_thread, so the next stop() "
+                                           "(kill() then __del__ both call it) falls through to _close_audio_stream and "
+                                           "blocks on the very stream the first call left alone")
+    def test_a_second_stop_after_a_wedge_still_leaves_the_stream_to_the_worker(self, playback):
+        wedged = Mock()
+        wedged.is_alive.return_value = True
+        playback.audio_thread = wedged
+
+        with patch.object(playback, "_close_audio_stream") as mock_close, \
+             patch.object(playback, "_start_stall_forensics") as forensics, \
+             patch(f"{MOD}.error"):
+            playback.stop()
+            playback.stop()
+
+        mock_close.assert_not_called()
+        forensics.assert_called_once_with()

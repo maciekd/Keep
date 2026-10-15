@@ -264,3 +264,22 @@ class TestAnthropicCostMonitorAggregation:
         monitor._fetch_cost_data()
 
         assert [c.args[0] for c in mock_get.call_args_list] == [AnthropicCostMonitor.API_URL]
+
+
+@pytest.mark.unit
+class TestWorkspaceSeries:
+    @patch('common.AnthropicCostMonitor.config')
+    @patch('common.AnthropicCostMonitor.requests.get')
+    def test_two_workspace_ids_with_one_name_are_one_series_before_the_threshold(self, mock_get, mock_config):
+        # An archived workspace and its successor carry one name: their spend is one series,
+        # and it is the series' total — not each id's — that the $1 threshold weighs.
+        mock_config.get.return_value = "test-key"
+        mock_get.side_effect = _routed_get(
+            {"data": [_bucket("2026-04-20", [("wrkspc_a", "60"), ("wrkspc_b", "60")])], "has_more": False},
+            {"data": [{"id": "wrkspc_a", "name": "Dev"}, {"id": "wrkspc_b", "name": "Dev"}], "has_more": False})
+
+        monitor, tab = _make_monitor()
+        monitor._fetch_cost_data()
+
+        assert tab.daily_costs["2026-04-20"] == {"Dev": pytest.approx(1.2)}
+        assert tab.cost_workspaces == ["Dev"]

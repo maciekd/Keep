@@ -534,6 +534,15 @@ class TestWakeAssistant:
         assert fake.receive_chat_message.call_count == 3
 
     @pytest.mark.asyncio
+    async def test_another_bots_replies_to_the_bots_bubble_are_under_the_same_brake(self, wake, monkeypatch):
+        # Two Keeps answering each other's bubbles is the loop the brake exists for.
+        monkeypatch.setattr('integrations.telegram_feed.TelegramFeedIntegration.BOT_WAKE_CAP', 1)
+        m, say, fake = wake
+        for _ in range(2):
+            await say("Michelle, same here", sender_id=888, bot=True, name="Erik's Keep", reply_to_sender=777)
+        assert fake.receive_chat_message.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_her_own_reply_never_wakes_her(self, wake):
         # The bot's reply in the group often carries her name ("I'm Michelle", the quoted
         # question): read by the owner's account like any message, it must not start a turn.

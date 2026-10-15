@@ -176,6 +176,21 @@ class TestVehicleState:
             reported.append(api.vehicle_state(family(api)).cabin_temp_c)
         assert reported == [21.5, 21.5, 21.5, 22.5, 22.5, 21.5, None, 21.5]
 
+    def test_each_car_holds_its_own_cabin_temperature(self):
+        # The hold is per car: a second car's first reading is reported as it is, not held at
+        # what the first car reported, and each car's later readings are held against its own.
+        session = FakeSession()
+        config = build_default_config()
+        config["vehicles"].append({"name": "work", "vin": "VIN456"})
+        api = TeslaIntegration(config=config, session=session)
+        specs = {spec.id: spec for spec in api.vehicles()}
+        reported = []
+        for car, inside_temp in (("family", 21.5), ("work", 21.9), ("family", 21.9), ("work", 21.5)):
+            session.queue_response("GET", f"{TeslaIntegration.TESSIE_API_BASE}/{specs[car].handle}/state",
+                                   DummyResponse(200, {"climate_state": {"inside_temp": inside_temp}}))
+            reported.append(api.vehicle_state(specs[car]).cabin_temp_c)
+        assert reported == [21.5, 21.9, 21.5, 21.9]
+
     def test_missing_blocks_leave_every_field_unset(self):
         state = self._api({}).vehicle_state(family(self._api({})))
         assert state == VehicleState()

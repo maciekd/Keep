@@ -487,3 +487,19 @@ class TestIntegrationRows:
         text = "\n".join("".join(cell.char for cell in row) for row in screen.next_frame)
         assert all(f"On{i}" in text for i in range(5)), "every enabled integration is shown"
         assert "Off0" in text and "Off1" not in text, "the disabled ones fill the cells left and are clipped first"
+
+
+@pytest.mark.unit
+class TestFeedsTotalEdges:
+    def test_a_feed_with_no_count_yet_adds_nothing_and_a_thousand_is_split(self):
+        # A stopped feed that never stored a row reports stored=None: it counts as nothing,
+        # and exactly 1000 is the first count the thousands split touches.
+        screen = draw_feeds({"a": status(stored=1000), "b": status("stopped", stored=None)})
+        assert row_text(screen, 2).endswith(" stopped")
+        assert row_text(screen, 3).endswith(" 1 000 items")
+
+    def test_a_paused_feeds_rows_still_count_in_the_total(self):
+        screen = draw_feeds({"a": status(stored=1000), "b": status("catching_up", stored=500, total=900,
+                                                                  remaining=400, progress=0.5, paused=True)})
+        assert "paused" in row_text(screen, 2)
+        assert row_text(screen, 3).endswith(" 1 500 items")

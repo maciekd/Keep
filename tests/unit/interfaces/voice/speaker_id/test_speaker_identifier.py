@@ -612,3 +612,39 @@ def test_a_reload_already_running_or_still_settling_is_not_started_again():
     while not si._enroll_users.called and time.time() < deadline:
         time.sleep(0.01)
     si._enroll_users.assert_called_once()
+
+
+class TestEnrollmentVersion:
+    """What makes the identifier re-enroll: a person's folder written to, a candidate folder
+    appearing or going — not a loose file in voice_id/."""
+
+    def test_follows_the_person_and_candidate_folders_not_loose_files(self, tmp_path):
+        import os
+        import shutil
+        si = make_speaker_identifier()
+        si.VOICE_ID_DIR = tmp_path
+        alice = tmp_path / "alice"
+        alice.mkdir()
+        start = si._enrollment_version()
+
+        (tmp_path / "notes.txt").write_text("x")
+        assert si._enrollment_version() == start, "a loose file at the top is nobody's enrollment"
+
+        (alice / "a.wav").write_bytes(b"RIFF")
+        os.utime(alice, (1_800_000_100, 1_800_000_100))
+        after_wav = si._enrollment_version()
+        assert after_wav != start
+
+        candidate = tmp_path / SpeakerIdentifier.CANDIDATES_FOLDER / "voice-abcd"
+        candidate.mkdir(parents=True)
+        after_candidate = si._enrollment_version()
+        assert after_candidate != after_wav
+        assert "voice-abcd" in {name for name, _ in after_candidate}
+
+        shutil.rmtree(candidate)
+        assert si._enrollment_version() != after_candidate
+
+    def test_a_missing_directory_is_an_empty_version(self, tmp_path):
+        si = make_speaker_identifier()
+        si.VOICE_ID_DIR = tmp_path / "nowhere"
+        assert si._enrollment_version() == ()

@@ -213,6 +213,30 @@ class TestGroupDestinations:
         t.stop()
         assert Destinations.names() == []
 
+    def test_a_group_taken_off_the_allow_list_loses_its_destination(self):
+        from assistant import Destinations
+        t = _make_transport(allowed=(-5, -9))
+        t._application.bot.get_chat = self._get_chat({-5: "Family", -9: "Board"})
+        asyncio.run(t._register_group_destinations())
+        t.config_values['telegram_bot.allowed_chat_ids'] = [-5]
+        asyncio.run(t._register_group_destinations())
+        assert Destinations.names() == ["Family"]
+        assert Destinations.find("-9") is None
+
+    @pytest.mark.xfail(strict=True, reason="Destinations.register replaces a destination of the same name: two allowed "
+                                           "groups with one title leave only the second reachable, the first's id alias "
+                                           "gone with it")
+    def test_two_groups_with_one_title_both_stay_reachable_by_their_ids(self):
+        from assistant import Destinations
+        t = _make_transport(allowed=(-5, -7))
+        t._application.bot.get_chat = self._get_chat({-5: "Family", -7: "Family"})
+        asyncio.run(t._register_group_destinations())
+        posted = []
+        with patch.object(t, "send_text", side_effect=lambda cid, html, **kw: posted.append(cid) or True):
+            assert Destinations.send("-5", "dinner at seven") == ""
+            assert Destinations.send("-7", "dinner at seven") == ""
+        assert posted == [-5, -7]
+
 
 @pytest.mark.unit
 class TestLifecycle:

@@ -1977,3 +1977,22 @@ def test_add_command_result_passes_the_cap_through(prompt_test_environment):
         manager.add_command_result("result: \npage")
     assert add.call_args_list == [call("result: \n# Toolkit: web", cap=False, source=None),
                                   call("result: \npage", cap=True, source=None)]
+
+
+@pytest.mark.unit
+def test_after_a_rebuild_the_next_change_diffs_from_the_rebuilt_prompt_and_the_old_note_stays(prompt_test_environment):
+    """A rebuild bakes an unsent note's content into the prompt and re-baselines: the next
+    change to that section is a note of its own, diffing from the rebuilt state — folding
+    into the old note would rewrite a row that is already in the window."""
+    manager, sections = _seed_full_rebuild(prompt_test_environment)
+    _change(manager, sections, "car_info", "Driving on Kungsgatan")
+    first = manager.message_history.transient_entries[0]
+
+    manager._assemble_prompt(force=True)
+    assert "Driving on Kungsgatan" in manager.prompt
+
+    _change(manager, sections, "car_info", "Parked on Burggrevegatan")
+    entries = manager.message_history.transient_entries
+    assert len(entries) == 2 and entries[0] is first
+    assert "-Driving on Kungsgatan" in entries[1]["content"] and "+Parked on Burggrevegatan" in entries[1]["content"]
+    assert "car_info_content" not in entries[1]["content"], "the baseline is the rebuilt prompt, not the first one"
