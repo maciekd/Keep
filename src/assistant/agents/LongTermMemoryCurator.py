@@ -705,7 +705,13 @@ class LongTermMemoryCurator:
             commands = ""
         elif self.needs_condensing(self.word_count(new_memory)):
             info(f"Rem: the curated bank is more than {CONDENSE_TRIGGER:.0%} over the limit — condensing it")
-            new_memory, condense = self._condense(new_memory)
+            try:
+                new_memory, condense = self._condense(new_memory)
+            except Exception as e:
+                # The curation (a batch call of up to 90 minutes) is done and must be saved;
+                # a failed pass costs only the pass, the next night's gets another go.
+                error(f"Rem: the condensing pass failed, saving the curated bank uncondensed "
+                      f"({self.word_count(new_memory)} words): {e!r}")
         else:
             trace("Rem: the curated bank is within the condense trigger — no condensing pass")
 

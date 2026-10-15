@@ -68,7 +68,7 @@ class TestStop:
         playback.audio_thread = wedged
 
         with patch.object(playback, "_close_audio_stream") as mock_close, \
-             patch.object(playback, "_start_stall_forensics"), \
+             patch.object(playback, "_start_wedge_confirmation"), \
              patch(f"{MOD}.error"):
             playback.stop()
 
@@ -76,19 +76,23 @@ class TestStop:
         mock_close.assert_not_called()
         assert playback.audio_thread is None
 
-    def test_stop_starts_the_stall_forensics_when_worker_wedged(self, playback):
+    def test_stop_hands_a_worker_that_outlives_the_join_to_the_wedge_confirmation(self, playback):
         """A wedge found by stop() is diagnosed (and the process restarted when it is ours)
-        right away — not once a later reply has stalled for the whole playback timeout."""
+        without waiting for a later reply to stall — but off this thread, and only once the
+        worker has shown no progress: a barge-in's kill() lands here while a healthy worker
+        is inside a multi-second write of a whole-sentence chunk."""
         wedged = Mock()
         wedged.is_alive.return_value = True
         playback.audio_thread = wedged
 
         with patch.object(playback, "_close_audio_stream"), \
-             patch.object(playback, "_start_stall_forensics") as forensics, \
+             patch.object(playback, "_start_wedge_confirmation") as confirm, \
+             patch.object(playback, "_capture_playback_stall_forensics") as forensics, \
              patch(f"{MOD}.error"):
             playback.stop()
 
-        forensics.assert_called_once_with()
+        confirm.assert_called_once_with(wedged)
+        forensics.assert_not_called()
 
     def test_stop_of_a_worker_that_exits_starts_no_forensics(self, playback):
         worker = Mock()
@@ -96,10 +100,55 @@ class TestStop:
         playback.audio_thread = worker
 
         with patch.object(playback, "_close_audio_stream"), \
-             patch.object(playback, "_start_stall_forensics") as forensics:
+             patch.object(playback, "_start_wedge_confirmation") as confirm:
             playback.stop()
 
+        confirm.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestWedgeConfirmation
+# ---------------------------------------------------------------------------
+
+class TestWedgeConfirmation:
+    """stop()'s 1s join times out for a healthy worker inside a long blocking write just as
+    for a wedged one; the forensics (whose verdict restarts the server) run only for a
+    worker that neither exits nor writes another chunk within the grace period."""
+
+    def _run(self, playback, worker, played_after: int):
+        with patch.object(playback, "_capture_playback_stall_forensics") as forensics, \
+             patch(f"{MOD}.error"), patch(f"{MOD}.info"):
+            playback._chunks_played = played_after
+            playback._confirm_wedge(worker, played_before=3)
+        return forensics
+
+    def test_a_worker_that_exits_within_the_grace_period_is_not_wedged(self, playback):
+        worker = Mock()
+        worker.is_alive.return_value = False
+        forensics = self._run(playback, worker, played_after=3)
+        worker.join.assert_called_once_with(timeout=ServerPlayback.WEDGE_CONFIRM_TIMEOUT)
         forensics.assert_not_called()
+
+    def test_a_worker_that_wrote_another_chunk_is_not_wedged(self, playback):
+        worker = Mock()
+        worker.is_alive.return_value = True
+        forensics = self._run(playback, worker, played_after=4)
+        forensics.assert_not_called()
+
+    def test_a_worker_alive_with_no_progress_is_diagnosed(self, playback):
+        worker = Mock()
+        worker.is_alive.return_value = True
+        forensics = self._run(playback, worker, played_after=3)
+        forensics.assert_called_once_with()
+
+    def test_stop_measures_progress_from_the_moment_of_the_stop(self, playback):
+        playback._chunks_played = 7
+        worker = Mock()
+        with patch(f"{MOD}.threading.Thread") as thread_cls:
+            playback._start_wedge_confirmation(worker)
+        assert thread_cls.call_args.kwargs['args'] == (worker, 7)
+        assert thread_cls.call_args.kwargs['daemon'] is True
+        thread_cls.return_value.start.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------
@@ -584,19 +633,17 @@ class TestPlayThinkingFiller:
 
 @pytest.mark.unit
 class TestStopAfterAWedge:
-    @pytest.mark.xfail(strict=True, reason="the first stop() on a wedged worker clears audio_thread, so the next stop() "
-                                           "(kill() then __del__ both call it) falls through to _close_audio_stream and "
-                                           "blocks on the very stream the first call left alone")
     def test_a_second_stop_after_a_wedge_still_leaves_the_stream_to_the_worker(self, playback):
         wedged = Mock()
         wedged.is_alive.return_value = True
         playback.audio_thread = wedged
 
         with patch.object(playback, "_close_audio_stream") as mock_close, \
-             patch.object(playback, "_start_stall_forensics") as forensics, \
+             patch.object(playback, "_start_wedge_confirmation") as confirm, \
              patch(f"{MOD}.error"):
             playback.stop()
             playback.stop()
 
         mock_close.assert_not_called()
-        forensics.assert_called_once_with()
+        confirm.assert_called_once_with(wedged)
+        wedged.join.assert_called_once()

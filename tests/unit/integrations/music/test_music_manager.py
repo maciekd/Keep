@@ -398,21 +398,19 @@ class TestGetAllZonesStatus:
         result = mm.get_all_zones_status()
         assert result == ""
 
-    def test_zone_error_propagates_instead_of_replacing_status(self):
-        """Regression: a failing zone must raise so PromptSectionGenerator's
-        retry/keep-stale logic can keep the last good zone list. The old code
-        returned the error string (wiping the whole MusicZones prompt section)
-        and passed the exception object to error(), which crashed the logger
-        with AttributeError ('ConnectionError' object has no attribute 'split')
-        — this test uses the real error(), so either regression fails it."""
+    def test_a_failing_zone_is_reported_unreachable_instead_of_replacing_the_status(self):
+        """Regression: a failing zone once raised out of the whole status — the section then
+        failed every poll for the outage's length — and before that its error string replaced
+        the section. It is one unreachable line now. The exception once reached error() as an
+        object and crashed the logger ('ConnectionError' object has no attribute 'split'), so
+        this test uses the real error()."""
         mm = make_music_manager()
 
         zone = Mock()
         mm._discover_sonos_zones = Mock(return_value={"Kitchen Front": zone})
         mm._get_coordinator = Mock(side_effect=ConnectionError("network blip"))
 
-        with pytest.raises(ConnectionError):
-            mm.get_all_zones_status()
+        assert mm.get_all_zones_status() == "Kitchen (unreachable)"
 
 
 class TestRefreshCycle:
@@ -699,3 +697,51 @@ class TestSpotifyUserPlaylists:
         assert "Summer Hits - by Alice ID: AA" in result
         assert mm._spotify_search_cache["AA"] == "spotify:playlist:sh1"
         assert mock_spotify.search.call_args.kwargs['type'] == 'track,artist,playlist'
+
+
+class TestZonesStatusWithAnUnreachableZone:
+    """One offline speaker (soco answers no group for a zone the topology no longer lists, or
+    its HTTP is refused) must not cost the other zones' status every poll."""
+
+    @staticmethod
+    def _zone(state="PLAYING", title="Song", artist="Band", group=True):
+        zone = Mock()
+        coordinator = Mock()
+        coordinator.get_current_transport_info.return_value = {'current_transport_state': state}
+        coordinator.get_current_track_info.return_value = {'title': title, 'artist': artist}
+        zone.group = Mock(coordinator=coordinator) if group else None
+        return zone
+
+    def _manager(self, zones):
+        mm = make_music_manager(room_mapping={})
+        mm._sonos_zones_cache = dict(zones)
+        mm._sonos_zones_cache_time = time.time()
+        return mm
+
+    def test_a_zone_without_a_group_is_listed_unreachable_and_the_rest_keep_their_status(self):
+        mm = self._manager({"Kitchen": self._zone(group=False), "Office": self._zone(state="PAUSED_PLAYBACK")})
+        with patch("integrations.music.MusicIntegration.error"):
+            status = mm.get_all_zones_status()
+        assert status.splitlines() == ["Kitchen (unreachable)", "Office (Song by Band - Paused)"]
+
+    def test_a_zone_whose_http_fails_is_listed_unreachable(self):
+        broken = self._zone()
+        broken.group.coordinator.get_current_transport_info.side_effect = ConnectionError("Host is down")
+        mm = self._manager({"Kitchen": broken, "Office": self._zone()})
+        with patch("integrations.music.MusicIntegration.error"):
+            status = mm.get_all_zones_status()
+        assert status.splitlines() == ["Kitchen (unreachable)", "Office (Song by Band - Playing)"]
+
+    def test_an_unreachable_zone_leaves_the_cache_for_the_next_discovery_to_re_find(self):
+        mm = self._manager({"Kitchen": self._zone(group=False), "Office": self._zone()})
+        with patch("integrations.music.MusicIntegration.error") as err:
+            mm.get_all_zones_status()
+            mm.get_all_zones_status()
+        assert list(mm._sonos_zones_cache) == ["Office"]
+        assert err.call_count == 1   # the outage is logged once, not on every 3-second poll
+        assert mm._sonos_zones_cache_time is not None   # no full rediscovery per poll
+
+    def test_a_command_on_a_zone_without_a_group_fails_with_a_connection_error(self):
+        mm = make_music_manager()
+        with pytest.raises(ConnectionError):
+            mm._get_coordinator(self._zone(group=False))

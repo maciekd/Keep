@@ -449,44 +449,51 @@ class MusicIntegration(Integration):
 
     def _get_coordinator(self, zone: soco.SoCo) -> soco.SoCo:
         """Get the group coordinator for a zone. If zone is in a group, returns the coordinator.
-        If zone is standalone, returns the zone itself."""
-        coordinator = zone.group.coordinator
-        return coordinator
+        If zone is standalone, returns the zone itself. A zone the topology no longer lists —
+        a speaker that went offline — has no group: that is a connection error, not a crash."""
+        group = zone.group
+        if group is None:
+            raise ConnectionError("the zone is not in the Sonos topology (speaker offline?)")
+        return group.coordinator
 
     def get_all_zones_status(self) -> str:
+        """One line per zone. A zone that cannot be reached — its speaker offline, its HTTP
+        refused — is listed as unreachable and dropped from the zone cache, so the next
+        discovery re-finds it once it is back; the other zones' status is kept."""
         zones = self._discover_sonos_zones()
         res = ""
 
-        for zone_name, zone in zones.items():
+        for zone_name, zone in list(zones.items()):
+            name = self.room_mapping.get(zone_name, zone_name)
+            if name == "":
+                continue
             try:
-                name = self.room_mapping.get(zone_name, zone_name)
-
-                if name == "":
-                    continue
-
                 coordinator = self._get_coordinator(zone)
                 transport_info = coordinator.get_current_transport_info()
                 track_info = coordinator.get_current_track_info()
-
-                if transport_info.get('current_transport_state') == 'PLAYING':
-                    state = "Playing"
-                else:
-                    state = "Paused"
-
-                title = track_info.get('title', '').strip()
-                artist = track_info.get('artist', '').strip()
-
-                if title and artist:
-                    now_playing = f"{title} by {artist} - {state}"
-                elif title or artist:
-                    now_playing = f"{title or artist} - {state}"
-                else:
-                    now_playing = state
-
-                res += f"{name} ({now_playing})\n"
             except Exception as e:
-                error(f"Error getting status for zone {zone_name}: {e}")
-                raise
+                error(f"Sonos zone {zone_name} is unreachable ({e}) — listed as unreachable and dropped "
+                      f"from the zone cache until the next discovery finds it")
+                zones.pop(zone_name, None)
+                res += f"{name} (unreachable)\n"
+                continue
+
+            if transport_info.get('current_transport_state') == 'PLAYING':
+                state = "Playing"
+            else:
+                state = "Paused"
+
+            title = track_info.get('title', '').strip()
+            artist = track_info.get('artist', '').strip()
+
+            if title and artist:
+                now_playing = f"{title} by {artist} - {state}"
+            elif title or artist:
+                now_playing = f"{title or artist} - {state}"
+            else:
+                now_playing = state
+
+            res += f"{name} ({now_playing})\n"
         return res.strip()
 
     @staticmethod

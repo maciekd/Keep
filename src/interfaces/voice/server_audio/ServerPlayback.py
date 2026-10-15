@@ -34,6 +34,13 @@ class ServerPlayback:
     # consumption is one ~40ms chunk per write, so 10s of zero progress is decisive.
     PLAYBACK_STALL_TIMEOUT = 10.0
 
+    # How long stop() lets a worker that outlived its 1s join keep going before the stall
+    # forensics (and the restart they trigger) are run. A barge-in kills a reply whose worker
+    # is inside a healthy blocking write — Supertonic queues a whole sentence as one chunk,
+    # many seconds of audio — and the join of a healthy write times out just like a wedge.
+    # Only a worker that neither exits nor writes another chunk in this long is wedged.
+    WEDGE_CONFIRM_TIMEOUT = 20.0
+
     # Class-wide owner of the local-outpost mute. Each time any reply mutes the
     # outposts it bumps _mute_generation and records the new value as its own claim.
     # The failsafe unmute (restore_outposts_if_muted) only fires if this reply is
@@ -70,6 +77,9 @@ class ServerPlayback:
         # drain wait watches this for progress instead of queue size (which the TTS
         # producer can still be growing) so a worker wedged inside CoreAudio is detected.
         self._chunks_played = 0
+        # True once stop() found the worker wedged and left its stream to it: every later
+        # stop() must leave it alone too.
+        self._wedged = False
 
         self.sample_rate = 24000
         self.channels = 1
@@ -188,28 +198,57 @@ class ServerPlayback:
 
     def stop(self):
         """Clean up audio resources (kill path and handler teardown)."""
+        if self._wedged:
+            # An earlier stop() found the worker wedged and left the stream to it; kill()
+            # and __del__ both land here, and closing that stream now would block on the
+            # same wedge the first call stepped around.
+            trace("Audio playback stop: the worker is wedged, leaving its stream alone again.")
+            return
         thread = self.audio_thread
         if thread and thread.is_alive():
             # Signal audio thread to stop and wait for it to clean up the stream.
             self.audio_queue.put(None)
             thread.join(timeout=1.0)
             if thread.is_alive():
-                # Worker is wedged inside a CoreAudio call (stream open/write hang).
-                # Closing its stream from here would block on the same wedge — leave
-                # cleanup to the daemon worker's finally if it ever unwedges.
-                error("Audio playback worker did not exit within 1s (wedged in CoreAudio?) "
-                      "— skipping stream close so this thread doesn't hang too. "
-                      "Capturing forensics in background.")
+                # Worker is still inside a CoreAudio call: a wedge (stream open/write hang),
+                # or a healthy blocking write of a whole-sentence chunk, which a barge-in
+                # interrupts mid-sentence. Closing its stream from here would block on the
+                # same call — leave cleanup to the daemon worker's finally.
+                error("Audio playback worker did not exit within 1s (wedged in CoreAudio, or "
+                      "mid-write?) — skipping stream close so this thread doesn't hang too. "
+                      f"Diagnosing in background unless it moves within {self.WEDGE_CONFIRM_TIMEOUT:.0f}s.")
+                self._wedged = True
                 # Recover at the first sign: left to a later reply's drain wait, the wedge
                 # was only diagnosed once that reply had stalled for PLAYBACK_STALL_TIMEOUT
-                # (35 minutes of silent replies on the incident that showed it).
-                self._start_stall_forensics()
+                # (35 minutes of silent replies on the incident that showed it). But only a
+                # worker that makes no progress is wedged — the forensics restart the server.
+                self._start_wedge_confirmation(thread)
                 self.audio_thread = None
                 return
 
         # Ensure residual stream resources are released once.
         self._close_audio_stream()
         self.audio_thread = None
+
+    def _start_wedge_confirmation(self, thread: threading.Thread):
+        """Off the calling thread: give the worker WEDGE_CONFIRM_TIMEOUT to exit or to finish
+        the write it is in, and run the stall forensics only when it did neither."""
+        played_before = self._chunks_played
+        threading.Thread(target=self._confirm_wedge, args=(thread, played_before),
+                         name="PlaybackWedgeConfirmation", daemon=True).start()
+
+    def _confirm_wedge(self, thread: threading.Thread, played_before: int):
+        thread.join(timeout=self.WEDGE_CONFIRM_TIMEOUT)
+        if not thread.is_alive():
+            info("Audio playback worker exited after the stop timeout — it was finishing a write, not wedged.")
+            return
+        if self._chunks_played != played_before:
+            info(f"Audio playback worker wrote {self._chunks_played - played_before} more chunk(s) after "
+                 "the stop timeout — not wedged, no forensics.")
+            return
+        error(f"Audio playback worker made no progress for {self.WEDGE_CONFIRM_TIMEOUT:.0f}s after "
+              "stop() — wedged in CoreAudio. Capturing forensics.")
+        self._capture_playback_stall_forensics()
 
     # ------------------------------------------------------------------ end of reply
 

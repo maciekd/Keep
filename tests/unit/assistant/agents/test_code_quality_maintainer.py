@@ -1835,8 +1835,6 @@ class TestNightlyUpdateFailures:
     """What a git process that hangs past GIT_TIMEOUT at 03:00 costs: _pull_target handles a
     failing exit code (the night runs on the old code), a raise must not cost more."""
 
-    @pytest.mark.xfail(strict=True, reason="a nightly update that raises (git pull past GIT_TIMEOUT) is caught by _run's "
-                                           "catch-all after _last_run_date was set — the whole night's run is skipped")
     @patch('assistant.agents.CodeQualityMaintainer.time.sleep')
     @patch('assistant.agents.CodeQualityMaintainer.datetime')
     def test_an_update_that_raises_still_leaves_the_night_to_run_on_the_old_code(self, mock_dt, mock_sleep, maintainer):

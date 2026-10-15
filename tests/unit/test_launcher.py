@@ -445,3 +445,56 @@ def test_a_rolled_back_pr_trial_is_told_with_the_startup_announcement():
             system_note.assert_called_once()
     finally:
         set_notifier(None)
+
+
+@pytest.mark.unit
+class TestMainShutdown:
+    """The interpreter joins every non-daemon thread before the atexit handlers run, so a
+    Server.stop() left to atexit never reached a thread that only ends when stop() tells it to:
+    the process sat silent after "Clean shutdown complete" until start.sh's SIGKILL. main()
+    stops the server itself, and arms a deadline that names a lingering thread and exits."""
+
+    @staticmethod
+    def _server(serve):
+        from unittest.mock import AsyncMock
+        iface = Mock(name="iface")
+        iface.start_async = AsyncMock()
+        iface.stop_async = AsyncMock()
+        http = Mock(serve=AsyncMock(side_effect=serve))
+        server = Mock(interfaces=[iface], running_as_testsuite=True)
+        type(server).http = property(lambda self: http)
+        return server, iface
+
+    def test_a_serve_that_ends_stops_the_server_after_the_interfaces(self):
+        import asyncio
+        import floxy_ai_server
+        server, iface = self._server(serve=lambda: None)
+        order = []
+        iface.stop_async.side_effect = lambda: order.append("iface")
+        server.stop.side_effect = lambda: order.append("server")
+        with patch("floxy_ai_server._arm_exit_deadline") as deadline:
+            asyncio.run(floxy_ai_server.main(server))
+        assert order == ["iface", "server"]
+        deadline.assert_called_once_with()
+
+    def test_a_serve_that_raises_still_stops_the_server(self):
+        import asyncio
+        import floxy_ai_server
+        server, _ = self._server(serve=RuntimeError("hypercorn died"))
+        with patch("floxy_ai_server._arm_exit_deadline"), pytest.raises(RuntimeError):
+            asyncio.run(floxy_ai_server.main(server))
+        server.stop.assert_called_once_with()
+
+    def test_the_exit_deadline_dumps_the_threads_to_the_real_stderr_and_ends_the_process(self):
+        import floxy_ai_server
+        with patch("floxy_ai_server.faulthandler.dump_traceback_later") as dump:
+            floxy_ai_server._arm_exit_deadline()
+        assert dump.call_args.kwargs == {'exit': True, 'file': sys.__stderr__}
+        assert dump.call_args.args[0] == floxy_ai_server.EXIT_DEADLINE_SECONDS
+
+    def test_no_stderr_means_no_deadline(self):
+        import floxy_ai_server
+        with patch("floxy_ai_server.sys.__stderr__", None), \
+                patch("floxy_ai_server.faulthandler.dump_traceback_later") as dump:
+            floxy_ai_server._arm_exit_deadline()
+        dump.assert_not_called()

@@ -329,7 +329,28 @@ async def main(server: Server):
         note("Shutting down server!")
         for iface in reversed(server.interfaces):
             await iface.stop_async()
-        info("Clean shutdown complete")
+        # Stop everything here, not from atexit: the interpreter joins every non-daemon thread
+        # BEFORE the atexit handlers run, so a thread that only ends once stop() tells it to
+        # kept the process alive after "Clean shutdown complete" until start.sh's SIGKILL.
+        _arm_exit_deadline()
+        info("Interfaces stopped — stopping the assistant, agents, integrations and logging")
+        server.stop()
+        info("Clean shutdown complete")   # stdout only by now: the log writer stopped with the server
+
+
+EXIT_DEADLINE_SECONDS = 5
+
+
+def _arm_exit_deadline():
+    """A stop step that hangs or a thread that outlives the shutdown is named, not waited
+    for: after the deadline faulthandler writes every thread's stack to the real stderr
+    (log/raw-floxy.log under start.sh) and ends the process itself, before start.sh would
+    force-kill it with nothing to show for it."""
+    if sys.__stderr__ is None:
+        info("Exit deadline off: this process has no stderr to name a lingering thread on")
+        return
+    faulthandler.dump_traceback_later(EXIT_DEADLINE_SECONDS, exit=True, file=sys.__stderr__)
+    trace(f"Exit deadline armed: a thread still alive in {EXIT_DEADLINE_SECONDS}s is dumped to stderr and the process ends")
 
 
 def _enable_crash_traces():
@@ -415,5 +436,5 @@ if __name__ == "__main__":
     _verify_config_or_exit()
     info("Loading libraries...")
     _server = build(_port, _testsuite)
-    atexit.register(_server.stop)
+    atexit.register(_server.stop)   # the fallback for a start that never reached main()'s finally
     asyncio.run(main(_server))

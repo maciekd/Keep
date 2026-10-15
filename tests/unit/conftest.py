@@ -138,13 +138,17 @@ def isolated_vault_file(tmp_path_factory):
 @pytest.fixture(autouse=True, scope="session")
 def isolated_memory_stores(tmp_path_factory):
     """No unit test reads or writes the developer's memory/watchlist and memory/procedures (or
-    their log/memory trail): the stores' default directories are empty ones for the session.
-    A test of the stores passes or patches its own tmp_path."""
+    their log/memory trail, or the curator's dream journals in log/memory — a journal written
+    there after 04:00 would make the live server skip the night's curation): the stores'
+    default directories are empty ones for the session. A test of the stores passes or
+    patches its own tmp_path."""
     from assistant import Procedures, VoiceCandidates, WatchList
+    from assistant.agents import LongTermMemoryCurator
     root = tmp_path_factory.mktemp("memory")
     WatchList.WATCHLIST_DIR, WatchList.LOG_DIR = root / "watchlist", root / "log" / "watchlist"
     Procedures.PROCEDURES_DIR, Procedures.LOG_DIR = root / "procedures", root / "log" / "procedures"
     VoiceCandidates.CANDIDATES_DIR, VoiceCandidates.LOG_DIR = root / "voice_candidates", root / "log" / "voice_id"
+    LongTermMemoryCurator.MEMORY_LOG_DIR = root / "log"
 
 
 @pytest.fixture(autouse=True, scope="session")

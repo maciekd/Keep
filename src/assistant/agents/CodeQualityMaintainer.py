@@ -517,7 +517,7 @@ class CodeQualityMaintainer:
                 now = datetime.now()
                 if now.hour == RUN_HOUR and self._last_run_date != now.date():
                     self._last_run_date = now.date()
-                    if self._nightly_update():
+                    if self._try_nightly_update():
                         info("CodeQualityMaintainer: the nightly update is restarting the server, "
                              "the new process runs the night")
                         return
@@ -648,6 +648,15 @@ class CodeQualityMaintainer:
         if not present:
             trace("CodeQualityMaintainer: no report of the night is there for the fix step to read")
         return "\n\n".join(f"# {title}\n\n{body}" for title, body in present)
+
+    def _try_nightly_update(self) -> bool:
+        """`_nightly_update`, where a raise (a git call past GIT_TIMEOUT) is a failed update, not
+        a lost night: `_run` has marked the date by now, so the night must still run here."""
+        try:
+            return self._nightly_update()
+        except Exception as e:
+            error(f"CodeQualityMaintainer: the nightly update raised, the night runs on the old code — {e!r}")
+            return False
 
     def _nightly_update(self) -> bool:
         """The first thing of the night, at RUN_HOUR: check out the branch `developer_release`

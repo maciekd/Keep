@@ -761,9 +761,6 @@ def test_size_note_demands_condensing_only_when_over_the_limit_by_a_tenth():
 
 @pytest.mark.unit
 class TestCondensingPassFailure:
-    @pytest.mark.xfail(strict=True, reason="_curate_with_data calls _condense unguarded: an LLM error in the condensing "
-                                           "pass raises past the finished curation (a batch call of up to 90 minutes) "
-                                           "and the night saves nothing")
     def test_a_condensing_pass_that_raises_keeps_the_curated_bank(self):
         curated = _bank(int(MEMORY_WORD_LIMIT * 1.3))
         llm = Mock()
