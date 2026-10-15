@@ -241,6 +241,14 @@ class WebAccess(Integration):
     _PAGE_QUIET_TIMEOUT = 2.0       # cap on waiting for DOM quiet (a spinner never goes quiet)
     _PAGE_READY_EVAL_TIMEOUT = 2.0  # cap on each individual in-page evaluate while polling
     _PAGE_READY_POLL = 0.2          # readyState / DOM-quiet polling interval
+    # A quiet DOM is not a finished page: Apple's order page (2026-10-15) is a static
+    # shell that solves a challenge, then fetches the order and renders it — the grab
+    # beat the fetch by 0.4 s. So after DOM quiet the gate also waits for the captured
+    # XHR/fetch traffic to settle. Soft like the rest: a polling page hits the cap.
+    _PAGE_NET_IDLE_MS = 500         # no request sent or answered this long counts as idle
+    _PAGE_NET_IDLE_TIMEOUT = 4.0    # cap on waiting for the network to go idle
+    _PAGE_NET_STALE_S = 30.0        # an unanswered request older than this is a long-poll or a lost event, not pending
+    _BLANK_REGRAB_WAIT_S = 2.0      # fetch_via_chrome: pause before re-reading a page that rendered no text
 
     # Hard caps on individual CDP round-trips inside browse commands. A renderer
     # process swap (clicking into a Shopify checkout) or an OOPIF destroyed by
@@ -1090,7 +1098,18 @@ class WebAccess(Integration):
         except Exception:
             return '?'
 
+    def _network_touch(self) -> None:
+        self._network_last_activity = time.time()
+
+    def _network_in_flight(self) -> list:
+        """Captured requests still unanswered — XHR/fetch/document, not EventSource (a
+        stream never finishes) and not those older than _PAGE_NET_STALE_S."""
+        horizon = time.time() - self._PAGE_NET_STALE_S
+        return [e for e in getattr(self, '_network_requests', {}).values()
+                if not e['done'] and e['type'] != 'EventSource' and e['ts'] >= horizon]
+
     def _network_add(self, entry: dict) -> None:
+        self._network_touch()
         self._network_log.append(entry)
         self._network_requests[entry['rid']] = entry
         while len(self._network_log) > self._NETWORK_LOG_MAX:
@@ -1162,6 +1181,7 @@ class WebAccess(Integration):
         entry = self._network_requests.get(str(event.request_id))
         if entry is None:
             return
+        self._network_touch()
         entry['status'] = event.response.status
         entry['mime'] = event.response.mime_type or ''
         trace(f"network[{entry['tab']}]: ← {entry['type']} {entry['status']} {entry['method']} "
@@ -1171,6 +1191,7 @@ class WebAccess(Integration):
         entry = self._network_requests.get(str(event.request_id))
         if entry is None:
             return
+        self._network_touch()
         entry['done'] = True
         entry['size'] = int(getattr(event, 'encoded_data_length', 0) or 0)
         if entry['type'] not in self._NETWORK_BODY_TYPES or not self._NETWORK_BODY_MIME_RE.search(entry['mime']):
@@ -1197,6 +1218,7 @@ class WebAccess(Integration):
         entry = self._network_requests.get(str(event.request_id))
         if entry is None:
             return
+        self._network_touch()
         entry['done'] = True
         entry['note'] = 'canceled' if getattr(event, 'canceled', False) else f"failed: {event.error_text}"
         trace(f"network[{entry['tab']}]: ✗ {entry['method']} {entry['url']} — {entry['note']}")
@@ -1207,6 +1229,7 @@ class WebAccess(Integration):
             trace(f"network: dropping {len(self._network_log)} captured entries of the previous session")
         self._network_log = []
         self._network_requests = {}
+        self._network_last_activity = 0.0
 
     def _format_network_entry(self, i: int, e: dict) -> str:
         stamp = time.strftime('%H:%M:%S', time.localtime(e['ts']))
@@ -1503,7 +1526,10 @@ class WebAccess(Integration):
                   f"<html>/<body> or a wrapper of the page content, not a banner")
 
     @staticmethod
-    def extract_text_with_links(html_content: str, base_url: str) -> str:
+    def extract_text_with_links(html_content: str, base_url: str, *, visible_only: bool = False) -> str:
+        """The readable text of a page. visible_only leaves out what the JSON payloads
+        (__NEXT_DATA__, embedded script blocks) add — the test for a page that has
+        rendered nothing yet."""
         soup = BeautifulSoup(html_content, 'html.parser')
 
         # Pull structured data out of Next.js's __NEXT_DATA__ payload before we
@@ -1620,6 +1646,9 @@ class WebAccess(Integration):
         lines = [line.strip() for line in text.split('\n')]
         lines = [line for line in lines if line]
         text = '\n'.join(lines)
+
+        if visible_only:
+            return text
 
         if next_data_text:
             text = f"{text}\n\n{next_data_text}" if text else next_data_text
@@ -1863,9 +1892,13 @@ class WebAccess(Integration):
         WAIT_READY: poll document.readyState until 'interactive'/'complete'.
         WAIT_QUIET: wait until __domMon reports no DOM mutation for quiet_ms
         (falling back to the content-length stability loop when the monitor is
-        absent). Every cap is SOFT — on expiry or evaluate failure this logs and
-        returns; it never raises, never stops the load, never reinits the
-        driver. The return value is a status string for logging/tests only.
+        absent).
+        WAIT_NETWORK: then until no captured XHR/fetch is in flight and none was
+        sent or answered for _PAGE_NET_IDLE_MS — a quiet DOM may be a shell whose
+        data is still on its way (_async_wait_for_network_idle).
+        Every cap is SOFT — on expiry or evaluate failure this logs and returns;
+        it never raises, never stops the load, never reinits the driver. The
+        return value is a status string for logging/tests only.
         """
         ready_timeout = self._PAGE_READY_TIMEOUT if ready_timeout is None else ready_timeout
         quiet_ms = self._PAGE_QUIET_MS if quiet_ms is None else quiet_ms
@@ -1905,15 +1938,45 @@ class WebAccess(Integration):
                 fine("page-ready: __domMon absent — falling back to content-length stability")
                 remaining = max(1, int(quiet_deadline - time.time()))
                 await self._async_wait_for_dynamic_content(tab, timeout=remaining)
+                await self._async_wait_for_network_idle()
                 return "fallback:no-dommon"
             if idle_ms >= quiet_ms:
                 fine(f"page-ready: DOM quiet for {int(idle_ms)}ms — {status}")
+                await self._async_wait_for_network_idle()
                 return status
             await asyncio.sleep(self._PAGE_READY_POLL)
 
         trace(f"page-ready: DOM still mutating after {quiet_timeout}s — "
               "proceeding with the page as-is (soft cap)")
+        await self._async_wait_for_network_idle()
         return "soft-timeout:quiet"
+
+    async def _async_wait_for_network_idle(self, idle_ms=None, timeout=None) -> str:
+        """WAIT_NETWORK: the third stage of the readiness gate. Returns once no captured
+        request is in flight and none was sent or answered for idle_ms; a soft cap of
+        timeout seconds, like the other stages. Pages whose capture recorded nothing
+        (handlers not installed, a fetch-free page) pass straight through."""
+        idle_ms = self._PAGE_NET_IDLE_MS if idle_ms is None else idle_ms
+        timeout = self._PAGE_NET_IDLE_TIMEOUT if timeout is None else timeout
+        last = getattr(self, '_network_last_activity', 0.0)
+        if not last:
+            return "idle:no-traffic"
+        started = time.time()
+        deadline = started + timeout
+        while True:
+            pending = self._network_in_flight()
+            idle_for = (time.time() - self._network_last_activity) * 1000
+            if not pending and idle_for >= idle_ms:
+                if time.time() - started >= self._PAGE_READY_POLL:
+                    fine(f"page-ready: network idle after {time.time() - started:.1f}s")
+                return "idle"
+            if time.time() >= deadline:
+                busy = (', '.join(f"{e['method']} {e['url']}" for e in pending[:3])
+                        or 'nothing in flight, traffic still arriving')
+                trace(f"page-ready: network still busy after {timeout}s ({busy}) — "
+                      "proceeding with the page as-is (soft cap)")
+                return "soft-timeout:network"
+            await asyncio.sleep(self._PAGE_READY_POLL)
 
     @staticmethod
     def _bidi_to_python(node):
@@ -2791,7 +2854,7 @@ class WebAccess(Integration):
             await self._async_wait_for_page_ready(tab)
             await self._async_settle_cookie_banner(tab, url)
             await self._async_scroll_to_load_content(tab)
-            return await tab.get_content()
+            return await self._async_regrab_if_blank(tab, url, await tab.get_content())
         except _BROWSER_DEAD_EXC as e:
             note(f"nodriver unhealthy after fetch for {url}: {e} — reinitializing")
             await self._async_initialize_driver()
@@ -2802,6 +2865,25 @@ class WebAccess(Integration):
                 note("fetch_via_chrome: opaque failure and the browser is dead — reinitializing")
                 await self._async_initialize_driver()
             return None
+
+    async def _async_regrab_if_blank(self, tab: 'nodriver.Tab', url: str, html: str) -> str:
+        """Safety net under the readiness gate: a page whose markup renders no visible
+        text is a shell still waiting for its data. Pause, let the network settle, and
+        read the page once more — the second read is returned whatever it holds, so the
+        embedded-JSON fallback of the extractor still has the shell to work on."""
+        if self.extract_text_with_links(html or '', url, visible_only=True).strip():
+            return html
+        info(f"fetch_via_chrome: no visible text on {url} after the readiness gate — "
+             f"re-reading the page once in {self._BLANK_REGRAB_WAIT_S:.0f}s")
+        await asyncio.sleep(self._BLANK_REGRAB_WAIT_S)
+        await self._async_wait_for_network_idle()
+        regrab = await tab.get_content()
+        visible = len(self.extract_text_with_links(regrab or '', url, visible_only=True).strip())
+        if visible:
+            info(f"fetch_via_chrome: the re-read of {url} found {visible} chars of visible text")
+        else:
+            trace(f"fetch_via_chrome: the re-read of {url} is still blank — using it as-is")
+        return regrab
 
     def _fetch_via_chrome(self, url: str) -> str | None:
         """Sync wrapper around the nodriver Tier 1 fetch. Takes the browse lock — the

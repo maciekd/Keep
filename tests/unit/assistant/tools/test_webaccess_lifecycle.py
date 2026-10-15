@@ -21,6 +21,7 @@ def run(coro):
 
 def make_wa(**overrides):
     wa = WebAccess.__new__(WebAccess)
+    wa._BLANK_REGRAB_WAIT_S = 0.001
     wa._browser = Mock()
     wa._tab = Mock()
     wa._chrome_pids = set()
