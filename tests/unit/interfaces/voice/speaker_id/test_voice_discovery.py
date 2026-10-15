@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pytest
+# cluster() imports scipy.cluster.hierarchy lazily (~0.2 s); paid here at collection, with the rest
+# of the tree, rather than inside whichever clustering test a worker runs first.
+import scipy.cluster.hierarchy  # noqa: F401
 
 from assistant import VoiceCandidates
 from interfaces.voice.speaker_id import VoiceDiscovery as vd

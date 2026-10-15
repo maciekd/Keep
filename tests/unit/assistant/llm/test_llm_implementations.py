@@ -4,6 +4,9 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 
 from assistant.llm.AbstractLLM import AbstractLLM, LLMRefusalError, ThinkingNotSupportedError
+# Imported at collection, with the rest of the tree: GeminiLLM pulls in google.genai (~0.2 s of
+# pydantic models), which would otherwise land in the call of the first Gemini test a worker runs.
+from assistant.llm.GeminiLLM import GeminiLLM
 
 
 # ---------------------------------------------------------------------------
@@ -950,7 +953,6 @@ class TestGeminiLLM:
     @patch('assistant.llm.GeminiLLM.config')
     def test_convert_messages_maps_roles(self, mock_config):
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
         messages = [
             {"role": "system", "content": "sys"},
@@ -970,7 +972,6 @@ class TestGeminiLLM:
         <<<CACHE_BREAKPOINT>>> markers as literal system-prompt text. They mean
         nothing to Gemini and must never reach the model."""
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         sys_instr, _ = GeminiLLM()._convert_messages([
             {"role": "system", "content": "rules<<<CACHE_BREAKPOINT>>>live data"},
             {"role": "user", "content": "hello"},
@@ -981,7 +982,6 @@ class TestGeminiLLM:
     @patch('assistant.llm.GeminiLLM.types')
     def test_streaming_completion(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
         llm.client = Mock()
 
@@ -1002,7 +1002,6 @@ class TestGeminiLLM:
         INVALID_ARGUMENT — their floor is LOW. Older Flash generations must
         keep MINIMAL (the voice loop's latency floor)."""
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         from google.genai.types import ThinkingLevel
         assert GeminiLLM("gemini-3.7-flash")._min_thinking_level() == ThinkingLevel.LOW
         assert GeminiLLM("gemini-3.8-flash")._min_thinking_level() == ThinkingLevel.LOW
@@ -1014,7 +1013,6 @@ class TestGeminiLLM:
         """The non-thinking streaming path is the production voice loop on the
         fast tier — sending MINIMAL to gemini-3.7-flash 400s every request."""
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         from google.genai.types import ThinkingLevel
         llm = GeminiLLM("gemini-3.7-flash")
         llm.client = Mock()
@@ -1031,7 +1029,6 @@ class TestGeminiLLM:
         """The floor helper must not blanket-raise every model to LOW — that
         would silently slow the voice loop on models that accept MINIMAL."""
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         from google.genai.types import ThinkingLevel
         llm = GeminiLLM()
         llm.client = Mock()
@@ -1046,7 +1043,6 @@ class TestGeminiLLM:
     @patch('assistant.llm.GeminiLLM.types')
     def test_completion_37_flash_never_requests_minimal(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         from google.genai.types import ThinkingLevel
         llm = GeminiLLM("gemini-3.7-flash")
         llm.client = Mock()
@@ -1063,7 +1059,6 @@ class TestGeminiLLM:
         path's near-identical block uses HIGH, so a copy-paste between them
         would silently regress voice latency."""
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         from google.genai.types import ThinkingLevel
         llm = GeminiLLM()
         llm.client = Mock()
@@ -1080,7 +1075,6 @@ class TestGeminiLLM:
         """Non-streaming completions have no voice-latency constraint — thinking
         must stay HIGH, not drift down to the streaming path's LOW cap."""
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         from google.genai.types import ThinkingLevel
         llm = GeminiLLM()
         llm.client = Mock()
@@ -1214,7 +1208,6 @@ class TestGeminiLLMImageConversion:
     def test_convert_messages_with_image_blocks(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
         mock_types.Part.from_bytes.return_value = "mock_image_part"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
 
         img_data = base64.b64encode(b"fake image").decode()
@@ -1237,7 +1230,6 @@ class TestGeminiLLMImageConversion:
     @patch('assistant.llm.GeminiLLM.types')
     def test_convert_messages_string_content_unchanged(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
         messages = [
             {"role": "user", "content": "hello"},
@@ -1253,7 +1245,6 @@ class TestGeminiLLMImageConversion:
     def test_create_completion_with_images(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
         mock_types.Part.from_bytes.return_value = "mock_image_part"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
         llm.client = Mock()
 
@@ -1287,7 +1278,6 @@ class TestGeminiLLMVideo:
     def test_think_with_video_sends_inline_clip_before_text(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
         mock_types.Part.return_value = "video_part"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM(model="gemini-video")
         llm.client = Mock()
         llm.client.models.generate_content.return_value = Mock(text="A dog runs", usage_metadata=None)
@@ -1309,7 +1299,6 @@ class TestGeminiLLMVideo:
         """The indexer's system instruction is the same from clip to clip, and a clip must not pay
         full price for it when the stills already have it cached."""
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM(model="gemini-video")
         llm.client = Mock()
         llm.client.caches.create.return_value = Mock(usage_metadata=Mock(total_token_count=1868))
@@ -1346,7 +1335,6 @@ class TestGeminiLLMVideo:
     @patch('assistant.llm.GeminiLLM.types')
     def test_think_with_video_passes_fps_as_video_metadata(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
         llm.client = Mock()
         llm.client.models.generate_content.return_value = Mock(text="ok", usage_metadata=None)
@@ -1360,7 +1348,6 @@ class TestGeminiLLMVideo:
     @staticmethod
     def _uploading_llm(mock_config, states=("ACTIVE",)):
         """A GeminiLLM whose files.upload returns a file in states[0] and files.get walks the rest."""
-        from assistant.llm.GeminiLLM import GeminiLLM
         mock_config.get_api_key.return_value = "k"
         llm = GeminiLLM(model="gemini-video")
         llm.client = Mock()
@@ -1493,7 +1480,6 @@ class TestGeminiLLMVideo:
     @patch('assistant.llm.GeminiLLM.types')
     def test_empty_response_returns_empty_string_instead_of_none(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
         llm.client = Mock()
         blocked = Mock(text=None, usage_metadata=None, prompt_feedback=Mock(block_reason="SAFETY"))
@@ -1507,7 +1493,6 @@ class TestGeminiLLMVideo:
     @patch('assistant.llm.GeminiLLM.types')
     def test_empty_image_response_returns_empty_string_instead_of_none(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
         llm.client = Mock()
         blocked = Mock(text=None, usage_metadata=None, prompt_feedback=Mock(block_reason="SAFETY"))
@@ -1524,7 +1509,6 @@ class TestGeminiLLMVideo:
         and how much of the prompt the implicit cache served — the video path logged it, the
         image path did not."""
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
         llm.client = Mock()
         usage = Mock(prompt_token_count=8900, cached_content_token_count=6500,
@@ -1542,7 +1526,6 @@ class TestGeminiLLMVideo:
     @patch('assistant.llm.GeminiLLM.types')
     def test_think_with_video_retries_transient_failure(self, mock_types, mock_config):
         mock_config.get_api_key.return_value = "k"
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM()
         llm.client = Mock()
         llm.client.models.generate_content.side_effect = [RuntimeError("503"), Mock(text="ok", usage_metadata=None)]
@@ -1567,7 +1550,6 @@ class TestGeminiSystemCache:
 
     @staticmethod
     def _llm():
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM(model="gemini-3.8-flash")
         llm.client = Mock()
         llm.client.caches.create.return_value = Mock(name="cachedContents/abc", usage_metadata=Mock(total_token_count=1868))
@@ -1670,7 +1652,6 @@ class TestGeminiBatchedImages:
 
     @staticmethod
     def _llm():
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM(model="gemini-3.8-flash")
         llm.client = Mock()
         llm.client.caches.create.side_effect = RuntimeError("400 below minimum")    # no cache: plain system instruction
@@ -1775,7 +1756,6 @@ class TestGeminiOutage:
 
     @staticmethod
     def _llm():
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = GeminiLLM(model="gemini-3.8-flash")
         llm.client = Mock()
         llm.client.caches.create.side_effect = RuntimeError("400 below minimum")
@@ -1788,7 +1768,6 @@ class TestGeminiOutage:
     @patch('assistant.llm.GeminiLLM.types')
     def test_a_402_is_raised_once_as_unavailable_and_then_refused_without_a_call(self, mock_types, mock_config):
         from assistant.llm.AbstractLLM import LLMUnavailable
-        from assistant.llm.GeminiLLM import GeminiLLM
         llm = self._llm()
         llm.client.models.generate_content.side_effect = self.CREDITS
         with pytest.raises(LLMUnavailable):
@@ -2989,7 +2968,6 @@ class TestOllamaMlxLogFormat:
 class TestMissingApiKey:
     @patch('assistant.llm.GeminiLLM.config')
     def test_gemini_names_its_key_only_when_unset(self, mock_config):
-        from assistant.llm.GeminiLLM import GeminiLLM
         mock_config.get_api_key.return_value = ""
         assert GeminiLLM().missing_api_key() == "api_keys.gemini"
         mock_config.get_api_key.return_value = "g-key"
@@ -3021,7 +2999,6 @@ class TestMissingApiKey:
         """dfa4b591: the key is read at every use, not captured in __init__. The LLM objects
         are built once at boot; a key the user stores from the chat (config_request) must
         reach the next request without a restart."""
-        from assistant.llm.GeminiLLM import GeminiLLM
         from assistant.llm.ClaudeLLM import ClaudeLLM
         from assistant.llm.ChatGPTLLM import ChatGPTLLM
         for cfg in (gemini_cfg, claude_cfg, gpt_cfg):
