@@ -232,7 +232,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "whatsapp", "telegram", "music", "photos", "location", "calendar",
-               "reminders", "weather", "timers", "watch", "cars", "husdata", "history", "vault", "setup", "developer",
+               "reminders", "weather", "timers", "watch", "cars", "husdata", "homeclaw", "history", "vault", "setup", "developer",
                "self_improvement", "voice")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)

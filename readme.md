@@ -214,6 +214,7 @@ Every integration is off until you turn it on, and Keep walks you through the se
 <tr><td>✉️&nbsp;<b>Email</b></td><td>Any IMAP mailbox — iCloud and Gmail with an app password — plus Gmail and Microsoft 365 (Outlook.com, work accounts) signed in once with Google or Microsoft; as many accounts as the household has, listed side by side; Keep also uses your inbox to handle 2FA codes on its own</td></tr>
 <tr><td>📅&nbsp;<b>Calendars</b></td><td>CalDAV calendars — iCloud, Fastmail, Nextcloud — plus Google and Microsoft 365 calendars, from several accounts in one week view; Keep adds, moves and deletes events in the calendar you name</td></tr>
 <tr><td>🏠&nbsp;<b>Home</b></td><td>Home Assistant, Indigo, Philips Hue and Plejd for lights, switches, locks, sensors and scenes</td></tr>
+<tr><td>🏡&nbsp;<b>HomeKit</b></td><td>Through the HomeClaw app on the server's Mac: temperature, humidity and soil sensors, motion, thermostats, covers, the garage door, irrigation and scenes — whatever Plejd and Hue do not already bring</td></tr>
 <tr><td>📹&nbsp;<b>Cameras</b></td><td>Arlo, Ring and UniFi Protect</td></tr>
 <tr><td>🚗&nbsp;<b>Cars</b></td><td>Tesla, Volvo, Hyundai, Kia and Genesis; the whole family's cars as one fleet</td></tr>
 <tr><td>🏊&nbsp;<b>Pool</b></td><td>Aseko pool units, through aseko.cloud</td></tr>

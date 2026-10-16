@@ -113,6 +113,8 @@ location:
 
 # >> hue: src/integrations/hue/config.example.yaml
 
+# >> homeclaw: src/integrations/homeclaw/config.example.yaml
+
 # >> self_improvement: src/integrations/self_improvement/config.example.yaml
 
 chat:

@@ -1,0 +1,11 @@
+# HomeClaw: the HomeKit home through the HomeClaw macOS app (Omar Shahine) on the server's own Mac; enable with
+# `enabled_integrations: [HomeClaw]`. The app must be running — Keep talks to it over its local socket and nothing is
+# signed in here, the app holds the HomeKit access. Its accessories join the house beside Plejd, Hue and the rest.
+homeclaw:
+  # socket: ~/Library/Group Containers/group.com.shahine.homeclaw/homeclaw.sock   # the app's socket; this default is where v1.0.12 puts it
+  # The accessories of these makers, or of a bridge by them, are left out: Keep's own Plejd and Philips Hue
+  # integrations already list them, and nothing should appear twice. Substrings, case-insensitive, matched against
+  # the accessory's manufacturer and its bridge's manufacturer, model and name. An empty list keeps everything.
+  exclude: [Plejd, Signify, Philips Hue]
+  # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
+  prompt_filters: []

@@ -24,6 +24,7 @@ GROUPS = {
     'src/integrations/caldav': ('caldav', 'Calendars over CalDAV: one calendar account per caldav.accounts entry, iCloud by preset, any other server by its url.'),
     'src/integrations/home_assistant': ('home_assistant', 'Home Assistant as the home automation backend: one websocket for state, commands and the event feed.'),
     'src/integrations/hue': ('hue', 'Philips Hue as a home automation backend: the bridge read over CLIP v2 for lights, rooms, scenes and sensors, paired from the chat.'),
+    'src/integrations/homeclaw': ('homeclaw', 'HomeKit through the HomeClaw app on the server’s Mac: sensors, covers, the garage door, irrigation and scenes over its local socket, plus its event log as a feed.'),
     'src/integrations/husdata': ('husdata', 'The heat pump through a Husdata H60/H66 gateway: the readings in the prompt, the room target and hot water setpoint as commands.'),
     'src/integrations/icloud': ('icloud', 'The iCloud account: Find My locations and device pings, with its 2FA recovery.'),
     'src/integrations/imap': ('imap', 'Mail over IMAP/SMTP: one mail account per imap.accounts entry, iCloud and Gmail by preset, any other server by its hosts.'),
