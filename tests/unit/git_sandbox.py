@@ -38,6 +38,9 @@ def git_env() -> dict:
             'GIT_CONFIG_KEY_1': 'maintenance.auto', 'GIT_CONFIG_VALUE_1': 'false'}
 
 
+git_env()  # at collection, so the `git --exec-path` process is not the first script test's to pay
+
+
 def spawn(command: list, **kwargs) -> subprocess.CompletedProcess:
     """subprocess.run on posix_spawn, in git's environment. Python forks instead as soon as
     it is given a `cwd`, a bare program name or descriptors to close, and forking a pytest

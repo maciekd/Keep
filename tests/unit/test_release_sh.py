@@ -51,10 +51,13 @@ class Repos:
             self.history.commit(datetime(int(year), int(number), n, 12, tzinfo=timezone.utc),
                                 f'feat: edit {n}', {'readme.md': f'Keep, edit {n}\n'})
 
-    def released(self, version: str):
-        """The newest commit is what an earlier release left on origin: `release` and its tag."""
+    def released(self, version: str, today: bool = False):
+        """The newest commit is what an earlier release left on origin: `release` and its tag.
+        Tagged `today`, it is the day's earlier release: the script's search for a baseline
+        from before today passes it by without the two ancestry processes a dated tag costs."""
         self.history.branch('release', self.history.count)
-        self.history.tag(version, self.history.count, f'Release {version}')
+        when = datetime.now(timezone.utc) if today else None
+        self.history.tag(version, self.history.count, f'Release {version}', when=when)
 
     def push(self) -> list[str]:
         """The full hashes of the commits, oldest first. The clone gets the history too — it
@@ -222,28 +225,29 @@ class TestGuidance:
     detail to keep out of it without dropping the commit the way --ignore-commits does — and
     the release still targets origin/master; the first word selects the commit only when it
     resolves to one. Claude is echo here, so the prompt, guidance included, is the note the
-    dry run prints."""
+    dry run prints. The earlier release is today's: the run that writes the note is the
+    script's longest, and a baseline from an earlier day would cost it two processes more."""
 
     def test_words_that_name_no_commit_are_guidance_and_the_release_still_targets_master(self, repos):
-        repos.commits('2026.08')
-        repos.released('v2026.08.1')
-        repos.commits('2026.09')
+        repos.commits('2026.10')
+        repos.released('v2026.10.1', today=True)
+        repos.commits('2026.10')
         tip = repos.push()[-1]
         result = repos.release('--dry-run', 'dont', 'mention', 'the', 'plumber')
         assert result.returncode == 0, result.stderr
-        assert f'Releasing v2026.09.2 ({tip[:7]}' in result.stdout
+        assert f'Releasing v2026.10.2 ({tip[:7]}' in result.stdout
         note = result.stdout.split("What's new in", 1)[1]
         assert 'dont mention the plumber' in note
         assert note.index('dont mention the plumber') < note.index('Commits:'), "the guidance is an instruction, not a commit"
 
     def test_the_first_word_selects_the_commit_when_it_names_one_and_the_rest_is_guidance(self, repos):
-        repos.commits('2026.08')
-        repos.released('v2026.08.1')
-        repos.commits('2026.09', '2026.09')
+        repos.commits('2026.10')
+        repos.released('v2026.10.1', today=True)
+        repos.commits('2026.10', '2026.10')
         _, second, _ = repos.push()
         result = repos.release('--dry-run', second[:7], 'keep', 'it', 'short')
         assert result.returncode == 0, result.stderr
-        assert f'Releasing v2026.09.2 ({second[:7]}' in result.stdout
+        assert f'Releasing v2026.10.2 ({second[:7]}' in result.stdout
         listing, note = result.stdout.split("What's new in", 1)
         assert 'edit 2' in listing and 'edit 3' not in listing
         assert 'keep it short' in note and second[:7] not in note.split('Commits:', 1)[1].split('\n', 1)[0]
