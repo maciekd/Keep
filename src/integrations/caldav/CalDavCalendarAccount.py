@@ -6,6 +6,7 @@ from typing import Callable, Optional
 
 import caldav
 import pytz
+from caldav.lib.error import NotFoundError
 
 from assistant.integration.calendar.CalendarAccount import CalendarAccount, CalendarInfo
 from assistant.integration.calendar.Event import Event
@@ -129,20 +130,34 @@ class CalDavCalendarAccount(CalendarAccount):
             raise ValueError(f"Calendar '{calendar_name}' not found. Available: {[c.name for c in self._calendar_objects()]}")
         return calendar
 
+    LOOKUP_WINDOW = timedelta(days=1)
+
     def _resource(self, calendar_name: str, event: Event, verb: str):
-        """The library's object for an event read earlier, looked up by its UID; refuses an
-        event of a series, whose resource is the whole series (saving one expanded occurrence
-        would overwrite the series with that instance, deleting it would delete every one)."""
+        """The library's object for an event read earlier: a date search around the event's
+        start, as the listing does, and the object whose UID is the event's. iCloud answers
+        412 Precondition Failed to the UID prop-filter `event_by_uid` sends, so that lookup is
+        never used. Refuses an event of a series, whose resource is the whole series (saving
+        one expanded occurrence would overwrite the series with that instance, deleting it
+        would delete every one)."""
         if event.recurring:
             raise ValueError(f"'{event.title}' is a recurring event, which cannot be {verb} yet — only single events can")
         if not event.id:
             raise ValueError(f"'{event.title}' has no UID, so it cannot be {verb}")
         calendar = self._calendar(calendar_name)
         try:
-            resource = calendar.event_by_uid(event.id)
-        except Exception as e:
-            info(f"{self.name}: event '{event.title}' ({event.id}) not found in '{calendar_name}': {type(e).__name__}: {e}")
+            candidates = calendar.date_search(start=event.start - self.LOOKUP_WINDOW,
+                                              end=event.start + self.LOOKUP_WINDOW, expand=False)
+        except NotFoundError as e:
+            info(f"{self.name}: event '{event.title}' ({event.id}) not found in '{calendar_name}': {e}")
             raise ValueError(f"'{event.title}' is no longer in '{calendar_name}'") from e
+        except Exception as e:
+            info(f"{self.name}: lookup of event '{event.title}' ({event.id}) in '{calendar_name}' refused: {type(e).__name__}: {e}")
+            raise ValueError(f"{self.name} refused the lookup of '{event.title}' in '{calendar_name}': {type(e).__name__}: {e}") from e
+        resource = next((c for c in candidates if self._uid(c.vobject_instance.vevent) == event.id), None)
+        if resource is None:
+            info(f"{self.name}: event '{event.title}' ({event.id}) not among the {len(candidates)} event(s) of '{calendar_name}' "
+                 f"around {event.start.isoformat()}")
+            raise ValueError(f"'{event.title}' is no longer in '{calendar_name}'")
         if self._is_recurring(resource.vobject_instance.vevent):
             raise ValueError(f"'{event.title}' is a recurring event, which cannot be {verb} yet — only single events can")
         return resource

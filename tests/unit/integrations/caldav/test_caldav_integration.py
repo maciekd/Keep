@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 import pytz
 import vobject
+from caldav.lib.error import NotFoundError, ReportError
 
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.calendar.Event import Event
@@ -49,11 +50,16 @@ ICS = ("BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:uid-1\nSUMMARY:Dentist\n
        "END:VEVENT\nEND:VCALENDAR\n")
 
 
-def _resource(bounds="DTSTART;TZID=Europe/Stockholm:20250615T110000\nDTEND;TZID=Europe/Stockholm:20250615T120000"):
-    """A library event object over a real vobject, the way `event_by_uid` answers."""
+def _resource(bounds="DTSTART;TZID=Europe/Stockholm:20250615T110000\nDTEND;TZID=Europe/Stockholm:20250615T120000", uid="uid-1"):
+    """A library event object over a real vobject, the way a date search answers."""
     resource = Mock()
-    resource.vobject_instance = vobject.readOne(ICS.format(bounds=bounds))
+    resource.vobject_instance = vobject.readOne(ICS.format(bounds=bounds).replace("UID:uid-1", f"UID:{uid}"))
     return resource
+
+
+def _found(calendar, *resources):
+    """The date search of `calendar` answers `resources`, the event looked for among others."""
+    calendar.date_search.return_value = [_resource(uid="uid-other"), *resources]
 
 
 def _stored(resource) -> dict:
@@ -197,42 +203,78 @@ def _read(title="Dentist", recurring=False, uid="uid-1"):
 @pytest.mark.unit
 class TestDeleteEvent:
     @patch(CALDAV)
-    def test_the_resource_found_by_the_uid_in_the_named_calendar_is_deleted(self, mock_caldav):
+    def test_the_resource_with_the_events_uid_from_a_date_search_around_its_start_is_deleted(self, mock_caldav):
         home, family = _calendar("Home"), _calendar("Family")
         _serve(mock_caldav, home, family)
         resource = _resource()
-        home.event_by_uid.return_value = resource
+        _found(home, resource)
 
         _account().delete_event("Home", _read())
 
-        home.event_by_uid.assert_called_once_with("uid-1")
         resource.delete.assert_called_once_with()
-        family.event_by_uid.assert_not_called()
+        home.date_search.return_value[0].delete.assert_not_called()
+        kwargs = home.date_search.call_args.kwargs
+        assert kwargs["start"] < _read().start < kwargs["end"]
+        assert kwargs["expand"] is False
+        family.date_search.assert_not_called()
+
+    @patch(CALDAV)
+    def test_the_lookup_never_uses_the_uid_query_icloud_refuses(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        _found(home, _resource())
+
+        _account().delete_event("Home", _read())
+
+        home.event_by_uid.assert_not_called()
+        home.object_by_uid.assert_not_called()
 
     @patch(CALDAV)
     def test_a_recurring_event_is_refused_before_the_lookup_and_a_series_master_after_it(self, mock_caldav):
         home = _calendar("Home")
         _serve(mock_caldav, home)
-        home.event_by_uid.return_value = _resource(bounds="DTSTART:20250615T090000Z\nDTEND:20250615T100000Z\nRRULE:FREQ=WEEKLY")
+        series = _resource(bounds="DTSTART:20250615T090000Z\nDTEND:20250615T100000Z\nRRULE:FREQ=WEEKLY")
+        _found(home, series)
 
         with pytest.raises(ValueError, match="recurring"):
             _account().delete_event("Home", _read(recurring=True))
-        home.event_by_uid.assert_not_called()
+        home.date_search.assert_not_called()
         with pytest.raises(ValueError, match="recurring"):
             _account().delete_event("Home", _read())
-        home.event_by_uid.return_value.delete.assert_not_called()
+        series.delete.assert_not_called()
 
     @patch(CALDAV)
-    def test_an_event_without_a_uid_an_unknown_calendar_or_a_gone_event_raises(self, mock_caldav):
+    def test_an_event_without_a_uid_or_in_an_unknown_calendar_raises_before_the_lookup(self, mock_caldav):
         home = _calendar("Home")
         _serve(mock_caldav, home)
         with pytest.raises(ValueError, match="no UID"):
             _account().delete_event("Home", _read(uid=""))
         with pytest.raises(ValueError, match="Calendar 'Work' not found"):
             _account().delete_event("Work", _read())
-        home.event_by_uid.side_effect = RuntimeError("404 Not Found")
+        home.date_search.assert_not_called()
+
+    @patch(CALDAV)
+    def test_an_event_the_search_no_longer_returns_or_a_not_found_answer_is_gone(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        _found(home)
         with pytest.raises(ValueError, match="no longer"):
             _account().delete_event("Home", _read())
+        home.date_search.side_effect = NotFoundError("404 Not Found")
+        with pytest.raises(ValueError, match="no longer"):
+            _account().delete_event("Home", _read())
+
+    @patch(CALDAV)
+    def test_a_refused_lookup_such_as_iclouds_412_is_reported_as_such_not_as_a_gone_event(self, mock_caldav):
+        home = _calendar("Home")
+        _serve(mock_caldav, home)
+        home.date_search.side_effect = ReportError("412 Precondition Failed")
+
+        with pytest.raises(ValueError, match="refused") as raised:
+            _account().delete_event("Home", _read())
+
+        assert "no longer" not in str(raised.value)
+        assert "412" in str(raised.value)
 
 
 @pytest.mark.unit
@@ -244,7 +286,7 @@ class TestMoveEvent:
         home = _calendar("Home")
         _serve(mock_caldav, home)
         resource = _resource()
-        home.event_by_uid.return_value = resource
+        _found(home, resource)
 
         _account().move_event("Home", _read(), *self.UTC_BOUNDS, all_day=False)
 
@@ -256,7 +298,7 @@ class TestMoveEvent:
         home = _calendar("Home")
         _serve(mock_caldav, home)
         resource = _resource()
-        home.event_by_uid.return_value = resource
+        _found(home, resource)
 
         _account().move_event("Home", _read(), datetime(2025, 6, 18, tzinfo=UTC), datetime(2025, 6, 19, tzinfo=UTC), all_day=True)
 
@@ -268,7 +310,7 @@ class TestMoveEvent:
         _serve(mock_caldav, home)
         with_duration = _resource(bounds="DTSTART:20250615T090000Z\nDURATION:PT1H")
         all_day = _resource(bounds="DTSTART;VALUE=DATE:20250615\nDTEND;VALUE=DATE:20250616")
-        home.event_by_uid.side_effect = [with_duration, all_day]
+        home.date_search.side_effect = [[with_duration], [all_day]]
 
         _account().move_event("Home", _read(), *self.UTC_BOUNDS, all_day=False)
         _account().move_event("Home", _read(), *self.UTC_BOUNDS, all_day=False)
@@ -281,7 +323,7 @@ class TestMoveEvent:
         home = _calendar("Home")
         _serve(mock_caldav, home)
         resource = _resource(bounds="DTSTART:20250615T090000Z\nDTEND:20250615T100000Z\nRRULE:FREQ=WEEKLY")
-        home.event_by_uid.return_value = resource
+        _found(home, resource)
 
         with pytest.raises(ValueError, match="recurring"):
             _account().move_event("Home", _read(), *self.UTC_BOUNDS, all_day=False)
