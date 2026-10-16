@@ -294,3 +294,17 @@ class TestFetch:
             assert not feed.cursor_reached(json.dumps({"a": 10.0}), target)
             assert not feed.cursor_reached(None, target) and feed.cursor_reached(None, None)
             assert feed.cursor_reached("garbage", "{}")
+
+
+@pytest.mark.unit
+class TestDocsOf:
+    def test_the_docs_an_account_lists_are_kept_by_their_id_and_the_rest_logged_and_left_out(self):
+        """The config is hand-written: an id with stray spaces is still the id, a doc without
+        one or an entry that is no mapping is skipped on its own, and a `docs` that is not a
+        list at all yields no documents instead of a crash on the whole account."""
+        from integrations.google.GoogleIntegration import docs_of
+        entry = {"name": "Personal", "docs": [{"name": "Family plan", "id": f" {DOC_ID} "}, {"name": "no id yet"},
+                                               "just-a-string", {"id": "2ZyXwVuTsRqPoNmLkJiHgFeDcBa"}]}
+        assert docs_of(entry) == [{"id": DOC_ID, "name": "Family plan"}, {"id": "2ZyXwVuTsRqPoNmLkJiHgFeDcBa", "name": ""}]
+        assert docs_of({"name": "Personal", "docs": "Family plan"}) == []
+        assert docs_of({"name": "Personal"}) == []

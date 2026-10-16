@@ -884,3 +884,47 @@ def test_voice_discover_runs_the_handed_over_run_and_leaves_the_summary_in_the_h
     for t in threads:
         t.join(timeout=5)
     assert runs == [1, 1]
+
+
+def test_voice_discover_runs_one_at_a_time_and_a_failed_run_frees_the_slot(monkeypatch):
+    """A second //voice_discover while the first is still embedding is refused, not queued —
+    two runs would cluster the same clips twice. A run that raises leaves the failure in the
+    dialog and the slot free, so the next call runs again instead of being refused for good."""
+    started, release = threading.Event(), threading.Event()
+    runs, rows, threads = [], [], []
+
+    def run():
+        runs.append(1)
+        started.set()
+        release.wait(timeout=5)
+        raise RuntimeError("no clips this week")
+
+    class History:
+        def add_context_message(self, role, text, when, source=None):
+            rows.append(text)
+
+    real_thread = dc_mod.threading.Thread
+
+    class JoinedThread(real_thread):
+        def start(self):
+            super().start()
+            threads.append(self)
+
+    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
+    monkeypatch.setattr(DebugCommands, "voice_discovery", staticmethod(run))
+    commands = DebugCommands(history=History())
+    try:
+        commands.handle("//voice_discover")
+        assert started.wait(timeout=5)
+        second = commands.handle("//voice_discover")
+        assert runs == [1], "the run in progress was not started again"
+        assert "progress" in second
+    finally:
+        release.set()
+    for t in threads:
+        t.join(timeout=5)
+    assert len(rows) == 1 and "failed" in rows[0]
+    third = commands.handle("//voice_discover")
+    for t in threads:
+        t.join(timeout=5)
+    assert runs == [1, 1] and "progress" not in third

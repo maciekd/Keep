@@ -1852,6 +1852,14 @@ class TestCommandResultPersistence:
         prompt_manager, _ = self._run(handler, "page", executed=["open_url(x)"])
         prompt_manager.add_command_result.assert_called_once_with("result: \npage", cap=True)
 
+    def test_a_load_watch_round_is_a_toolkit_load_for_the_cap_too(self, handler):
+        """load_watch brings the watch toolkit's reference along with the item, so its result is
+        stored whole like a load_toolkit round: cut, the reference would be half there and its
+        header would still count the toolkit as loaded."""
+        reply = "# Watch: solar\n…\n\n# Toolkit: watch\n…"
+        prompt_manager, _ = self._run(handler, reply, executed=['load_watch("solar")'])
+        prompt_manager.add_command_result.assert_called_once_with(f"result: \n{reply}", cap=False)
+
     def test_block_reply_persists_text_and_notes_images(self, handler):
         blocks = [{"type": "text", "text": "Front door camera:"},
                   {"type": "image", "source": {"type": "base64", "data": "xx"}}]

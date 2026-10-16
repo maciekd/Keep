@@ -215,3 +215,35 @@ class TestReachBack:
         assert 'v2026.08.1' in listing
         assert 'edit 2' in listing and 'edit 3' in listing
         assert 'edit 1' not in listing
+
+
+class TestGuidance:
+    """Positional words that name no commit are guidance for the note Claude writes — a
+    detail to keep out of it without dropping the commit the way --ignore-commits does — and
+    the release still targets origin/master; the first word selects the commit only when it
+    resolves to one. Claude is echo here, so the prompt, guidance included, is the note the
+    dry run prints."""
+
+    def test_words_that_name_no_commit_are_guidance_and_the_release_still_targets_master(self, repos):
+        repos.commits('2026.08')
+        repos.released('v2026.08.1')
+        repos.commits('2026.09')
+        tip = repos.push()[-1]
+        result = repos.release('--dry-run', 'dont', 'mention', 'the', 'plumber')
+        assert result.returncode == 0, result.stderr
+        assert f'Releasing v2026.09.2 ({tip[:7]}' in result.stdout
+        note = result.stdout.split("What's new in", 1)[1]
+        assert 'dont mention the plumber' in note
+        assert note.index('dont mention the plumber') < note.index('Commits:'), "the guidance is an instruction, not a commit"
+
+    def test_the_first_word_selects_the_commit_when_it_names_one_and_the_rest_is_guidance(self, repos):
+        repos.commits('2026.08')
+        repos.released('v2026.08.1')
+        repos.commits('2026.09', '2026.09')
+        _, second, _ = repos.push()
+        result = repos.release('--dry-run', second[:7], 'keep', 'it', 'short')
+        assert result.returncode == 0, result.stderr
+        assert f'Releasing v2026.09.2 ({second[:7]}' in result.stdout
+        listing, note = result.stdout.split("What's new in", 1)
+        assert 'edit 2' in listing and 'edit 3' not in listing
+        assert 'keep it short' in note and second[:7] not in note.split('Commits:', 1)[1].split('\n', 1)[0]
