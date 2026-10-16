@@ -78,6 +78,28 @@ SCENES = [
     {"id": "F1000003-0000-4000-8000-000000000003", "name": "F1000003-0000-4000-8000-0000000000AA", "type": "user_defined"},
 ]
 
+MORNING = "A7000001-0000-4000-8000-000000000001"
+BUTTON = "A7000002-0000-4000-8000-000000000002"
+HIDDEN_SET = "F2000001-0000-4000-8000-000000000001"
+AUTOMATIONS = [
+    {"id": MORNING, "name": "Weekday Morning", "enabled": True, "trigger_type": "calendar", "fire_time": "06:30",
+     "event_summary": "at 06:30 (+1 condition)", "scene_count": 1, "scenes": ["F2000001-0000-4000-8000-0000000000AA"],
+     "action_sets": [{"id": HIDDEN_SET, "name": "F2000001-0000-4000-8000-0000000000AA", "hidden": True, "action_count": 4}]},
+    {"id": BUTTON, "name": "Bedside Button", "enabled": False, "trigger_type": "button",
+     "event_summary": "Bedside Switch single_press", "scene_count": 1, "scenes": ["Good Night"],
+     "action_sets": [{"id": SCENES[0]["id"], "name": "Good Night", "action_count": 2}]},
+]
+AUTOMATION_DETAIL = {MORNING: {"conditions": [{"type": "weekdays", "weekdays": [2, 3, 4, 5, 6], "summary": "Mon, Tue, Wed, Thu, Fri"}],
+                               "events": []},
+                     BUTTON: {"conditions": None, "events": [{"type": "characteristic", "trigger_type": "button"}]}}
+SCENE_ACTIONS = {
+    HIDDEN_SET: [{"accessory": "Floor Lamp", "accessory_id": FLOOR_LAMP, "characteristic": "power", "value": "1"},
+                 {"accessory": "Floor Lamp", "accessory_id": FLOOR_LAMP, "characteristic": "brightness", "value": "30"},
+                 {"accessory": "Awning Roof", "accessory_id": AWNING, "characteristic": "target_position", "value": "0"},
+                 {"accessory": "Radiator", "accessory_id": THERMOSTAT, "characteristic": "target_temperature", "value": "21"}],
+    SCENES[0]["id"]: [{"accessory": "Floor Lamp", "accessory_id": FLOOR_LAMP, "characteristic": "power", "value": "0"}],
+}
+
 
 class FakeHomeClaw:
     """Serves `replies` on a Unix socket under a short temp dir (macOS caps the path at 104
@@ -137,6 +159,10 @@ def house_replies() -> dict:
                                    if args.get("dry_run") else {"verified": True, "new_value": args["value"]}),
         "trigger_scene": ok({"triggered": True}),
         "events": ok({"events": []}),
+        "list_automations": ok(AUTOMATIONS),
+        "get_automation": lambda args: ok({**next(a for a in AUTOMATIONS if a["id"] == args["id"]),
+                                           **AUTOMATION_DETAIL[args["id"]]}),
+        "get_scene": lambda args: ok({"id": args["id"], "actions": SCENE_ACTIONS[args["id"]]}),
     }
 
 
