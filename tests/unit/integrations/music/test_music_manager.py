@@ -1,7 +1,7 @@
 import time
 
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import PropertyMock, Mock, patch
 import threading
 
 from integrations.music.MusicIntegration import MusicManager, MusicIntegration, SpotifyPlaylist
@@ -232,6 +232,33 @@ class TestSonosZonesCacheExpiry:
         result = mm._discover_sonos_zones()
         assert "Bedroom" in result
         mock_discover.assert_called_once()
+
+
+    @patch('integrations.music.MusicIntegration.soco.discover')
+    def test_an_offline_zone_is_skipped_and_the_reachable_ones_are_cached(self, mock_discover):
+        """Reading a zone's name is an HTTP GET to the speaker: one offline speaker must not
+        leave the cache empty and every poll rediscovering."""
+        import requests
+        mm = make_music_manager()
+        kitchen, offline = Mock(), Mock()
+        kitchen.player_name = "Kitchen"
+        type(offline).player_name = PropertyMock(side_effect=requests.ConnectionError("HTTPConnectionPool(host='192.0.2.7', port=1400)"))
+        offline.ip_address = "192.0.2.7"
+        mock_discover.return_value = [offline, kitchen]
+
+        assert mm._discover_sonos_zones() == {"Kitchen": kitchen}
+        assert mm._sonos_zones_cache_time is not None
+        assert mm._discover_sonos_zones() == {"Kitchen": kitchen}
+        mock_discover.assert_called_once()
+
+    @patch('integrations.music.MusicIntegration.soco.discover')
+    def test_a_discovery_that_reaches_no_zone_keeps_the_old_cache(self, mock_discover):
+        mm = make_music_manager()
+        old_zone = Mock()
+        mm._sonos_zones_cache = {"Bedroom": old_zone}
+        mm._sonos_zones_cache_time = time.time() - MusicIntegration.CACHE_EXPIRY_SECONDS - 1
+        mock_discover.return_value = None
+        assert mm._discover_sonos_zones() == {"Bedroom": old_zone}
 
 
 class TestPlayInZoneRouting:

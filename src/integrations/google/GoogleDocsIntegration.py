@@ -330,15 +330,12 @@ class GoogleDocsIntegration(Integration, Feed):
         doc = step.doc
         with self._lock:
             if step.tracking:
-                text = doc.drive.export(doc.id, step.target)
-                doc.cache(text)
-                info(f"Google Docs: {doc.label} seen for the first time with no earlier revision, now tracking from {step.target.id}")
-                return [FeedEntry(step.target.modified_ts, tracking_note(doc.name, text), location=doc.name)]
+                return self._track(doc, step.target)
             baseline = doc.cached_text()
             if baseline is None:
                 if step.baseline is None:
                     info(f"Google Docs: {doc.label} has no cached text and no baseline revision, tracking from {step.target.id}")
-                    return self._run(Step(doc, step.target, step.revisions, tracking=True))
+                    return self._track(doc, step.target)
                 info(f"Google Docs: {doc.label} seen for the first time, revision {step.baseline.id} before the horizon is the baseline")
                 baseline = doc.drive.export(doc.id, step.baseline)
             text = doc.drive.export(doc.id, step.target)
@@ -350,3 +347,12 @@ class GoogleDocsIntegration(Integration, Feed):
             return []
         info(f"Google Docs: {doc.label} on {day}, {len(step.revisions)} revision(s) by {step.authors} — {content.splitlines()[0]}")
         return [FeedEntry(step.target.modified_ts, content, location=doc.name)]
+
+    @staticmethod
+    def _track(doc: WatchedDoc, target: Revision) -> list[FeedEntry]:
+        """The first row of a doc with no baseline: its text is cached and noted, not diffed.
+        Called with the lock held — it takes none itself, so the fallback above cannot deadlock."""
+        text = doc.drive.export(doc.id, target)
+        doc.cache(text)
+        info(f"Google Docs: {doc.label} seen for the first time with no earlier revision, now tracking from {target.id}")
+        return [FeedEntry(target.modified_ts, tracking_note(doc.name, text), location=doc.name)]

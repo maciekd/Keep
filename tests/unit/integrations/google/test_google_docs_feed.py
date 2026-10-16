@@ -270,6 +270,27 @@ class TestFetch:
             change, = feed.fetch(batch.cursor, backfill=True).entries
             assert "+ Four" in change.content.splitlines() and "- " not in change.content
 
+    def test_a_cache_gone_between_plan_and_run_falls_back_to_tracking_without_deadlocking(self, fresh):
+        """The plan saw a cached text and gave the step no baseline; the cache vanished (a wipe,
+        a deleted file) before the run. The fallback runs under the feed's own lock."""
+        import threading
+        from integrations.google.GoogleDocsIntegration import Step
+        from integrations.google.GoogleDrive import Revision
+        _signed_in(fresh)
+        drive = FakeDrive(HORIZON + DAY, [_revision(1, HORIZON + DAY)], {"1": "One\nTwo"})
+        with _config(_entries()), patch(REQUEST, drive):
+            feed = self._feed(drive)
+            doc = feed.docs()[0]
+            assert doc.cached_text() is None
+            step = Step(doc, Revision("1", HORIZON + DAY, "Charlotte", EXPORT % 1), [Revision("1", HORIZON + DAY, "Charlotte", EXPORT % 1)])
+            result = []
+            worker = threading.Thread(target=lambda: result.extend(feed._run(step)), daemon=True)
+            worker.start()
+            worker.join(timeout=2)
+            assert not worker.is_alive(), "the run deadlocked on the feed's own lock"
+            note, = result
+            assert "now tracked" in note.content and doc.cached_text() == "One\nTwo"
+
     def test_a_revision_that_changed_no_paragraph_writes_no_row_but_moves_the_cursor(self, fresh):
         _signed_in(fresh)
         drive = FakeDrive(HORIZON + DAY, [_revision(1, HORIZON + DAY)], {"1": "Same\ntext"})

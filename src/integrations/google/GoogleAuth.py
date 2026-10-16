@@ -123,6 +123,7 @@ class GoogleAuth:
         self._scopes = scopes
         self._address = address
         self._tokens: Optional[dict] = None
+        self._loaded_stamp: Optional[tuple[int, int]] = None
         self.refresh_error = ""
         self._lock = threading.RLock()
         flow = pending_sign_in(name)
@@ -135,17 +136,33 @@ class GoogleAuth:
 
     # --- the token file ----------------------------------------------------------------------
 
+    def _stamp(self) -> Optional[tuple[int, int]]:
+        """The token file's (mtime, size), None without one: what tells a write by someone else."""
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return st.st_mtime_ns, st.st_size
+
     def _load(self) -> dict:
-        if self._tokens is None:
-            self._tokens = {}
-            if self.path.exists():
-                try:
-                    self._tokens = json.loads(self.path.read_text(encoding="utf-8")) or {}
-                    trace(f"Google: tokens of '{self.name}' loaded from {self.path.name}")
-                except (OSError, ValueError) as e:
-                    error(f"Google: token file {self.path} unreadable, starting empty: {e}")
-            else:
-                trace(f"Google: '{self.name}' has no token file yet")
+        """The tokens on file, re-read whenever the file changed under this instance: the mail,
+        calendar and docs sides of one account each hold a GoogleAuth over the same file, and a
+        sign-in or refresh by one must not be overwritten with the other's stale copy."""
+        stamp = self._stamp()
+        if self._tokens is not None and stamp == self._loaded_stamp:
+            return self._tokens
+        if self._tokens is not None:
+            info(f"Google: the token file of '{self.name}' changed on disk, re-reading it")
+            self.refresh_error = ""
+        self._tokens, self._loaded_stamp = {}, stamp
+        if stamp is not None:
+            try:
+                self._tokens = json.loads(self.path.read_text(encoding="utf-8")) or {}
+                trace(f"Google: tokens of '{self.name}' loaded from {self.path.name}")
+            except (OSError, ValueError) as e:
+                error(f"Google: token file {self.path} unreadable, starting empty: {e}")
+        else:
+            trace(f"Google: '{self.name}' has no token file yet")
         return self._tokens
 
     def _save(self, tokens: dict) -> None:
@@ -154,7 +171,7 @@ class GoogleAuth:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(tokens, handle)
         os.chmod(self.path, 0o600)
-        self._tokens = tokens
+        self._tokens, self._loaded_stamp = tokens, self._stamp()
         trace(f"Google: tokens of '{self.name}' written to {self.path.name}")
 
     # --- what the integration reads ----------------------------------------------------------
@@ -165,8 +182,11 @@ class GoogleAuth:
             return bool(self._load().get("refresh_token"))
 
     def needs_sign_in_again(self) -> bool:
-        """True when the last refresh was refused: the file is kept, the user must sign in anew."""
-        return bool(self.refresh_error)
+        """True when the last refresh was refused: the file is kept, the user must sign in anew
+        — unless the file changed since, a sign-in through another instance."""
+        with self._lock:
+            self._load()
+            return bool(self.refresh_error)
 
     def signed_in_as(self) -> str:
         with self._lock:
@@ -295,7 +315,7 @@ class GoogleAuth:
     def sign_out(self) -> None:
         """Forgets the account: its token file is deleted."""
         with self._lock:
-            self._tokens = None
+            self._tokens, self._loaded_stamp = None, None
             _set_pending(self.name, None)
             self.refresh_error = ""
             if self.path.exists():

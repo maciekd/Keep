@@ -421,12 +421,18 @@ class MusicIntegration(Integration):
         )
 
         if not self._sonos_zones_cache or cache_expired:
-            self._sonos_zones_cache.clear()
-            zones = soco.discover()
-            if zones:
-                for zone in zones:
-                    self._sonos_zones_cache[zone.player_name] = zone
+            found: Dict[str, soco.SoCo] = {}
+            for zone in soco.discover() or []:
+                # The name is an HTTP GET to the speaker: one offline zone must not empty the house
+                try:
+                    found[zone.player_name] = zone
+                except Exception as e:
+                    info(f"Sonos: zone at {getattr(zone, 'ip_address', '?')} skipped, unreachable: {e}")
+            if found:
+                self._sonos_zones_cache = found
                 self._sonos_zones_cache_time = current_time
+            else:
+                trace("Sonos: discovery found no reachable zone, keeping the cache as it is")
         return self._sonos_zones_cache
 
     def _get_zone(self, room_name: str) -> Optional[soco.SoCo]:

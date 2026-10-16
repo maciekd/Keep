@@ -55,6 +55,21 @@ class TestRegisterRoom:
         register.assert_not_called()
         assert vi.announcer is None and vi._room is None
 
+    def test_stop_with_a_voice_discovery_running_unhooks_it_and_still_reaches_the_announcer(self):
+        """A voice start outside the testsuite always has a discovery: its stop is the first
+        thing stop() does, and the announcer, the room and the audio device come after it."""
+        from assistant.commands.DebugCommands import DebugCommands
+        vi = _interface(voice_discovery=Mock(), announcer=Mock(), _room="kitchen")
+        DebugCommands.voice_discovery = vi.voice_discovery.run
+        try:
+            with patch.object(module, "unregister_room") as unregister:
+                vi.stop()
+        finally:
+            DebugCommands.voice_discovery = None
+        vi.voice_discovery.stop.assert_called_once()
+        vi.announcer.stop.assert_called_once()
+        unregister.assert_called_once_with("kitchen")
+
     def test_stop_silences_the_announcer_and_drops_the_room(self):
         vi = _interface()
         with patch.object(module, "Announcer"), patch.object(module, "register_room", return_value="kitchen"):

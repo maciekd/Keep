@@ -155,6 +155,7 @@ class VoiceInterface(Interface):
     def stop(self) -> None:
         """Stop all audio streams before Python teardown to prevent CoreAudio callback crashes."""
         if self.voice_discovery is not None:
+            from assistant.commands.DebugCommands import DebugCommands
             self.voice_discovery.stop()
             DebugCommands.voice_discovery = None
         if self.announcer is not None:

@@ -215,6 +215,36 @@ class TestToken:
         assert a.finish(redirected(sign_in)) == ""
         assert not a.needs_sign_in_again() and a.token() == "ya29.again"
 
+    def test_a_sign_in_through_another_instance_is_seen_before_a_refresh_overwrites_the_file(self, token_dir, google):
+        """The mail/calendar side and the docs side each hold a GoogleAuth over the same file.
+        A new sign-in through one must not be undone by the other's refresh of its stale copy."""
+        self._signed_in(token_dir, expires_in=0)
+        docs, login = auth(), auth()
+        assert docs.signed_in() and login.signed_in()
+        google.answer_token(token_grant(access_token="ya29.fresh", refresh_token="1//renewed", scope="email docs", expires_in=1))
+        google.answer_token(token_grant(access_token="ya29.refreshed", refresh_token="", scope=""))
+        assert login.finish(redirected(login.begin())) == ""
+
+        assert docs.has_scope("docs") and docs.token() == "ya29.refreshed"
+
+        refresh = google.token_posts()[-1]
+        assert refresh.data["refresh_token"] == "1//renewed"
+        stored = json.loads(token_path("Personal").read_text())
+        assert stored["refresh_token"] == "1//renewed" and stored["scope"] == "email docs"
+
+    def test_a_sign_in_elsewhere_clears_this_instances_refused_state_and_a_sign_out_is_seen_too(self, token_dir, google):
+        self._signed_in(token_dir, expires_in=0)
+        google.answer_token({"error": "invalid_grant"}, status=400)
+        docs, login = auth(), auth()
+        with pytest.raises(NotSignedIn):
+            docs.token()
+        assert docs.needs_sign_in_again()
+        google.answer_token(token_grant(access_token="ya29.again"))
+        assert login.finish(redirected(login.begin())) == ""
+        assert not docs.needs_sign_in_again() and docs.token() == "ya29.again"
+        login.sign_out()
+        assert not docs.signed_in()
+
     def test_without_a_token_asking_for_one_says_to_sign_in(self, token_dir, google):
         with pytest.raises(NotSignedIn) as raised:
             auth().token()
