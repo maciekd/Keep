@@ -82,3 +82,11 @@ def test_the_app_not_running_is_the_reply(commands_instance, homeclaw):
 def test_the_garage_and_the_thermostat_need_approval():
     assert HomeClawCommands.SENSITIVE_COMMANDS == {"homekit_garage", "homekit_thermostat"}
     assert set(HomeClawCommands.APPROVAL_NOTES) == HomeClawCommands.SENSITIVE_COMMANDS
+
+
+def test_automations_take_an_optional_name_and_a_refusal_reaches_the_llm(commands_instance, homeclaw):
+    homeclaw.describe_automations.return_value = "Weekday Morning: at 06:30"
+    assert "06:30" in _run(commands_instance, "homekit_automations", "morning")
+    homeclaw.describe_automations.assert_called_with("morning")
+    homeclaw.describe_automations.side_effect = HomeClawUnavailable("HomeClaw is not running (no socket)")
+    assert "not running" in _run(commands_instance, "homekit_automations")

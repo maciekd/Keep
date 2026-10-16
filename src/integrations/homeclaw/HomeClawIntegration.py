@@ -20,7 +20,8 @@ from assistant.integration.Feed import FeedEntry
 from assistant.integration.Integration import Integration
 from common.ConfigManager import config
 from common.logging import info, trace
-from .HomeClawClient import HomeClawClient, HomeClawError
+from .HomeClawAutomations import is_hidden, render_detail, render_summary
+from .HomeClawClient import HomeClawClient, HomeClawError, HomeClawUnavailable
 from .HomeClawModel import (
     COVER, DEFAULT_BRIDGE_FILTERS, GARAGE, IRRIGATION, SWITCHED, THERMOSTAT, Index, Target, Unresolved,
     build_targets, event_entry, excluded, real_scenes, render, zones_of)
@@ -127,7 +128,15 @@ class HomeClawIntegration(Integration):
         index = self.refresh()
         with self._lock:
             scenes = list(self._scenes)
-        return render(index, scenes)
+        body = render(index, scenes)
+        try:
+            summary = render_summary(self.automations())
+        except HomeClawUnavailable:
+            raise
+        except HomeClawError as e:
+            info(f"HomeClaw: automations left out of the section: {e}")
+            summary = ""
+        return f"{body}\n\n{summary}" if summary else body
 
     def _resolve(self, ref: str, kinds, what: str) -> Target:
         with self._lock:
@@ -139,6 +148,52 @@ class HomeClawIntegration(Integration):
         except Unresolved:
             trace(f"HomeClaw: '{ref}' does not resolve to one {what} — reading the app again")
             return self.refresh().resolve(ref, kinds, what)
+
+    # --- automations ------------------------------------------------------------------------------
+
+    def automations(self) -> list[dict]:
+        """Every automation of the home with its conditions: `list_automations` plus one
+        `get_automation` each (the list leaves the conditions out); a row whose detail cannot be
+        read is kept as listed."""
+        rows = self._list(self.client().call("list_automations"), "automations")
+        detailed = []
+        for row in rows:
+            try:
+                detail = self.client().call("get_automation", id=row.get("id"))
+            except HomeClawUnavailable:
+                raise
+            except HomeClawError as e:
+                info(f"HomeClaw: cannot read automation {row.get('name')}: {e} — shown without its conditions")
+                detail = None
+            detailed.append({**row, **detail} if isinstance(detail, dict) else row)
+        trace(f"HomeClaw: {len(detailed)} automations")
+        return detailed
+
+    def describe_automations(self, wanted: str = "") -> str:
+        """The `homekit_automations` reply: every automation, or those whose name holds `wanted`
+        (or whose id it is), each with what it runs — the actions of a hidden action set always,
+        those of a named scene only when automations were asked for by name."""
+        automations = self.automations()
+        wanted = str(wanted or "").strip().strip('"').casefold()
+        if wanted:
+            automations = [a for a in automations if wanted in str(a.get("name") or "").casefold()
+                           or wanted == str(a.get("id") or "").casefold()]
+            if not automations:
+                trace(f"HomeClaw: no automation matches '{wanted}'")
+                return f"No HomeKit automation called '{wanted}'; call homekit_automations() for the list."
+        if not automations:
+            return "The home has no HomeKit automations."
+        scenes = {}
+        for automation in automations:
+            for action_set in automation.get("action_sets") or []:
+                if (wanted or is_hidden(action_set)) and action_set.get("id") not in scenes:
+                    try:
+                        scenes[action_set["id"]] = self.client().call("get_scene", id=action_set["id"]) or {}
+                    except HomeClawUnavailable:
+                        raise
+                    except HomeClawError as e:
+                        info(f"HomeClaw: cannot read the actions of {automation.get('name')}: {e}")
+        return render_detail(automations, scenes, expand_named=bool(wanted))
 
     # --- writing ----------------------------------------------------------------------------------
 

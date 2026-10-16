@@ -1,7 +1,7 @@
 ---
 name: homeclaw
-summary: "HomeKit through HomeClaw: covers, the garage door, irrigation, the thermostat, other lights, scenes, what changed"
-commands: [homekit_cover, homekit_garage, homekit_valve, homekit_thermostat, homekit_light, homekit_scene, homekit_events]
+summary: "HomeKit through HomeClaw: covers, the garage door, irrigation, the thermostat, other lights, scenes, automations, what changed"
+commands: [homekit_cover, homekit_garage, homekit_valve, homekit_thermostat, homekit_light, homekit_scene, homekit_events, homekit_automations]
 ---
 The HOMEKIT (HOMECLAW) section of your prompt lists, room by room, the HomeKit accessories Keep's Hue and Plejd
 integrations do not already bring, each line ending with its ref in brackets, e.g. `[A1B2C3D4]`. Several accessories
@@ -16,6 +16,11 @@ fits several is refused with the candidates and their refs — pick one, never g
 `homekit_scene(name)` — run a HomeKit scene, by the name listed under "Scenes"
 `homekit_events(since)` — what changed in these accessories, oldest first; since is `30m`, `6h`, `2d` or an ISO time
 (default `1h`). Sensor readings and light tweaks are not in it — the section has the current values.
+`homekit_automations(name)` — the HomeKit automations: when each fires (a time, sunrise/sunset with offset, a button,
+a sensor, people leaving or arriving), its conditions (weekdays, …), whether it is disabled and what it does, the
+accessories grouped by setting ("off: A, B; on 30 %: C"). Without a name it lists them all; with one (part of a name)
+it also spells out the named scenes they run. The section's "Automations" lists them a line each; call this for what
+an automation actually does. Reading only — Keep cannot create, change, enable or disable automations.
 
 Every command but the scene sends the change and waits for the accessory to confirm it; the reply says when the
 accessory reports something else. Add `dry_run` as the last argument — `homekit_cover(A1B2C3D4, 40, dry_run)` — to

@@ -10,7 +10,7 @@ ON, OFF = {"on", "true", "1", "open", "start"}, {"off", "false", "0", "close", "
 
 
 class HomeClawCommands(CommandSet):
-    """The HomeKit accessories behind HomeClaw: covers, the garage door, valves, the thermostat, lights, scenes, the event log."""
+    """The HomeKit accessories behind HomeClaw: covers, the garage door, valves, the thermostat, lights, scenes, the event log, the automations."""
 
     MULTI_PARAM_COMMANDS = frozenset({"homekit_cover", "homekit_garage", "homekit_valve", "homekit_thermostat",
                                       "homekit_light", "homekit_scene"})
@@ -127,6 +127,16 @@ class HomeClawCommands(CommandSet):
         return "\n".join(f"{datetime.fromtimestamp(e.timestamp):%Y-%m-%d %H:%M} {e.content.removeprefix('HomeKit: ')}"
                          for e in entries)
 
+    def cmd_homekit_automations(self, parameter_string: str):
+        self.background_command(self._automations, self.commands.first_argument(parameter_string or ""))
+
+    @staticmethod
+    def _automations(wanted: str) -> str:
+        try:
+            return HomeClawIntegration.get_instance().describe_automations(wanted)
+        except HomeClawError as e:
+            return str(e)
+
     def describe_homekit_cover(self, p):       return f"Moving the HomeKit cover ({p})"
     def describe_homekit_garage(self, p):      return f"Garage door via HomeClaw ({p})"
     def describe_homekit_valve(self, p):       return f"Irrigation valve via HomeClaw ({p})"
@@ -134,3 +144,4 @@ class HomeClawCommands(CommandSet):
     def describe_homekit_light(self, p):       return f"Switching the HomeKit light ({p})"
     def describe_homekit_scene(self, p):       return f"Running the HomeKit scene {p}"
     def describe_homekit_events(self, p):      return "Reading the HomeKit event log"
+    def describe_homekit_automations(self, p): return "Reading the HomeKit automations"
