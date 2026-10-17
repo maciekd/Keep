@@ -56,3 +56,18 @@ def test_a_stale_socket_nobody_listens_on_means_the_app_is_not_running():
     finally:
         os.unlink(path)
         os.rmdir(directory)
+
+
+def test_an_app_that_does_not_answer_in_time_is_an_error_not_the_app_missing():
+    """The toolkit tells the LLM never to retry "not running"; a slow accessory behind a
+    `control` with verify is a different thing and must not read as the app being gone."""
+    import threading
+    gate = threading.Event()
+    app = FakeHomeClaw({"control": lambda args: (gate.wait(1), b"")[1]})
+    try:
+        with pytest.raises(HomeClawError, match="did not answer control") as caught:
+            HomeClawClient(app.path, timeout=0.02).call("control", id="x", characteristic="power", value="true")
+        assert not isinstance(caught.value, HomeClawUnavailable)
+    finally:
+        gate.set()
+        app.close()

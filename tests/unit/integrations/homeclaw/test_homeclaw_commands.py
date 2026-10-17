@@ -90,3 +90,24 @@ def test_automations_take_an_optional_name_and_a_refusal_reaches_the_llm(command
     homeclaw.describe_automations.assert_called_with("morning")
     homeclaw.describe_automations.side_effect = HomeClawUnavailable("HomeClaw is not running (no socket)")
     assert "not running" in _run(commands_instance, "homekit_automations")
+
+
+def test_a_third_argument_is_refused_before_the_integration_is_asked(commands_instance, homeclaw):
+    reply = _run(commands_instance, "homekit_cover", "B2000001", "40", "slowly")
+    homeclaw.set_cover.assert_not_called()
+    assert "homekit_cover(ref" in reply
+
+
+def test_up_and_down_and_a_decimal_comma_are_positions(commands_instance, homeclaw):
+    _run(commands_instance, "homekit_cover", "B2000001", "up")
+    homeclaw.set_cover.assert_called_with("B2000001", 100, False)
+    _run(commands_instance, "homekit_cover", "B2000001", "down")
+    homeclaw.set_cover.assert_called_with("B2000001", 0, False)
+    _run(commands_instance, "homekit_cover", "B2000001", "33,4%")
+    homeclaw.set_cover.assert_called_with("B2000001", 33, False)
+
+
+def test_a_word_that_is_neither_on_nor_off_never_reaches_the_valve(commands_instance, homeclaw):
+    reply = _run(commands_instance, "homekit_valve", "D4000001", "half")
+    homeclaw.set_valve.assert_not_called()
+    assert "half" in reply

@@ -134,3 +134,38 @@ class TestEvents:
         with settings_patch({"homeclaw.socket": "/tmp/no-such-dir-for-homeclaw/homeclaw.sock"}):
             with pytest.raises(HomeClawUnavailable, match="not running"):
                 HomeClawIntegration().events("1h")
+
+
+class TestHealthWithoutAHome:
+    def test_a_ready_app_that_sees_no_home_is_not_healthy_and_says_what_to_check(self, app, homeclaw):
+        app.replies["status"] = ok({"ready": True, "homes": 0, "accessories": 0})
+        with pytest.raises(HomeClawError, match="HomeKit access"):
+            homeclaw.check_health()
+
+
+class TestNewAccessories:
+    def test_an_accessory_added_since_the_last_read_gets_its_row(self, app, homeclaw):
+        """The index is from the last refresh; an event of an accessory it does not know is
+        the sign the house changed, so the app is read again rather than the change dropped."""
+        from .conftest import ACCESSORIES
+        shed_lamp = "B7000001-0000-4000-8000-000000000001"
+        homeclaw.snapshot()
+        reads = len(app.of("list_accessories"))
+        app.replies["list_accessories"] = ok(ACCESSORIES + [
+            {"id": shed_lamp, "name": "Shed Lamp", "room": "Shed", "category": "lightbulb", "manufacturer": "Nanoleaf",
+             "reachable": True, "bridge": None, "state": {"power": "false"}}])
+        app.replies["events"] = ok({"events": [
+            {"type": "characteristic_change", "timestamp": "2026-03-01T10:00:00Z", "characteristic": "power",
+             "previous_value": "false", "value": "true", "accessory": {"id": shed_lamp}}]})
+        entries = homeclaw.events("1h")
+        assert len(app.of("list_accessories")) == reads + 1
+        assert len(entries) == 1 and "Shed Lamp [Shed]" in entries[0].content
+
+    def test_events_of_known_accessories_read_the_app_no_second_time(self, app, homeclaw):
+        homeclaw.snapshot()
+        reads = len(app.of("list_accessories"))
+        app.replies["events"] = ok({"events": [
+            {"type": "characteristic_change", "timestamp": "2026-03-01T10:00:00Z", "characteristic": "current_door_state",
+             "previous_value": "closed", "value": "open", "accessory": {"id": GARAGE_DOOR}}]})
+        assert len(homeclaw.events("1h")) == 1
+        assert len(app.of("list_accessories")) == reads

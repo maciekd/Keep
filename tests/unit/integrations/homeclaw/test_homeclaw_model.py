@@ -142,3 +142,49 @@ class TestEvents:
         plejd = {"type": "characteristic_change", "timestamp": "2026-03-01T10:00:00Z", "characteristic": "power",
                  "value": "true", "accessory": {"id": PLEJD_LAMP}}
         assert event_entry(plejd, self._targets()) is None
+
+
+class TestMoreRendering:
+    def test_a_garage_on_its_way_says_where_it_goes_and_that_it_is_blocked(self):
+        target = Target(id="X", name="Garage Door", room="Garage", kind=GARAGE,
+                        state={"current_door_state": "closed", "target_door_state": "open", "obstruction_detected": "true"})
+        text = state_text(target)
+        assert text.startswith("closed") and "open" in text and "OBSTRUCTED" in text
+        settled = Target(id="X", name="Garage Door", room="Garage", kind=GARAGE,
+                         state={"current_door_state": "open", "target_door_state": "open", "obstruction_detected": "false"})
+        assert state_text(settled) == "open"
+
+    def test_a_thermostat_says_its_mode_once_unless_it_is_doing_something_else(self):
+        from integrations.homeclaw.HomeClawModel import THERMOSTAT
+        heating = Target(id="X", name="Radiator", room="", kind=THERMOSTAT,
+                         state={"current_temperature": "19.5°C", "target_temperature": "21", "target_heating_cooling": "heat",
+                                "current_heating_cooling": "heat"})
+        text = state_text(heating)
+        assert text.count("heat") == 1 and "19.5 °C" in text and "target 21.0 °C" in text
+        idle = Target(id="X", name="Radiator", room="", kind=THERMOSTAT,
+                      state={"target_heating_cooling": "heat", "current_heating_cooling": "off"})
+        assert "now off" in state_text(idle)
+
+    def test_a_gardena_sensors_humidity_is_soil_moisture(self):
+        soil = Target(id="X", name="Soil", room="", kind=SENSOR, manufacturer="GARDENA", state={"current_humidity": "37"})
+        room = Target(id="Y", name="Air", room="", kind=SENSOR, manufacturer="Aqara", state={"current_humidity": "37"})
+        assert "soil moisture 37 %" in state_text(soil)
+        assert "humidity 37 %" in state_text(room) and "soil" not in state_text(room)
+
+    def test_a_switched_accessory_without_a_power_reading_says_so(self):
+        from integrations.homeclaw.HomeClawModel import LIGHT
+        assert state_text(Target(id="X", name="Lamp", room="", kind=LIGHT, state={"brightness": "40"})) == "state unknown"
+        assert state_text(Target(id="X", name="Lamp", room="", kind=LIGHT, state={"power": "1", "brightness": "40"})) == "on 40 %"
+
+
+class TestRefParsing:
+    def test_an_id_prefix_quotes_and_brackets_around_a_ref_are_ignored(self):
+        index = _index()
+        for text in (f"id {AWNING[:8]}", f'"{AWNING[:8]}"', f"[{AWNING[:8]}]", f"  {AWNING[:8].lower()}  "):
+            assert index.resolve(text, {COVER}, "cover").id == AWNING, text
+
+    def test_a_ref_prefix_that_fits_several_targets_is_refused_with_their_refs(self):
+        index = _index()
+        with pytest.raises(Unresolved, match="several") as caught:
+            index.resolve("A10000", {SENSOR}, "sensor")
+        assert all(uid[:8] in str(caught.value) for uid in (SENSOR_A, SENSOR_B, SENSOR_C))

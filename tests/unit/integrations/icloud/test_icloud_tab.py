@@ -169,3 +169,29 @@ class TestAutoTwoFactor:
         tab._before_draw()
         assert tab._input_mode is True and tab._input_text == "12"
         api.get_auth_status.assert_not_called()
+
+
+class TestFindMyVerdictInTheSameTick:
+    """The listing is the one request that learns Find My's verdict, and the status check runs
+    before it: an empty table must not sit under "Connected" until the next tick."""
+
+    def _tab(self, statuses, devices):
+        api = Mock()
+        api.get_auth_status.side_effect = statuses
+        api.get_icloud_devices.return_value = devices
+        api.get_devices_list.return_value = ""
+        return api, make_tab(api)
+
+    def test_an_empty_listing_re_reads_the_status_it_just_taught(self):
+        api, tab = self._tab([{"status": "authenticated", "message": ""},
+                              {"status": "needs_reauth", "message": "Find My is idle"}], [])
+        tab._check_auth_status()
+        assert tab.status == "needs_reauth"
+        assert api.get_auth_status.call_count == 2
+        assert "Ctrl-R" in tab._table().empty
+
+    def test_a_filled_listing_keeps_the_status_it_was_read_with(self):
+        api, tab = self._tab([{"status": "authenticated", "message": ""}], [{"id": "fmip-dad", "name": "Dad's iPhone"}])
+        tab._check_auth_status()
+        assert tab.status == "authenticated"
+        assert api.get_auth_status.call_count == 1

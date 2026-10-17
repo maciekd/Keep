@@ -256,3 +256,95 @@ class TestAccountLock:
             api.on_needs_2fa()
         fresh.assert_not_called()
         sms.assert_not_called()
+
+
+class TestVerdictLifetime:
+    """What the status shows of the last Find My verdict, and for how long: a "reauth" stands
+    until a sign-in or an accepted code (expired cookies never come back by themselves), a
+    transient error expires so the table tries again, and an accepted code drops the "2FA
+    pending" verdict recorded while the challenge was open."""
+
+    def _aged_past_ttl(self, api):
+        api._find_my_probe.at -= api.FIND_MY_PROBE_TTL_SECONDS + 1
+
+    def test_a_reauth_verdict_stands_past_the_ttl_without_another_request(self, api):
+        api._api = _service(exc=_reauth_wanted())
+        assert api.get_icloud_devices() == []
+        self._aged_past_ttl(api)
+        assert api.get_auth_status()["status"] == "needs_reauth"
+        assert api._api.session.post.call_count == 1
+
+    def test_a_transient_error_verdict_expires_so_the_next_listing_asks_again(self, api):
+        service = _service([])
+        service.session.post.side_effect = [
+            PyiCloudAPIResponseException("Service Temporarily Unavailable", 503, Mock(text="")),
+            _answer([_record("fmip-dad")])]
+        api._api = service
+        assert api.get_icloud_devices() == []
+        assert api.get_auth_status()["status"] == "error"
+        self._aged_past_ttl(api)
+        assert api.get_auth_status()["status"] == "authenticated"
+        assert len(api.get_icloud_devices()) == 1
+
+    @pytest.mark.xfail(strict=True, reason="a reauth or error FindMyProbe is recorded with complete=False, so a complete listing (get_icloud_devices) inside the TTL never takes it from the cache and probes Find My again")
+    def test_a_reauth_verdict_inside_the_ttl_serves_the_next_listing_without_a_request(self, api):
+        """The verdict is cached so the table and the listing share one request; a refused
+        request repeated for a verdict that cannot change is the pattern that got the account
+        locked."""
+        api._api = _service(exc=_reauth_wanted())
+        assert api.get_icloud_devices() == []
+        assert api.get_icloud_devices() == []
+        assert api._api.session.post.call_count == 1
+
+    def test_an_accepted_code_drops_the_pending_verdict_and_the_next_listing_decides(self, api):
+        service = _service([])
+        service.session.post.side_effect = [_reauth_wanted(), _answer([_record("fmip-dad")])]
+        service.two_factor_delivery_method = "sms"
+        service.requires_2sa = False
+        service.is_trusted_session = True
+
+        def challenged(force_refresh=False):
+            service.requires_2fa = True
+            service._auth_data = {"phoneNumberVerification": {"trustedPhoneNumber": {
+                "id": 1, "pushMode": "sms", "nonFTEU": False, "obfuscatedNumber": "•••05"}}}
+        service.authenticate.side_effect = challenged
+        api._api = service
+        assert api.get_icloud_devices(sign_in=True) == []
+        assert api.get_auth_status()["status"] == "needs_2fa"
+
+        service._validate_sms_code.side_effect = lambda code: setattr(service, "requires_2fa", False)
+        assert api.send_2fa_code("123456") is True
+        assert api.get_auth_status()["status"] == "authenticated", "the '2FA pending' verdict predates the code"
+        assert [d["id"] for d in api.get_icloud_devices()] == ["fmip-dad"]
+        assert service.session.post.call_count == 2
+
+
+class TestParkFile:
+    def test_a_park_file_that_cannot_be_read_still_parks(self, api, icloud_session_dir):
+        """A refused sign-in is the one verdict that must survive anything: a garbled file is a
+        park whose details were lost, not a licence to sign in."""
+        from integrations.icloud.ICloudIntegration import iCloudAuthenticationError
+        icloud_session_dir.mkdir(parents=True, exist_ok=True)
+        (icloud_session_dir / api.PARK_FILE).write_text("{not json")
+        with patch('integrations.icloud.ICloudIntegration.PyiCloudService') as mock_pyicloud:
+            with pytest.raises(iCloudAuthenticationError, match="parked"):
+                api.check_health()
+        mock_pyicloud.assert_not_called()
+        assert api.get_auth_status()["status"] == "parked"
+
+    def test_a_park_that_cannot_be_written_holds_in_memory_until_the_user_lifts_it(self, api, tmp_path):
+        service = _service(exc=_reauth_wanted())
+        service.authenticate.side_effect = _locked_login()
+        api._api = service
+        unwritable = tmp_path / "no-such-dir" / api.PARK_FILE
+        with patch.object(api, "_park_path", return_value=unwritable), patch(NOTIFY_PATH) as notify:
+            assert api._sign_in_for_find_my("test")
+            assert api._sign_in_for_find_my("test")
+            service.authenticate.assert_called_once(), "parked in memory: no second sign-in"
+            notify.assert_called_once()
+            assert api.get_auth_status()["status"] == "parked"
+            with patch('integrations.icloud.ICloudIntegration.PyiCloudService') as mock_pyicloud:
+                mock_pyicloud.return_value = _service([{"content": [_record("fmip-dad")]}])
+                api.refresh_connection(by_user=True)
+        mock_pyicloud.return_value.authenticate.assert_called_once()
+        assert api.get_auth_status()["status"] == "authenticated"
