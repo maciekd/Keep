@@ -289,6 +289,18 @@ class TestExecuteActionFrameRouting:
             assert run(wa._async_execute_action(0, None)) is None
         assert 'click()' in main_eval.await_args_list[-1].args[1]
 
+    def test_failed_click_point_lookup_falls_back_to_js_click(self):
+        wa = make_wa()
+        wa._tab = SimpleNamespace()
+        wa._browse_snapshot_frame_ids = [None]
+        # meta, scroll, click point (the page's context went away mid-lookup), JS click
+        main_eval = AsyncMock(side_effect=[self.META, None, ProtocolException('context destroyed'), True])
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
+            assert run(wa._async_execute_action(0, None)) is None
+        mouse.assert_not_awaited()
+        assert 'click()' in main_eval.await_args_list[-1].args[1]
+
     def test_click_reports_element_gone_when_finder_misses(self):
         wa = make_wa()
         wa._tab = SimpleNamespace()

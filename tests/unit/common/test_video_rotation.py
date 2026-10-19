@@ -3,7 +3,8 @@ import sys
 import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -166,3 +167,59 @@ class TestLoadFrameworks:
 
         assert {m.__name__: m.lookups for m in lazy_modules.values()} == {
             name: len(names) for name, names in VideoRotation._FRAMEWORK_NAMES.items()}
+
+
+def _fake_frameworks(export):
+    """The resolved frameworks as a stand-in: a 1280x720 track whose matrix shows it as 720x1280,
+    and `export` as the session AVFoundation hands back (None when it refuses one)."""
+    fw = MagicMock()
+    track = MagicMock()
+    track.naturalSize.return_value = SimpleNamespace(width=1280, height=720)
+    track.nominalFrameRate.return_value = 30.0
+    fw.AVURLAsset.URLAssetWithURL_options_.return_value.tracksWithMediaType_.return_value = [track]
+    fw.CGRectApplyAffineTransform.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=-720, y=0), size=SimpleNamespace(width=720, height=1280))
+    fw.AVAssetExportSession.exportSessionWithAsset_presetName_.return_value = export
+    return fw
+
+
+@pytest.mark.unit
+class TestExportFailures:
+    """Every way the export can go wrong answers None, so the caller sends the clip as it is."""
+
+    def test_an_export_that_does_not_finish_in_time_is_cancelled(self):
+        export = MagicMock()  # the completion handler is never called
+        with patch.object(VideoRotation, "_frameworks", _fake_frameworks(export)):
+            assert bake_rotation(b"clip", timeout=0.01) is None
+        export.cancelExport.assert_called_once_with()
+
+    def test_an_export_that_fails_is_not_cancelled_and_gives_nothing(self):
+        export = MagicMock()
+        export.exportAsynchronouslyWithCompletionHandler_.side_effect = lambda handler: handler()
+        export.status.return_value = 4  # AVAssetExportSessionStatusFailed
+        export.error.return_value.localizedDescription.return_value = "Cannot Decode"
+        with patch.object(VideoRotation, "_frameworks", _fake_frameworks(export)):
+            assert bake_rotation(b"clip") is None
+        export.cancelExport.assert_not_called()
+
+    def test_a_refused_export_session_gives_nothing(self):
+        with patch.object(VideoRotation, "_frameworks", _fake_frameworks(None)):
+            assert bake_rotation(b"clip") is None
+
+    def test_a_clip_without_a_video_track_starts_no_export(self):
+        fw = _fake_frameworks(MagicMock())
+        fw.AVURLAsset.URLAssetWithURL_options_.return_value.tracksWithMediaType_.return_value = []
+        with patch.object(VideoRotation, "_frameworks", fw):
+            assert bake_rotation(b"clip") is None
+        fw.AVAssetExportSession.exportSessionWithAsset_presetName_.assert_not_called()
+
+    def test_the_canvas_is_the_displayed_size_and_the_frame_is_shifted_back_to_the_origin(self):
+        export = MagicMock()
+        export.exportAsynchronouslyWithCompletionHandler_.side_effect = lambda handler: handler()
+        export.status.return_value = 4
+        fw = _fake_frameworks(export)
+        with patch.object(VideoRotation, "_frameworks", fw):
+            bake_rotation(b"clip")
+        # a 90° matrix lands the 1280x720 frame at x=-720: the canvas is 720x1280 and the frame moves +720
+        fw.AVMutableVideoComposition.videoComposition.return_value.setRenderSize_.assert_called_once_with((720, 1280))
+        fw.CGAffineTransformMakeTranslation.assert_called_once_with(720, 0)

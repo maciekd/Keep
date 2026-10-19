@@ -53,6 +53,18 @@ def _login_behind_a_5xx():
             return e
 
 
+def _login_behind_a_5xx_with_a_body():
+    """Apple's fault answered with a JSON error body: pyicloud puts Apple's own code in `code`
+    and the HTTP status is on the response alone."""
+    try:
+        raise PyiCloudAPIResponseException("Service Temporarily Unavailable", "-21000", Mock(status_code=503, text=""))
+    except PyiCloudAPIResponseException as cause:
+        try:
+            raise PyiCloudFailedLoginException("Failed to initiate srp authentication.") from cause
+        except PyiCloudFailedLoginException as e:
+            return e
+
+
 def _locked_login():
     try:
         raise PyiCloudAPIResponseException("", 403, Mock(text=LOCK_BODY))
@@ -221,10 +233,11 @@ class TestAccountLock:
         status = api.get_auth_status()
         assert status["status"] == "parked" and "locked" in status["message"].lower()
 
-    def test_a_5xx_behind_the_login_failure_parks_nothing_so_the_next_command_tries_again(self, api, icloud_session_dir):
+    @pytest.mark.parametrize("login_failure", [_login_behind_a_5xx, _login_behind_a_5xx_with_a_body])
+    def test_a_5xx_behind_the_login_failure_parks_nothing_so_the_next_command_tries_again(self, api, icloud_session_dir, login_failure):
         """pyicloud wraps Apple's server fault in the same exception as a refused password."""
         service = _service(exc=_reauth_wanted())
-        service.authenticate.side_effect = _login_behind_a_5xx()
+        service.authenticate.side_effect = login_failure()
         api._api = service
         with patch(NOTIFY_PATH) as notify:
             assert all(api._sign_in_for_find_my("test") for _ in range(2)), "Find My stays unavailable for now"

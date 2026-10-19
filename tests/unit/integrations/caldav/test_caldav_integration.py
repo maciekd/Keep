@@ -261,10 +261,40 @@ class TestDeleteEvent:
             _account().delete_event("Home", _read())
         assert "412" in str(caught.value) and "no longer" not in str(caught.value)
 
+    @patch(CALDAV)
+    def test_a_deleted_event_s_href_is_forgotten_so_a_repeat_asks_by_uid_and_finds_it_gone(self, mock_caldav):
+        home = _calendar("Home", ("Dentist", 11))
+        home.date_search.return_value[0].url = "https://caldav.example/home/abc.ics"
+        _serve(mock_caldav, home)
+        home.event_by_url.return_value = _resource()
+        home.event_by_uid.side_effect = NotFoundError("404 Not Found")
+        account = _account()
+        account.events(["Home"], date(2025, 6, 15), date(2025, 6, 16))
+
+        account.delete_event("Home", _read(uid="uid-Dentist"))
+        with pytest.raises(ValueError, match="no longer"):
+            account.delete_event("Home", _read(uid="uid-Dentist"))
+
+        home.event_by_url.assert_called_once()
+        home.event_by_uid.assert_called_once_with("uid-Dentist")
+
 
 @pytest.mark.unit
 class TestMoveEvent:
     UTC_BOUNDS = (datetime(2025, 6, 18, 8, 0, tzinfo=UTC), datetime(2025, 6, 18, 9, 30, tzinfo=UTC))
+
+    @patch(CALDAV)
+    def test_an_event_gone_from_the_server_since_the_read_is_said_gone_without_a_uid_query(self, mock_caldav):
+        home = _calendar("Home", ("Dentist", 11))
+        home.date_search.return_value[0].url = "https://caldav.example/home/abc.ics"
+        _serve(mock_caldav, home)
+        home.event_by_url.side_effect = NotFoundError("404 Not Found")
+        account = _account()
+        account.events(["Home"], date(2025, 6, 15), date(2025, 6, 16))
+
+        with pytest.raises(ValueError, match="no longer"):
+            account.move_event("Home", _read(uid="uid-Dentist"), *self.UTC_BOUNDS, all_day=False)
+        home.event_by_uid.assert_not_called()
 
     @patch(CALDAV)
     def test_timed_bounds_are_written_in_utc_without_the_old_tzid_and_the_resource_saved(self, mock_caldav):
