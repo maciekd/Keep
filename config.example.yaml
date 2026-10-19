@@ -345,7 +345,7 @@ wake_word_near_misses: [mission, missions, we shall]
 #                           # and posts each as "Tip from <owner>'s Keep: …", never the household's own people,
 #                           # places or accounts. The other Keeps read the group through their owners' Telegram
 #                           # Feed. Unset: no tips are posted.
-#  cache_auditor:
+#  cache_auditor:          # decides whether a cached reply may be replayed; Claude Sonnet 5.5 by default
 #    llm: OllamaLLM
 #  photo_indexing:         # indexes Apple Photos stills and videos, one call each (thousands on a backfill).
 #    llm: GeminiLLM         # Needs native video input for the videos, so Gemini is the only full backend.

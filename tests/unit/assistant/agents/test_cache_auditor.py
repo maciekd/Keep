@@ -8,7 +8,7 @@ class TestCacheAuditorInit:
     """Tests for CacheAuditor initialization"""
 
     @pytest.fixture
-    def mock_gemini_llm(self):
+    def mock_llm(self):
         with patch('assistant.agents.CacheAuditor.create_llm') as mock:
             mock_instance = Mock()
             mock_instance.missing_api_key.return_value = None
@@ -28,7 +28,7 @@ class TestCacheAuditorInit:
         with patch('assistant.agents.CacheAuditor.CommandParser') as mock:
             yield mock
 
-    def test_the_parser_knows_core_commands_and_the_ones_integration_folders_add(self, mock_gemini_llm, mock_command_parser):
+    def test_the_parser_knows_core_commands_and_the_ones_integration_folders_add(self, mock_llm, mock_command_parser):
         from assistant.agents.CacheAuditor import CacheAuditor
         CacheAuditor()
         names = mock_command_parser.call_args[0][0]
@@ -40,7 +40,7 @@ class TestCacheAuditorAuditPass:
     """Tests for _audit_pass() verdict handling"""
 
     @pytest.fixture
-    def mock_gemini_llm(self):
+    def mock_llm(self):
         with patch('assistant.agents.CacheAuditor.create_llm') as mock:
             mock_instance = Mock()
             mock_instance.missing_api_key.return_value = None
@@ -74,8 +74,8 @@ class TestCacheAuditorAuditPass:
             }
 
     @pytest.fixture
-    def cache_auditor(self, mock_gemini_llm, mock_commands, mock_logging):
-        mock_llm, _ = mock_gemini_llm
+    def cache_auditor(self, mock_llm, mock_commands, mock_logging):
+        mock_llm, _ = mock_llm
         with patch('assistant.agents.CacheAuditor.CommandParser') as mock_parser_class:
             mock_parser = Mock()
             mock_parser_class.return_value = mock_parser
@@ -152,7 +152,7 @@ class TestCacheAuditorStartStop:
     """Tests for start() and stop() thread lifecycle"""
 
     @pytest.fixture
-    def mock_gemini_llm(self):
+    def mock_llm(self):
         with patch('assistant.agents.CacheAuditor.create_llm') as mock:
             mock_instance = Mock()
             mock_instance.missing_api_key.return_value = None
@@ -178,7 +178,7 @@ class TestCacheAuditorStartStop:
              patch('assistant.agents.CacheAuditor.fine') as mock_fine:
             yield
 
-    def test_start_creates_daemon_thread(self, mock_gemini_llm, mock_commands, mock_command_parser, mock_logging):
+    def test_start_creates_daemon_thread(self, mock_llm, mock_commands, mock_command_parser, mock_logging):
         from assistant.agents.CacheAuditor import CacheAuditor
         auditor = CacheAuditor()
         with patch.object(threading.Thread, 'start'):
@@ -195,7 +195,7 @@ class TestCacheAuditorWithoutApiKey:
     def keyless_llm(self):
         with patch('assistant.agents.CacheAuditor.create_llm') as mock:
             mock_instance = Mock()
-            mock_instance.missing_api_key.return_value = "api_keys.gemini"
+            mock_instance.missing_api_key.return_value = "api_keys.anthropic"
             mock.return_value = mock_instance
             yield mock_instance
 
@@ -211,8 +211,8 @@ class TestCacheAuditorWithoutApiKey:
 
     def test_does_not_initialize_the_llm(self, auditor, keyless_llm):
         keyless_llm.initialize.assert_not_called()
-        assert auditor.disabled_reason == "api_keys.gemini"
-        auditor._logged.assert_called_once_with("Cache auditor disabled: no api_keys.gemini")
+        assert auditor.disabled_reason == "api_keys.anthropic"
+        auditor._logged.assert_called_once_with("Cache auditor disabled: no api_keys.anthropic")
 
     def test_start_is_a_no_op(self, auditor):
         with patch('assistant.agents.CacheAuditor.threading.Thread') as mock_thread:

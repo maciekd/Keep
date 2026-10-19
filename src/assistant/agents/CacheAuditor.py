@@ -33,8 +33,12 @@ Then ALWAYS end your reply with SAFE or UNSAFE on a single line."""
 class CacheAuditor:
     """Classifies cached LLM responses as safe or unsafe to replay and evicts the unsafe ones.
 
-    Without the key its LLM tier needs (Gemini by default) the auditor is disabled: the server
-    still starts, cache entries just stay unaudited until the key is configured."""
+    Without the key its LLM tier needs (Claude Sonnet by default) the auditor is disabled: the
+    server still starts, cache entries just stay unaudited until the key is configured.
+
+    The prompt's request for a short explanation first is not what Anthropic's safeguards read as
+    reasoning extraction (a "thinking" field is): measured 2026-10-19, Sonnet 5.5 answered every one
+    of 116 calls with it, so the line stays for the trace the verdict is logged with."""
     def __init__(self):
         self._running = False
         self._thread = None

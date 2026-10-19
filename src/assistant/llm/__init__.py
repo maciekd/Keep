@@ -40,7 +40,9 @@ _TIER_DEFAULTS = {
     'video': ('GeminiLLM', 'gemini-3.8-flash'),  # describes videos (iMessage/Telegram/email); must be an LLM with native video input — Claude has none
     'autonomous_action': ('ClaudeLLM', 'claude-opus-5-5'),  # used for the heartbeat/autonomous actions
     'memory_curator': ('ClaudeLLM', 'claude-fable-5-1'),  # memory curation: nightly, or more often while the bank is being built up
-    'cache_auditor': ('GeminiLLM', 'gemini-3.8-flash'),  # used to decide is a user query is cachable or not, fairly simple decision so a cost efficient AI is good here
+    'cache_auditor': ('ClaudeLLM', 'claude-sonnet-5-5'),  # decides whether a cached reply may be replayed; a simple verdict, so a cost-efficient model.
+                                                        # Sonnet 5.5 replayed prod's latest 104 verdicts 2026-10-19: no refusal, 100 agreed, the 4 others
+                                                        # it called UNSAFE where Gemini said SAFE — the harmless direction.
     'photo_indexing': ('GeminiLLM', 'gemini-3.8-flash'),  # indexes every Apple Photos still and video (one call each, thousands on a backfill); needs native video input
     'code_quality': ('ClaudeLLM', 'claude-fable-5-1'),  # model for the nightly Claude Code CLI runs (CodeQualityMaintainer); only the model is used, the class is always the `claude` CLI
 }
