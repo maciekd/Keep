@@ -493,6 +493,20 @@ class TestInboundText:
         hub.receive.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_an_unauthorized_group_is_logged_with_its_id_and_not_answered(self, hub):
+        # The line the owner reads to put a new group on allowed_chat_ids; the notice that a
+        # stranger gets in a private chat would be posted into the group at every message.
+        t = _make_transport(allowed=[999])
+        t._hub = hub
+        update = _update(chat_id=-6001, title="Chess club")
+        with patch(f'{MODULE}.info') as log:
+            await t._handle_message(update, MagicMock())
+        line = log.call_args[0][0]
+        assert "-6001" in line and "Chess club" in line and "allowed_chat_ids" in line
+        update.message.reply_text.assert_not_called()
+        hub.receive.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_no_hub_apologises(self, transport):
         update = _update()
         await transport._handle_message(update, MagicMock())
@@ -515,6 +529,71 @@ class TestInboundText:
         t._hub = hub
         await t._handle_message(update, MagicMock())
         hub.receive.assert_not_called()
+
+
+def _membership(chat_id, was, now, title=None):
+    update = MagicMock()
+    update.my_chat_member.chat.id = chat_id
+    update.my_chat_member.old_chat_member.status = was
+    update.my_chat_member.new_chat_member.status = now
+    update.effective_chat.id = chat_id
+    update.effective_chat.title = title
+    update.effective_user.first_name = "Carol"
+    return update
+
+
+@pytest.mark.unit
+class TestMembership:
+    """In privacy mode a group the bot is added to sends it nothing but the membership update,
+    so that update is where the group's id is logged for allowed_chat_ids."""
+
+    @pytest.mark.asyncio
+    async def test_the_handler_is_registered_for_the_bots_own_membership(self):
+        from telegram.ext import ChatMemberHandler
+        t = _make_transport(running=False)
+        app, builder, _ = TestLifecycle._mock_application()
+        TestLifecycle._start_and_stop(TestLifecycle(), t, builder)
+        handlers = [h for h in (c[0][0] for c in app.add_handler.call_args_list) if isinstance(h, ChatMemberHandler)]
+        assert len(handlers) == 1 and handlers[0].chat_member_types == ChatMemberHandler.MY_CHAT_MEMBER
+
+    @pytest.mark.asyncio
+    async def test_added_to_a_group_off_the_list_logs_its_id_as_not_allowed(self):
+        t = _make_transport(allowed=[42])
+        with patch(f'{MODULE}.info') as log:
+            await t._handle_my_chat_member(_membership(-6001, 'left', 'member', title="Chess club"), MagicMock())
+        line = log.call_args[0][0]
+        assert "added" in line and "Chess club" in line and "-6001" in line and "not on allowed_chat_ids" in line
+
+    @pytest.mark.asyncio
+    async def test_added_to_a_group_on_the_list_says_so(self):
+        t = _make_transport(allowed=[42, -5001])
+        with patch(f'{MODULE}.info') as log:
+            await t._handle_my_chat_member(_membership(-5001, 'left', 'administrator', title="Family"), MagicMock())
+        line = log.call_args[0][0]
+        assert "added" in line and "-5001" in line and "not on" not in line and "on allowed_chat_ids" in line
+
+    @pytest.mark.asyncio
+    async def test_removed_from_a_group_is_logged_too(self):
+        t = _make_transport(allowed=[42, -5001])
+        with patch(f'{MODULE}.info') as log:
+            await t._handle_my_chat_member(_membership(-5001, 'member', 'kicked', title="Family"), MagicMock())
+        assert "removed" in log.call_args[0][0] and "-5001" in log.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_a_promotion_within_the_group_is_not_an_addition(self):
+        t = _make_transport(allowed=[42])
+        with patch(f'{MODULE}.info') as log, patch(f'{MODULE}.trace') as quiet:
+            await t._handle_my_chat_member(_membership(-6001, 'member', 'administrator', title="Chess club"),
+                                           MagicMock())
+        log.assert_not_called()
+        assert "-6001" in quiet.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_a_person_blocking_the_bot_is_logged_with_their_id(self):
+        t = _make_transport(allowed=[42])
+        with patch(f'{MODULE}.info') as log:
+            await t._handle_my_chat_member(_membership(42, 'member', 'kicked'), MagicMock())
+        assert "blocked" in log.call_args[0][0] and "42" in log.call_args[0][0] and "Carol" in log.call_args[0][0]
 
 
 @pytest.mark.unit

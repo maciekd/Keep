@@ -1,4 +1,4 @@
-from unittest.mock import patch, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -146,6 +146,18 @@ class TestFormatMessage:
         dialog = _make_dialog(title="Family Chat", is_group=True)
         result = await feed_no_blacklist._format_message(msg, _make_me(), dialog)
         assert "Family Chat" in result
+
+    @pytest.mark.asyncio
+    async def test_a_group_row_carries_the_id_allowed_chat_ids_takes(self, feed_no_blacklist):
+        # A basic group is -<id>, a supergroup -100<id>: the Bot API's form, the one the list is in.
+        from telethon.tl.types import Channel, Chat
+        msg = _make_msg(sender_id=123, text="Hey everyone")
+        group = _make_dialog(title="Family", is_group=True)
+        group.entity = Chat(id=5001, title="Family", photo=None, participants_count=3, date=None, version=1)
+        supergroup = _make_dialog(title="Chess club", is_group=True)
+        supergroup.entity = Channel(id=7001, title="Chess club", photo=None, date=None, megagroup=True)
+        assert "to Family [-5001]:" in await feed_no_blacklist._format_message(msg, _make_me(), group)
+        assert "to Chess club [-1000000007001]:" in await feed_no_blacklist._format_message(msg, _make_me(), supergroup)
 
     @pytest.mark.asyncio
     async def test_own_dm_includes_recipient(self, feed_no_blacklist):
@@ -479,11 +491,48 @@ class TestWakeAssistant:
         assert rows == []  # a turn of the dialog now, not a context row as well
 
     @pytest.mark.asyncio
-    async def test_a_group_the_bot_is_not_in_stays_a_context_row(self, wake):
+    async def test_a_group_the_bot_is_not_in_stays_a_context_row_logged_with_its_id(self, wake):
+        # The id in the info log and in the row is what a new group needs on allowed_chat_ids.
         m, say, fake = wake
-        rows = await say("Michelle, are you there?", group="Chess club")
+        with patch('integrations.telegram_feed.TelegramFeedIntegration.info') as log:
+            rows = await say("Michelle, are you there?", group="Chess club")
         fake.receive_chat_message.assert_not_called()
-        assert len(rows) == 1 and "Chess club" in rows[0].content
+        assert len(rows) == 1 and "Chess club [-6001]" in rows[0].content
+        line = log.call_args[0][0]
+        assert "Chess club" in line and "-6001" in line and "allowed_chat_ids" in line
+
+    @pytest.mark.asyncio
+    async def test_the_bots_handle_names_her_too(self, wake):
+        # "@keep_test_bot" is how a group addresses a bot; the underscore keeps it from a word
+        # boundary match, so the handle — resolved once through the account — is its own alternative.
+        m, say, fake = wake
+        m._client = Mock()
+        m._client.get_entity = AsyncMock(return_value=Mock(username="keep_test_bot"))
+        await say("@keep_test_bot what's for dinner?")
+        fake.receive_chat_message.assert_called_once()
+        await say("@keep_test_bot and dessert?")
+        m._client.get_entity.assert_awaited_once_with(777)
+        assert fake.receive_chat_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_another_bots_handle_does_not_wake_her(self, wake):
+        m, say, fake = wake
+        m._client = Mock()
+        m._client.get_entity = AsyncMock(return_value=Mock(username="keep_test_bot"))
+        rows = await say("@keep_test_bottle is a weird handle, @other_bot help")
+        fake.receive_chat_message.assert_not_called()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_handle_the_account_cannot_resolve_leaves_her_name_as_the_wake(self, wake):
+        m, say, fake = wake
+        m._client = Mock()
+        m._client.get_entity = AsyncMock(side_effect=ValueError("no such entity"))
+        await say("@keep_test_bot are you there?")
+        fake.receive_chat_message.assert_not_called()
+        await say("Michelle, are you there?")
+        fake.receive_chat_message.assert_called_once()
+        m._client.get_entity.assert_awaited_once()   # not asked again after a failure
 
     @pytest.mark.asyncio
     async def test_a_message_without_her_name_is_not_a_wake(self, wake):

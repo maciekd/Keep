@@ -134,10 +134,10 @@ telegram_bot:
   # Positive ids are people (a private chat's id is the person's user id) — the household's owners, who may
   # run commands and answer approval cards. Negative ids are groups the bot was added to: there it answers
   # replies to its own messages, and — through the Telegram Feed, the owner's own account — anyone who
-  # says its wake_word; a group member who is not a positive id is a guest, whose turn runs no command.
+  # says its wake_word or its @handle; a group member who is not a positive id is a guest, whose turn runs no command.
   # What is the owners' alone never goes to a group: the approval cards and secret prompts a group turn
   # needs, and the proactive pushes by default, go to the positive ids. An empty list serves no group at all.
-  allowed_chat_ids: []  # empty = anyone may talk to the bot; /start in the bot shows a chat id. Read live, no restart.
+  allowed_chat_ids: []  # empty = anyone may talk to the bot; /start in the bot shows a chat id, and the log shows a group's the moment the bot is added to it. Read live, no restart.
   notify_chat_ids: []  # who gets the proactive pushes (autonomous findings, system notes, photos it sends unasked); empty = every allowed chat. A photo someone asked for goes back to their chat. Read live, no restart.
   link_previews: false  # true = Telegram renders preview cards for URLs in the bot's replies; needs restart_integration("Telegram")
 

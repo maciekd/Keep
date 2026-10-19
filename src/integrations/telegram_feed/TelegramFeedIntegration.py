@@ -76,6 +76,8 @@ class TelegramFeedIntegration(Integration, Feed):
         self._directory: dict[str, dict[int, tuple]] = {}   # lowercase name → {entity id: (entity, display)}
         self._directory_built: float = 0.0
         self._bot_wakes: dict[int, deque] = {}   # group chat id → times another bot woke the assistant
+        self._bot_username: Optional[str] = None   # the bot's @handle, resolved once through the account
+        self._bot_username_resolved = False
 
     def _on_reset(self):
         self.shut_down()
@@ -306,13 +308,45 @@ class TelegramFeedIntegration(Integration, Feed):
         return int(prefix) if prefix.isdigit() else None
 
     @staticmethod
-    def _names_assistant(text: str) -> bool:
+    def _bot_api_id(entity) -> Optional[int]:
+        """The id the Bot API and allowed_chat_ids use: -<id> for a group, -100<id> for a
+        supergroup, the user id of a private chat. None for an entity Telethon cannot place."""
+        from telethon import utils
+        try:
+            return utils.get_peer_id(entity)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _names_assistant(text: str, bot_username: Optional[str] = None) -> bool:
+        """Her name, an alias, or the bot's own @handle in *text* (the handle is what people
+        write in a group to address a bot; its underscores make it no match for a word boundary)."""
         names = [n for n in (config.get('wake_word', 'Michelle'), *(config.get('wake_word_aliases', []) or [])) if n]
-        if not names:
+        if not names and not bot_username:
             trace("TelegramFeed: no wake word configured, nothing can wake the assistant from a group")
             return False
-        pattern = r"\b(" + "|".join(re.escape(n) for n in names) + r")\b"
-        return re.search(pattern, text, re.IGNORECASE) is not None
+        alternatives = [r"\b" + re.escape(n) + r"\b" for n in names]
+        if bot_username:
+            alternatives.append(r"(?<!\w)@" + re.escape(bot_username) + r"(?!\w)")
+        return re.search("|".join(alternatives), text, re.IGNORECASE) is not None
+
+    async def _bot_handle(self) -> Optional[str]:
+        """The bot's @username, looked up once through the owner's account (the token carries
+        only its id); None when there is no bot or the account has never seen it."""
+        if not self._bot_username_resolved:
+            self._bot_username_resolved = True
+            bot_id = self._bot_user_id()
+            if bot_id is not None and self._client is not None:
+                try:
+                    self._bot_username = getattr(await self._client.get_entity(bot_id), 'username', None) or None
+                    if self._bot_username:
+                        info(f"TelegramFeed: the bot's handle is @{self._bot_username} — said in a group it names "
+                             f"the assistant")
+                    else:
+                        info("TelegramFeed: the bot has no @username, her name alone wakes her")
+                except Exception as e:
+                    info(f"TelegramFeed: the bot's @handle could not be resolved ({e}), her name alone wakes her")
+        return self._bot_username
 
     def _bot_wake_allowed(self, chat_id: int) -> bool:
         recent = self._bot_wakes.setdefault(chat_id, deque())
@@ -346,13 +380,17 @@ class TelegramFeedIntegration(Integration, Feed):
         mode Telegram delivers it only replies to its own bubbles — but the owner's account sees
         the whole group, other bots included. True when handed over."""
         text = msg.text or ""
-        if not text or not self._names_assistant(text):
+        if not text or not self._names_assistant(text, await self._bot_handle() if "@" in text else None):
             return False
-        from telethon import utils
-        chat_id = utils.get_peer_id(chat)   # the Bot API id: -<id> for a group, -100<id> for a supergroup
+        chat_id = self._bot_api_id(chat)
         ids = self._bot_chat_ids()
-        if chat_id >= 0 or chat_id not in ids:
-            trace(f"TelegramFeed: '{getattr(chat, 'title', chat_id)}' names the assistant but the bot is not in it")
+        if chat_id is None or chat_id >= 0:
+            trace(f"TelegramFeed: the assistant named in a private chat [{chat_id}] — a context row, not a wake")
+            return False
+        if chat_id not in ids:
+            # The line to read when a new group is to be allowed: the id is what the list takes.
+            info(f"TelegramFeed: the assistant named in group '{getattr(chat, 'title', None)}' [{chat_id}], "
+                 f"which is not on telegram_bot.allowed_chat_ids — a context row, not a wake")
             return False
         bot_id = self._bot_user_id()
         if bot_id is not None and msg.sender_id == bot_id:
@@ -546,6 +584,12 @@ class TelegramFeedIntegration(Integration, Feed):
 
         is_group = getattr(dialog, 'is_group', False) or bool(getattr(dialog.entity, 'title', None))
         group_name = getattr(dialog.entity, 'title', None) if is_group else None
+        if group_name:
+            # The Bot API id beside the title, so a row of a group the bot is not in shows what
+            # telegram_bot.allowed_chat_ids needs — in the history and in the log alike.
+            chat_id = self._bot_api_id(dialog.entity)
+            if chat_id is not None:
+                group_name = f"{group_name} [{chat_id}]"
 
         recipient_name = None
         if is_from_me and not is_group:

@@ -389,8 +389,8 @@ class TelegramTransport(Integration, ChatTransport):
 
     async def _start_bot(self):
         from telegram import LinkPreviewOptions, Update
-        from telegram.ext import (ApplicationBuilder, CallbackQueryHandler, CommandHandler, Defaults,
-                                  MessageHandler, MessageReactionHandler, filters)
+        from telegram.ext import (ApplicationBuilder, CallbackQueryHandler, ChatMemberHandler, CommandHandler,
+                                  Defaults, MessageHandler, MessageReactionHandler, filters)
 
         # Bot-wide default for every send and edit (replies, drafts, notifications, fallbacks):
         # a per-call disable_web_page_preview=True still wins, so opt-outs keep working.
@@ -406,6 +406,7 @@ class TelegramTransport(Integration, ChatTransport):
                                                      self._handle_video))
         self._application.add_handler(MessageReactionHandler(self._handle_reaction))
         self._application.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        self._application.add_handler(ChatMemberHandler(self._handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
 
         await self._application.initialize()
         await self._application.start()
@@ -635,6 +636,29 @@ class TelegramTransport(Integration, ChatTransport):
             f"Send me a message and I'll respond."
         )
 
+    IN_GROUP = ('member', 'administrator', 'restricted')
+
+    async def _handle_my_chat_member(self, update, context):
+        """The bot's own membership changed — added to a group, removed from one, blocked or
+        unblocked in a private chat. Logged at info with the chat id: in privacy mode this is
+        the only update a new group ever sends (the words said in it, the bot's @handle
+        included, never arrive), so it is where the id for allowed_chat_ids is found."""
+        change = update.my_chat_member
+        chat_id = change.chat.id
+        was, now = change.old_chat_member.status, change.new_chat_member.status
+        listed = "on allowed_chat_ids" if chat_id in self._allowed_chat_ids else "not on allowed_chat_ids"
+        if chat_id > 0:
+            who = self._sender_name(update)
+            info(f"Telegram: {who} [{chat_id}] {'blocked' if now == 'kicked' else 'unblocked'} the bot — {listed}")
+            return
+        title = self._chat_name(update) or "?"
+        if now in self.IN_GROUP and was not in self.IN_GROUP:
+            info(f"Telegram: added to group '{title}' [{chat_id}] — {listed}")
+        elif now not in self.IN_GROUP and was in self.IN_GROUP:
+            info(f"Telegram: removed from group '{title}' [{chat_id}] — {listed}")
+        else:
+            trace(f"Telegram: membership in group '{title}' [{chat_id}] changed {was} → {now} — {listed}")
+
     async def _admit(self, update) -> Optional[int]:
         """The chat id when the sender may talk to the bot, else None (after telling them)."""
         chat_id = update.effective_chat.id
@@ -644,8 +668,14 @@ class TelegramTransport(Integration, ChatTransport):
             trace(f"Telegram [{chat_id}]: update without a new message (edit or channel post), ignored")
             return None
         if not self._is_authorized(chat_id):
-            fine(f"Telegram: unauthorized chat_id {chat_id}")
-            await update.message.reply_text(NOT_AUTHORIZED)
+            title = self._chat_name(update)
+            info(f"Telegram: message from unauthorized chat [{chat_id}]"
+                 + (f" (group '{title}')" if title else f" ({self._sender_name(update)})")
+                 + " — not on allowed_chat_ids, ignored")
+            if chat_id > 0:
+                # A stranger in a private chat is told; a group is not — the bot would answer
+                # every message it is shown with the notice, and the owner reads the log.
+                await update.message.reply_text(NOT_AUTHORIZED)
             return None
         if chat_id < 0 and not self._allowed_chat_ids:
             # An empty allow list makes everyone an owner — in a private chat, which is the
@@ -819,7 +849,7 @@ class TelegramTransport(Integration, ChatTransport):
             return
         chat_id = reaction.chat.id
         if not self._is_authorized(chat_id):
-            fine(f"Telegram: reaction from unauthorized chat_id {chat_id}")
+            info(f"Telegram: reaction from unauthorized chat [{chat_id}] — not on allowed_chat_ids, ignored")
             return
         if chat_id < 0 and not self._allowed_chat_ids:
             # The same rule as _admit: with an empty allow list everyone is an owner, which in
