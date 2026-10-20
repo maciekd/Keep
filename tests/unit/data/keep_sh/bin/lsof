@@ -1,0 +1,6 @@
+#!/bin/bash
+# keep.sh's test double for `lsof`: the port listens (exit 0) from the KEEP_TEST_LISTENS_AT-th
+# call on, never when unset; the count lives in KEEP_TEST_COUNTERS/lsof.
+n=0; [ -f "$KEEP_TEST_COUNTERS/lsof" ] && read -r n < "$KEEP_TEST_COUNTERS/lsof"
+n=$((n+1)); echo $n > "$KEEP_TEST_COUNTERS/lsof"
+[ "$n" -ge "${KEEP_TEST_LISTENS_AT:-1000000}" ]

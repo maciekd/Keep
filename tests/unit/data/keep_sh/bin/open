@@ -1,0 +1,5 @@
+#!/bin/bash
+# keep.sh's test double for `open`: `-Ra <app>` answers whether the app is one of KEEP_TEST_APPS
+# (an alternation, empty for none installed); any other launch is recorded in KEEP_TEST_CALLS.
+if [ "$1" = "-Ra" ]; then [[ "$2" =~ ^(${KEEP_TEST_APPS})$ ]]; exit $?; fi
+echo "open $*" >> "$KEEP_TEST_CALLS"

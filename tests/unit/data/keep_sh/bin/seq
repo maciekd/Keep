@@ -1,0 +1,4 @@
+#!/bin/bash
+# keep.sh's test double for `seq`: counts to KEEP_TEST_POLLS instead of the asked-for end when
+# that is set, so a test of the loop's last round does not sit through 120 of them.
+for ((i = $1; i <= ${KEEP_TEST_POLLS:-$2}; i++)); do echo $i; done

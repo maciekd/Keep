@@ -1,0 +1,6 @@
+#!/bin/bash
+# keep.sh's test double for `pgrep`: the server process exists (exit 0) until the
+# KEEP_TEST_GONE_AT-th call, for good when unset; the count lives in KEEP_TEST_COUNTERS/pgrep.
+n=0; [ -f "$KEEP_TEST_COUNTERS/pgrep" ] && read -r n < "$KEEP_TEST_COUNTERS/pgrep"
+n=$((n+1)); echo $n > "$KEEP_TEST_COUNTERS/pgrep"
+[ "$n" -lt "${KEEP_TEST_GONE_AT:-1000000}" ]

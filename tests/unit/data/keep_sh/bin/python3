@@ -1,0 +1,3 @@
+#!/bin/bash
+# keep.sh's test double for `python3`: records the launch in KEEP_TEST_CALLS.
+echo "python3 $*" >> "$KEEP_TEST_CALLS"

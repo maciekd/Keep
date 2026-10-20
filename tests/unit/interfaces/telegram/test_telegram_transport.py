@@ -366,7 +366,10 @@ class TestLifecycle:
         async def coro():
             ran.append(True)
 
-        with patch('telegram.ext.ApplicationBuilder', return_value=builder), patch(f'{MODULE}.error'):
+        # The real delay is 5 s, slept in half-second chunks that stop() cannot wake: a short one
+        # keeps the test from sitting out a chunk after the stop.
+        with patch('telegram.ext.ApplicationBuilder', return_value=builder), patch(f'{MODULE}.error'), \
+             patch.object(t, '_start_retry_seconds', return_value=0.02):
             t.start(MagicMock())
             assert t._schedule(coro(), "send") is True
             deadline = time.monotonic() + 5
