@@ -678,6 +678,23 @@ class TestFlakyApi:
             with later(module.KEEP_ENGINE_S + 1):
                 assert not integration.vehicle_state(car).in_gear
 
+    def test_a_car_in_use_is_kept_for_minutes_only_too(self):
+        """CAR_IN_USE makes the car "on the road" like a running engine; kept for a day it said so
+        of a car parked since the morning through every API outage."""
+        fake = FakeVolvo()
+        electric_car(fake, availability="CAR_IN_USE")
+        with _config():
+            integration = build(fake)
+            car = spec(integration)
+            assert integration.vehicle_state(car).in_gear
+            fake.route("GET", f"{CONNECTED}/command-accessibility", {"error": {"message": "INTERNAL_ERROR"}}, status=500)
+            with later(module.STATE_TTL + 1):
+                assert integration.vehicle_state(car).in_gear
+            with later(module.KEEP_ENGINE_S + 1):
+                state = integration.vehicle_state(car)
+        assert not state.in_gear and state.connectivity is None
+        assert state.battery_percent == 72, "the other reads still stand"
+
     def test_a_404_replaces_the_kept_answer_it_is_the_cars_own_answer(self):
         fake = FakeVolvo()
         electric_car(fake)

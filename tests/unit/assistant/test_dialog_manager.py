@@ -351,6 +351,27 @@ def test_transport_drop_with_only_thinking_output_retries_transparently(monkeypa
 
 
 @pytest.mark.unit
+def test_a_gemini_server_error_before_any_output_retries_transparently(monkeypatch):
+    """A Gemini "500 INTERNAL" two seconds into the stream is as transient as a dropped
+    socket; until 2026-10-19 it fell through to the failure notice and the request was lost."""
+    from google.genai.errors import ServerError
+
+    processor = ThinkingSwallowingProcessor()
+    dm, _ = make_dialog_manager(monkeypatch, [], command_processor=processor)
+    dm.ai = DroppingAI([
+        [ServerError(500, {"error": {"message": "INTERNAL", "status": "INTERNAL"}})],
+        ["All done."],
+    ])
+    _patch_stream_time(monkeypatch, [100.0, 100.1, 100.2, 100.3])
+
+    output = list(dm.stream_llm_response())
+
+    assert output == ["All done."]
+    assert dm.ai.calls == 2
+    assert dm.messages[-1] == {"role": "assistant", "content": "All done."}
+
+
+@pytest.mark.unit
 def test_transport_drop_after_user_facing_text_truncates_gracefully(monkeypatch):
     """Once reply text has streamed, regeneration would diverge — no retry. The turn
     must end cleanly with a truncation notice and stay in history marked interrupted."""

@@ -498,6 +498,36 @@ class TestAvailabilityHold:
         assert "Blinds [Sovrum]" in back[0].content and back[0].timestamp == T0 + 700
         assert integration.fetch(None, backfill=False, now=T0 + 900).entries == []
 
+    def _reconnect(self, fake, states):
+        """The socket came back: the handshake's refill loads a fresh table where the hub's
+        entities stand in `states` (an event for their recovery never came)."""
+        table = {s["entity_id"]: s for s in fake.results["get_states"]}
+        for entity_id, (value, seconds) in states.items():
+            table[entity_id] = timed(entity_id, value, seconds)
+        fake.results["get_states"] = list(table.values())
+        fake.start()
+
+    def test_an_outage_still_held_at_a_reconnect_ends_silently_when_the_fresh_table_shows_the_entity_back(self, integration, fake, hub):
+        self._outage(fake, hub, 0)
+        self._reconnect(fake, {e: ("on" if e.startswith("light") else "open", 100) for e in hub})
+        assert integration.fetch(None, backfill=False, now=T0 + 360).entries == [], "no row for an outage long over"
+        assert integration._outages == {}
+
+    def test_a_reported_outage_over_at_a_reconnect_is_one_row_back(self, integration, fake, hub):
+        self._outage(fake, hub, 0)
+        assert len(integration.fetch(None, backfill=False, now=T0 + 360).entries) == 1
+        self._reconnect(fake, {e: ("on" if e.startswith("light") else "open", 700) for e in hub})
+        back = integration.fetch(None, backfill=False, now=T0 + 702).entries
+        assert len(back) == 1 and back[0].content.startswith("Hue bridge") and back[0].timestamp == T0 + 700
+        assert integration._outages == {}
+
+    def test_an_entity_still_unavailable_at_a_reconnect_keeps_its_outage(self, integration, fake, hub):
+        self._outage(fake, hub, 0)
+        self._reconnect(fake, {"light.hall": ("on", 100), "light.kitchen_spots": ("unavailable", 0), "cover.blinds": ("unavailable", 0)})
+        assert set(integration._outages) == {"light.kitchen_spots", "cover.blinds"}
+        rows = integration.fetch(None, backfill=False, now=T0 + 360).entries
+        assert len(rows) == 1 and "Hall light" not in rows[0].content and "Blinds [Sovrum]" in rows[0].content
+
     def test_a_cover_that_moved_during_the_hiccup_is_the_one_real_change(self, integration, fake, hub):
         self._outage(fake, hub, 0)
         self._recovery(fake, hub, 30, {**hub, "cover.blinds": "closed"})

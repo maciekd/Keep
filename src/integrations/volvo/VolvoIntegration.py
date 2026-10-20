@@ -424,7 +424,8 @@ class VolvoIntegration(Integration, VehicleProvider):
         has_battery = fuel_type in BATTERY_FUEL_TYPES or not fuel_type
         has_combustion = fuel_type in COMBUSTION_FUEL_TYPES
 
-        access = self._read("command accessibility", vin, lambda: self._get_data(f"{CONNECTED}/{vin}/command-accessibility"))
+        # kept for minutes like the engine: a stale CAR_IN_USE would say "in use" of a parked car all day
+        access = self._read("command accessibility", vin, lambda: self._get_data(f"{CONNECTED}/{vin}/command-accessibility"), KEEP_ENGINE_S)
         engine = self._read("engine status", vin, lambda: self._get_data(f"{CONNECTED}/{vin}/engine-status"), KEEP_ENGINE_S)
         statistics = self._read("statistics", vin, lambda: self._get_data(f"{CONNECTED}/{vin}/statistics"))
         energy = self._read("energy state", vin, lambda: self._request("GET", f"{ENERGY}/{vin}/state")) if has_battery else {}

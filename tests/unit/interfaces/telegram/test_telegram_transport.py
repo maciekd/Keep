@@ -493,21 +493,33 @@ class TestInboundText:
         notifier.return_value.open_conversation.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_start_during_the_setup_opens_the_conversation_instead_of_leaving_a_row(self):
+    async def test_the_first_start_during_the_setup_opens_the_conversation_instead_of_leaving_a_row(self):
         # The first-time setup's way to learn the owner's chat id without them copying it over,
         # and to go on without them typing "done": the assistant gets the fact as a turn.
-        transport, _ = _bot_in_group(allowed=[42])
+        transport, _ = _bot_in_group(allowed=[])
         with patch(f'{MODULE}.system_note') as note, patch(f'{MODULE}.FirstRun.in_ftue', return_value=True), \
                 patch(f'{MODULE}.notifier') as notifier:
             notifier.return_value.open_conversation.return_value = True
             await transport._handle_start(_update(chat_id=99, first_name="Bob"), MagicMock())
         turn = notifier.return_value.open_conversation.call_args[0][0]
-        assert "99" in turn and "Bob" in turn and 'allowed_chat_ids[1]' in turn
+        assert "99" in turn and "Bob" in turn and 'allowed_chat_ids[0]' in turn
         note.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_start_during_the_setup_falls_back_to_a_row_when_no_chat_takes_the_turn(self):
+    async def test_a_start_during_the_setup_with_an_owner_listed_is_a_row_an_owner_has_to_act_on(self):
+        # The setup window stays open for days; a stranger who finds the bot then must not get a
+        # turn that tells the assistant to make them an owner.
         transport, _ = _bot_in_group(allowed=[42])
+        with patch(f'{MODULE}.system_note') as note, patch(f'{MODULE}.FirstRun.in_ftue', return_value=True), \
+                patch(f'{MODULE}.notifier') as notifier:
+            await transport._handle_start(_update(chat_id=99, first_name="Bob"), MagicMock())
+        notifier.return_value.open_conversation.assert_not_called()
+        text = note.call_args[0][1]
+        assert "99" in text and 'allowed_chat_ids[1]' in text and "owner asks" in text
+
+    @pytest.mark.asyncio
+    async def test_start_during_the_setup_falls_back_to_a_row_when_no_chat_takes_the_turn(self):
+        transport, _ = _bot_in_group(allowed=[])
         with patch(f'{MODULE}.system_note') as note, patch(f'{MODULE}.FirstRun.in_ftue', return_value=True), \
                 patch(f'{MODULE}.notifier') as notifier:
             notifier.return_value.open_conversation.return_value = False

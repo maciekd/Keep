@@ -2534,6 +2534,25 @@ class TestPhotoProcessorIndexingLlm:
         assert processor.probe_provider() is True
 
     @pytest.mark.unit
+    def test_a_refusal_on_the_clip_backend_holds_the_feed_and_the_probe_asks_it(self):
+        """The `video` tier's backend is a third one: a 402 or 429 on a clip has to pause the
+        feed like one on the stills, or the held cursor freezes the indexing in silence."""
+        processor, live, backfill = self._two_backends()
+        clips = Mock(name="clips")
+        clips.unavailable.return_value = "rate limited by Gemini (429)"
+        clips.out_of_credits.return_value = False
+        live.out_of_credits.return_value = backfill.out_of_credits.return_value = False
+        processor._clip_backend, processor._clip_backend_asked = clips, True
+        assert processor.provider_unavailable() == "rate limited by Gemini (429)"
+        live.probe.return_value = backfill.probe.return_value = True
+        clips.probe.return_value = False
+        assert processor.probe_provider() is False
+        clips.probe.return_value = True
+        assert processor.probe_provider() is True
+        clips.out_of_credits.return_value = True
+        assert processor.provider_out_of_credits() is True
+
+    @pytest.mark.unit
     def test_a_configured_photo_indexing_tier_is_honoured(self):
         """`ai.photo_indexing` steers the indexer like any other tier; PhotoProcessor binds
         parse_llm_config by name, so the patch has to land on its own module."""

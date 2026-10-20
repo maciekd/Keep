@@ -635,6 +635,13 @@ class ICloudIntegration(Integration):
             error(f"iCloud: Failed to authenticate: {_brief(e)}")
             raise iCloudAuthenticationError(f"Failed to authenticate: {e}") from e
 
+    def _challenge_open_now(self) -> bool:
+        """Whether a code could be answered right now: a challenge one of our sign-ins opened,
+        not pyicloud's flag alone — a token-restored session Apple merely calls untrusted carries
+        it too, and on that one a "code texted" notice is false and every code is "rejected"
+        (2026-10-19, the install with no SMS reader). No sign-in is run to find out."""
+        return self._api is not None and self._api.requires_2fa and self._challenge_from_fresh_signin
+
     def _challenge_open(self) -> bool:
         """Whether the sign-in that just ran ended on a 2FA challenge — pyicloud holds the
         challenge page in `_auth_data`; a token-restored session it merely calls untrusted
@@ -1001,7 +1008,7 @@ class ICloudIntegration(Integration):
                 info(f"iCloud: not auto-requesting SMS 2FA code ({reason}) — no reader of the Mac's text "
                      "messages is live, a code would go unread; the user enters it (icloud_login_code or the "
                      "console's iCloud tab)")
-                if self._api is not None and self._api.requires_2fa:
+                if self._challenge_open_now():
                     self._note_challenge(self._sms_requested_at or 0.0)
                 return
             limit = self._auto_sms_limiter.check()
@@ -1067,7 +1074,7 @@ class ICloudIntegration(Integration):
         if len(digits) != 6:
             info(f"icloud_login_code: refused '{code}' — not a 6-digit code")
             return "iCloud refused the code: Apple's codes are 6 digits."
-        if self._api is None or not self._api.requires_2fa:
+        if not self._challenge_open_now():
             status = self.get_auth_status()
             info(f"icloud_login_code: no 2FA challenge open — iCloud is {status['status']}")
             return f"iCloud is not waiting for a code — it is {status['status']}: {status['message']}"

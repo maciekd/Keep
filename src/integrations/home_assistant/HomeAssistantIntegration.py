@@ -154,8 +154,29 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
                 self._states = {state["entity_id"]: state for state in states}
                 self._dirty = True
                 self._filled = True
-            info(f"Home Assistant: {len(states)} states loaded")
+                ended = self._reconcile_outages()
+            info(f"Home Assistant: {len(states)} states loaded"
+                 + (f", {ended} outage{'s' if ended != 1 else ''} ended while the socket was down" if ended else ""))
             self._load_registries()
+
+    def _reconcile_outages(self) -> int:
+        """The outages whose entity the fresh table shows available (or gone): recovered while
+        no event could say so. A reported one gets its "available again" row at the next fetch,
+        one still inside its hold ends silently, as an event would have ended it. Without this a
+        reconnect kept them, and the hold released a row for an outage long over (2026-10-19).
+        Caller holds _lock; returns how many ended."""
+        ended = [entity_id for entity_id, outage in self._outages.items()
+                 if not is_unavailable(self._states.get(entity_id))]
+        for entity_id in ended:
+            outage = self._outages.pop(entity_id)
+            state = self._states.get(entity_id)
+            if outage.released and state is not None:
+                self._recovered.append((entity_id, state_time(state), outage.since))
+                trace(f"Home Assistant: {entity_id} available again since the socket dropped — one row at the next fetch")
+            else:
+                trace(f"Home Assistant: {entity_id} {'gone' if state is None else 'available again'} since the socket "
+                      f"dropped, its outage {'reported' if outage.released else 'inside its hold'} — dropped")
+        return len(ended)
 
     def _load_registries(self):
         """Areas, entities, devices, the Assist exposure list and the users, each kept from the

@@ -2292,6 +2292,18 @@ class TestReaderGate:
             api._auto_request_sms("test")
         note.assert_not_called()
 
+    def test_an_untrusted_token_session_is_not_told_a_code_was_texted(self):
+        """pyicloud flags a token-restored session untrusted too, with no challenge behind it:
+        Apple texted nothing, and "enter the code" sends the user looking for a text that never
+        comes (2026-10-19, the install with no reader)."""
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge()
+        api._challenge_from_fresh_signin = False
+        with patch(LIVE_PATH, return_value=[]), patch(NOTE_PATH) as note, patch.object(api, 'request_sms_2fa') as request:
+            api._auto_request_sms("test")
+        note.assert_not_called()
+        request.assert_not_called()
+
     def test_a_live_reader_lets_the_request_through(self):
         api = self._api_with_open_challenge()
         with patch(NOTE_PATH), patch.object(api, 'request_sms_2fa', return_value="•••05") as mock_request, \
@@ -2416,6 +2428,7 @@ class TestSubmitUserCode:
     def _api_awaiting_code(self):
         api = iCloudAPI(config=VALID_CONFIG)
         api._api = _service_with_sms_challenge()
+        api._challenge_from_fresh_signin = True
         api._sms_requested_at = time.time()
         return api
 
@@ -2434,6 +2447,17 @@ class TestSubmitUserCode:
             text = api.submit_user_code("123456")
         send.assert_not_called()
         assert "not waiting" in text
+
+    def test_a_code_for_an_untrusted_token_session_is_not_sent_to_apple(self):
+        """No challenge is open on such a session, so Apple would answer "rejected" to any
+        code; the user hears that iCloud is not waiting for one instead."""
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = _service_with_sms_challenge()
+        api._challenge_from_fresh_signin = False
+        with patch.object(api, 'send_2fa_code') as send:
+            text = api.submit_user_code("123456")
+        send.assert_not_called()
+        assert "not waiting" in text and "rejected" not in text
 
     def test_an_accepted_code_signs_in_clears_the_pending_request_and_rechecks(self):
         api = self._api_awaiting_code()

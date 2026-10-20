@@ -6,6 +6,7 @@ from typing import Callable, Generator, TYPE_CHECKING
 
 import httpx
 from anthropic import APIConnectionError
+from google.genai.errors import ServerError as GeminiServerError
 
 
 from common.RequestKilledException import RequestKilledException
@@ -409,7 +410,9 @@ class DialogManager:
                      f"falling back to {fallback.name()} for this request.")
                 refused_ai, self.ai = self.ai, fallback
                 self.ai.initialize()
-            except (httpx.TransportError, APIConnectionError) as e:
+            except (httpx.TransportError, APIConnectionError, GeminiServerError) as e:
+                # a Gemini 5xx before the first token is as transient as a dropped socket (2026-10-19:
+                # one "500 INTERNAL" two seconds in cost a voice request its reply)
                 had_output = bool(self.llm_response)
                 commands_fired = self.command_processor.commands_dispatched
                 if had_output or commands_fired or attempt >= self.STREAM_DROP_RETRIES:

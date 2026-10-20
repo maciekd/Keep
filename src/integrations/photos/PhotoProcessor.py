@@ -476,7 +476,10 @@ class PhotoProcessor:
             return None
 
     def _built_llms(self) -> list[AbstractLLM]:
-        return [llm for llm in (self._llm, self._backfill_llm) if llm is not None]
+        """Every backend built so far, the clips' one included: a 402 or 429 on the clips
+        has to hold the feed's cursor and pause it like one on the stills (2026-10-19 — the
+        clip backend was left out, and a Gemini credit refusal froze the indexing in silence)."""
+        return [llm for llm in (self._llm, self._backfill_llm, self._clip_backend) if llm is not None]
 
     def provider_unavailable(self) -> Optional[str]:
         """Why an indexing backend refuses every request right now (out of credits, rate
