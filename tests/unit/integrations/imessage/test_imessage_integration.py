@@ -1520,3 +1520,11 @@ class TestScheduleColumnsFallback:
 
     def test_one_column_alone_is_not_enough(self):
         assert self._schema(["ROWID", "text", "schedule_type"]) is False
+
+    def test_a_schema_that_cannot_be_read_keeps_the_columns_in_the_query(self):
+        """Not reading the schema is not evidence of a Sonoma database: the query keeps naming
+        the columns, so a Sequoia Mac with a momentary lock keeps its send-later tracking and
+        the fetch, not the schema probe, reports what is really wrong."""
+        with patch('integrations.imessage.IMessageIntegration.sqlite3.connect',
+                   side_effect=sqlite3.OperationalError("database is locked")):
+            assert IMessageIntegration._schema_has_schedule_columns() is True

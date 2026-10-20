@@ -1,4 +1,6 @@
 """DashboardTab._draw_columns: the one chart core every dashboard chart goes through."""
+import re
+
 import pytest
 
 from interfaces.console.framework.TUIScreen import Color, TUIScreen
@@ -503,3 +505,48 @@ class TestFeedsTotalEdges:
                                                                   remaining=400, progress=0.5, paused=True)})
         assert "paused" in row_text(screen, 2)
         assert row_text(screen, 3).endswith(" 1 500 items")
+
+
+class TestCostSummary:
+    """The Anthropic cost card's title strip (acc3490, ea11b79): the month total, then yesterday's
+    cost per workspace, each workspace figure in its bar colour so the reader needs no legend.
+    The total is no workspace's and must not wear a workspace colour: drawn in the first
+    workspace's cyan it read as that workspace's figure."""
+
+    WIDTH = 70
+
+    @staticmethod
+    def tab():
+        tab = make_tab()
+        tab.cost_date_strs = ["2026-10-17", "2026-10-18", "2026-10-19"]
+        tab.daily_costs = {"2026-10-17": {"ws-alpha": 9.0, "ws-beta": 9.0},
+                           "2026-10-18": {"ws-alpha": 12.4, "ws-beta": 3.2},
+                           "2026-10-19": {"ws-alpha": 50.0, "ws-beta": 60.0}}
+        tab.cost_workspaces = ["ws-alpha", "ws-beta"]
+        tab.total_cost_30d = 321.7
+        return tab
+
+    def strip(self, width=WIDTH):
+        screen = TUIScreen(width, 3)
+        self.tab()._draw_cost_summary(screen, 1, 1, width)
+        row = screen.next_frame[0]
+        return "".join(cell.char for cell in row), row
+
+    def test_the_figures_are_the_month_total_and_yesterdays_cost_per_workspace(self):
+        text, _ = self.strip()
+        figures = [piece for piece in text.split() if piece.startswith("$")]
+        assert figures == ["$322", "$12", "$3"], "rounded; yesterday's figures, not today's"
+
+    def test_each_workspace_figure_wears_its_bar_colour_and_the_total_wears_none(self):
+        text, row = self.strip()
+        total, alpha, beta = [row[m.start()].style.fg for m in re.finditer(r"\$\d+", text)]
+        assert (alpha, beta) == tuple(DashboardTab.WORKSPACE_COLORS[:2])
+        assert total not in DashboardTab.WORKSPACE_COLORS
+
+    def test_the_strip_ends_two_cells_before_the_cards_right_edge(self):
+        text, _ = self.strip()
+        assert len(text.rstrip()) == self.WIDTH - 2
+
+    def test_a_card_too_narrow_for_the_title_and_the_strip_draws_nothing(self):
+        text, _ = self.strip(width=len("Anthropic API Cost") + len("Month $322 · Day $12 $3") + 5)
+        assert text.strip() == ""

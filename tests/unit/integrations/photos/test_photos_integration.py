@@ -3097,3 +3097,54 @@ class TestBatchedBackfill:
             mock_db.return_value.get_photo_description.return_value = "desc"
             processor.process_rows(self._rows(2), batched=True)
         llm.think_batched_with_images.assert_not_called()
+
+
+class TestClipBackend:
+    """f1f5286: the default indexing backends are Claude, which takes no video, so a clip goes
+    to the `video` tier's backend — but only one that takes video and has its key; otherwise the
+    clips stay unindexed (never stored as skipped) and nothing is initialized without a key.
+    The verdict is asked once per processor, a None included: a backlog of clips must not
+    rebuild the backend per clip."""
+
+    @staticmethod
+    def _backend(supports_video=True, missing_key=None, local=False):
+        llm = Mock()
+        llm.supports_video.return_value = supports_video
+        llm.missing_api_key.return_value = missing_key
+        llm.is_local.return_value = local
+        llm.name.return_value = "VideoBackend"
+        return llm
+
+    @staticmethod
+    def _build(llm, factory_error=None):
+        from integrations.photos import PhotoProcessor as module
+        with patch.object(module, 'parse_llm_config', return_value=('GeminiLLM', 'gemini-3.8-flash')) as tiers, \
+             patch.object(module, 'create_llm', side_effect=factory_error, return_value=llm):
+            built = module.PhotoProcessor._build_clip_llm()
+        assert tiers.call_args.args == ('video',), "the clips' backend is the video tier's, not an indexing tier's"
+        return built
+
+    def test_a_video_backend_with_its_key_is_initialized_and_used(self):
+        llm = self._backend()
+        assert self._build(llm) is llm
+        llm.initialize.assert_called_once()
+
+    def test_without_the_key_the_clips_wait_and_nothing_is_initialized(self):
+        llm = self._backend(missing_key="api_keys.gemini")
+        assert self._build(llm) is None
+        llm.initialize.assert_not_called()
+
+    def test_a_video_tier_that_takes_no_video_leaves_the_clips_unindexed(self):
+        llm = self._backend(supports_video=False)
+        assert self._build(llm) is None
+        llm.initialize.assert_not_called()
+
+    def test_a_backend_that_cannot_be_built_leaves_the_clips_unindexed(self):
+        assert self._build(None, factory_error=RuntimeError("no such provider")) is None
+
+    def test_the_verdict_is_asked_once_even_when_it_is_none(self):
+        from integrations.photos import PhotoProcessor as module
+        processor = module.PhotoProcessor()
+        with patch.object(module.PhotoProcessor, '_build_clip_llm', return_value=None) as build:
+            assert processor._clip_llm() is None and processor._clip_llm() is None
+        assert build.call_count == 1

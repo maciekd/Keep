@@ -2590,3 +2590,35 @@ class TestShowFullDiskAccessSetting:
                 patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value="System Settings could not be opened: no open"):
             result = commands_instance.cmd_show_full_disk_access_setting("")
         assert "could not be opened" in result and "Privacy & Security" in result
+
+
+class TestIntegrationErrorsShowWhole:
+    """75aa659: the iMessage Full Disk Access hint is three numbered steps, about 400 characters
+    with the database path; list_integrations cut an error at 160 and the restart result at 300,
+    so the step that ends the hint — relaunch and run start.sh — never reached the LLM for an
+    integration without a feed to repeat it. The whole hint must come through on both."""
+
+    HINT = ("the Messages database cannot be read by this process: Full Disk Access is missing. "
+            "1. Open System Settings > Privacy & Security > Full Disk Access and turn Terminal on. "
+            "2. Let macOS quit Terminal when it offers to, or quit every Terminal window yourself. "
+            "3. Open a new Terminal window and run /Users/marcus/Keep/start.sh — the restarted server "
+            "has the grant (database: /Users/marcus/Library/Messages/chat.db)")
+    LAST_STEP = "run /Users/marcus/Keep/start.sh"
+
+    @pytest.fixture(autouse=True)
+    def a_hint_longer_than_the_old_caps(self):
+        assert 300 < len(self.HINT) <= 450 and self.HINT.endswith(")")
+
+    def test_list_integrations_shows_a_three_step_hint_whole(self, commands_instance):
+        status = TestCmdListIntegrations._status("iMessage", "error", last_error=self.HINT, restartable=True)
+        monitor = Mock()
+        monitor.describe_all.return_value = [status]
+        with patch.object(Commands, "_integration_monitor", return_value=monitor):
+            line, = commands_instance._run_list_integrations().splitlines()
+        assert self.LAST_STEP in line and "chat.db)" in line
+
+    def test_the_restart_result_shows_it_whole_too(self, commands_instance):
+        status = {"name": "iMessage", "state": "error", "last_error": self.HINT, "config_keys": [],
+                  "last_check_time": None, "consecutive_failures": 0, "restartable": True}
+        line = commands_instance._describe_restart(status, True)
+        assert self.LAST_STEP in line and line.endswith("chat.db)")
