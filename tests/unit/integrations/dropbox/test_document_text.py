@@ -2,9 +2,9 @@
 history's cap and cuts at a boundary, and the find that says which page a phrase is on."""
 import pytest
 
-from integrations.dropbox.DocumentText import PAGE_CHARS, Unreadable, extract, find, pages, snippet
+from integrations.dropbox.DocumentText import PAGE_CHARS, Unreadable, extract, find, pages, rtf_text, snippet
 
-from .dropbox_fakes import make_docx, make_pdf, make_pptx
+from .dropbox_fakes import make_docx, make_pdf, make_pptx, make_rtf
 
 
 @pytest.mark.unit
@@ -51,6 +51,26 @@ class TestExtract:
     def test_a_pptx_gives_its_slides_in_number_order_under_markers(self):
         text = extract("deck.pptx", make_pptx([["Plan", "Step one"], ["Step two"]]))
         assert text == "[slide 1]\nPlan\nStep one\n\n[slide 2]\nStep two"
+
+    def test_a_textedit_rtf_is_plain_text_with_the_swedish_letters_decoded(self):
+        text = extract("recept.rtf", make_rtf(["Friterad kyckling å la Åsa", "", "1 kg kycklinglår, smör och ägg"]))
+        assert text == "Friterad kyckling å la Åsa\n\n1 kg kycklinglår, smör och ägg"
+        assert "\\" not in text and "fonttbl" not in text and "Helvetica" not in text
+
+    def test_a_word_rtf_in_another_code_page_decodes_in_that_one(self):
+        text = extract("dopis.rtf", make_rtf(["Příliš žluťoučký kůň", "Řádek dva"], code_page=1250, cocoa=False))
+        assert text == "Příliš žluťoučký kůň\nŘádek dva"
+
+    def test_an_rtf_is_known_by_its_header_whatever_the_name(self):
+        assert extract("TXT.rtf", make_rtf(["Inuti bundeln"])) == "Inuti bundeln"
+        assert extract("notes.txt", make_rtf(["Fel ändelse"])) == "Fel ändelse"
+        assert extract("plain.rtf", "Ingen RTF alls\n".encode()) == "Ingen RTF alls\n", "a .rtf without the header is text"
+
+    def test_unicode_escapes_fields_and_tabs_in_an_rtf(self):
+        data = (b"{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Calibri;}}\\pard Pris\\tab \\u8364?10\\par "
+                b"{\\field{\\*\\fldinst HYPERLINK \"http://x.example\"}{\\fldrslt x.example}}\\par "
+                b"\\uc2 \\u229??ngest {\\b fet} \\'e4r\\par}")
+        assert rtf_text(data) == "Pris\t€10\nx.example\nångest fet är"
 
 
 def paragraphs(count: int, words: int = 60) -> str:

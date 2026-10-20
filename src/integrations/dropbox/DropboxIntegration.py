@@ -14,8 +14,8 @@ from common.ConfigManager import ConfigManager
 from common.Paths import CACHE_DIR
 from common.logging import error, info, trace
 from integrations.dropbox.DocumentText import Unreadable, extension, extract
-from integrations.dropbox.DropboxAuth import (DropboxAuth, NotSignedIn, delete_token_file, not_signed_in_hint,
-                                              token_path)
+from integrations.dropbox.DropboxAuth import (DropboxAuth, NotSignedIn, delete_token_file, missing_scopes_hint,
+                                              not_signed_in_hint, token_path)
 from integrations.dropbox.DropboxClient import DropboxClient, Entry, Match
 
 SECTION = "dropbox"
@@ -25,6 +25,8 @@ TEXT_CACHE_DIR = CACHE_DIR / "dropbox"
 DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024
 CACHE_MAX_BYTES = 200 * 1024 * 1024
 PAPER_EXTENSION = "paper"
+BUNDLE_EXTENSION = "rtfd"       # a TextEdit bundle: a folder Dropbox lists as such, the text in TXT.rtf inside
+BUNDLE_TEXT_FILE = "TXT.rtf"
 
 
 @dataclass(frozen=True)
@@ -40,8 +42,9 @@ class DropboxIntegration(Integration):
     """The files in Dropbox, searched and read, read-only.
 
     Finds a file in the household's Dropbox, lists a folder, and reads a document page by
-    page — a PDF, a Word or PowerPoint file, a Paper doc, any text file — with a find inside
-    the file that says which page a phrase is on; it never writes, moves or shares anything.
+    page — a PDF, a Word or PowerPoint file, a Paper doc, an RTF (a TextEdit .rtfd too), any
+    text file — with a find inside the file that says which page a phrase is on; it never
+    writes, moves or shares anything.
 
     One account, signed in once with the app's key through the PKCE code flow by paste
     (`DropboxAuth`); `DropboxClient` makes the calls. A read fetches the file once: its text
@@ -51,7 +54,9 @@ class DropboxIntegration(Integration):
     the app folder of an App-folder app); a path outside them is refused before any call.
     The health check is `users/get_current_account`, which also tells the plan the account
     is on. `needs_2fa` is "the user has to sign in": the monitor shows NEEDS_2FA with the
-    login hint until the paste flow completes. Config is read at call time."""
+    login hint until the paste flow completes — also for a sign-in on file that was issued
+    without a file scope (from before the check at the exchange), where the hint names the
+    scope and the Permissions tab. Config is read at call time."""
     sensitive = True
     login_hint = "dropbox_login() from the chat"
 
@@ -122,8 +127,14 @@ class DropboxIntegration(Integration):
         self.auth.sign_out()
 
     def needs_2fa(self) -> bool:
-        """The user has to sign in (never did, or the refresh was refused): local state only."""
-        return not self.auth.signed_in() or self.auth.needs_sign_in_again()
+        """The user has to sign in (never did, the refresh was refused, or the sign-in on file
+        lacks a file scope): local state only."""
+        return not self.auth.signed_in() or self.auth.needs_sign_in_again() or bool(self.auth.missing_scopes())
+
+    def current_login_hint(self) -> str:
+        if self.auth.signed_in() and (missing := self.auth.missing_scopes()):
+            return missing_scopes_hint(missing, "")
+        return self.login_hint
 
     @classmethod
     def wipe_targets(cls) -> list[tuple[Path, str]]:
@@ -153,6 +164,9 @@ class DropboxIntegration(Integration):
     def check_health(self) -> bool:
         if not self.auth.signed_in():
             raise NotSignedIn(not_signed_in_hint())
+        if missing := self.auth.missing_scopes():
+            info(f"Dropbox: the sign-in on file lacks {missing} — every file call would fail")
+            raise NotSignedIn(missing_scopes_hint(missing, ""))
         account = self.client.current_account()
         if account.account_type != self.account_type:
             info(f"Dropbox: signed in as {account.display_name or account.email} on a {account.account_type or 'unknown'} "
@@ -191,6 +205,9 @@ class DropboxIntegration(Integration):
         if problem := self.refused(path):
             raise ValueError(problem)
         entry = self.client.metadata(normalise(path))
+        if entry.is_folder and extension(entry.name) == BUNDLE_EXTENSION:
+            trace(f"Dropbox: {entry.path} is an .rtfd bundle — reading its {BUNDLE_TEXT_FILE}")
+            entry = self.client.metadata(f"{entry.path}/{BUNDLE_TEXT_FILE}")
         if entry.is_folder:
             raise ValueError(f"{entry.path} is a folder — list_dropbox_folder shows what is in it")
         if entry.size > DOWNLOAD_MAX_BYTES:

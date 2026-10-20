@@ -2,7 +2,9 @@
 
 Pure functions, no I/O. `extract` reads what it has a reader for — plain text of any kind, a
 PDF through pdfplumber with a `[p. N]` marker before each PDF page, a .docx or .pptx through
-the stdlib zip and XML readers (`[slide N]` markers) — and raises `Unreadable` for the rest
+the stdlib zip and XML readers (`[slide N]` markers), an RTF through the small reader here
+(the control words dropped, the `\'xx` escapes decoded in the document's code page, so a
+TextEdit file's ö, ä and å come out as letters) — and raises `Unreadable` for the rest
 (images, spreadsheets, archives, a binary it cannot place). `pages` cuts a text into pages of
 at most PAGE_CHARS at paragraph boundaries, so a page and its header stay under the size the
 history stores a command result at. `find` is the content search that works on any plan:
@@ -24,6 +26,17 @@ BINARY_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tif",
                      "wav", "aac", "flac", "mp4", "mov", "m4v", "avi", "mkv", "zip", "gz", "tgz", "rar", "7z", "dmg",
                      "pkg", "exe", "app", "xls", "xlsx", "numbers", "key", "pages", "doc", "ppt", "psd", "ai", "sketch"}
 MARKER_RE = re.compile(r"^\[(?:p\.|slide) (\d+)\]$")
+RTF_TOKEN_RE = re.compile(rb"\\([a-zA-Z]{1,32})(-?\d{1,10})? ?|\\'([0-9a-fA-F]{2})|\\([^a-zA-Z])|([{}])|([^\\{}]+)")
+# Groups whose text is not the document's: the font and colour tables, the metadata, pictures,
+# the headers and footers, a field's instruction (its result stays). `{\*\…}` groups are skipped as such.
+RTF_SKIPPED = {"fonttbl", "colortbl", "stylesheet", "info", "pict", "object", "fldinst", "footnote", "header", "footer",
+               "headerl", "headerr", "headerf", "footerl", "footerr", "footerf", "listtable", "listoverridetable",
+               "revtbl", "themedata", "colorschememapping", "latentstyles", "datastore", "xmlnstbl", "generator"}
+RTF_SYMBOLS = {"par": "\n", "line": "\n", "page": "\n", "sect": "\n", "row": "\n", "tab": "\t", "cell": "\t",
+               "emdash": "—", "endash": "–", "lquote": "‘", "rquote": "’", "ldblquote": "“", "rdblquote": "”",
+               "bullet": "•", "emspace": " ", "enspace": " ", "qmspace": " ", "~": "\xa0", "_": "-", "-": "",
+               "{": "{", "}": "}", "\\": "\\", "\n": "\n", "\r": "\n"}
+RTF_CODE_PAGES = {"mac": "mac_roman", "pc": "cp437", "pca": "cp850"}
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 
@@ -46,6 +59,8 @@ def extension(name: str) -> str:
 def extract(name: str, data: bytes) -> str:
     """The text of the file `name` holds in `data`; raises Unreadable."""
     ext = extension(name)
+    if data[:5] == b"{\\rtf":          # an .rtf, or TXT.rtf of an .rtfd bundle; a .rtf without the header is plain text
+        return rtf_text(data)
     if ext == "pdf":
         return pdf_text(data)
     if ext == "docx":
@@ -136,6 +151,86 @@ def pptx_text(data: bytes) -> str:
         text = "\n".join(line for line in lines if line.strip())
         parts.append(f"[slide {number}]\n{text}" if text else f"[slide {number}]")
     return "\n\n".join(parts)
+
+
+def rtf_text(data: bytes) -> str:
+    """The text of an RTF: the groups walked, the control words dropped or turned into their
+    character, the `\\'xx` bytes gathered and decoded in the code page the header names
+    (cp1252 unless `\\ansicpgN`, `\\mac`, `\\pc` or `\\pca` say otherwise), `\\uN` as the
+    character with its fallback skipped."""
+    if data[:5] != b"{\\rtf":
+        raise Unreadable("not an RTF file (no {\\rtf header)")
+    encoding = "cp1252"
+    out: list[str] = []
+    raw = bytearray()               # bytes waiting for a decode in the code page
+    stack: list[tuple[bool, int]] = []
+    skipping, uc, skip = False, 1, 0   # the group's state: skipped?, \uc, fallback chars still to skip
+
+    def flush():
+        nonlocal raw
+        if raw:
+            out.append(raw.decode(encoding, errors="replace"))
+            raw = bytearray()
+
+    for word, number, hexbyte, symbol, brace, text in RTF_TOKEN_RE.findall(data):
+        if brace == b"{":
+            stack.append((skipping, uc))
+            continue
+        if brace == b"}":
+            if stack:
+                skipping, uc = stack.pop()
+            continue
+        if skipping:
+            continue
+        if text:
+            piece = text.replace(b"\r", b"").replace(b"\n", b"")
+            if skip:
+                dropped = min(skip, len(piece))
+                piece, skip = piece[dropped:], skip - dropped
+            raw.extend(piece)
+            continue
+        if hexbyte:
+            if skip:
+                skip -= 1
+                continue
+            raw.append(int(hexbyte, 16))
+            continue
+        if symbol:
+            if symbol == b"*":
+                skipping = True
+                continue
+            flush()
+            out.append(RTF_SYMBOLS.get(symbol.decode("latin-1"), ""))
+            continue
+        name = word.decode("ascii")
+        if name in RTF_SKIPPED:
+            skipping = True
+        elif name == "u":
+            flush()
+            code = int(number)
+            out.append(chr(code + 65536 if code < 0 else code))
+            skip = uc
+        elif name == "uc":
+            uc = int(number) if number else 1
+        elif name == "ansicpg" and number:
+            flush()
+            encoding = _code_page(f"cp{int(number)}")
+        elif name in RTF_CODE_PAGES:
+            flush()
+            encoding = RTF_CODE_PAGES[name]
+        elif name in RTF_SYMBOLS:
+            flush()
+            out.append(RTF_SYMBOLS[name])
+    flush()
+    return _tidy("".join(out))
+
+
+def _code_page(name: str) -> str:
+    try:
+        "".encode(name)
+        return name
+    except LookupError:
+        return "cp1252"
 
 
 def _paragraph_text(paragraph, ns: str) -> str:

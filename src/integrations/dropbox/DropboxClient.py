@@ -3,10 +3,15 @@
 The shape of `GoogleDrive`: a bearer token from `DropboxAuth.token()`, one retry on a rate
 limit (Dropbox says how long to wait) or a 5xx, 401 → `NotSignedIn` with the sign-in hint,
 409 → the `error_summary` Dropbox sends (`path/not_found/..`) as a `DropboxError` the
-commands turn into a sentence. RPC endpoints take a JSON body on api.dropboxapi.com; the
-content endpoints (download, export) on content.dropboxapi.com take their argument in the
-`Dropbox-API-Arg` header and answer with the bytes."""
+commands turn into a sentence. A 400 comes as plain text — the app lacking a scope reads
+`Error in call to API function "files/search_v2": Your app (ID: …) is not permitted … required
+scope 'files.metadata.read' …` — and is carried whole: the sentence names the scope and
+Dropbox's own explanation follows, so the cause shows without the server log. RPC endpoints
+take a JSON body on api.dropboxapi.com; the content endpoints (download, export) on
+content.dropboxapi.com take their argument in the `Dropbox-API-Arg` header and answer with
+the bytes."""
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,7 +20,7 @@ from typing import Optional
 import requests
 
 from common.logging import error, info, trace
-from integrations.dropbox.DropboxAuth import DropboxAuth, NotSignedIn, sign_in_again_hint
+from integrations.dropbox.DropboxAuth import DropboxAuth, NotSignedIn, missing_scopes_hint, sign_in_again_hint
 
 API_URL = "https://api.dropboxapi.com/2"
 CONTENT_URL = "https://content.dropboxapi.com/2"
@@ -24,6 +29,8 @@ DOWNLOAD_TIMEOUT = 300
 RETRY_AFTER = 2
 SEARCH_LIMIT = 20
 LIST_LIMIT = 200
+SUMMARY_CHARS = 600
+MISSING_SCOPE_RE = re.compile(r"required scope '([^']+)'")
 
 
 class DropboxError(Exception):
@@ -199,14 +206,16 @@ class DropboxClient:
     def _summary(response) -> str:
         try:
             body = response.json()
-            return str(body.get("error_summary") or body.get("error") or response.text)[:300]
+            return str(body.get("error_summary") or body.get("error") or response.text).strip()[:SUMMARY_CHARS]
         except (ValueError, AttributeError):
-            return (response.text or f"HTTP {response.status_code}")[:300]
+            return (response.text or f"HTTP {response.status_code}").strip()[:SUMMARY_CHARS]
 
     @staticmethod
     def _message(status: int, summary: str) -> str:
-        """The error_summary as a sentence: `path/not_found/..` → "not found"."""
-        head = summary.split("/")
+        """The error_summary as a sentence: `path/not_found/..` → "not found"; an unknown one
+        is given whole, Dropbox's explanation being the only one there is."""
+        if scope := MISSING_SCOPE_RE.search(summary):
+            return f"{missing_scopes_hint([scope.group(1)], '')}. Dropbox said: {summary}"
         if "not_found" in summary:
             return "nothing at that path"
         if "not_file" in summary:
@@ -221,4 +230,4 @@ class DropboxClient:
             return f"the sign-in lacks the permission for that — {sign_in_again_hint()}"
         if "unsupported_file" in summary or "non_exportable" in summary:
             return "Dropbox cannot export that file as text"
-        return f"Dropbox answered {status} {head[0] if head else summary}".strip()
+        return f"Dropbox answered {status}: {summary.rstrip('/.') or 'no explanation'}"

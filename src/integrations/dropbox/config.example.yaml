@@ -1,14 +1,19 @@
 # Dropbox, the "Dropbox" integration: the assistant searches and reads the files of one Dropbox account,
-# read-only (a PDF, a Word or PowerPoint file, a Paper doc, any text file — page by page). It needs an app of
-# your own, once per install, at https://www.dropbox.com/developers/apps: Create app > Scoped access; choose
-# "App folder" (the assistant only ever sees /Apps/<app name> — drop in what it may read) or "Full Dropbox"
-# (everything, or the `folders` below); under Permissions tick account_info.read, files.metadata.read and
-# files.content.read; under Settings add http://localhost:18724/ as a redirect URI and copy the App key here.
-# No app secret is needed. Sign in with dropbox_login() from the chat: it gives a link to open in any browser;
-# after the sign-in the browser lands on a http://localhost:18724/... page that does not load — that is
-# expected — and that page's address is pasted back (dropbox_login_code). The token is kept in cache/oauth/,
-# the text of the documents read in cache/dropbox/. Whether a search looks inside files depends on the
-# Dropbox plan (a Basic plan searches names only); the assistant can always search inside one file.
+# read-only (a PDF, a Word or PowerPoint file, a Paper doc, an RTF, any text file — page by page). It needs an
+# app of your own, once per install, at https://www.dropbox.com/developers/apps, in this order:
+# 1. Create app > Scoped access; choose "App folder" (the assistant only ever sees /Apps/<app name> — drop in
+#    what it may read) or "Full Dropbox" (everything, or the `folders` below).
+# 2. Permissions tab: tick account_info.read, files.metadata.read and files.content.read, then press Submit
+#    at the bottom of the tab — a tick that is not submitted is not saved. Do this BEFORE signing in: a
+#    sign-in keeps the permissions the app had at that moment, and a permission ticked later needs
+#    dropbox_login() again (the old sign-in is never upgraded).
+# 3. Settings tab: add http://localhost:18724/ as a redirect URI and copy the App key here. No secret needed.
+# Then sign in with dropbox_login() from the chat: it gives a link to open in any browser; after the sign-in
+# the browser lands on a http://localhost:18724/... page that does not load — that is expected — and that
+# page's address is pasted back (dropbox_login_code), which checks that all three permissions were granted
+# and says which is missing if not. The token is kept in cache/oauth/, the text of the documents read in
+# cache/dropbox/. Whether a search looks inside files depends on the Dropbox plan (a Basic plan searches
+# names only); the assistant can always search inside one file.
 dropbox:
   app_key: YOUR_APP_KEY
   # The folders the assistant may search and read, e.g. [/Documents, /Household]. Empty is the whole Dropbox

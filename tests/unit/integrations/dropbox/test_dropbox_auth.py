@@ -141,6 +141,32 @@ class TestFinish:
         assert "dropbox.app_key" in a.finish(redirected(sign_in))
         assert not a.signed_in()
 
+    def test_a_grant_short_of_a_file_scope_is_refused_naming_the_scope_and_the_tab(self, token_dir, dropbox):
+        a = auth()
+        sign_in = a.begin()
+        dropbox.answer_token({**token_grant(), "scope": "account_info.read"})
+
+        problem = a.finish(redirected(sign_in))
+
+        assert "files.metadata.read" in problem and "files.content.read" in problem
+        assert "Permissions" in problem and "Submit" in problem and "dropbox_login()" in problem
+        assert not a.signed_in() and not token_path().exists(), "a token that fails every file call is not kept"
+        assert not a.pending(), "the code is spent: the user fixes the app, then starts anew"
+        assert a.missing_scopes() == []
+
+    def test_a_grant_that_names_no_scopes_is_taken_as_whole(self, token_dir, dropbox):
+        a = auth()
+        sign_in = a.begin()
+        dropbox.answer_token({**token_grant(), "scope": ""})
+        assert a.finish(redirected(sign_in)) == "" and a.signed_in()
+
+    def test_a_sign_in_on_file_from_before_the_check_shows_its_missing_scopes(self, token_dir):
+        a = auth()
+        a._save({**token_file(), "scope": "account_info.read files.metadata.read"})
+        assert a.missing_scopes() == ["files.content.read"]
+        a._save(token_file())
+        assert a.missing_scopes() == [], "an old file without the field is not called short"
+
     def test_a_grant_without_a_refresh_token_is_not_a_sign_in(self, token_dir, dropbox):
         a = auth()
         sign_in = a.begin()

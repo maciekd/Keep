@@ -123,10 +123,11 @@ def account(account_type="basic", email="marcus@example.com", display_name="Marc
 
 
 class StubAuth:
-    def __init__(self, token="at.stub", signed_in=True, again=False):
+    def __init__(self, token="at.stub", signed_in=True, again=False, missing=()):
         self._token = token
         self._signed_in = signed_in
         self._again = again
+        self._missing = list(missing)
         self.refresh_error = "the Dropbox sign-in is no longer valid" if again else ""
 
     def signed_in(self) -> bool:
@@ -134,6 +135,9 @@ class StubAuth:
 
     def needs_sign_in_again(self) -> bool:
         return self._again
+
+    def missing_scopes(self) -> list:
+        return self._missing
 
     def token(self) -> str:
         from integrations.dropbox.DropboxAuth import NotSignedIn, not_signed_in_hint
@@ -143,6 +147,24 @@ class StubAuth:
 
 
 # --- document builders -------------------------------------------------------------------------
+
+def make_rtf(lines: list[str], code_page: int = 1252, cocoa: bool = True) -> bytes:
+    """An RTF as TextEdit writes it (`cocoa`: the font and colour tables, a `{\\*\\…}` group, a
+    backslash-newline per paragraph) or as Word does (`\\par`), the non-ASCII letters as
+    `\\'xx` escapes of the code page — which is what the reader has to undo."""
+    def escaped(line: str) -> bytes:
+        out = bytearray()
+        for char in line:
+            byte = char.encode(f"cp{code_page}", errors="strict")
+            out.extend(byte if byte.isascii() else b"".join(b"\\'%02x" % b for b in byte))
+        return bytes(out)
+    head = (b"{\\rtf1\\ansi\\ansicpg%d\\cocoartf2822\n\\cocoatextscaling0{\\fonttbl\\f0\\fswiss\\fcharset0 Helvetica;}\n"
+            b"{\\colortbl;\\red255\\green255\\blue255;}\n{\\*\\expandedcolortbl;;}\n"
+            b"\\paperw11900\\margl1440\\pard\\tx566\\pardirnatural\\partightenfactor0\n\n\\f0\\fs24 \\cf0 " % code_page
+            if cocoa else b"{\\rtf1\\ansi\\ansicpg%d\\deff0{\\fonttbl{\\f0 Calibri;}}\\pard " % code_page)
+    separator = b"\\\n" if cocoa else b"\\par "
+    return head + separator.join(escaped(line) for line in lines) + separator + b"}"
+
 
 def make_pdf(pages: list[str]) -> bytes:
     """A PDF with one page per text (an empty text is a page without a text layer), built by

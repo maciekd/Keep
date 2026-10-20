@@ -12,7 +12,8 @@ from integrations.dropbox import DropboxIntegration as module
 from integrations.dropbox.DropboxAuth import NotSignedIn, token_path
 from integrations.dropbox.DropboxIntegration import DOWNLOAD_MAX_BYTES, DropboxIntegration, human_size, normalise
 
-from .dropbox_fakes import FakeDropbox, StubAuth, account, file_metadata, folder_metadata, make_pdf, search_match, token_file
+from .dropbox_fakes import (FakeDropbox, StubAuth, account, file_metadata, folder_metadata, make_pdf, make_rtf, search_match,
+                            token_file)
 
 CONFIG = "integrations.dropbox.DropboxIntegration.ConfigManager.get_instance"
 
@@ -153,6 +154,16 @@ class TestDocument:
         assert document.text.startswith("# Notes") and document.kind == "PAPER"
         assert not fake.sent("/files/download")
 
+    def test_an_rtfd_bundle_is_read_through_the_txt_rtf_inside_it(self):
+        fake = FakeDropbox()
+        fake.route_answers("/files/get_metadata", (200, folder_metadata("/Recept/Kyckling.rtfd")),
+                           (200, file_metadata("/Recept/Kyckling.rtfd/TXT.rtf", size=1758)))
+        fake.route("/files/download", raw=make_rtf(["Friterad kyckling", "Smör och ägg"]))
+        with _config():
+            document = build(fake).document("/Recept/Kyckling.rtfd")
+        assert document.text == "Friterad kyckling\nSmör och ägg" and document.kind == "RTF"
+        assert [c.body["path"] for c in fake.sent("/files/get_metadata")] == ["/Recept/Kyckling.rtfd", "/Recept/Kyckling.rtfd/TXT.rtf"]
+
     def test_a_path_outside_the_folders_never_reaches_dropbox(self):
         fake = FakeDropbox()
         with _config(folders=["/Household"]):
@@ -191,6 +202,17 @@ class TestHealth:
             integration = build(fake)
             assert integration.check_health() is True
             assert integration.account_type == "basic" and not integration.needs_2fa()
+
+    def test_a_sign_in_short_of_a_scope_is_the_2fa_state_with_the_scope_in_the_hint(self):
+        fake = FakeDropbox()
+        fake.route("/users/get_current_account", account())
+        with _config():
+            integration = build(fake, StubAuth(missing=["files.metadata.read"]))
+            assert integration.needs_2fa()
+            with pytest.raises(NotSignedIn, match="files.metadata.read"):
+                integration.check_health()
+        assert "files.metadata.read" in integration.current_login_hint() and "Submit" in integration.current_login_hint()
+        assert not fake.sent("/users/get_current_account"), "the account is not asked when the file scopes are known to be short"
 
     def test_a_refused_refresh_is_the_2fa_state_too(self):
         with _config():

@@ -8,7 +8,11 @@ back, a random `state`), the user signs in with it in any browser, lands on the 
 `REDIRECT_URI` — a page nothing serves, registered as the app's redirect URI in the App
 Console — and pastes that whole address back into `finish()`, which checks the state and
 exchanges the code with the verifier (`assistant.integration.OAuthPaste` does the paste
-handling). Scopes: the account, file metadata and file content, all read-only.
+handling). Scopes: the account, file metadata and file content, all read-only. A token is
+issued with the scopes the app had ticked *and submitted* on its Permissions tab at the time
+— Dropbox grants the subset silently, and a token keeps its scopes for life — so `finish()`
+reads the `scope` the token endpoint answers with and refuses a sign-in short of one, naming
+it and the tab to fix; `missing_scopes()` reads the same off the file for the health check.
 
 The tokens live in `cache/oauth/dropbox.json` (mode 600). Access tokens last four hours, so
 `token()` refreshes within a minute of the expiry; refresh tokens do not expire on their own.
@@ -96,6 +100,20 @@ def sign_in_again_hint() -> str:
     return f"sign in to Dropbox again — {LOGIN_COMMAND}"
 
 
+def missing_scopes(granted: str) -> list[str]:
+    """The scopes of SCOPES a token's `scope` string lacks; nothing when the string is empty
+    (an answer without one says nothing about them)."""
+    have = set(granted.split())
+    return [scope for scope in SCOPES if scope not in have] if have else []
+
+
+def missing_scopes_hint(missing: list[str], granted: str) -> str:
+    return (f"the app lacks the permission{'s' if len(missing) > 1 else ''} {', '.join(missing)}"
+            f"{' (granted: ' + ', '.join(granted.split()) + ')' if granted else ''}: on the app's Permissions tab at "
+            f"https://www.dropbox.com/developers/apps tick {', '.join(SCOPES)} and press Submit, then {sign_in_again_hint()} "
+            f"— a sign-in keeps the permissions it was made with")
+
+
 def delete_token_file() -> bool:
     """The token file, gone (a sign-out, or the integration lost its config): True when there was one."""
     path = token_path()
@@ -161,6 +179,11 @@ class DropboxAuth:
     def needs_sign_in_again(self) -> bool:
         """True when the last refresh was refused: the file is kept, the user must sign in anew."""
         return bool(self.refresh_error)
+
+    def missing_scopes(self) -> list[str]:
+        """The scopes the sign-in on file was issued without (a sign-in from before the check)."""
+        with self._lock:
+            return missing_scopes(str(self._load().get("scope") or ""))
 
     def expires_at(self) -> Optional[datetime]:
         """When the access token on file runs out (the next call refreshes it); None without one."""
@@ -261,13 +284,21 @@ class DropboxAuth:
             if not answer.get("refresh_token"):
                 info("Dropbox: the code exchange returned no refresh token")
                 return f"Dropbox sent no refresh token — run {LOGIN_COMMAND} again"
+            granted = str(answer.get("scope") or "")
+            if missing := missing_scopes(granted):
+                # The code is spent; the token would fail every file call, so it is not kept.
+                info(f"Dropbox: the sign-in was granted '{granted}', short of {missing} — not kept")
+                _set_pending(None)
+                return f"Dropbox signed in without the file permissions — {missing_scopes_hint(missing, granted)}"
+            if not granted:
+                info("Dropbox: the token answer names no scopes — taken as granted")
             self._save({"refresh_token": answer["refresh_token"], "access_token": answer["access_token"],
                         "expiry": time.time() + float(answer.get("expires_in") or DEFAULT_EXPIRES_IN),
-                        "scope": str(answer.get("scope") or ""), "account_id": str(answer.get("account_id") or ""),
+                        "scope": granted, "account_id": str(answer.get("account_id") or ""),
                         "signed_in_at": time.time()})
             _set_pending(None)
             self.refresh_error = ""
-        info("Dropbox: signed in")
+        info(f"Dropbox: signed in with {granted or 'unnamed scopes'}")
         return ""
 
     def sign_out(self) -> None:

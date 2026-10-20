@@ -116,6 +116,24 @@ class TestErrors:
             client(fake).metadata("/gone.txt")
         assert caught.value.status == 409 and "nothing at that path" in str(caught.value)
 
+    def test_a_missing_scope_400_names_the_scope_and_carries_dropboxs_whole_explanation(self):
+        fake = FakeDropbox()
+        explanation = ('Error in call to API function "files/search_v2": Your app (ID: 1234567) is not permitted to access '
+                       "this endpoint because it does not have the required scope 'files.metadata.read'. The owner of the "
+                       "app can enable the scope for the app using the Permissions tab on the App Console.")
+        fake.route("/files/search_v2", raw=explanation.encode(), status=400)
+        with pytest.raises(DropboxError) as caught:
+            client(fake).search("chicken")
+        message = str(caught.value)
+        assert "files.metadata.read" in message and "Permissions" in message and "dropbox_login()" in message
+        assert message.endswith(explanation), "the cause shows without the server log"
+
+    def test_an_unknown_error_is_given_whole_not_cut_at_a_slash(self):
+        fake = FakeDropbox()
+        fake.route("/files/search_v2", raw=b'Error in call to API function "files/search_v2": request body: unknown option', status=400)
+        with pytest.raises(DropboxError, match="unknown option"):
+            client(fake).search("chicken")
+
     def test_a_folder_downloaded_is_told_as_such(self):
         fake = FakeDropbox()
         fake.route("/files/download", {"error_summary": "path/not_file/..", "error": {".tag": "path"}}, status=409)
