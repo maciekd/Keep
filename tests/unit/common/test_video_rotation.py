@@ -3,6 +3,7 @@ import sys
 import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -12,19 +13,28 @@ import common.VideoRotation as VideoRotation
 from common.Mp4Metadata import mp4_display_size, mp4_duration, mp4_is_rotated
 from common.VideoRotation import bake_rotation
 
-WIDTH, HEIGHT, FRAMES = 320, 180, 12
-RED, BLUE = (0, 0, 255, 255), (255, 0, 0, 255)  # BGRA
-
-
-def _portrait_clip(path) -> bytes:
-    """An H.264 clip with WIDTHxHEIGHT frames (left half red, right half blue) and the 90° matrix
-    an iPhone writes for a portrait recording: shown turned, red at the top."""
+# The pyobjc frameworks are imported here, at collection, like the conftest's openai: the four
+# imports are ~90 ms, and the first real export on a worker paid them inside the test, was
+# recorded as slow, moved to the front of the next run's collection and paid them again.
+try:
     import AVFoundation as AV
     import CoreMedia as CM
     import Quartz
     from Foundation import NSURL
     from Quartz import CoreVideo as CV
+except ImportError:  # not a Mac: the real-encoder tests skip
+    AV = None
 
+WIDTH, HEIGHT, FRAMES = 320, 180, 12
+RED, BLUE = (0, 0, 255, 255), (255, 0, 0, 255)  # BGRA
+PORTRAIT_CLIP = Path(__file__).parents[1] / "data" / "video" / "portrait.mp4"
+
+
+def _portrait_clip(path) -> bytes:
+    """An H.264 clip with WIDTHxHEIGHT frames (left half red, right half blue) and the 90° matrix
+    an iPhone writes for a portrait recording: shown turned, red at the top. This is what wrote
+    PORTRAIT_CLIP; regenerate the file with it, never by hand — the writer's first session on a
+    worker is ~100 ms, so the tests read the file instead of building it."""
     writer = AV.AVAssetWriter.assetWriterWithURL_fileType_error_(NSURL.fileURLWithPath_(str(path)), AV.AVFileTypeMPEG4, None)[0]
     settings = {AV.AVVideoCodecKey: AV.AVVideoCodecTypeH264, AV.AVVideoWidthKey: WIDTH, AV.AVVideoHeightKey: HEIGHT}
     track = AV.AVAssetWriterInput.assetWriterInputWithMediaType_outputSettings_(AV.AVMediaTypeVideo, settings)
@@ -59,11 +69,6 @@ def _portrait_clip(path) -> bytes:
 
 def _stored_frame(path):
     """The pixels of the middle frame as stored, ignoring the track matrix: (width, height, pixel(x, y) -> (r, g, b))."""
-    import AVFoundation as AV
-    import CoreMedia as CM
-    import Quartz
-    from Foundation import NSURL
-
     asset = AV.AVURLAsset.URLAssetWithURL_options_(NSURL.fileURLWithPath_(str(path)), None)
     generator = AV.AVAssetImageGenerator.assetImageGeneratorWithAsset_(asset)
     generator.setAppliesPreferredTrackTransform_(False)
@@ -80,9 +85,9 @@ def _stored_frame(path):
 
 
 @pytest.fixture(scope="module")
-def portrait(tmp_path_factory) -> bytes:
+def portrait() -> bytes:
     pytest.importorskip("AVFoundation")
-    return _portrait_clip(tmp_path_factory.mktemp("clip") / "portrait.mp4")
+    return PORTRAIT_CLIP.read_bytes()
 
 
 @pytest.mark.unit
