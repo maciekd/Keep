@@ -69,18 +69,22 @@ class TestTheInvokeFormat:
         return f"<function_calls>\n{body}</function_calls>"
 
     @staticmethod
-    def guarded(reader, text):
-        """`read` with a bound: the reader loops forever on some blocks (the bug below), and a
-        hung test would hold its worker."""
-        import signal
-        def hung(*_):
-            raise AssertionError("StoredReplyReader.read did not return")
-        signal.signal(signal.SIGALRM, hung)
-        signal.setitimer(signal.ITIMER_REAL, 0.3)
-        try:
-            return reader.read(text)
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
+    def guarded(reader, text, rounds=20):
+        """`read` with a bound on its rounds: the reader loops forever on some blocks (the bug
+        below), and a hung test would hold its worker. A count of the format's `find_start`
+        calls, not an alarm: a signal lands wherever the loop happens to be, and
+        `Commands.describe`, called every round, swallows any exception raised inside it — a
+        one-shot alarm caught there left the loop running for good."""
+        find_start = reader._format.find_start
+        left = iter(range(rounds))
+
+        def bounded(remaining):
+            if next(left, None) is None:
+                raise AssertionError(f"StoredReplyReader.read did not return in {rounds} rounds")
+            return find_start(remaining)
+
+        reader._format.find_start = bounded
+        return reader.read(text)
 
     def test_a_block_with_one_invoke_reads_like_a_keep_call(self, invoke_reader):
         reply = self.guarded(invoke_reader, f"On it.\n{self.block(('turn_on', 'Kitchen lamp'))}\nDone.")
