@@ -204,6 +204,16 @@ class TestStreaming:
         assert processor.calls == [("dim", ["Kitchen lamp", "40"]), ("load_toolkit", ["email", "web"])]
         assert OPEN not in out and "Done." in out
 
+    @pytest.mark.xfail(strict=True, reason="a complete <tool_call> block without a <function=…> extracts to no "
+                                           "call, and process_one_command then truncates the reply: the prose and "
+                                           "the calls after the empty block are lost")
+    def test_an_empty_block_is_dropped_but_what_follows_it_is_kept(self, processor):
+        reply = (f"{OPEN}\n{CLOSE}\nSure, done.\n"
+                 + block("turn_on", ("light_name", "Kitchen lamp")) + "\nAnd that.")
+        out = self._stream(processor, [reply])
+        assert processor.calls == [("turn_on", ["Kitchen lamp"])]
+        assert "Sure, done." in out and "And that." in out and OPEN not in out
+
     def test_a_stream_cut_inside_the_block_reports_the_unterminated_command(self, processor):
         from unittest.mock import Mock
         cut = self.REPLY[:self.REPLY.index("Kitchen")]

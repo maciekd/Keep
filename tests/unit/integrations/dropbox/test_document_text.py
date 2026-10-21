@@ -72,6 +72,32 @@ class TestExtract:
                 b"\\uc2 \\u229??ngest {\\b fet} \\'e4r\\par}")
         assert rtf_text(data) == "Pris\t€10\nx.example\nångest fet är"
 
+    @pytest.mark.xfail(strict=True, reason="looks_like_text decodes the first 8192 bytes alone, so a multi-byte "
+                                           "character cut at the edge makes a UTF-8 text file 'binary'")
+    def test_a_long_utf8_text_with_an_unknown_extension_is_still_text(self):
+        # Swedish prose over 8 KB: the 8192-byte head ends inside an "å" for every odd offset.
+        text = "a" + "å" * 5000
+        assert extract("README", text.encode("utf-8")) == text
+
+    def test_a_word_rtf_unicode_escape_drops_its_hex_fallback_and_a_negative_code_wraps(self):
+        # Word writes the fallback as a code-page byte, not a "?"; a code above 32767 is written negative.
+        assert rtf_text(b"{\\rtf1\\ansi Sm\\u246\\'f6r}") == "Smör"
+        assert rtf_text(b"{\\rtf1\\ansi\\uc2 \\u8364\\'80\\'ac10}") == "€10"
+        assert rtf_text(b"{\\rtf1\\ansi \\u-3913?}") == chr(65536 - 3913)
+
+    @pytest.mark.xfail(strict=True, reason="the \\u fallback count is not restored at the group's end, so a "
+                                           "\\'xx right after a {\\uN} group is swallowed as the fallback")
+    def test_the_unicode_fallback_count_ends_with_its_group(self):
+        assert rtf_text(b"{\\rtf1\\ansi {\\u246}\\'f6x}") == "ööx"
+
+    def test_a_mac_rtf_decodes_in_mac_roman_and_an_unknown_code_page_falls_back_to_cp1252(self):
+        assert rtf_text(b"{\\rtf1\\mac \\'8c}") == "å", "0x8c is å in Mac Roman, Œ in cp1252"
+        assert rtf_text(b"{\\rtf1\\ansi\\ansicpg99999 \\'e5}") == "å"
+
+    def test_a_word_table_in_an_rtf_is_rows_of_tabbed_cells(self):
+        data = b"{\\rtf1\\ansi\\trowd \\intbl Item\\cell Owner\\cell\\row \\intbl Roof\\cell Frances\\cell\\row}"
+        assert rtf_text(data) == "Item\tOwner\t\nRoof\tFrances", "a cell ends in a tab, a row in a newline, the end trimmed"
+
 
 def paragraphs(count: int, words: int = 60) -> str:
     return "\n\n".join(f"Paragraph {i}: " + " ".join(f"w{i}-{j}" for j in range(words)) for i in range(1, count + 1))

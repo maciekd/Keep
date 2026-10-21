@@ -229,6 +229,32 @@ class TestToken:
             with pytest.raises(NotSignedIn, match="could not be reached"):
                 a.token()
 
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_a_refresh_refused_with_401_or_403_is_a_lapsed_sign_in_too(self, token_dir, dropbox, status):
+        a = auth()
+        a._save(token_file(expires_in=0))
+        dropbox.answer_token({"error": "invalid_grant", "error_description": "the app's access was removed"}, status=status)
+        with pytest.raises(NotSignedIn):
+            a.token()
+        assert a.needs_sign_in_again()
+
+    def test_a_server_answer_that_is_no_json_is_reported_by_its_status(self, token_dir, dropbox):
+        a = auth()
+        a._save(token_file(expires_in=0))
+        dropbox.token_answers.append(FakeResponse(502, raw=b"<html>Bad gateway " + b"x" * 500 + b"</html>"))
+        with pytest.raises(NotSignedIn) as caught:
+            a.token()
+        assert "Bad gateway" in str(caught.value) and len(str(caught.value)) < 350, "the HTML page is cut, not relayed whole"
+        assert not a.needs_sign_in_again()
+
+    def test_a_corrupt_token_file_is_not_a_sign_in(self, token_dir):
+        token_dir.mkdir(parents=True)
+        token_path().write_text("{not json")
+        a = auth()
+        assert not a.signed_in()
+        with pytest.raises(NotSignedIn, match="not signed in"):
+            a.token()
+
     def test_never_signed_in_says_so(self, token_dir):
         with pytest.raises(NotSignedIn, match="not signed in"):
             auth().token()

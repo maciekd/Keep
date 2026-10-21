@@ -191,6 +191,17 @@ class TestStreaming:
         assert out == "Sure." + CALL_TEXT
         assert mock_note.called
 
+    @pytest.mark.xfail(strict=True, reason="a tool_calls delta without a function name is dropped from the "
+                                           "rendering, yet it still counts as a parsed call, so the DSML text "
+                                           "withheld for it is neither written back nor released: the reply "
+                                           "ends mid-thought")
+    def test_withheld_text_behind_a_nameless_tool_call_is_not_lost(self):
+        llm, _ = _llm_with_stream([_chunk(content="Sure."), _chunk(content=CALL_TEXT),
+                                   _chunk(tool_calls=[_call_delta(index=0, id="c1", name=None, arguments="{}")]),
+                                   _chunk(choices=False)])
+        out = "".join(_stream(llm))
+        assert "kitchen lamp" in out, "the call the model wrote reaches the parser one way or the other"
+
     def test_a_split_opener_in_plain_text_is_not_lost(self):
         llm, _ = _llm_with_stream([_chunk(content="a <"), _chunk(content="b"), _chunk(choices=False)])
         assert "".join(_stream(llm)) == "a <b"
@@ -287,6 +298,15 @@ class TestLocalOnlyRouting:
         with self._get(None, True):
             assert local_only_class() == 'OllamaLLM'
             assert parse_llm_config('smart') == ('OllamaLLM', None)
+
+    @pytest.mark.xfail(strict=True, reason="config_set stores the typed text, and local_only_class takes any "
+                                           "non-empty string as a class name: 'true' becomes the backend class "
+                                           "'true' (create_llm then fails at boot) and 'false' does not switch off")
+    def test_the_text_a_config_set_stores_means_the_same_as_the_bool(self):
+        with self._get(None, "true"):
+            assert local_only_class() == 'OllamaLLM'
+        with self._get(None, "false"):
+            assert local_only_class() is None
 
     def test_a_class_name_routes_every_cloud_tier_there_without_its_cloud_model(self):
         with self._get(None, 'Ds4LLM'):

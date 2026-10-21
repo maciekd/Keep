@@ -521,6 +521,22 @@ class TestAvailabilityHold:
         assert len(back) == 1 and back[0].content.startswith("Hue bridge") and back[0].timestamp == T0 + 700
         assert integration._outages == {}
 
+    def test_a_reported_outage_of_an_entity_gone_from_the_fresh_table_ends_without_a_row(self, integration, fake, hub):
+        # The entity was removed from HA while the socket was down: nothing is "available again",
+        # so the reported outage closes without the recovery row, and nothing waits for one.
+        self._outage(fake, hub, 0)
+        assert len(integration.fetch(None, backfill=False, now=T0 + 360).entries) == 1
+        table = {s["entity_id"]: s for s in fake.results["get_states"]}
+        table.pop("light.hall")
+        for entity_id in ("light.kitchen_spots", "cover.blinds"):
+            table[entity_id] = timed(entity_id, "on" if entity_id.startswith("light") else "open", 700)
+        fake.results["get_states"] = list(table.values())
+        fake.start()
+        assert integration._outages == {}
+        back = integration.fetch(None, backfill=False, now=T0 + 702).entries
+        assert len(back) == 1 and "Hall light" not in back[0].content
+        assert integration.fetch(None, backfill=False, now=T0 + 800).entries == []
+
     def test_an_entity_still_unavailable_at_a_reconnect_keeps_its_outage(self, integration, fake, hub):
         self._outage(fake, hub, 0)
         self._reconnect(fake, {"light.hall": ("on", 100), "light.kitchen_spots": ("unavailable", 0), "cover.blinds": ("unavailable", 0)})

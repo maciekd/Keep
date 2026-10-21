@@ -184,6 +184,21 @@ class TestRead:
             short = owner(commands_instance, "read_dropbox_file")._run_read(LEASE.path, 1)
         assert "page 1 of 1" in short and "Next:" not in short and "find_in_dropbox_file" not in short
 
+    def test_a_document_without_text_says_so_instead_of_an_empty_page(self, commands_instance):
+        integration = _integration()
+        integration.document.return_value = Document(LEASE, "   \n", "PDF", False)
+        with _with(integration):
+            reply = owner(commands_instance, "read_dropbox_file")._run_read(LEASE.path, 1)
+        assert "no text" in reply and "---" not in reply and "Lease 2024.pdf" in reply
+
+    def test_page_zero_and_a_negative_page_are_refused_like_one_past_the_end(self, commands_instance):
+        integration = _integration()
+        integration.document.return_value = Document(LEASE, "Short lease.", "PDF", True)
+        with _with(integration):
+            for number in (0, -2):
+                reply = owner(commands_instance, "read_dropbox_file")._run_read(LEASE.path, number)
+                assert reply.startswith("read_dropbox_file failed") and f"page {number}" in reply and "---" not in reply
+
     def test_a_page_past_the_end_says_how_many_there_are(self, commands_instance):
         integration = _integration()
         integration.document.return_value = Document(LEASE, "Short lease.", "PDF", True)

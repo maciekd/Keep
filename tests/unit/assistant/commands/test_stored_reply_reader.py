@@ -45,3 +45,61 @@ def test_a_call_that_never_closes_stays_prose(reader):
     reply = reader.read("I could run google( but will not")
     assert reply.prose == "I could run google( but will not" and not reply.before and not reply.after
 
+
+
+class TestTheInvokeFormat:
+    """A reply stored under Claude's own `<function_calls>` syntax: the reader parses it with the
+    active format, and a block holding several invokes — the format's native shape — is read
+    call by call."""
+
+    @pytest.fixture
+    def invoke_reader(self):
+        from assistant.commands.formats.CommandFormats import CommandFormats
+        from assistant.commands.formats.InvokeFormat import InvokeFormat
+        CommandFormats.set_active(InvokeFormat, "a test")
+        try:
+            yield StoredReplyReader()
+        finally:
+            CommandFormats.reset()
+
+    @staticmethod
+    def block(*invokes: tuple[str, str]) -> str:
+        body = "".join(f'<invoke name="{name}">\n<parameter name="device">{value}</parameter>\n</invoke>\n'
+                       for name, value in invokes)
+        return f"<function_calls>\n{body}</function_calls>"
+
+    @staticmethod
+    def guarded(reader, text):
+        """`read` with a bound: the reader loops forever on some blocks (the bug below), and a
+        hung test would hold its worker."""
+        import signal
+        def hung(*_):
+            raise AssertionError("StoredReplyReader.read did not return")
+        signal.signal(signal.SIGALRM, hung)
+        signal.setitimer(signal.ITIMER_REAL, 0.3)
+        try:
+            return reader.read(text)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+
+    def test_a_block_with_one_invoke_reads_like_a_keep_call(self, invoke_reader):
+        reply = self.guarded(invoke_reader, f"On it.\n{self.block(('turn_on', 'Kitchen lamp'))}\nDone.")
+        assert reply.prose == "On it.\n\nDone." and reply.before == []
+        assert len(reply.after) == 1 and "Kitchen lamp" in reply.after[0]
+
+    @pytest.mark.xfail(strict=True, reason="the reader finds the end of a call by the length of the format's "
+                                           "remainder, but a block's further invokes come back re-rendered, so "
+                                           "the cut lands inside the block: raw XML in the prose, one echo short")
+    def test_a_block_with_two_invokes_gives_two_echoes_and_no_xml(self, invoke_reader):
+        text = f"On it.\n{self.block(('turn_on', 'Kitchen lamp'), ('turn_off', 'Hall lamp'))}\nDone."
+        reply = self.guarded(invoke_reader, text)
+        assert reply.prose == "On it.\n\nDone."
+        assert len(reply.after) == 2 and "Kitchen lamp" in reply.after[0] and "Hall lamp" in reply.after[1]
+
+    @pytest.mark.xfail(strict=True, reason="a block whose re-rendered remainder is longer than the text makes the "
+                                           "cut negative, the remainder never shrinks and read() loops forever")
+    def test_a_block_of_short_invokes_does_not_hang_the_reader(self, invoke_reader):
+        text = ('<function_calls><invoke name="turn_on"></invoke><invoke name="turn_off"></invoke>'
+                '<invoke name="turn_on"></invoke></function_calls>')
+        reply = self.guarded(invoke_reader, text)
+        assert reply.prose == "" and len(reply.before) + len(reply.after) == 3

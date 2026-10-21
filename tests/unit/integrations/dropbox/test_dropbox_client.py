@@ -140,6 +140,43 @@ class TestErrors:
         with pytest.raises(DropboxError, match="folder, not a file"):
             client(fake).download("/Household")
 
+    @pytest.mark.parametrize("summary, fact", [
+        ("path/not_folder/..", "not a folder"),
+        ("path/malformed_path/..", "valid Dropbox path"),
+        ("path/restricted_content/..", "restricted"),
+        ("insufficient_permissions/..", "dropbox_login"),
+        ("missing_scope/files.content.read", "dropbox_login"),
+        ("unsupported_file/..", "export"),
+    ])
+    def test_each_dropbox_error_summary_is_a_sentence_about_what_to_do(self, summary, fact):
+        fake = FakeDropbox()
+        fake.route("/files/get_metadata", {"error_summary": summary, "error": {".tag": summary.split("/")[0]}}, status=409)
+        with pytest.raises(DropboxError) as caught:
+            client(fake).metadata("/a.txt")
+        assert fact in str(caught.value)
+
+    def test_an_unknown_409_is_given_with_its_summary_without_the_trailing_dots(self):
+        fake = FakeDropbox()
+        fake.route("/files/get_metadata", {"error_summary": "path/conflict/..", "error": {".tag": "path"}}, status=409)
+        with pytest.raises(DropboxError) as caught:
+            client(fake).metadata("/a.txt")
+        assert str(caught.value).endswith("path/conflict") and "409" in str(caught.value)
+
+    @pytest.mark.parametrize("header, wait", [
+        ({"Retry-After": "999"}, 30),      # clamped: no call waits half an hour
+        ({"Retry-After": "0"}, 1),
+        ({}, module.RETRY_AFTER),
+        ({"Retry-After": "soon"}, module.RETRY_AFTER),
+    ])
+    def test_the_retry_wait_is_dropboxs_clamped_to_a_sane_range(self, header, wait):
+        fake = FakeDropbox()
+        fake.routes["/users/get_current_account"] = [
+            FakeResponse(503, raw=b"<html>gateway</html>", headers=header),
+            FakeResponse(200, account()),
+        ]
+        client(fake).current_account()
+        module.time.sleep.assert_called_once_with(wait)
+
     def test_a_rate_limit_is_retried_once_after_the_wait_dropbox_names(self):
         fake = FakeDropbox()
         fake.routes["/users/get_current_account"] = [

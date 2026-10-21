@@ -75,6 +75,18 @@ class TestFolders:
         with _config(folders=["/"]):
             assert DropboxIntegration.folders() == [] and DropboxIntegration.refused("/x") == ""
 
+    def test_one_folder_written_as_a_string_is_that_folder_not_its_characters(self):
+        # `dropbox.folders: /Household` without the list dash: iterated as a string, "/" alone
+        # would open the whole Dropbox.
+        with _config(folders="/Household"):
+            assert DropboxIntegration.folders() == ["/Household"]
+            assert DropboxIntegration.refused("/Household/Lease.pdf") == ""
+            assert DropboxIntegration.refused("/Work/x.txt") != ""
+
+    def test_the_root_anywhere_in_the_list_opens_everything(self):
+        with _config(folders=["/Household", "/"]):
+            assert DropboxIntegration.folders() == [] and DropboxIntegration.refused("/Work/x.txt") == ""
+
     def test_a_search_without_a_folder_fans_out_over_the_roots(self):
         fake = FakeDropbox()
         fake.route("/files/search_v2", {"matches": [search_match(file_metadata("/Household/a.txt"))], "has_more": False})
@@ -154,6 +166,21 @@ class TestDocument:
         assert document.text.startswith("# Notes") and document.kind == "PAPER"
         assert not fake.sent("/files/download")
 
+    def test_a_paper_doc_without_a_content_hash_is_cached_by_path_and_date(self):
+        fake = FakeDropbox()
+        metadata = {**file_metadata("/Notes.paper", size=0, content_hash=""), "is_downloadable": False}
+        fake.route("/files/get_metadata", metadata)
+        fake.route("/files/export", raw="# Notes\n".encode())
+        with _config():
+            integration = build(fake)
+            integration.document("/Notes.paper")
+            again = integration.document("/notes.paper")
+            exports_before_the_edit = len(fake.sent("/files/export"))
+            fake.route("/files/get_metadata", {**metadata, "server_modified": "2024-04-01T10:00:00Z"})
+            edited = integration.document("/Notes.paper")
+        assert again.from_cache and exports_before_the_edit == 1, "the path's case does not make a new entry"
+        assert not edited.from_cache and len(fake.sent("/files/export")) == 2, "a later date does"
+
     def test_an_rtfd_bundle_is_read_through_the_txt_rtf_inside_it(self):
         fake = FakeDropbox()
         fake.route_answers("/files/get_metadata", (200, folder_metadata("/Recept/Kyckling.rtfd")),
@@ -230,6 +257,17 @@ class TestLogOut:
             outcome = DropboxIntegration.log_out()
         assert outcome and "revoked" in outcome and "deleted" in outcome
         assert not token_path().exists() and fake.sent("/auth/token/revoke")
+
+    def test_a_revoke_that_fails_still_deletes_the_token_without_claiming_it_revoked(self, fresh):
+        import requests
+        auth_module.DropboxAuth(lambda: "k")._save(token_file())
+        fake = FakeDropbox()
+        fake.transport_errors.append(requests.ConnectionError("down"))
+        real_client = module.DropboxClient
+        with _config(), patch.object(module, "DropboxClient", lambda auth, session=None: real_client(auth, fake)):
+            outcome = DropboxIntegration.log_out()
+        assert outcome and "deleted" in outcome and "revoked" not in outcome
+        assert not token_path().exists()
 
     def test_log_out_with_nothing_signed_in_does_nothing(self):
         with _config():
