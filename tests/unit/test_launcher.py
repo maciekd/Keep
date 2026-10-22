@@ -1,5 +1,6 @@
 """floxy_ai_server.build() with the voice interface disabled must import nothing voice-
 related — the Telegram-only install boots on the base requirements alone (Phase 6)."""
+import logging
 import sys
 from unittest.mock import Mock, patch
 
@@ -524,3 +525,26 @@ class TestFirstBootWhatsNew:
             assert "Spotify" not in history.add_context_message.call_args.args[1]
             assert StartupTracker.read_announced_release() == "v2026.10.243"
             assert StartupTracker.unannounced_release_notes() == ""
+
+
+@pytest.mark.unit
+class TestHttpxLogging:
+    def test_an_httpx_request_line_with_the_bot_token_never_reaches_the_log(self, caplog):
+        """httpx logs every request URL at INFO, and the Telegram Bot API's URL carries the bot
+        token (issue #97): once the boot has parsed its arguments an httpx INFO line is dropped
+        before any handler sees it, while httpx's warnings still get through."""
+        import floxy_ai_server
+        httpx_logger = logging.getLogger("httpx")
+        level_before = httpx_logger.level
+        try:
+            with patch.object(sys, 'argv', ['floxy_ai_server.py', '8888']), \
+                    patch.object(sys, 'stderr', Mock(spec=['write', 'flush'])):
+                port, testsuite = floxy_ai_server._parse_args()
+            assert (port, testsuite) == (8888, False)
+            with caplog.at_level(logging.INFO):
+                httpx_logger.info('HTTP Request: GET https://api.telegram.org/bot123456:FAKE-TOKEN/getUpdates "HTTP/1.1 200 OK"')
+                httpx_logger.warning("connection reset by api.telegram.org")
+            assert "FAKE-TOKEN" not in caplog.text
+            assert "connection reset" in caplog.text
+        finally:
+            httpx_logger.setLevel(level_before)

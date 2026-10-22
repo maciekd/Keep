@@ -1326,3 +1326,57 @@ def test_a_reply_within_the_command_cap_is_read_to_its_end(monkeypatch):
     assert "".join(output).strip() == "All done."
     assert dm.llm_response_raw.endswith("All done.")
     processor.kill()
+
+
+class OwnTurnAI(FakeAI):
+    """A backend with an answer to prefers_query_as_own_turn (ds4 says yes, every other no)."""
+
+    def __init__(self, chunks, own_turn: bool):
+        super().__init__(chunks)
+        self._own_turn = own_turn
+
+    def prefers_query_as_own_turn(self):
+        return self._own_turn
+
+
+@pytest.mark.unit
+def test_the_test_suite_query_is_its_own_turn_behind_an_ack_on_a_backend_that_asks(monkeypatch):
+    """ds4-server cuts its reusable disk checkpoint right before the prompt's last user turn,
+    so in the test suite the query goes after the toolkit result as a user turn of its own —
+    behind a short assistant turn, since two user-side turns in a row render into one block —
+    and the toolkit turn, a fixture PromptManager still holds, is left exactly as it was."""
+    dm, _ = make_dialog_manager(monkeypatch, ["ok"])
+    dm.ai = OwnTurnAI(["ok"], own_turn=True)
+    dm.test_suite_mode = True
+    shared_turn = {"role": "user", "content": "toolkit reference"}
+    dm.messages = [{"role": "system", "content": "system prompt"}, shared_turn]
+
+    list(dm.stream_llm_response())
+
+    assert dm.messages[1] is shared_turn and shared_turn == {"role": "user", "content": "toolkit reference"}
+    sent = dm.ai.observed_messages
+    roles = [m["role"] for m in sent]
+    assert roles[:4] == ["system", "user", "assistant", "user"]
+    assert all(a != b for a, b in zip(roles[1:], roles[2:]))   # never two turns of one role in a row
+    assert sent[3]["content"].startswith("Turn on the kitchen lights")
+    assert "Turn on the kitchen lights" not in sent[1]["content"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("test_suite_mode, own_turn", [(False, True), (True, False)])
+def test_the_query_merges_into_the_toolkit_turn_in_production_and_on_a_backend_that_does_not_ask(
+        monkeypatch, test_suite_mode, own_turn):
+    """The own turn is the test suite's on a backend that asks for it and nothing else: a
+    production request on ds4 keeps the merge, as does the suite on Claude or Gemini, which
+    reject same-role adjacency."""
+    dm, _ = make_dialog_manager(monkeypatch, ["ok"])
+    dm.ai = OwnTurnAI(["ok"], own_turn=own_turn)
+    dm.test_suite_mode = test_suite_mode
+    dm.messages = [{"role": "system", "content": "system prompt"}, {"role": "user", "content": "toolkit reference"}]
+
+    list(dm.stream_llm_response())
+
+    user_turns = [m for m in dm.ai.observed_messages if m["role"] == "user"]
+    assert len(user_turns) == 1
+    assert user_turns[0]["content"].startswith("toolkit reference\n\nTurn on the kitchen lights")
+    assert DialogManager.TEST_SUITE_TOOLKITS_ACK not in [m["content"] for m in dm.ai.observed_messages]

@@ -217,6 +217,70 @@ class TestStreamingEventHandling:
         assert ClaudeLLM.FAST_MODE_BETA in call_kwargs['betas']
 
 
+class ClosableEvents:
+    """An SDK event stream that records how far it was read and whether it was closed."""
+
+    def __init__(self, events):
+        self._events = iter(events)
+        self.consumed = 0
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        event = next(self._events)
+        self.consumed += 1
+        return event
+
+    def close(self):
+        self.closed = True
+
+
+def _text_delta(text: str):
+    event = MagicMock()
+    event.type = 'content_block_delta'
+    event.delta.type = 'text_delta'
+    event.delta.text = text
+    return event
+
+
+@patch("assistant.llm.ClaudeLLM.config")
+class TestStreamClosing:
+    """The dialog stops reading a reply at the command cap by closing the generator; the SDK
+    stream has to go with it, or the request — and the model's generation — runs on to the
+    model's own end (2026-10-21: 51 invokes in one reply)."""
+
+    def _llm(self, stream):
+        llm = ClaudeLLM.__new__(ClaudeLLM)
+        llm.client = Mock()
+        llm.model = "claude-sonnet-4-5"
+        llm.speed = None
+        llm.prompt_cache = True
+        llm.client.messages.create = Mock(return_value=stream)
+        return llm
+
+    def test_a_consumer_that_stops_reading_closes_the_sdk_stream_where_it_stopped(self, mock_config):
+        stream = ClosableEvents([_text_delta('one'), _text_delta('two'), _text_delta('three')])
+        reply = self._llm(stream).create_streaming_completion([{"role": "user", "content": "hi"}])
+        assert next(reply) == 'one'
+        assert not stream.closed
+        reply.close()
+        assert stream.closed
+        assert stream.consumed == 1
+
+    def test_a_reply_read_to_its_end_leaves_no_open_stream_behind(self, mock_config):
+        stream = ClosableEvents([_text_delta('one'), _text_delta('two')])
+        assert list(self._llm(stream).create_streaming_completion([{"role": "user", "content": "hi"}])) == ['one', 'two']
+        assert stream.closed
+
+    def test_a_stream_without_a_close_is_read_as_before(self, mock_config):
+        reply = self._llm(iter([_text_delta('one'), _text_delta('two')])).create_streaming_completion(
+            [{"role": "user", "content": "hi"}])
+        assert next(reply) == 'one'
+        reply.close()
+
+
 @patch("assistant.llm.ClaudeLLM.config")
 class TestStreamingRetry:
     def test_retries_on_500_then_succeeds(self, mock_config):

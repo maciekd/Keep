@@ -114,6 +114,19 @@ class TestSetup:
         with p1, p2:
             assert Ds4LLM().prefers_prepended_user_query() is False
 
+    def test_its_cache_preferences_reach_the_dialog_through_the_wrapper_create_llm_puts_around_it(self):
+        """ds4 reuses its live context only for a prompt that extends the previous one token for
+        token, and its disk checkpoint is cut before the last user turn: the dialog must hear
+        both answers through the VaultLLM every backend is wrapped in — AbstractLLM's own
+        defaults say no to both, and they win over the wrapper's __getattr__ — or the directive
+        tail diverges the prefix every round and the suite's query merges into the toolkit turn."""
+        p1, p2 = _config({})
+        with p1, p2:
+            wrapped = create_llm('Ds4LLM')
+            assert wrapped.prefers_byte_prefix_tail() is True
+            assert wrapped.prefers_query_as_own_turn() is True
+            assert wrapped.prefers_prepended_user_query() is False
+
 
 class TestReasoningEffort:
     def test_an_unknown_effort_spelling_falls_back_to_the_default(self):
