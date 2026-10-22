@@ -1458,13 +1458,14 @@ class TestBrowseScreenshot:
         assert "(0, 300)" in text
 
     def test_tall_page_gets_a_factor_per_axis(self, tmp_path):
-        # The downscale rounds each dimension down separately: a 1920x30000 page becomes
-        # a 65x1024 image, 29.54 CSS px per image px across but 29.30 down — one factor
-        # would put a click near the bottom some 240 CSS px off.
-        geometry = {'vw': 1920, 'vh': 1080, 'dpr': 1, 'sx': 0, 'sy': 0}
-        text = self._screenshot_text(tmp_path, self._png(1920, 30000), geometry)
+        # The downscale rounds each dimension down separately: a 192x3000 page becomes
+        # a 65x1024 image (65.5 truncated), 2.95 CSS px per image px across but 2.93 down —
+        # one factor would put a click near the bottom some 24 CSS px off. (A page ten times
+        # the size shows the same thing and costs half a second to encode.)
+        geometry = {'vw': 192, 'vh': 1080, 'dpr': 1, 'sx': 0, 'sy': 0}
+        text = self._screenshot_text(tmp_path, self._png(192, 3000), geometry)
         assert "65x1024 px" in text
-        assert "multiply image x by 29.54 and image y by 29.30" in text
+        assert "multiply image x by 2.95 and image y by 2.93" in text
 
     def test_reply_has_no_factor_when_the_page_size_is_unknown(self, tmp_path):
         png = self._real_png_bytes()
