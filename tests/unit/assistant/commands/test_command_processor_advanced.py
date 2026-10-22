@@ -2160,6 +2160,40 @@ class TestCommandCap:
         assert not processor.reply_cut
         assert "all done" in shown
 
+    def test_the_cut_goes_to_the_llm_as_a_command_reply_so_a_follow_up_round_comes(self, processor, dm):
+        """Ten silent commands (turn_on) leave no reply of their own: without the note the
+        request ended "completed silently" and the eleventh command vanished unmentioned."""
+        cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
+        for i in range(cap + 1):
+            processor.process(f"turn_on(lamp {i}) ", dm)
+        processor.command_queue.join()
+        assert processor.reply_cut
+        assert processor.command_reply is not None
+        assert processor.command_reply_contains_error   # framed as a report of what did not run
+        assert str(cap) in processor.command_reply
+
+    def test_a_reply_within_the_cap_leaves_no_command_reply(self, processor, dm):
+        processor.process("turn_on(lamp) ", dm)
+        processor.command_queue.join()
+        assert processor.command_reply is None
+
+    def test_a_new_reply_through_the_same_processor_starts_the_cap_over(self, processor, dm):
+        """The autonomous check feeds every round of a check through one processor: the cap is
+        the reply's, not the check's — left standing, every reply after the cut was dropped."""
+        cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
+        for i in range(cap + 1):
+            processor.process(f"turn_on(lamp {i}) ", dm)
+        assert processor.reply_cut
+        processor.clear_command_reply()
+
+        processor.start_new_reply()
+
+        assert not processor.reply_cut and processor.commands_dispatched == 0
+        shown = processor.process("turn_on(lamp) done", dm) or ""
+        shown += processor.flush_buffer(dm) or ""
+        assert processor.commands_dispatched == 1
+        assert "done" in shown
+
 
 @pytest.mark.unit
 class TestRemainderAfterACommand:

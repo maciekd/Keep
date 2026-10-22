@@ -33,8 +33,14 @@ class CommandProcessor:
     # The runaway guard: a reply is read up to this many calls and the stream is dropped
     # there (2026-10-21: Opus wrote 51 history searches in one reply, a 660 KB result).
     # The calls read run as usual; the stored turn is cut after the last of them
-    # (`CommandFormat.cut`), so the next round looks like a reply of exactly that many.
+    # (`CommandFormat.cut`), so the next round looks like a reply of exactly that many — and
+    # the command reply says the rest was dropped, so a follow-up round always comes
+    # (ten silent commands alone would end the request with the eleventh lost unmentioned).
     MAX_COMMANDS_PER_REPLY = 10
+    CUT_NOTE = ("Your reply was cut after {cap} commands, the most one reply may run: the first {cap} "
+                "ran, nothing after the last of them was read, so any later command in the reply did "
+                "not run and no text after it reached the user. Continue from here, {cap} commands per "
+                "reply at most.")
 
     def __init__(self, test_suite_mode: bool):
         self.previous_content_buffer = ""
@@ -277,8 +283,8 @@ class CommandProcessor:
         self._log_command_reply(content)
         self._resolve_orphan_if_any()
 
-    # Only called with command errors, approval denials and the unterminated-command
-    # report — flags the reply so _handle_background_commands frames the follow-up round
+    # Only called with command errors, approval denials, the unterminated-command report and
+    # the cut note — flags the reply so _handle_background_commands frames the follow-up round
     # as an error report.
     def append_command_reply(self, content: str):
         self._sync_replies.append(content)
@@ -348,6 +354,19 @@ class CommandProcessor:
         self.thinking_content_buffer = ""
         self.in_thinking_tag = False
         self.thinking_start_time = None
+
+    def start_new_reply(self):
+        """A later reply fed through the same processor (the autonomous check keeps one for
+        all its rounds; a request builds one per round): the parse state and the cap are
+        the reply's, so they start over. Left standing, a cut in one reply dropped every
+        later reply of the check unread (2026-10-22)."""
+        if self.commands_dispatched or self.reply_cut:
+            trace(f"New reply through the same processor: the cap starts over "
+                  f"({self.commands_dispatched} dispatched, cut: {self.reply_cut})")
+        self.reset_parse_state()
+        self.commands_dispatched = 0
+        self.reply_cut = False
+        self.unterminated_command_report = None
 
     # Runs on: command worker thread (called from Commands.background_command)
     def background_command_start(self):
@@ -538,6 +557,7 @@ class CommandProcessor:
                          f"dropped unread: {self.previous_content_buffer[:80]!r}")
                     self.reply_cut = True
                     self.previous_content_buffer = ""
+                    self.append_command_reply(self.CUT_NOTE.format(cap=self.MAX_COMMANDS_PER_REPLY))
                     return None
                 # Go again on what is left. It was filtered for thinking tags before it entered
                 # the buffer, so it goes straight back here: `process` would prepend the partial

@@ -570,6 +570,8 @@ class AutonomousActionManager:
                 # Add assistant response to messages for potential next iteration
                 messages.append({"role": "assistant", "content": result})
 
+                # The same processor reads every round of the check: the command cap is per reply.
+                command_processor.start_new_reply()
                 stray = self._run_commands(result, command_processor)
 
                 # Wait for queued follow-up commands to be picked up and processed

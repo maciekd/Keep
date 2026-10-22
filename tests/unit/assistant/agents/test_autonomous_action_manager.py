@@ -1714,6 +1714,35 @@ def Toolkits_header() -> str:
         kwargs = [c.kwargs for c in llm.think_with_messages.call_args_list]
         assert kwargs == [{"volatile_tail": 1, "follow_up": False}, {"volatile_tail": 0, "follow_up": True}]
 
+    def test_a_follow_up_round_after_a_cut_reply_runs_its_commands(self):
+        """One processor serves every round of a check. A first reply past the command cap
+        left the cap state standing, so the follow-up's commands — the post_message that is
+        the check's only output — were dropped unread (2026-10-22)."""
+        from assistant.commands.CommandProcessor import CommandProcessor
+        mgr, llm = make_manager()
+        cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
+        runaway = " ".join(f"turn_on(lamp {i})" for i in range(cap + 2))
+        llm.think_with_messages.side_effect = [runaway, "turn_on(hall lamp)", "NO"]
+        processors = []
+
+        def real_processor(test_mode):
+            processors.append(CommandProcessor(test_suite_mode=True))
+            return processors[-1]
+
+        mgr.test_mode = False
+        try:
+            with patch('assistant.commands.CommandProcessor.CommandProcessor', side_effect=real_processor):
+                mgr.activity_check(prompt="test prompt")
+        finally:
+            mgr.test_mode = True
+            for processor in processors:
+                processor.kill()
+
+        assert len(processors) == 1
+        processor = processors[0]
+        assert llm.think_with_messages.call_count == 2   # the cut round, then the follow-up it earned
+        assert not processor.reply_cut and processor.commands_dispatched == 1   # the follow-up's command ran
+
     def test_the_refusal_fallback_gets_the_same_volatile_tail(self):
         mgr, llm = make_manager()
         llm.think_with_messages.side_effect = LLMRefusalError("refused")
