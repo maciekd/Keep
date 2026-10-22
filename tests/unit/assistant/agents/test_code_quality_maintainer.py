@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -608,6 +608,11 @@ class TestStepLogTriage:
     def test_returns_empty_on_error(self, mock_claude):
         assert CodeQualityMaintainer._step_log_triage() == ""
 
+    @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=ClaudeUsageLimitError("log-triage", "out of usage credits"))
+    def test_a_failed_claude_run_reaches_the_night(self, mock_claude):
+        with pytest.raises(ClaudeUsageLimitError):
+            CodeQualityMaintainer._step_log_triage()
+
 
 @pytest.mark.unit
 class TestFixInput:
@@ -945,10 +950,35 @@ class TestRunClaude:
         assert CodeQualityMaintainer._run_claude("prompt", "label") == "Please run /login is the fix."
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    def test_failed_run_without_login_markers_is_returned_for_the_caller_to_judge(self, mock_popen):
+    def test_a_flagged_result_is_a_failed_run_not_a_report(self, mock_popen):
+        """Taken as a report, the CLI's reason stood as the night's bug analysis."""
         lines = ['{"type": "result", "is_error": true, "result": "Rate limit reached, try again later"}\n']
         mock_popen.return_value = _mock_popen(lines)
-        assert CodeQualityMaintainer._run_claude("prompt", "label") == "Rate limit reached, try again later"
+        with pytest.raises(ClaudeRunFailedError) as exc:
+            CodeQualityMaintainer._run_claude("prompt", "bug-analysis")
+        assert "Rate limit reached" in str(exc.value) and "bug-analysis" in str(exc.value)
+        assert not exc.value.stops_the_night   # the next step may still run
+
+    @pytest.mark.parametrize("flagged", [True, False])
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_the_out_of_credits_answer_stops_the_night_whether_or_not_the_cli_flags_it(self, mock_popen, flagged):
+        text = ("You're out of usage credits. Switch to another model, or manage usage credits at "
+                "https://claude.ai/settings/usage, to continue.")
+        lines = [json.dumps({"type": "result", "is_error": flagged, "result": text}) + "\n"]
+        mock_popen.return_value = _mock_popen(lines)
+        with pytest.raises(ClaudeUsageLimitError) as exc:
+            CodeQualityMaintainer._run_claude("prompt", "log-triage")
+        assert exc.value.stops_the_night
+        assert "out of usage credits" in str(exc.value)
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_a_report_that_discusses_usage_limits_is_a_report(self, mock_popen):
+        """The unflagged marker check is for the CLI's one-line message, not a report's length."""
+        report = ("Bug: the retry loop never gives up on a spend limit error from the API. "
+                  + "The loop at Retry.py:12 reads the status and tries again. " * 8)
+        lines = [json.dumps({"type": "result", "is_error": False, "result": report}) + "\n"]
+        mock_popen.return_value = _mock_popen(lines)
+        assert CodeQualityMaintainer._run_claude("prompt", "label").startswith("Bug: the retry loop")
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_handles_invalid_json(self, mock_popen):
@@ -1318,6 +1348,44 @@ class TestExecuteNightlyRun:
         text = self.fix.call_args[0][0]
         bugs, logs = text.index("| Major | foo.py:3 |"), text.index("| Critical | bar.py:9 |")
         assert text.index("# Bug Analysis") < bugs < text.index("# Log Triage") < logs
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_out_of_credits_at_the_bug_analysis_skips_the_later_claude_steps_and_the_report_says_so(
+            self, mock_sub, mock_commits, maintainer):
+        """2026-10-22: the four later steps each came back with the credits line in a second, the
+        fix step read "nothing Critical or Major" in them and the night mailed "nothing to fix"."""
+        self.logs.return_value = "| Major | bar.py:9 | a feed stalled |"
+        self.merge.return_value = "merged #11"
+        limit = ClaudeUsageLimitError("bug-analysis", "You're out of usage credits.")
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', side_effect=limit), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value="pinned"), \
+                patch.object(CodeQualityMaintainer, '_markdown_to_html', side_effect=lambda md: md), \
+                patch.object(CodeQualityMaintainer, '_send_email') as send:
+            maintainer._execute_nightly_run()
+        for step in (self.logs, self.fix, self.health, self.pins):
+            step.assert_not_called()
+        self.merge.assert_called_once()   # no Claude in it
+        text = send.call_args[0][1]
+        assert "out of usage credits" in text and "bug analysis" in text
+        assert text.index("# Log Triage") < text.index("Not run") < text.index("merged #11")
+        assert "a feed stalled" not in text
+
+    @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_failed_run_that_is_not_the_credits_leaves_the_night_going_and_names_itself_to_the_fix_step(
+            self, mock_sub, mock_commits, maintainer):
+        self.logs.return_value = "| Major | bar.py:9 | a feed stalled |"
+        failed = ClaudeRunFailedError("bug-analysis", "Reached max turns (50)")
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', side_effect=failed), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_send_email'):
+            maintainer._execute_nightly_run()
+        self.fix.assert_called_once()
+        text = self.fix.call_args[0][0]
+        assert text.index("# Bug Analysis") < text.index("max turns") < text.index("# Log Triage") < text.index("a feed stalled")
+        self.health.assert_called_once()
+        self.pins.assert_called_once()
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
     @patch.object(CodeQualityMaintainer, '_run_subprocess')

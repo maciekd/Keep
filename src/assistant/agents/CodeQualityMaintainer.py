@@ -36,6 +36,13 @@ API_KEY_CONFIG_KEY = "api_keys.anthropic"   # stands in for a Claude Code login,
 API_KEY_ENV = "ANTHROPIC_API_KEY"            # how the CLI takes a key: its environment, never argv
 CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS"  # "Name: Value" lines the CLI adds to every request
 NOT_LOGGED_IN_MARKERS = ("not logged in", "please run /login", "invalid api key")
+# What the CLI answers in place of a report when the subscription's credits are gone (2026-10-22:
+# "You're out of usage credits…" after a 24-minute bug analysis) or its spend limit is hit — every
+# later run of the night answers the same within a second, so the night stops its Claude steps.
+USAGE_LIMIT_MARKERS = ("out of usage credits", "spend limit", "usage limit")
+# A result the CLI did not flag counts as the limit message only when it is one: a sentence or
+# two, never the length of a report that happens to discuss a limit.
+USAGE_LIMIT_MESSAGE_MAX_CHARS = 400
 CREDENTIALS_HINT = (
     f"Either put an Anthropic API key in config.yaml ({API_KEY_CONFIG_KEY}; the runs are then billed "
     "per token to that key), or log in with a claude.ai subscription: open a terminal on the server "
@@ -120,7 +127,9 @@ _nightly_lock = threading.Lock()   # the scheduled run and //nightly work in the
 
 
 class ClaudeUnavailableError(RuntimeError):
-    """The `claude` CLI on the server cannot run a job; the message says what to do about it."""
+    """The `claude` CLI on the server cannot run a job; the message says what to do about it.
+    `stops_the_night`: whether every later Claude Code run of the night would fail the same way."""
+    stops_the_night = True
 
 
 class ClaudeNotLoggedInError(ClaudeUnavailableError):
@@ -134,6 +143,20 @@ class ClaudeNotInstalledError(ClaudeUnavailableError):
     """No `claude` binary on the PATH or at the installer's default location."""
     def __init__(self):
         super().__init__(NOT_INSTALLED_MESSAGE)
+
+
+class ClaudeRunFailedError(ClaudeUnavailableError):
+    """The `claude` CLI flagged a run as failed and answered with the reason (a rate limit, the
+    turn cap) in place of a report — the step produced nothing; the next one may still run."""
+    stops_the_night = False
+
+    def __init__(self, label: str, reason: str):
+        super().__init__(f"Claude Code did not finish the {label} run: {reason}")
+
+
+class ClaudeUsageLimitError(ClaudeRunFailedError):
+    """The subscription's credits or spend limit are used up: no later run tonight can do better."""
+    stops_the_night = True
 
 
 def claude_path() -> Optional[str]:
@@ -654,8 +677,15 @@ class CodeQualityMaintainer:
                  "open pins run tonight, the steps about the commits are skipped.")
             keys = ["logs", "fix", "merge", "pins"]
         sections = []
+        claude_down: ClaudeUnavailableError | None = None
+        failed_at = None
         for key in keys:
             title, step = REPORT_TITLES[key], steps[key]
+            if claude_down and key != "merge":
+                info(f"CodeQualityMaintainer: {title} skipped — Claude Code failed at the {failed_at}.")
+                reports[key] = f"Not run: Claude Code failed at the {failed_at}. {claude_down}"
+                sections.append((key, reports[key]))
+                continue
             try:
                 report = step()
                 reports[key] = report
@@ -663,6 +693,12 @@ class CodeQualityMaintainer:
                     sections.append((key, report))
                 else:
                     info(f"CodeQualityMaintainer: {title} produced no report.")
+            except ClaudeUnavailableError as e:
+                error(f"CodeQualityMaintainer: {title} did not run — {e}")
+                reports[key] = f"**The {title.lower()} did not run.** {e}"
+                sections.append((key, reports[key]))
+                if e.stops_the_night:
+                    claude_down, failed_at = e, title.lower()
             except Exception as e:
                 error(f"CodeQualityMaintainer: {title} exception: {e}")
         if sections:
@@ -966,7 +1002,8 @@ class CodeQualityMaintainer:
             preview = result[:200] if result else "(empty)"
             facts = [f"${cost:.4f}" if cost else "",
                      f"{obj['num_turns']} turns" if obj.get("num_turns") else "",
-                     f"{obj['duration_ms'] / 1000:.0f} s" if obj.get("duration_ms") else ""]
+                     f"{obj['duration_ms'] / 1000:.0f} s" if obj.get("duration_ms") else "",
+                     "flagged as failed" if obj.get("is_error") else ""]
             facts_str = ", ".join(f for f in facts if f)
             return f"RESULT ({facts_str}): {preview}" if facts_str else f"RESULT: {preview}"
         return None
@@ -1039,6 +1076,17 @@ class CodeQualityMaintainer:
                 or CodeQualityMaintainer._is_not_logged_in(stderr):
             error(f"CodeQualityMaintainer [{label}] Claude Code is not logged in on this machine: {output.strip() or stderr.strip()}")
             raise ClaudeNotLoggedInError()
+        # A flagged result is the CLI's reason, not a report: taken as one, the out-of-credits line
+        # was the night's bug analysis and the fix step read "nothing Critical or Major" in it.
+        if result_is_error or (len(result_text) <= USAGE_LIMIT_MESSAGE_MAX_CHARS
+                               and CodeQualityMaintainer._is_usage_limit(result_text)):
+            reason = (output or stderr).strip() or "no reason given"
+            if CodeQualityMaintainer._is_usage_limit(reason):
+                error(f"CodeQualityMaintainer [{label}] Claude Code is out of usage credits — no run tonight can "
+                      f"do better: {reason}")
+                raise ClaudeUsageLimitError(label, reason)
+            error(f"CodeQualityMaintainer [{label}] Claude Code flagged the run as failed: {reason}")
+            raise ClaudeRunFailedError(label, reason)
         if output and status.api_key:
             info(f"CodeQualityMaintainer [{label}] the run was billed to {API_KEY_CONFIG_KEY}"
                  f"{f' (${cost_usd:.2f})' if cost_usd else ''}: the report says so")
@@ -1049,6 +1097,11 @@ class CodeQualityMaintainer:
     def _is_not_logged_in(text) -> bool:
         lowered = (text or "").lower()
         return any(marker in lowered for marker in NOT_LOGGED_IN_MARKERS)
+
+    @staticmethod
+    def _is_usage_limit(text) -> bool:
+        lowered = (text or "").lower()
+        return any(marker in lowered for marker in USAGE_LIMIT_MARKERS)
 
     def _step_generate_tests(self) -> str:
         """First step of the night: the tests the last days' commits lack, as a tests-only PR
@@ -1061,6 +1114,8 @@ class CodeQualityMaintainer:
             trace("Starting Claude Code in the background...")
             report = CodeQualityMaintainer._run_claude(GENERATE_TESTS_PROMPT, "generate-tests")
             info("CodeQualityMaintainer: test generation complete.")
+        except ClaudeUnavailableError:
+            raise   # the night reports it and knows whether to go on
         except Exception as e:
             error(f"CodeQualityMaintainer: test generation failed: {e}")
             return ""
@@ -1089,6 +1144,8 @@ class CodeQualityMaintainer:
                 TEST_HEALTH_PROMPT.format(runs=TEST_HEALTH_RUNS, slow_ms=SLOW_TEST_MS), "test-health")
             info("CodeQualityMaintainer: test health complete.")
             return report
+        except ClaudeUnavailableError:
+            raise   # the night reports it and knows whether to go on
         except Exception as e:
             error(f"CodeQualityMaintainer: test health failed: {e}")
             return ""
@@ -1103,6 +1160,8 @@ class CodeQualityMaintainer:
             report = CodeQualityMaintainer._run_claude(BUG_ANALYSIS_PROMPT, "bug-analysis")
             info("CodeQualityMaintainer: bug analysis complete.")
             return report
+        except ClaudeUnavailableError:
+            raise   # the night reports it and knows whether to go on
         except Exception as e:
             error(f"CodeQualityMaintainer: bug analysis failed: {e}")
             return ""
@@ -1118,6 +1177,8 @@ class CodeQualityMaintainer:
             report = CodeQualityMaintainer._run_claude(LOG_TRIAGE_PROMPT.format(hours=LOG_TRIAGE_HOURS), "log-triage")
             info("CodeQualityMaintainer: log triage complete.")
             return report
+        except ClaudeUnavailableError:
+            raise   # the night reports it and knows whether to go on
         except Exception as e:
             error(f"CodeQualityMaintainer: log triage failed: {e}")
             return ""
@@ -1149,6 +1210,8 @@ class CodeQualityMaintainer:
             report = CodeQualityMaintainer._run_claude(OPEN_PINS_PROMPT, "open-pins")
             info("CodeQualityMaintainer: open pins complete.")
             return report
+        except ClaudeUnavailableError:
+            raise   # the night reports it and knows whether to go on
         except Exception as e:
             error(f"CodeQualityMaintainer: open pins failed: {e}")
             return ""
