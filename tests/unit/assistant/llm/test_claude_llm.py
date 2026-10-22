@@ -817,3 +817,14 @@ class TestTestSuiteCachedTail:
                                                                 thinking=True, stream=True)
         assert len(params["messages"][-1]["content"]) == 1
         assert _breakpoints(params) == 3
+
+    def test_a_turn_that_is_the_toolkit_result_alone_is_one_block_never_an_empty_one(self):
+        # Contract with the Messages API: a text block with no text is refused with a 400, so a
+        # turn that ends where the tail ends gets the breakpoint and nothing after it.
+        messages = _test_suite_messages(SYSTEM_TWO_BLOCKS)
+        messages[-1] = {"role": "user", "content": TOOLKIT_TAIL}
+        params = ClaudeLLM("claude-opus-5-5")._build_api_params(messages, thinking=True, stream=True)
+        blocks = params["messages"][-1]["content"]
+        assert [b["text"] for b in blocks] == [TOOLKIT_TAIL]
+        assert all(b["text"].strip() for m in params["messages"] if isinstance(m["content"], list) for b in m["content"])
+        assert "cache_control" in blocks[0]

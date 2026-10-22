@@ -2264,3 +2264,18 @@ def test_a_live_section_update_never_rebuilds_the_test_suite_prompt(prompt_test_
 
     assert manager.prompt == baked == prompt_test_environment["testsuite_prompt"]
     assert manager.get_messages()[0] == {"role": "system", "content": baked}
+
+
+@pytest.mark.unit
+def test_the_last_baked_section_of_the_test_suite_prompt_runs_to_its_end(prompt_test_environment):
+    """Nothing bounds the section when no top-level heading follows it: the data runs to the end
+    of the prompt, its own sub-headings included, instead of coming back empty."""
+    from assistant.commands import Toolkits
+    (prompt_test_environment["root"] / "testsuite_prompt.md").write_text(
+        "Header\n\n# CURRENT CAR INFO\nKEP 47L parked at home\n\n# HOME AUTOMATION DATA\n"
+        "## LIGHTS\n\"Lamp [Kök]\": off\n\n## VARIABLES\n\"Alarm\": armed\n")
+
+    data = PromptManager(test_suite=True).carried_data(Toolkits.by_name("home"), record=False)
+
+    assert '"Lamp [Kök]": off' in data and '"Alarm": armed' in data
+    assert "KEP 47L" not in data

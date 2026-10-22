@@ -2159,3 +2159,39 @@ class TestCommandCap:
         assert processor.commands_dispatched == cap - 1
         assert not processor.reply_cut
         assert "all done" in shown
+
+
+@pytest.mark.unit
+class TestRemainderAfterACommand:
+    """The text left in the buffer after a command ran was filtered for thinking tags before it
+    was buffered, so it is parsed again straight away: feeding it back through `process` put
+    the partial tag the filter was holding — text that arrived after the remainder — in front
+    of it, and the next call leaked as text."""
+
+    @pytest.fixture
+    def processor(self):
+        processor = CommandProcessor(test_suite_mode=True)
+        processor.calls = []
+        processor.invoke_command = lambda name, params, dm: processor.calls.append((name, params))
+        yield processor
+        processor.kill()
+
+    @pytest.fixture
+    def dm(self):
+        dm = Mock()
+        dm.is_killed = False
+        return dm
+
+    REPLY = "turn_on(Lamp)\nturn_on(Hall)\n<thinking>which one next</thinking>\nDone."
+
+    @pytest.mark.parametrize("size", range(1, 16))
+    def test_two_calls_run_and_the_thinking_stays_hidden_at_every_chunk_boundary(self, processor, dm, size):
+        shown = ""
+        for i in range(0, len(self.REPLY), size):
+            if (text := processor.process(self.REPLY[i:i + size], dm)) is not None:
+                shown += text
+        if (text := processor.flush_buffer(dm)) is not None:
+            shown += text
+        assert processor.calls == [("turn_on", ["Lamp"]), ("turn_on", ["Hall"])]
+        assert "which one next" not in shown and "<" not in shown
+        assert shown.strip() == "Done."

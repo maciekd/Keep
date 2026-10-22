@@ -254,3 +254,29 @@ class TestSshLogSource:
         assert mock_run.call_count == 1
         source._disabled_until = 0.0   # the cooldown expires
         assert source.size() == 42
+
+
+class TestMeasuredRate:
+    def test_a_progress_line_read_again_keeps_the_time_it_was_first_seen(self, tracker, log_path):
+        """The measured rate is the tokens of the latest progress line over the time from the
+        request's start to the moment that line was read: a later read of the same line must
+        not move that moment, or the rate would sink at every poll while the engine is quiet,
+        and a new line must."""
+        token = tracker.begin()
+        _append(log_path, "work 0 2000\nstep 500 2000\n")
+        tracker.work(token, force=True)
+        request = tracker._find(token)
+        first_seen = request.progress_ts
+        request.start_ts = first_seen - 2.0
+        assert tracker.rate() == pytest.approx(250.0)
+
+        request.read_ts = 0.0   # the next poll slot has come; the log has nothing new
+        tracker.work(token, force=True)
+        assert request.progress_ts == first_seen
+        assert tracker.rate() == pytest.approx(250.0)
+
+        _append(log_path, "step 1500 2000\n")
+        tracker.work(token, force=True)
+        assert request.progress_ts > first_seen
+        assert request.progress == (1500, 2000)
+        tracker.end(token)
