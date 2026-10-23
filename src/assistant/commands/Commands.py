@@ -140,8 +140,9 @@ class Commands:
     PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
     # Actions whose effect is the answer: a request ending on them without a word stays
     # silent. Any other command ending a silent request gets one more round to reply
-    # (RequestProcessor._reply_owed). restart_server reports through a system note.
-    SELF_EVIDENT_COMMANDS = frozenset({"turn_on", "turn_off", "stop", "dim", "restart_server"})
+    # (RequestProcessor._reply_owed). restart_server reports through a system note;
+    # false_positive is the wake-word misfire, which must never be answered aloud.
+    SELF_EVIDENT_COMMANDS = frozenset({"turn_on", "turn_off", "stop", "dim", "restart_server", "false_positive"})
     AI_MESSAGE_SUFFIX = "[Sent with the help of AI 🤖]"
     # The footer is on unless config.yaml says ai_message_footer: false — read at each send.
     AI_FOOTER_KEY = "ai_message_footer"

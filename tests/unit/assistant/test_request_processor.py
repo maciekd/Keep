@@ -865,6 +865,16 @@ class TestHandleBackgroundCommands:
         handler.request_context.test = True
         assert self._end_request(handler, self._silent_dm("checked_watch(news)")) == []
 
+    def test_a_wake_word_misfire_is_not_answered(self, handler):
+        """false_positive() is the LLM saying the input was not meant for it: the request ends
+        there, without a round that would speak a reply to gibberish."""
+        from assistant.commands.Commands import Commands
+        with patch.object(Commands, '_mail_access', return_value=Mock()):
+            resolver = Commands(Mock(), command_sets=[]).is_self_evident
+        dm = self._silent_dm("false_positive()")
+        dm.command_processor.commands.is_self_evident.side_effect = resolver
+        assert self._end_request(handler, dm) == []
+
     # --- a round the LLM ended at its output cap ---
 
     def _cut_dm(self, said="", cap=16000):
