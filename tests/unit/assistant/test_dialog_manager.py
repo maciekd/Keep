@@ -231,6 +231,21 @@ def test_stream_llm_response_propagates_cache_query_to_cached_llm(monkeypatch):
 
 
 @pytest.mark.unit
+def test_a_round_that_produced_no_text_leaves_no_empty_assistant_turn(monkeypatch):
+    """The output cap spent on native thinking: the stream ends with nothing received. The
+    request circles back on these messages, and the Messages API rejects an empty
+    non-final assistant message, so a placeholder stands for the turn — while the round's
+    own record stays empty, so nothing is read back to the user or stored as said."""
+    dm, _ = make_dialog_manager(monkeypatch, [])
+
+    list(dm.stream_llm_response())
+
+    assert dm.llm_response_raw == ""
+    assert dm.messages[-1]["role"] == "assistant"
+    assert dm.messages[-1]["content"].strip()
+
+
+@pytest.mark.unit
 def test_stream_llm_response_respects_initial_kill(monkeypatch):
     dm, _ = make_dialog_manager(monkeypatch, [])
     dm.is_killed = True

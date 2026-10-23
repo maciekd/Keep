@@ -379,7 +379,18 @@ class DialogManager:
         # processor rescued is written in the active one, so the model never sees that shape
         # in its own past turns (the feedback loop that made Opus repeat it).
         self.llm_response_raw = self.command_processor.format.rewritten(self.llm_response_raw)
-        self.messages.append({"role": "assistant", "content": self.llm_response_raw})
+        self.messages.append({"role": "assistant", "content": self._turn_for_messages()})
+
+    # What stands for an assistant turn that produced no text — the output cap spent on
+    # thinking (native, so not in the stream) — when the request circles back on it: the
+    # Messages API rejects an empty or whitespace-only non-final message with a 400.
+    EMPTY_TURN_PLACEHOLDER = "[no reply was produced in this round]"
+
+    def _turn_for_messages(self) -> str:
+        if self.llm_response_raw.strip():
+            return self.llm_response_raw
+        info("The round produced no text — a placeholder stands for it in the request's messages")
+        return self.EMPTY_TURN_PLACEHOLDER
 
     STREAM_DROP_RETRIES = 2
     STREAM_DROP_RETRY_DELAY = 1.0
