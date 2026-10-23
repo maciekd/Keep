@@ -1,6 +1,7 @@
 """floxy_ai_server.build() with the voice interface disabled must import nothing voice-
 related — the Telegram-only install boots on the base requirements alone (Phase 6)."""
 import logging
+import pathlib
 import sys
 from unittest.mock import Mock, patch
 
@@ -215,6 +216,50 @@ class TestInterfaceFlags:
         assert floxy_ai_server._enabled("http", running_as_testsuite=True) is True
         with patch.object(config, 'get', side_effect=lambda key, default=None: default):
             assert floxy_ai_server._enabled("console", running_as_testsuite=False) is True
+
+
+@pytest.mark.unit
+class TestTestsuiteDatabase:
+    def test_a_testsuite_server_gets_a_fresh_database_of_its_own_per_port(self, tmp_path):
+        """The prompt suite's servers run from the developer's checkout, so without this their
+        dialog would land in the live floxy.db and show up in the live console's history at its
+        next reload. Each server (one per port) gets an empty file of its own under cache/, and
+        a file a previous run of the same port left is not reused — a test's history must not
+        depend on the previous run's."""
+        from common.FloxyDatabase import FloxyDatabase
+        import floxy_ai_server
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        stale = {port: cache / f"testsuite-{port}.db" for port in (8801, 8802)}
+        for path in stale.values():
+            path.write_bytes(b"last run's dialog")
+        live_path = FloxyDatabase.DB_PATH
+        try:
+            with patch("common.Paths.CACHE_DIR", cache):
+                floxy_ai_server._isolate_database(8801)
+                first = FloxyDatabase.DB_PATH
+                floxy_ai_server._isolate_database(8802)
+                second = FloxyDatabase.DB_PATH
+        finally:
+            FloxyDatabase.DB_PATH = live_path
+        assert first != second and first != live_path
+        assert all(pathlib.Path(p).parent == cache for p in (first, second))
+        assert not stale[8801].exists() and not stale[8802].exists()
+
+    def test_the_cache_folder_is_created_when_missing(self, tmp_path):
+        """A fresh checkout has no cache/ yet; the isolation must not fail the server's start
+        on it. The database opens the file itself later, so only the folder is needed here."""
+        from common.FloxyDatabase import FloxyDatabase
+        import floxy_ai_server
+        cache = tmp_path / "cache"
+        live_path = FloxyDatabase.DB_PATH
+        try:
+            with patch("common.Paths.CACHE_DIR", cache):
+                floxy_ai_server._isolate_database(8803)
+                chosen = pathlib.Path(FloxyDatabase.DB_PATH)
+        finally:
+            FloxyDatabase.DB_PATH = live_path
+        assert cache.is_dir() and chosen.parent == cache
 
 
 @pytest.mark.unit

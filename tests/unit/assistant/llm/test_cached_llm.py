@@ -341,6 +341,22 @@ class TestCachedLLMCoreMethods:
         assert result[0] in ["turn_on(kitchen) Done!", "turn_on(kitchen) Lights on!", "turn_on(kitchen) Sure!"]
         assert cached_llm.last_response_was_cached is True
 
+    def test_a_served_cached_reply_hides_the_backends_stop_reason(self, cached_llm, mock_database, mock_llm):
+        """RequestProcessor reads the stop reason after every round to tell a reply cut at the
+        output cap: a reply served from the cache was never cut, whatever the wrapped backend's
+        last call ended on, or a cached hit after a cut round would circle back for nothing."""
+        mock_llm.last_stop_reason = 'max_tokens'
+        mock_database.get_response_counts_for_query.return_value = [("turn_on(kitchen)", 3)]
+        cached_llm.cache_query = "turn on kitchen"
+        list(cached_llm.create_streaming_completion([{"role": "user", "content": "turn on kitchen"}]))
+        assert cached_llm.last_stop_reason is None
+
+        mock_database.get_response_counts_for_query.return_value = []
+        mock_llm.create_streaming_completion.return_value = iter(["a fresh reply"])
+        cached_llm.cache_query = "something new"
+        list(cached_llm.create_streaming_completion([{"role": "user", "content": "something new"}]))
+        assert cached_llm.last_stop_reason == 'max_tokens'
+
     def test_cache_hit_records_serve_state(self, cached_llm, mock_database):
         """A hit must retain the query and ALL majority wordings so a later
         invalidate_served_response can evict every row carrying the bad command set."""

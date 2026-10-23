@@ -209,6 +209,26 @@ class TestChatGPTLLM:
         assert processed[0]['content'][1]['type'] == 'image_url'
 
     @patch('assistant.llm.ChatGPTLLM.config')
+    def test_images_ride_the_first_user_message_only(self, mock_config):
+        """The photo backfill sends a system message, the user's question, and on a follow-up
+        the earlier turns too: the pictures belong to the first user turn, once; a later user
+        turn keeps its plain text and the system message is never turned into parts."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ChatGPTLLM import ChatGPTLLM
+        messages = [
+            {"role": "system", "content": "analyst"},
+            {"role": "user", "content": "what is this?"},
+            {"role": "assistant", "content": "a lamp"},
+            {"role": "user", "content": "and this?"},
+        ]
+        out = ChatGPTLLM._image_messages(messages, [b'\x89PNG' + b'\x00' * 10, b'\xff\xd8\xff' + b'\x00' * 10])
+        assert out[0] == messages[0] and out[2] == messages[2]
+        assert [part["type"] for part in out[1]["content"]] == ["text", "image_url", "image_url"]
+        assert out[1]["content"][0]["text"] == "what is this?"
+        assert out[3] == {"role": "user", "content": "and this?"}
+        assert messages[1]["content"] == "what is this?"   # the caller's list is left as it was
+
+    @patch('assistant.llm.ChatGPTLLM.config')
     def test_completion_strips_cache_markers_from_system(self, mock_config):
         # Regression for the marker leak: OpenAI-compatible backends (and every
         # ChatGPTLLM subclass — Grok, OpenRouter, …) received Claude's cache

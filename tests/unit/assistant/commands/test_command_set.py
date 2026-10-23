@@ -15,6 +15,7 @@ class LampCommands(CommandSet):
     MULTI_PARAM_COMMANDS = frozenset({"lamp_scene"})
     SENSITIVE_COMMANDS = frozenset({"lamp_scene"})
     PURE_COMMANDS = frozenset({"lamp_state"})
+    SELF_EVIDENT_COMMANDS = frozenset({"lamp_on"})
     APPROVAL_NOTES = {"lamp_scene": "Changes every lamp in the room."}
 
     def cmd_lamp_on(self, parameter_string):
@@ -67,6 +68,14 @@ def test_the_flags_of_a_command_come_from_the_set_that_owns_it(commands):
 def test_core_commands_keep_their_own_flags_beside_a_set(commands):
     assert commands.is_multi_param("dim") and commands.is_sensitive("send_email") and commands.is_pure("load_toolkit")
     assert not commands.is_sensitive("turn_on")
+
+
+def test_whether_a_commands_effect_is_its_answer_is_the_owners_verdict(commands):
+    # RequestProcessor asks the host, per command, whether a request may end silently on it;
+    # the host must find the set's declaration, and a core action keeps its own.
+    assert commands.is_self_evident("lamp_on") and not commands.is_self_evident("lamp_state")
+    assert commands.is_self_evident("turn_off") and not commands.is_self_evident("remember")
+    assert not commands.is_self_evident("no_such_command")
 
 
 def test_a_set_describes_its_commands_and_one_without_a_describer_echoes_the_call(commands):
@@ -153,5 +162,6 @@ def test_every_command_module_of_this_repository_is_discovered():
 def test_a_flag_names_only_a_command_its_owner_implements(owner):
     # The flags are asked of the command's owner, so one left behind when a command moves
     # to another owner is never read: a sensitive command would run without approval.
-    flagged = owner.MULTI_PARAM_COMMANDS | owner.SENSITIVE_COMMANDS | owner.PURE_COMMANDS | set(owner.APPROVAL_NOTES)
+    flagged = (owner.MULTI_PARAM_COMMANDS | owner.SENSITIVE_COMMANDS | owner.PURE_COMMANDS
+               | owner.SELF_EVIDENT_COMMANDS | set(owner.APPROVAL_NOTES))
     assert flagged - set(command_set_module.command_names(owner)) == set()

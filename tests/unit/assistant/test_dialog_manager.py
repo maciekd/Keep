@@ -1313,7 +1313,8 @@ def test_a_reply_past_the_command_cap_is_cut_and_the_stream_closed(monkeypatch):
     assert [p for _, p in calls] == [[f"lamp {i}"] for i in range(cap)]
     assert dm.llm_response_raw.startswith("On it.")
     assert "All done." not in dm.llm_response_raw
-    assert "".join(output).strip() == "On it."
+    # The stream interleaves the CommandRan events of the calls already run with the text.
+    assert "".join(c for c in output if isinstance(c, str)).strip() == "On it."
     processor.kill()
 
 
