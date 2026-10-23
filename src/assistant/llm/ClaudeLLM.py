@@ -3,7 +3,7 @@ from typing import Generator
 
 import httpx
 
-from .AbstractLLM import AbstractLLM, LLMRefusalError, api_error_message
+from .AbstractLLM import AbstractLLM, LLMRefusalError, api_error_message, Thinking
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 from common.ConfigManager import config
 from common.DevelopmentConfig import BYTE_PREFIX_TAIL, CLAUDE_STATIC_CACHE_TTL, CLAUDE_HISTORY_CACHE_TTL
@@ -391,9 +391,10 @@ class ClaudeLLM(AbstractLLM):
             return
         trace("Claude cache: test suite — no turn starts with the toolkit result, nothing split")
 
-    def _build_api_params(self, messages: list[dict], thinking: bool, stream: bool, volatile_tail: int = 0,
+    def _build_api_params(self, messages: list[dict], thinking: Thinking | bool, stream: bool, volatile_tail: int = 0,
                           follow_up: bool = False) -> dict:
         """Build common API call parameters."""
+        full = Thinking.of(thinking).full   # MORE is an ordinary request here: effort is high regardless
         system_message, anthropic_messages = self._convert_messages(messages)
 
         if system_message and self.prompt_cache:
@@ -428,7 +429,7 @@ class ClaudeLLM(AbstractLLM):
         api_params = {
             'model': self.model,
             'messages': anthropic_messages,
-            'max_tokens': self.THINKING_MAX_TOKENS if thinking else self.MAX_TOKENS,
+            'max_tokens': self.THINKING_MAX_TOKENS if full else self.MAX_TOKENS,
             'stream': stream
         }
         if not stream:
@@ -437,7 +438,7 @@ class ClaudeLLM(AbstractLLM):
         if system:
             api_params['system'] = system
 
-        if thinking:
+        if full:
             api_params['thinking'] = {"type": "adaptive"}
         if self.model.startswith(self.EFFORT_MODEL_PREFIXES):
             api_params['output_config'] = {"effort": self.EFFORT}
@@ -582,7 +583,7 @@ class ClaudeLLM(AbstractLLM):
     def cancel(self):
         self._cancelled = True
 
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+    def create_streaming_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                     volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         self._ensure_initialized()
         self._cancelled = False
@@ -653,7 +654,7 @@ class ClaudeLLM(AbstractLLM):
                  f"blocks={block_types or 'none'})")
         return text
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+    def create_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL, volatile_tail: int = 0,
                           follow_up: bool = False) -> str:
         self._ensure_initialized()
 
@@ -685,7 +686,7 @@ class ClaudeLLM(AbstractLLM):
     BATCH_POLL_SECONDS = 30
     BATCH_CANCEL_WAIT_SECONDS = 300
 
-    def create_batched_completion(self, messages: list[dict], thinking: bool = False,
+    def create_batched_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                   max_wait_seconds: float = 3600) -> str | None:
         """One request through the Message Batches API — every token at half price, the answer
         whenever Anthropic gets to it (usually well within the hour, 24 hours at most). A batch

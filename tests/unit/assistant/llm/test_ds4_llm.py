@@ -10,6 +10,7 @@ from assistant.commands.formats.DsmlFormat import DsmlFormat, OPEN
 from assistant.commands.formats.KeepFormat import KeepFormat
 from assistant.llm import create_llm, local_only_class, parse_llm_config, tier_api_key_name
 from assistant.llm.Ds4LLM import Ds4LLM, Ds4LogFormat
+from assistant.llm.AbstractLLM import Thinking
 from assistant.llm.Ds4Replay import ReplayStore
 from assistant.llm.PrefillTracker import LogSource
 from assistant.llm.VaultLLM import VaultLLM
@@ -156,6 +157,26 @@ class TestReasoningEffort:
             create.return_value = iter([_chunk(content="y")])
             list(llm.create_streaming_completion([{'role': 'user', 'content': 'hi'}], thinking=True))
             assert create.call_args.kwargs['extra_body'] == {'reasoning_effort': Ds4LLM.THINKING_REASONING_EFFORT}
+
+    @pytest.mark.parametrize("key, more", [
+        ('none', 'medium'),     # one step up would be minimal: the floor wins
+        ('low', 'medium'),      # the default: the autonomous check gets one step more than a chat turn
+        ('high', 'xhigh'),      # a key above the floor is still raised a step
+        ('max', 'max'),         # nothing above max
+        ('lots', 'medium'),     # an unknown spelling is the default, low, raised a step
+    ])
+    def test_thinking_more_is_one_step_above_the_configured_effort_and_at_least_medium(self, key, more):
+        p1, p2 = _config({'ds4.reasoning_effort': key})
+        with p1, p2:
+            assert Ds4LLM()._effort_for(Thinking.MORE) == more
+            assert Ds4LLM()._effort_for(Thinking.FULL) == Ds4LLM.THINKING_REASONING_EFFORT
+            assert Ds4LLM()._effort_for(Thinking.NORMAL) == Ds4LLM.reasoning_effort()
+
+    def test_a_plain_bool_still_picks_the_two_outer_efforts(self):
+        p1, p2 = _config({'ds4.reasoning_effort': 'low'})
+        with p1, p2:
+            assert Ds4LLM()._effort_for(True) == Ds4LLM.THINKING_REASONING_EFFORT
+            assert Ds4LLM()._effort_for(False) == 'low'
 
     def test_the_model_counts_as_thinking_internally_unless_reasoning_is_off(self):
         p1, p2 = _config({'ds4.reasoning_effort': 'medium'})

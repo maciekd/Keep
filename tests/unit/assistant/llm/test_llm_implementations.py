@@ -3,7 +3,7 @@ import itertools
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
-from assistant.llm.AbstractLLM import AbstractLLM, LLMRefusalError, ThinkingNotSupportedError
+from assistant.llm.AbstractLLM import AbstractLLM, LLMRefusalError, Thinking, ThinkingNotSupportedError
 # Imported at collection, with the rest of the tree: GeminiLLM pulls in google.genai (~0.2 s of
 # pydantic models), which would otherwise land in the call of the first Gemini test a worker runs.
 from assistant.llm.GeminiLLM import GeminiLLM
@@ -107,6 +107,20 @@ class TestAbstractLLMRetry:
 # ===========================================================================
 
 class TestChatGPTLLM:
+    @patch('assistant.llm.ChatGPTLLM.config')
+    @patch('assistant.llm.ChatGPTLLM.OpenAI')
+    def test_only_full_thinking_is_refused_more_is_an_ordinary_request(self, mock_openai, mock_config):
+        from assistant.llm.ChatGPTLLM import ChatGPTLLM
+        mock_config.get_api_key.return_value = "k"
+        llm = ChatGPTLLM()
+        llm.initialize()
+        reply = MagicMock()
+        reply.choices = [MagicMock(message=MagicMock(content="ok"))]
+        mock_openai.return_value.chat.completions.create.return_value = reply
+        with pytest.raises(ThinkingNotSupportedError):
+            llm.create_completion([{"role": "user", "content": "hi"}], thinking=Thinking.FULL)
+        assert llm.create_completion([{"role": "user", "content": "hi"}], thinking=Thinking.MORE) == "ok"
+
     @patch('assistant.llm.ChatGPTLLM.config')
     @patch('assistant.llm.ChatGPTLLM.OpenAI')
     def test_initialize_with_base_url(self, MockOpenAI, mock_config):

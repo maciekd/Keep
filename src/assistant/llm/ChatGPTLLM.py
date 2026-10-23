@@ -1,6 +1,6 @@
 from typing import Generator
 from openai import OpenAI
-from .AbstractLLM import AbstractLLM, ThinkingNotSupportedError
+from .AbstractLLM import AbstractLLM, ThinkingNotSupportedError, Thinking
 from common.ConfigManager import config
 
 
@@ -68,9 +68,9 @@ class ChatGPTLLM(AbstractLLM):
                 converted.append(msg)
         return converted
 
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+    def create_streaming_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                     volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
-        if thinking:
+        if Thinking.of(thinking).full:
             raise ThinkingNotSupportedError(f"{self.name()} does not support native thinking mode")
 
         self._ensure_initialized()
@@ -85,9 +85,9 @@ class ChatGPTLLM(AbstractLLM):
             if chunk.choices[0].delta.content is not None:
                 yield chunk.choices[0].delta.content
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+    def create_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL, volatile_tail: int = 0,
                           follow_up: bool = False) -> str:
-        if thinking:
+        if Thinking.of(thinking).full:
             raise ThinkingNotSupportedError(f"{self.name()} does not support native thinking mode")
 
         self._ensure_initialized()

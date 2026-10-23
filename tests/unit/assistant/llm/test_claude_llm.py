@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock, Mock
 
 from anthropic import APIStatusError
 
-from assistant.llm.AbstractLLM import LLMRefusalError
+from assistant.llm.AbstractLLM import LLMRefusalError, Thinking
 from assistant.llm.ClaudeLLM import ClaudeLLM, WorkspaceRequiredError, WORKSPACE_CONFIG_KEY, WORKSPACE_HEADER, claude_workspace_id
 
 
@@ -620,6 +620,18 @@ class TestEffort:
         params = ClaudeLLM("claude-opus-5-5")._build_api_params(MESSAGES, thinking=True, stream=False)
         assert params['thinking'] == {"type": "adaptive"}
         assert params['output_config'] == {"effort": "high"}
+
+    def test_thinking_more_is_an_ordinary_request_on_claude(self):
+        """The autonomous check's Thinking.MORE buys reasoning only where a backend has levels
+        below its best; Claude already runs every request at high effort, so MORE must not
+        turn the long-answer headroom on — the same cap and parameters as a chat turn."""
+        llm = ClaudeLLM("claude-opus-5-5")
+        more = llm._build_api_params(MESSAGES, thinking=Thinking.MORE, stream=False)
+        normal = llm._build_api_params(MESSAGES, thinking=Thinking.NORMAL, stream=False)
+        assert more == normal
+        assert 'thinking' not in more and more['max_tokens'] == ClaudeLLM.MAX_TOKENS
+        full = llm._build_api_params(MESSAGES, thinking=Thinking.FULL, stream=False)
+        assert full['max_tokens'] == ClaudeLLM.THINKING_MAX_TOKENS and 'thinking' in full
 
 
 @patch('assistant.llm.ClaudeLLM.time.sleep')

@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 
 from common.logging import info, trace
+from ..llm.AbstractLLM import Thinking
 
 PROMPT = """
 You are condensing the long-term memory bank of a home automation AI system serving a family. The bank is in front
@@ -99,7 +100,7 @@ class MemoryCondenser:
                     .replace("{REMAINING}", str(remaining)).replace("{SHARE}", str(share)) \
                     .replace("{LEFT}", str(len(sections) - index)).replace("{SECTION}", section)
                 unprocessed -= size
-                response = self.llm.think(system_message=system, user_message=message, thinking=True)
+                response = self.llm.think(system_message=system, user_message=message, thinking=Thinking.FULL)
                 condensed = self._section(response)
                 heading = section.splitlines()[0][:60]
                 if getattr(self.llm, 'last_stop_reason', None) == 'max_tokens':

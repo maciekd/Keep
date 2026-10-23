@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Generator
 from google.genai.types import ThinkingLevel
 
-from .AbstractLLM import AbstractLLM, LLMUnavailable
+from .AbstractLLM import AbstractLLM, LLMUnavailable, Thinking
 from google import genai
 from google.genai import types
 from common.logging import trace, info, error
@@ -264,14 +264,14 @@ class GeminiLLM(AbstractLLM):
 
         return system_instruction, gemini_messages
 
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+    def create_streaming_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                     volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         self._ensure_initialized()
 
         system_instruction, gemini_messages = self._convert_messages(messages)
 
         # this is only used for longer queries from the user, we want it to be minimally slower than normal queries. Theres HIGH and MEDIUM here and it's great but doesn't fit what we need there (they're smart but 5s - so too slow)
-        thinking_level = ThinkingLevel.LOW if thinking else self._min_thinking_level()
+        thinking_level = ThinkingLevel.LOW if Thinking.of(thinking).full else self._min_thinking_level()
         config_params = {
             'thinking_config': types.ThinkingConfig(thinking_level=thinking_level)
         }
@@ -291,13 +291,13 @@ class GeminiLLM(AbstractLLM):
             if chunk.text:
                 yield chunk.text
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+    def create_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL, volatile_tail: int = 0,
                           follow_up: bool = False) -> str:
         self._ensure_initialized()
 
         system_instruction, gemini_messages = self._convert_messages(messages)
 
-        thinking_level = ThinkingLevel.HIGH if thinking else self._min_thinking_level()
+        thinking_level = ThinkingLevel.HIGH if Thinking.of(thinking).full else self._min_thinking_level()
         config_params = {
             'thinking_config': types.ThinkingConfig(thinking_level=thinking_level)
         }

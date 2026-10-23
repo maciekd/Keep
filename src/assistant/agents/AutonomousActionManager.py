@@ -8,7 +8,7 @@ from typing import Optional
 
 from .LongTermMemoryCurator import LongTermMemoryCurator
 from ..llm import create_llm, parse_llm_config, messages_contain_images
-from ..llm.AbstractLLM import LLMRefusalError
+from ..llm.AbstractLLM import LLMRefusalError, Thinking
 from common.logging import trace, info, note, error, fine
 from assistant import Destinations, MemoryFile, Procedures, WatchList
 from assistant.Telemetry import Telemetry
@@ -278,7 +278,9 @@ class AutonomousActionManager:
         `volatile_tail` is 1 for the first round: its trailing turn is the clock note and
         the instruction folded onto the history, which no later request sends. A follow-up
         round ends in the reply and the command result, which the next round repeats and no
-        later check reads — `follow_up` lets the LLM cache it for its short tier."""
+        later check reads — `follow_up` lets the LLM cache it for its short tier. The check
+        asks for Thinking.MORE: nobody waits on it, so a backend with reasoning levels (ds4)
+        gives it a step more than a conversation turn; the others treat it as an ordinary request."""
         llm = self._llm_for(messages)
         # The action prompt was built for the model of the first round; a follow-up round
         # that carries images goes to the vision tier, which may think on its own.
@@ -287,7 +289,8 @@ class AutonomousActionManager:
             if stripped:
                 info(f"{llm.name()} thinks on its own — <thinking> tag paragraph removed from the autonomous prompt")
         try:
-            return llm.think_with_messages(messages, volatile_tail=volatile_tail, follow_up=follow_up)
+            return llm.think_with_messages(messages, thinking=Thinking.MORE, volatile_tail=volatile_tail,
+                                           follow_up=follow_up)
         except LLMRefusalError:
             fallback = llm.refusal_fallback()
             if fallback is None:
@@ -296,7 +299,8 @@ class AutonomousActionManager:
             info(f"{llm.name()} refused the autonomous check (safety filter) — falling back to {fallback.name()}.")
             fallback.initialize()
             try:
-                return fallback.think_with_messages(messages, volatile_tail=volatile_tail, follow_up=follow_up)
+                return fallback.think_with_messages(messages, thinking=Thinking.MORE, volatile_tail=volatile_tail,
+                                                    follow_up=follow_up)
             except LLMRefusalError:
                 info(f"{fallback.name()} refused the autonomous check too — skipping.")
                 return ""

@@ -8,7 +8,7 @@ from typing import Generator
 from common.logging import fine, info
 from common.vault.Redactor import Redactor, RestoringStream
 from common.vault.Vault import Vault
-from .AbstractLLM import AbstractLLM
+from .AbstractLLM import AbstractLLM, Thinking
 
 
 class VaultLLM(AbstractLLM):
@@ -25,7 +25,7 @@ class VaultLLM(AbstractLLM):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
         return getattr(self.llm, name)
 
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+    def create_streaming_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                     volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         if not self.redactor.active:
             vault = self.redactor.vault
@@ -40,7 +40,7 @@ class VaultLLM(AbstractLLM):
                                                     volatile_tail=volatile_tail, follow_up=follow_up)
         yield from RestoringStream(inner, self.redactor)
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+    def create_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL, volatile_tail: int = 0,
                           follow_up: bool = False) -> str:
         return self._restored(self.llm.create_completion(self.redactor.redact_messages(messages), thinking=thinking,
                                                          volatile_tail=volatile_tail, follow_up=follow_up))
@@ -49,7 +49,7 @@ class VaultLLM(AbstractLLM):
         return self._restored(self.llm.create_completion_with_images(
             self.redactor.redact_messages(messages), images, background=background))
 
-    def create_batched_completion(self, messages: list[dict], thinking: bool = False,
+    def create_batched_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                   max_wait_seconds: float = 3600) -> str | None:
         # Explicit: the AbstractLLM default (None, "no batch API") would win over __getattr__.
         return self._restored(self.llm.create_batched_completion(

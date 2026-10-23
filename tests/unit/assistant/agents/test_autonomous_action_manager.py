@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import Mock, patch
 
 from assistant import Destinations, WatchList
-from assistant.llm.AbstractLLM import LLMRefusalError
+from assistant.llm.AbstractLLM import LLMRefusalError, Thinking
 
 from assistant.agents.AutonomousActionManager import (
     AutonomousActionManager,
@@ -1682,14 +1682,16 @@ def Toolkits_header() -> str:
         llm.think_with_messages.return_value = "NO"
 
         mgr.activity_check(prompt="test prompt")
-        assert llm.think_with_messages.call_args.kwargs == {"volatile_tail": 1, "follow_up": False}
+        assert llm.think_with_messages.call_args.kwargs == {"thinking": Thinking.MORE, "volatile_tail": 1,
+                                                            "follow_up": False}
 
         llm.think_with_messages.reset_mock()
         mgr._think([{"role": "system", "content": "test prompt"},
                     {"role": "user", "content": AutonomousActionManager._action_prompt(llm)},
                     {"role": "assistant", "content": "door_state(garage)"},
                     {"role": "user", "content": "result:\nclosed"}], follow_up=True)
-        assert llm.think_with_messages.call_args.kwargs == {"volatile_tail": 0, "follow_up": True}
+        assert llm.think_with_messages.call_args.kwargs == {"thinking": Thinking.MORE, "volatile_tail": 0,
+                                                            "follow_up": True}
 
     def test_the_round_after_a_command_goes_to_the_llm_as_a_follow_up(self):
         """The check loop itself flags its later rounds: the first call carries the volatile
@@ -1752,7 +1754,8 @@ def Toolkits_header() -> str:
 
         mgr._think([{"role": "system", "content": "p"}, {"role": "user", "content": "q"}], volatile_tail=1)
 
-        assert fallback.think_with_messages.call_args.kwargs == {"volatile_tail": 1, "follow_up": False}
+        assert fallback.think_with_messages.call_args.kwargs == {"thinking": Thinking.MORE, "volatile_tail": 1,
+                                                                 "follow_up": False}
 
     def test_image_follow_up_on_a_self_thinking_vision_tier_loses_the_paragraph(self):
         """The prompt is built for the first round's model. When a later round carries camera

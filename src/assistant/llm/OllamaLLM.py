@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from .AbstractLLM import AbstractLLM, LLMPreempted
+from .AbstractLLM import AbstractLLM, LLMPreempted, Thinking
 from .BackgroundSlot import BackgroundSlot
 from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
 from assistant.commands.formats import QwenFormat as qwen
@@ -526,7 +526,7 @@ class OllamaLLM(AbstractLLM):
                  f"↓ {eval_count} tokens ({gen_tps:.1f} t/s, {eval_dur_s:.2f}s) | "
                  f"{total_dur_s:.2f}s total. (no cache data — {hint})")
 
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+    def create_streaming_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                     num_predict: int | None = None, volatile_tail: int = 0,
                                     follow_up: bool = False) -> Generator[str, None, None]:
         """Native thinking (the chunk's `thinking` field) is yielded wrapped in <thinking> tags,
@@ -636,7 +636,7 @@ class OllamaLLM(AbstractLLM):
             note(f"Ollama left <tool_call> text in the content — the model wrote a block its parser "
                  f"did not take; the command parser reads it as written ({reply.count(qwen.OPEN)} opener(s))")
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+    def create_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL, volatile_tail: int = 0,
                           follow_up: bool = False) -> str:
         payload_str = self._log_prefix_match(messages)
         rendered_prompt, rendered_prefix_stats = self._log_rendered_prompt_match(messages)

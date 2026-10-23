@@ -15,7 +15,7 @@ from common.FloxyDatabase import FloxyDatabase, NO_INTERACTIONS
 from assistant.integration.calendar.CalendarAccess import CalendarAccess, EVENTS_UNAVAILABLE, NOT_CONFIGURED
 from assistant.integration.calendar.Event import NO_EVENTS
 from common.logging import info, error, trace
-from ..llm.AbstractLLM import LLMRefusalError
+from ..llm.AbstractLLM import LLMRefusalError, Thinking
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
 from common.vault.Redactor import redact_for_storage
 
@@ -769,7 +769,7 @@ class LongTermMemoryCurator:
             wait_minutes = float(config.get('ai.memory_curator.batch_wait_minutes', BATCH_WAIT_MINUTES))
             try:
                 response = self.llm.think_batched(system_message=prompt, user_message=user_message,
-                                                  thinking=True, max_wait_seconds=wait_minutes * 60)
+                                                  thinking=Thinking.FULL, max_wait_seconds=wait_minutes * 60)
             except LLMRefusalError:
                 raise
             except Exception as e:
@@ -779,7 +779,7 @@ class LongTermMemoryCurator:
                 info("Rem: the dream came back from the batch API (half price)")
                 return response
             info("Rem: no answer from the batch API — making the ordinary call")
-        return self.llm.think(system_message=prompt, user_message=user_message, thinking=True)
+        return self.llm.think(system_message=prompt, user_message=user_message, thinking=Thinking.FULL)
 
     def save_memory(self, memory_text: str, metadata: dict = None) -> str:
         """
@@ -915,7 +915,7 @@ class LongTermMemoryCurator:
 
     def _think_whole(self, prompt: str, what: str) -> str:
         """One LLM call whose reply must be complete: a reply cut off at the output cap raises."""
-        response = self.llm.think(system_message=prompt, user_message="Please do it now.", thinking=True)
+        response = self.llm.think(system_message=prompt, user_message="Please do it now.", thinking=Thinking.FULL)
         if getattr(self.llm, 'last_stop_reason', None) == 'max_tokens':
             raise RuntimeError(f"the AI's reply was cut off at its output limit while {what}")
         return response

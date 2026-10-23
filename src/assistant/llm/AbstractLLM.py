@@ -1,11 +1,36 @@
 import time
 import traceback
 from abc import ABC, abstractmethod
+from enum import IntEnum
 from typing import Generator
 
 from common.logging import error, trace
 from assistant.commands.formats.CommandFormat import CommandFormat
 from assistant.commands.formats.KeepFormat import KeepFormat
+
+
+class Thinking(IntEnum):
+    """How much a request may reason, in the caller's terms — each backend maps it to what it
+    has. NORMAL is a conversation turn: whatever the backend does by default. FULL is the
+    memory curator: the deepest reasoning and the headroom for a long, complete answer (on
+    Claude the adaptive-thinking parameter and the 64k output cap, on ds4 effort high, on
+    Gemini thinking level high; ChatGPT has nothing for it and refuses). MORE is between —
+    the autonomous check: more reasoning where a backend has levels to give (ds4 one step up,
+    medium at least) and exactly NORMAL everywhere else, never the long-answer headroom. A
+    plain bool is still accepted: True is FULL, False is NORMAL."""
+    NORMAL = 0
+    MORE = 1
+    FULL = 2
+
+    @classmethod
+    def of(cls, value: "Thinking | bool") -> "Thinking":
+        if isinstance(value, cls):
+            return value
+        return cls.FULL if value else cls.NORMAL
+
+    @property
+    def full(self) -> bool:
+        return self is Thinking.FULL
 
 
 class ThinkingNotSupportedError(Exception):
@@ -265,7 +290,7 @@ class AbstractLLM(ABC):
 
         Args:
             messages: List of message dictionaries with 'role' and 'content'
-            thinking: Enable native thinking mode if supported by this LLM
+            thinking: how much to reason (see `Thinking`); a bool is read as FULL / NORMAL
             volatile_tail: how many trailing messages no later request will send as they are
                 (an instruction folded onto the history for this call only). An LLM with a
                 prefix cache keeps its history breakpoint off them — a breakpoint on bytes
@@ -286,7 +311,7 @@ class AbstractLLM(ABC):
 
         Args:
             messages: List of message dictionaries with 'role' and 'content'
-            thinking: Enable native thinking mode if supported by this LLM
+            thinking: how much to reason (see `Thinking`); a bool is read as FULL / NORMAL
             volatile_tail: see think_with_messages; only an LLM with a prefix cache acts on it
             follow_up: see think_with_messages; only an LLM with a prefix cache acts on it
 
@@ -303,7 +328,7 @@ class AbstractLLM(ABC):
 
         Args:
             messages: List of message dictionaries with 'role' and 'content'
-            thinking: Enable native thinking mode if supported by this LLM
+            thinking: how much to reason (see `Thinking`); a bool is read as FULL / NORMAL
             volatile_tail: see think_with_messages; only an LLM with a prefix cache acts on it
             follow_up: see think_with_messages; only an LLM with a prefix cache acts on it
 

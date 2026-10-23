@@ -8,10 +8,13 @@ like Ollama).
 
 The model reasons server-side: the stream carries `reasoning_content` deltas, yielded here
 inside <thinking> tags so the command processor swallows and times them like a prompted
-thinking block. How much it reasons is `reasoning_effort`: a request with thinking=True (the
-memory curator) gets "high", every other one the `ds4.reasoning_effort` key, default "low" so
-a conversation turn answers in seconds; "none" turns server-side reasoning off, and then the
-prompt's own <thinking> instruction applies instead.
+thinking block. How much it reasons is `reasoning_effort`, from the request's `Thinking`:
+FULL (the memory curator) gets "high"; NORMAL (a conversation turn) the `ds4.reasoning_effort`
+key, default "low" so the turn answers in seconds; MORE (the autonomous check, which nobody
+waits on) one step above that key, "medium" at least — its prompt then shares the chat's
+cached prefix only up to the first assistant turn of the history, since the effort changes
+how the server renders past turns, and the check prefills the rest itself. "none" turns
+server-side reasoning off, and then the prompt's own <thinking> instruction applies instead.
 
 Commands: the default format is Keep's own call text (`KeepFormat`), the best of the formats
 on the prompt test suite with V4.1 Flash (measured 2026-10-22: 96.1 / 97.2 % pass at effort
@@ -91,7 +94,7 @@ from urllib.parse import urlparse
 import httpx
 from openai import OpenAI
 
-from .AbstractLLM import LLMPreempted
+from .AbstractLLM import LLMPreempted, Thinking
 from .BackgroundSlot import BackgroundSlot
 from .ChatGPTLLM import ChatGPTLLM
 from .Ds4Replay import ReplayStore, replay
@@ -128,8 +131,9 @@ class Ds4LLM(ChatGPTLLM):
     # Measured on V4.1 Flash, cold 24k–30k prompts, 2026-10-21; each reply's usage refines it.
     _prefill = PrefillTracker("ds4", Ds4LogFormat(), seed_tps=1400.0)
     DEFAULT_REASONING_EFFORT = 'low'
-    THINKING_REASONING_EFFORT = 'high'
-    # ds4-server's spellings; "minimal" is the smallest non-zero level, "none" alone disables reasoning.
+    THINKING_REASONING_EFFORT = 'high'   # Thinking.FULL
+    MORE_REASONING_EFFORT = 'medium'     # the floor of Thinking.MORE
+    # ds4-server's spellings, lowest first; "minimal" is the smallest non-zero level, "none" alone disables reasoning.
     REASONING_EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
     _slot = BackgroundSlot("ds4")
     _logged_configs: set[tuple[str, str]] = set()
@@ -237,8 +241,18 @@ class Ds4LLM(ChatGPTLLM):
         # (ds4-server log: `live kv cache miss ... common=<live - 20> reason=token-mismatch`).
         return True
 
-    def _effort_for(self, thinking: bool) -> str:
-        return self.THINKING_REASONING_EFFORT if thinking else self.reasoning_effort()
+    def _effort_for(self, thinking: Thinking | bool) -> str:
+        """The server's effort for a request: FULL is high, NORMAL the config key, MORE one step
+        above the key and never below medium (max stays max)."""
+        thinking = Thinking.of(thinking)
+        if thinking.full:
+            return self.THINKING_REASONING_EFFORT
+        effort = self.reasoning_effort()
+        if thinking is Thinking.MORE:
+            levels = self.REASONING_EFFORTS
+            raised = levels[min(levels.index(effort) + 1, len(levels) - 1)]
+            return max(raised, self.MORE_REASONING_EFFORT, key=levels.index)
+        return effort
 
     @classmethod
     def background_idle_seconds(cls) -> float:
@@ -255,7 +269,7 @@ class Ds4LLM(ChatGPTLLM):
             cls._replay_store = ReplayStore()
         return cls._replay_store
 
-    def _request_kwargs(self, messages: list[dict], thinking: bool, stream: bool) -> dict:
+    def _request_kwargs(self, messages: list[dict], thinking: Thinking | bool, stream: bool) -> dict:
         messages = replay(self._convert_anthropic_content(messages), self.replay_store())
         # No `tools`: see the module docstring — a declared tool costs the live cache and pulls the model's calls to it.
         kwargs = dict(model=self.model, messages=messages, stream=stream,
@@ -343,7 +357,7 @@ class Ds4LLM(ChatGPTLLM):
              f"({withheld.count(dsml.OPEN)} opener(s))")
         return withheld
 
-    def create_streaming_completion(self, messages: list[dict], thinking: bool = False,
+    def create_streaming_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                     volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:
         """Reasoning deltas (`reasoning_content`) are yielded wrapped in <thinking> tags, the reply
         text after them up to the first DSML sentinel; from there the content is withheld and
@@ -360,7 +374,7 @@ class Ds4LLM(ChatGPTLLM):
             self._prefill.end(token)
             Ds4LLM._slot.interactive_end()
 
-    def _stream(self, messages: list[dict], thinking: bool, started: float, token: int | None) -> Generator[str, None, None]:
+    def _stream(self, messages: list[dict], thinking: Thinking | bool, started: float, token: int | None) -> Generator[str, None, None]:
         self._last_stop_reason = None
         response = self.client.chat.completions.create(**self._request_kwargs(messages, thinking, stream=True))
         in_thinking, reasoning, usage = False, "", None
@@ -432,7 +446,7 @@ class Ds4LLM(ChatGPTLLM):
                 return text[:-length], text[-length:]
         return text, ""
 
-    def create_completion(self, messages: list[dict], thinking: bool = False, volatile_tail: int = 0,
+    def create_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL, volatile_tail: int = 0,
                           follow_up: bool = False) -> str:
         """The reply text, then every parsed tool call written back as DSML text; the model's
         reasoning is logged, not returned."""
