@@ -3,6 +3,7 @@ an interactive arrival does to a background request that will not unwind, and th
 background request waits on."""
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,20 @@ def _run(target):
     t = threading.Thread(target=target, daemon=True)
     t.start()
     return t
+
+
+class _Clock:
+    """The monotonic clock the slot's idle timer reads, moved by the test: a waiting background
+    request is woken the way an interactive end would wake it, and re-reads the clock."""
+
+    def __init__(self, monkeypatch):
+        self.now = 1000.0
+        monkeypatch.setattr("assistant.llm.BackgroundSlot.time", SimpleNamespace(monotonic=lambda: self.now))
+
+    def advance(self, slot, seconds):
+        with slot._cond:
+            self.now += seconds
+            slot._cond.notify_all()
 
 
 @pytest.mark.unit
@@ -72,12 +87,16 @@ class TestInteractiveArrival:
 
 @pytest.mark.unit
 class TestIdleClock:
-    def test_a_background_request_waits_out_the_idle_time_after_the_last_interactive_request(self, slot):
+    def test_a_background_request_waits_out_the_idle_time_after_the_last_interactive_request(self, slot, monkeypatch):
+        clock = _Clock(monkeypatch)
         slot.interactive_begin()
         slot.interactive_end()
         got = threading.Event()
-        _run(lambda: (slot.acquire(idle_s=0.3), got.set()))
-        assert not got.wait(0.1)
+        _run(lambda: (slot.acquire(idle_s=20), got.set()))
+        assert not got.wait(0.02)
+        clock.advance(slot, 19)
+        assert not got.wait(0.02)               # a second short of the idle time is not enough
+        clock.advance(slot, 1)
         assert got.wait(1)
         assert slot.wait_seconds() == 0.0       # the main thread queued nothing: the wait is per thread
 
