@@ -21,7 +21,7 @@ from html import escape
 from typing import Any, List, Optional
 
 import requests
-from telegram.error import RetryAfter
+from telegram.error import RetryAfter, TimedOut
 
 from assistant import Destinations, FirstRun
 from assistant.ChannelProfile import SOURCE_TELEGRAM
@@ -1146,6 +1146,9 @@ class TelegramTransport(Integration, ChatTransport):
         except Exception as e:
             error(f"Failed to send Telegram photo album to {chat_id}: {e}")
 
+    VIDEO_READ_TIMEOUT = 60.0  # seconds Telegram may take to accept an uploaded clip
+    VIDEO_WRITE_TIMEOUT = 120.0  # seconds the upload of the clip itself may take
+
     def send_video(self, conversation, data: bytes, caption: str = "", thumbnail: Optional[bytes] = None) -> bool:
         return self._schedule(self._send_video_async(conversation, data, caption, thumbnail), "video send")
 
@@ -1172,13 +1175,36 @@ class TelegramTransport(Integration, ChatTransport):
         shown = f"{size[0]}x{size[1]}" if size else "unknown size"
         shown += f", {duration}s" if duration else ", unknown duration"
         shown += ", thumbnail" if thumbnail else ", no thumbnail"
-        try:
-            await self._application.bot.send_video(
-                chat_id=chat_id, video=video_bytes, caption=caption[:1024], supports_streaming=True, **extra
-            )
-            info(f"Telegram [{chat_id}]: sent video ({len(video_bytes) / 1024 / 1024:.1f} MB, {shown})")
-        except Exception as e:
-            error(f"Failed to send Telegram video to {chat_id}: {e}")
+        megabytes = len(video_bytes) / 1024 / 1024
+        # The library's defaults (5 s read, 20 s media write) are for a text message: Telegram
+        # takes longer than that to accept a clip of tens of MB, and the 2026-10-23 41 MB clip
+        # timed out and was silently missing from a reply that announced it.
+        for attempt in (1, 2):
+            try:
+                await self._application.bot.send_video(
+                    chat_id=chat_id, video=video_bytes, caption=caption[:1024], supports_streaming=True,
+                    read_timeout=self.VIDEO_READ_TIMEOUT, write_timeout=self.VIDEO_WRITE_TIMEOUT, **extra
+                )
+                info(f"Telegram [{chat_id}]: sent video ({megabytes:.1f} MB, {shown})")
+                return
+            except TimedOut as e:
+                if attempt == 1:
+                    error(f"Telegram: sending a {megabytes:.1f} MB video to {chat_id} timed out ({e}), trying once more")
+                    continue
+                error(f"Failed to send Telegram video to {chat_id} ({megabytes:.1f} MB): timed out twice")
+            except Exception as e:
+                error(f"Failed to send Telegram video to {chat_id}: {e}")
+            break
+        await self._send_text_async(chat_id, self._video_failure_line(caption, megabytes, duration), silent=True)
+
+    @staticmethod
+    def _video_failure_line(caption: str, megabytes: float, duration: Optional[int]) -> str:
+        """The one line the chat gets instead of a clip that could not be uploaded, naming the
+        clip by its caption's first line — a reply announcing four clips and showing three
+        said nothing about the fourth before."""
+        about = f"{megabytes:.0f} MB" + (f", {duration} s" if duration else "")
+        name = caption.strip().splitlines()[0][:80] if caption.strip() else ""
+        return f"One clip could not be sent ({about}){f': {name}' if name else ''}."
 
     @staticmethod
     async def _upright(video_bytes: bytes) -> bytes:

@@ -1318,6 +1318,48 @@ class TestOneShotSends:
         assert kwargs["duration"] == 12 and kwargs["supports_streaming"] is True
         assert not {"width", "height", "thumbnail"} & kwargs.keys()
 
+    @pytest.mark.asyncio
+    async def test_a_video_upload_gets_longer_timeouts_than_a_text_message(self, transport):
+        # Contract with python-telegram-bot's defaults (5 s read, 20 s media write): a 41 MB clip
+        # took Telegram longer than the read default to accept and was dropped (2026-10-23).
+        transport._application.bot.send_video = AsyncMock()
+        with patch(f'{MODULE}.mp4_display_size', return_value=(1280, 720)), \
+             patch(f'{MODULE}.mp4_duration_seconds', return_value=99):
+            await transport._send_video_async(111, b"mp4" * 1000, "clip")
+        kwargs = transport._application.bot.send_video.call_args.kwargs
+        assert kwargs["read_timeout"] > 5 and kwargs["write_timeout"] > 20
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_upload_is_retried_once_and_the_chat_hears_nothing_when_it_lands(self, transport):
+        from telegram.error import TimedOut
+        transport._application.bot.send_video = AsyncMock(side_effect=[TimedOut(), MagicMock()])
+        with patch(f'{MODULE}.mp4_display_size', return_value=None), \
+             patch(f'{MODULE}.mp4_duration_seconds', return_value=None), patch(f'{MODULE}.error'):
+            await transport._send_video_async(111, b"mp4", "Driveway, 21:14")
+        assert transport._application.bot.send_video.call_count == 2
+        transport._application.bot.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_clip_that_times_out_twice_is_named_in_the_chat(self, transport):
+        from telegram.error import TimedOut
+        transport._application.bot.send_video = AsyncMock(side_effect=[TimedOut(), TimedOut()])
+        with patch(f'{MODULE}.mp4_display_size', return_value=(1280, 720)), \
+             patch(f'{MODULE}.mp4_duration_seconds', return_value=99), patch(f'{MODULE}.error'):
+            await transport._send_video_async(111, b"x" * (41 * 1024 * 1024), "Driveway, 21:14\nA car pulled in.")
+        assert transport._application.bot.send_video.call_count == 2
+        sent = transport._application.bot.send_message.call_args.kwargs
+        assert sent["chat_id"] == 111 and "Driveway, 21:14" in sent["text"] and "A car pulled in" not in sent["text"]
+        assert "41 MB" in sent["text"] and "99 s" in sent["text"]
+
+    @pytest.mark.asyncio
+    async def test_an_upload_failing_for_another_reason_is_reported_without_a_retry(self, transport):
+        transport._application.bot.send_video = AsyncMock(side_effect=RuntimeError("file too big"))
+        with patch(f'{MODULE}.mp4_display_size', return_value=None), \
+             patch(f'{MODULE}.mp4_duration_seconds', return_value=None), patch(f'{MODULE}.error'):
+            await transport._send_video_async(111, b"mp4", "")
+        assert transport._application.bot.send_video.call_count == 1
+        assert "could not be sent" in transport._application.bot.send_message.call_args.kwargs["text"]
+
 
 @pytest.mark.unit
 class TestStatusLine:
