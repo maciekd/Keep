@@ -2,6 +2,10 @@
 
 The script runs against a fake ds4 checkout in a temporary folder: a `ds4-server` that records
 its arguments and stays up (or dies at once), a model file and, per test, the vision encoder.
+The fake server is checked in under `tests/unit/data/local_ds4_start_sh/` and symlinked into the
+checkout: macOS assesses a freshly written executable the first time it is exec'd (~130 ms per
+new file, free once it is known), and the slow-first test ordering put a fresh one at the head
+of every worker.
 `lsof`, `curl` and `sleep` are bash functions sourced through $BASH_ENV, so no port of this
 machine is probed and the ten-minute wait loop ends in milliseconds; the KV cache folder is pointed into
 the temporary folder, so nothing under the real home is created.
@@ -19,21 +23,16 @@ VISION = 'gguf/DeepSeek-V4.1-Flash-Vision.gguf'
 # The memory curator's nightly prompt of 2026-10-22, the request that failed at the old window.
 CURATOR_PROMPT_TOKENS = 98557
 
-FAKE_SERVER = '''#!/bin/bash
-echo "$$" > "$PID_OUT"
-if [ -n "${DS4_FAKE_EXIT:-}" ]; then echo "fatal: no such GPU"; exit 7; fi
-printf '%s\\n' "$@" > "$ARGS_OUT"
-exec /bin/sleep 3
-'''
+FAKE_SERVER = Path(__file__).parent / 'data' / 'local_ds4_start_sh' / 'ds4-server'
 
 
 class Ds4Harness:
-    def __init__(self, tmp_path: Path, fake_server: Path):
+    def __init__(self, tmp_path: Path):
         self.dir = tmp_path
         self.ds4 = tmp_path / 'ds4'
         (self.ds4 / 'gguf').mkdir(parents=True)
         (self.ds4 / MODEL).write_text('model')
-        (self.ds4 / 'ds4-server').symlink_to(fake_server)
+        (self.ds4 / 'ds4-server').symlink_to(FAKE_SERVER)
         self.args_out = tmp_path / 'args'
         self.pid_out = tmp_path / 'pid'
         self.env_file = tmp_path / 'stubs.bash'
@@ -73,19 +72,9 @@ class Ds4Harness:
                 pass
 
 
-@pytest.fixture(scope='module')
-def fake_server(tmp_path_factory) -> Path:
-    # One executable for the module: macOS scans a freshly written executable on its first
-    # exec (~110 ms), a symlink to a scanned one runs in 30 ms.
-    server = tmp_path_factory.mktemp('ds4-bin') / 'ds4-server'
-    server.write_text(FAKE_SERVER)
-    server.chmod(0o755)
-    return server
-
-
 @pytest.fixture
-def harness(tmp_path, fake_server):
-    h = Ds4Harness(tmp_path, fake_server)
+def harness(tmp_path):
+    h = Ds4Harness(tmp_path)
     yield h
     h.stop()
 

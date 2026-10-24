@@ -1,0 +1,7 @@
+#!/bin/bash
+# The fake ds4-server of tests/unit/test_local_ds4_start_sh.py: records its pid and arguments
+# in the files the test names and stays up (or dies at once when DS4_FAKE_EXIT is set).
+echo "$$" > "$PID_OUT"
+if [ -n "${DS4_FAKE_EXIT:-}" ]; then echo "fatal: no such GPU"; exit 7; fi
+printf '%s\n' "$@" > "$ARGS_OUT"
+exec /bin/sleep 3
