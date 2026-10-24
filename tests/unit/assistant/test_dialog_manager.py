@@ -246,6 +246,19 @@ def test_a_round_that_produced_no_text_leaves_no_empty_assistant_turn(monkeypatc
 
 
 @pytest.mark.unit
+def test_a_round_that_produced_only_whitespace_gets_the_placeholder_too(monkeypatch):
+    """A newline before the cap was reached is as empty to the Messages API as nothing: a
+    whitespace-only non-final assistant message is the same 400. The placeholder stands for
+    the turn, and the round's own record keeps the whitespace it received."""
+    dm, _ = make_dialog_manager(monkeypatch, ["\n", "  "])
+
+    list(dm.stream_llm_response())
+
+    assert dm.llm_response_raw == "\n  "
+    assert dm.messages[-1]["content"].strip()
+
+
+@pytest.mark.unit
 def test_stream_llm_response_respects_initial_kill(monkeypatch):
     dm, _ = make_dialog_manager(monkeypatch, [])
     dm.is_killed = True
