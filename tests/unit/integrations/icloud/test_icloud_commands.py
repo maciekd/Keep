@@ -64,3 +64,38 @@ class TestCmdIcloudLoginCode:
         text = commands_instance._owner("icloud_login_code")._run_icloud_login_code("123456")
         icloud_api.submit_user_code.assert_called_once_with("123456")
         assert "accepted" in text
+
+
+class TestCmdFindPhone:
+    """`find_phone` answers at once and rings in the background, where a sign-in iCloud wants
+    first is waited out; the LLM is told the ping is on its way, and a ring that did not happen
+    reaches the user as a system note (2026-10-24: the command returned nothing, the ring was
+    refused in its thread, and the assistant said "I've pinged it")."""
+
+    def test_answers_at_once_and_hands_the_ring_to_the_background(self, commands_instance, icloud_api):
+        icloud_api.device_label.return_value = "Charlotte's iPhone"
+        with patch.object(commands_instance, "fire_and_forget") as fire:
+            text = commands_instance.run("find_phone", ["charlotte"])
+        assert "Charlotte's iPhone" in text and "on its way" in text
+        icloud_api.play_sound.assert_not_called()
+        ring, name = fire.call_args.args
+        ring(name)
+        icloud_api.play_sound.assert_called_once_with("charlotte")
+
+    def test_an_unknown_device_is_refused_before_anything_runs(self, commands_instance, icloud_api):
+        from integrations.icloud.ICloudIntegration import iCloudConfigurationError
+        icloud_api.device_label.side_effect = iCloudConfigurationError("No iCloud device matches 'bob'")
+        with patch.object(commands_instance, "fire_and_forget") as fire:
+            text = commands_instance.run("find_phone", ["bob"])
+        assert "No iCloud device matches" in text
+        fire.assert_not_called()
+
+    def test_a_ring_that_fails_is_a_system_note(self, commands_instance, icloud_api):
+        from integrations.icloud.ICloudIntegration import iCloudAuthenticationError
+        icloud_api.device_label.return_value = "Charlotte's iPhone"
+        icloud_api.play_sound.side_effect = iCloudAuthenticationError("still waiting for its 2FA code")
+        with patch.object(commands_instance, "fire_and_forget", side_effect=lambda fn, p: fn(p)), \
+             patch("integrations.icloud.ICloudCommands.system_note") as note:
+            commands_instance.run("find_phone", ["charlotte"])
+        source, text = note.call_args.args
+        assert source == "iCloud" and "Charlotte's iPhone" in text and "2FA" in text

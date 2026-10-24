@@ -302,6 +302,10 @@ class ICloudIntegration(Integration):
     # every 15 min, which stays under 4-per-30-min forever — each retry doing a
     # full SRP signin and firing a Telegram alert.
     AUTO_SMS_FAILURE_COOLDOWN_SECONDS = 2 * 60 * 60
+    # How long a ring or a location lookup waits for the auto-2FA flow to answer the challenge
+    # its sign-in opened: the code arrived and was accepted 21 s after the challenge on
+    # 2026-10-24; before this the command failed at once and the phone never rang.
+    CHALLENGE_WAIT_SECONDS = 60
     # Hard cap on from-scratch password (SRP) signins per recovery, independent
     # of the SMS limiter: on 2026-08-24 a 409 on every submitted code drove four
     # password logins + four SMS in 63s before the limiter kicked in.
@@ -376,6 +380,8 @@ class ICloudIntegration(Integration):
         # Account' (observed 2026-08-20), so requesting on them wastes an SMS — and it
         # is the whole of `requires_2fa()`: a session pyicloud merely calls untrusted
         # has nothing a code could answer.
+        # Set when a code is accepted, cleared when a challenge opens — what `_wait_for_find_my` waits on.
+        self._challenge_answered = threading.Event()
         self._challenge_from_fresh_signin = False
         self._fresh_signins_this_recovery = 0
         # True only while Floxy runs a signin it intends to complete with a code
@@ -396,6 +402,17 @@ class ICloudIntegration(Integration):
         """A new or dropped pyicloud session makes the last Find My verdict moot."""
         self.__api = api
         self._find_my_probe = None
+
+    @property
+    def _challenge_from_fresh_signin(self) -> bool:
+        return self.__challenge_from_fresh_signin
+
+    @_challenge_from_fresh_signin.setter
+    def _challenge_from_fresh_signin(self, open_: bool):
+        """A challenge opening restarts the wait of the commands that need it answered."""
+        self.__challenge_from_fresh_signin = open_
+        if open_:
+            self._challenge_answered.clear()
 
     @property
     def name(self) -> str:
@@ -469,6 +486,11 @@ class ICloudIntegration(Integration):
         if not specs:
             error("No valid iCloud device configuration entries were found.")
         return specs
+
+    def device_label(self, device_name: Optional[str]) -> str:
+        """The configured name of the device *device_name* picks — the iCloudConfigurationError
+        of an unknown name, raised here, is what a command answers at once."""
+        return self._select_device_spec(device_name).label()
 
     def _select_device_spec(self, device_name: Optional[str]) -> iCloudDeviceSpec:
         """Find device spec by display_name (used in voice commands)."""
@@ -1113,6 +1135,7 @@ class ICloudIntegration(Integration):
             self._sms_requested_at = None
             self._fresh_signins_this_recovery = 0
             self._find_my_probe = None       # "2FA pending" predates the code; the next listing decides
+            self._challenge_answered.set()
             info("iCloud: 2FA verification successful")
             if not api.is_trusted_session:
                 info("iCloud: Trusting session...")
@@ -1383,6 +1406,60 @@ class ICloudIntegration(Integration):
             info("iCloud: a 2FA challenge is open — not using Find My until the code is accepted")
             raise iCloudAuthenticationError(self.SESSION_EXPIRED_2FA_MESSAGE)
 
+    def _challenge_wait_pointless(self) -> Optional[str]:
+        """Why waiting for the open challenge to be answered would be a wait for nothing — None
+        while a code is on its way or the auto-2FA flow may still request one."""
+        if self.sms_request_pending():
+            return None
+        if not self._reader_live():
+            return "nothing on this Mac reads the code Apple texts, the user enters it"
+        parked = self._parked_reason()
+        if parked:
+            return f"sign-ins are parked: {parked}"
+        if time.time() - self._auto_sms_last_failure_ts < self.AUTO_SMS_FAILURE_COOLDOWN_SECONDS:
+            return "the auto-2FA flow is in its failure cooldown"
+        return None
+
+    def _wait_for_find_my(self, purpose: str):
+        """`_ensure_authenticated_and_ready`, but a 2FA challenge the auto-2FA flow is completing
+        is waited out (up to CHALLENGE_WAIT_SECONDS) instead of failing the command: a ring asked
+        while the session re-signs in then happens a minute later instead of never. Any other
+        reason Find My cannot be used is raised at once, as is a challenge nothing will answer."""
+        deadline = None
+        while True:
+            try:
+                self._ensure_authenticated_and_ready()
+                return
+            except iCloudAuthenticationError:
+                if not self._challenge_open_now():
+                    raise
+                pointless = self._challenge_wait_pointless()
+                if pointless:
+                    info(f"iCloud: {purpose} is not waiting for the 2FA code — {pointless}")
+                    raise
+                if deadline is None:
+                    deadline = time.time() + self.CHALLENGE_WAIT_SECONDS
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    info(f"iCloud: {purpose} waited {self.CHALLENGE_WAIT_SECONDS}s for the 2FA code — giving up")
+                    raise iCloudAuthenticationError(
+                        f"iCloud is still waiting for its 2FA code after {self.CHALLENGE_WAIT_SECONDS}s "
+                        "(manual entry: icloud_login_code or the console's iCloud tab)")
+                info(f"iCloud: {purpose} waits for the 2FA code to be accepted ({remaining:.0f}s left)")
+                self._challenge_answered.wait(min(remaining, 5.0))
+
+    def _find_my_operation(self, operation, context: str):
+        """Run a Find My operation once the session is ready for it, waiting out a 2FA challenge
+        before it — and the one the re-sign-in inside `_run_with_reauthentication` may open."""
+        self._wait_for_find_my(context)
+        try:
+            return self._run_with_reauthentication(operation, context)
+        except iCloudAuthenticationError:
+            if not self._challenge_open_now():
+                raise
+            self._wait_for_find_my(context)
+            return operation()
+
     def _devices_now(self):
         """pyicloud's device manager, rebuilt: the one from the last command holds that
         command's records, and no monitor thread refreshes them (refresh_interval=None)."""
@@ -1428,13 +1505,8 @@ class ICloudIntegration(Integration):
     def play_sound(self, device_name: Optional[str]) -> str:
         """Play sound on the specified device (Find My iPhone)."""
         info("Playing sound on iCloud device...")
-        self._ensure_authenticated_and_ready()
-
         spec = self._select_device_spec(device_name)
-        played_device_name = self._run_with_reauthentication(
-            lambda: self._play_sound_for_spec(spec),
-            "during API call"
-        )
+        played_device_name = self._find_my_operation(lambda: self._play_sound_for_spec(spec), "the ring")
         note(f"Playing sound on {played_device_name}")
 
         return f"Playing sound on {spec.label()}"
@@ -1559,13 +1631,8 @@ class ICloudIntegration(Integration):
     def get_location(self, device_name: Optional[str]) -> str:
         """Fetch location for the specified device via Find My iPhone."""
         info(f"Fetching iCloud location for device: {device_name!r}")
-        self._ensure_authenticated_and_ready()
-
         spec = self._select_device_spec(device_name)
-        return self._run_with_reauthentication(
-            lambda: self._location_for_spec(spec),
-            "during location lookup"
-        )
+        return self._find_my_operation(lambda: self._location_for_spec(spec), "the location lookup")
 
     @property
     def api(self) -> Optional[PyiCloudService]:

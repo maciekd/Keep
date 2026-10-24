@@ -1,6 +1,7 @@
+from assistant.SystemNote import system_note
 from assistant.commands.CommandSet import CommandSet
-from common.logging import info
-from integrations.icloud.ICloudIntegration import iCloudAPI
+from common.logging import error, info
+from integrations.icloud.ICloudIntegration import iCloudAPI, iCloudAPIError
 
 
 class ICloudCommands(CommandSet):
@@ -11,7 +12,27 @@ class ICloudCommands(CommandSet):
         return iCloudAPI.get_instance()
 
     def cmd_find_phone(self, parameter_string: str):
-        self.fire_and_forget(self._get_icloud_api().play_sound, parameter_string)
+        """Answers at once and rings in the background: a session iCloud wants re-signed, 2FA
+        code included, is waited out there (`play_sound`), so the reply is "pinging it" and the
+        ring follows within the minute. The phone ringing is the confirmation; a ring that did
+        not happen is told through a system note, which the next turn sees."""
+        api = self._get_icloud_api()
+        try:
+            label = api.device_label(parameter_string)
+        except iCloudAPIError as e:
+            info(f"find_phone refused: {e}")
+            return str(e)
+
+        def _ring(name):
+            try:
+                api.play_sound(name)
+            except Exception as e:
+                error(f"find_phone: ringing {label} failed: {e}")
+                system_note("iCloud", f"iCloud could not ring {label}: {e}")
+
+        self.fire_and_forget(_ring, parameter_string)
+        return (f"Ringing {label} now. If iCloud asks for a sign-in first it is completed in the background "
+                f"and the phone rings within a minute; tell the user the ping is on its way, not that it is done.")
 
     def cmd_locate_user(self, parameter_string: str):
         self.background_command(self._get_icloud_api().get_location, parameter_string)

@@ -2475,3 +2475,116 @@ class TestSubmitUserCode:
         monitor.get_instance.return_value.check_now.assert_not_called()
         assert "rejected" in text and "icloud_unlocked" in text
         assert api._sms_requested_at is not None, "a rejected manual code does not consume the auto-submit's shot"
+
+
+class TestFindMyWaitsOutTheChallenge:
+    """A ring or a location lookup asked while the session's re-sign-in has a 2FA challenge open
+    waits for the auto-2FA flow to answer it (2026-10-24: the command failed at once, the code was
+    accepted 21 s later, and the phone never rang) — unless nothing will answer it, or the
+    budget runs out."""
+
+    def _device(self, name="iPhone"):
+        device = Mock()
+        device.data = {"baUUID": "device-1-uuid", "name": name}
+        return device
+
+    def _challenged_api(self, device):
+        service = Mock()
+        service.requires_2fa = True
+        service._auth_data = {"phoneNumberVerification": {}}
+        service.devices = [device]
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = service
+        api._challenge_from_fresh_signin = True
+        api._sms_requested_at = time.time()
+        return api, service
+
+    def test_the_ring_happens_once_the_code_is_accepted(self):
+        device = self._device()
+        api, service = self._challenged_api(device)
+
+        def code_accepted(timeout=None):
+            service.requires_2fa = False
+            api._challenge_answered.set()
+            return True
+
+        with patch.object(api._challenge_answered, "wait", side_effect=code_accepted) as wait:
+            result = api.play_sound("iPhone")
+        assert "Playing sound on iPhone" in result
+        device.play_sound.assert_called_once()
+        assert wait.called
+
+    def test_a_location_lookup_waits_the_same_way(self):
+        device = self._device()
+        device.location = {"isOld": False, "latitude": 59.3, "longitude": 18.1}
+        api, service = self._challenged_api(device)
+
+        def code_accepted(timeout=None):
+            service.requires_2fa = False
+            return True
+
+        with patch.object(api._challenge_answered, "wait", side_effect=code_accepted), \
+             patch.object(api, "_location_for_spec", return_value="iPhone is at home") as locate:
+            assert api.get_location("iPhone") == "iPhone is at home"
+        locate.assert_called_once()
+
+    def test_a_challenge_nothing_reads_the_code_for_fails_at_once(self):
+        device = self._device()
+        api, _ = self._challenged_api(device)
+        api._sms_requested_at = None
+        with patch(LIVE_PATH, return_value=[]), patch.object(api._challenge_answered, "wait") as wait:
+            with pytest.raises(iCloudAuthenticationError):
+                api.play_sound("iPhone")
+        wait.assert_not_called()
+        device.play_sound.assert_not_called()
+
+    def test_the_wait_gives_up_after_its_budget(self):
+        device = self._device()
+        api, _ = self._challenged_api(device)
+        with patch.object(iCloudAPI, "CHALLENGE_WAIT_SECONDS", 0.01):
+            with pytest.raises(iCloudAuthenticationError, match="still waiting"):
+                api.play_sound("iPhone")
+        device.play_sound.assert_not_called()
+
+    def test_a_re_sign_in_that_opens_a_challenge_is_waited_out_too(self):
+        """Find My rejects the cookies mid-ring, the deliberate re-sign-in ends on a challenge
+        (the 2026-10-24 case): the ring waits for the code instead of failing."""
+        device_fail = self._device()
+        device_fail.play_sound.side_effect = Exception("Re-authentication required")
+        device_ok = self._device()
+        service = Mock()
+        service.requires_2fa = False
+        service._auth_data = {}
+        type(service).devices = PropertyMock(side_effect=[[device_fail], [device_ok]])
+
+        def reauth_opens_a_challenge(force_refresh=False):
+            service.requires_2fa = True
+            service._auth_data = {"phoneNumberVerification": {}}
+        service.authenticate.side_effect = reauth_opens_a_challenge
+
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = service
+        api._sms_requested_at = time.time()
+
+        def code_accepted(timeout=None):
+            service.requires_2fa = False
+            return True
+
+        with patch.object(api._challenge_answered, "wait", side_effect=code_accepted) as wait:
+            assert "Playing sound on iPhone" in api.play_sound("iPhone")
+        assert wait.called
+        device_ok.play_sound.assert_called_once()
+
+    def test_a_new_challenge_restarts_the_wait_and_an_accepted_code_ends_it(self):
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._challenge_answered.set()
+        api._challenge_from_fresh_signin = True
+        assert not api._challenge_answered.is_set()
+        service = Mock()
+        service.requires_2fa = True
+        service.is_trusted_session = True
+        service.validate_2fa_code.return_value = True
+        api._api = service
+        with patch.object(api, "_validate_sms_code_verbose", return_value=True):
+            api.send_2fa_code("123456")
+        assert api._challenge_answered.is_set()

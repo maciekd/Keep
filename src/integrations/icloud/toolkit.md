@@ -8,7 +8,9 @@ To make a family member's phone play a sound (useful when someone can't find the
 
 `find_phone(device_name: str)`
 
-Available devices: see the FAMILY PHONES section of your prompt.
+Available devices: see the FAMILY PHONES section of your prompt. The command answers at once and the phone rings in
+the background — a sign-in iCloud asks for first, its 2FA code included, is completed there too, so the phone rings
+within the minute. Say the ping is on its way, not that it is done; a ring that failed arrives as a system note.
 
 ### Fetch user location
 If someone is not at home, you can use Find My iPhone to fetch the approximate location of their phone. Use this if the user asks where someone is.
