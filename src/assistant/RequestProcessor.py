@@ -203,6 +203,7 @@ class RequestProcessor:
         self._rounds: list = []
         self._silent_end_followed_up = False
         self._cap_hit_followed_up = False
+        self._cut_round_result: str | None = None  # the second cut round's command result, for the history
         self.first_sound_chunk = True
         self.is_killed = False
         self.kill_reason = ""  # why kill() fired, so the turn gate can log a truthful abort
@@ -697,6 +698,8 @@ class RequestProcessor:
                                               timestamp=self.turn_timestamp, time_note=self.time_note)
             else:
                 prompt_manager.update_history(None, None, response_text)
+            if self._cut_round_result:
+                prompt_manager.add_command_result(self._cut_round_result)
         trace("")
         return response_text
 
@@ -930,12 +933,31 @@ class RequestProcessor:
             if cut_notice:
                 yield Notice(cut_notice)
             yield RoundEnd(self.dialog_manager.llm_response_raw)
-            if cut_notice:
-                return user_input_already_reported_on
             self._wait_for_initial_command()
             yield from self._drain_events()
+            if cut_notice:
+                yield from self._settle_cut_round()
+                return user_input_already_reported_on
             trace("Stream done.")
         return user_input_already_reported_on
+
+    def _settle_cut_round(self) -> Generator[AssistantEvent, None, None]:
+        """The round the request ends on after the second cut may have dispatched commands
+        before it overran the cap: they run to the end here, so the request is still in
+        progress while they do, and their result is kept for the history (_update_history
+        persists it after the round's own text, where the next turn expects a command row) —
+        the request just does not circle back with it."""
+        dm = self.dialog_manager
+        self._wait_for_background_command(dm)
+        yield from self._drain_events()
+        reply = dm.command_processor.command_reply
+        if reply is None:
+            trace("The cut round ran no command with a result — nothing to keep for the history")
+            return
+        executed = dm.command_processor.executed_commands
+        info(f"The cut round's command(s) finished ({', '.join(executed) or 'none succeeded'}) — keeping the "
+             f"result in the history without another round")
+        self._cut_round_result = _command_result_for_history(reply if isinstance(reply, list) else f"result: \n{reply}")
 
     def generate_events(self, prompt_manager) -> Generator[AssistantEvent, None, None]:
         """The whole request as an event stream: the user's round, one round per command

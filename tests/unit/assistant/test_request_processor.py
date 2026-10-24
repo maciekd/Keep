@@ -45,6 +45,7 @@ def handler():
     h._rounds = []
     h._silent_end_followed_up = False
     h._cap_hit_followed_up = False
+    h._cut_round_result = None
     h.dialog_manager = Mock()
     h.dialog_manager.reply_to_llm = "User: hello how are you"
     h.dialog_manager.reply_text = "User: hello how are you"
@@ -140,6 +141,7 @@ class TestHandleBackgroundCommands:
         h._rounds = []
         h._silent_end_followed_up = False
         h._cap_hit_followed_up = False
+        h._cut_round_result = None
         h.request_context = RequestContext(
             user_input="hello",
             user="User",
@@ -928,6 +930,47 @@ class TestHandleBackgroundCommands:
         assert notices == [RequestProcessor.CAP_HIT_NOTICE]
         assert any(isinstance(e, RoundEnd) for e in yielded)
 
+    def test_a_second_cut_waits_for_the_rounds_commands_and_keeps_their_result(self, handler):
+        """The round that overran the cap had already dispatched a command: the request ends
+        only once it finished, and its result follows the round's text into the history (the
+        next turn would otherwise not know it ran). No third LLM round."""
+        first = self._cut_dm()
+        cut_again = self._cut_dm()
+        cut_again.command_processor.command_reply = "Lamp Marcus is off."
+        cut_again.command_processor.executed_commands = ["home_control(lamp, off)"]
+        handler.dialog_manager = first
+        handler._rounds = [first]
+        handler._cap_hit()
+        waited, streamed = [], []
+        with patch.object(handler, 'stream_response', side_effect=lambda: iter(streamed.append(handler.dialog_manager) or [])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command', side_effect=waited.append), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch.object(handler, '_new_dialog_manager', return_value=cut_again):
+            self._exhaust_generator(handler._handle_background_commands(Mock()))
+        assert streamed == [cut_again]
+        assert waited[-1] is cut_again
+        handler.request_context = RequestContext(user_input="turn the lamp off", user="Marcus")
+        prompt_manager = Mock()
+        handler._update_history(prompt_manager, "turn the lamp off")
+        names = [c[0] for c in prompt_manager.mock_calls]
+        assert names.index('update_history') < names.index('add_command_result')
+        assert "Lamp Marcus is off." in prompt_manager.add_command_result.call_args.args[0]
+
+    def test_a_second_cut_round_without_a_result_adds_no_command_row(self, handler):
+        handler.dialog_manager = first = self._cut_dm()
+        handler._rounds = [first]
+        handler._cap_hit()
+        with patch.object(handler, 'stream_response', return_value=iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch.object(handler, '_new_dialog_manager', return_value=self._cut_dm()):
+            self._exhaust_generator(handler._handle_background_commands(Mock()))
+        prompt_manager = Mock()
+        handler._update_history(prompt_manager, "hello")
+        prompt_manager.add_command_result.assert_not_called()
+
     def test_a_round_that_ended_on_its_own_is_not_told_anything(self, handler):
         dm = self._silent_dm()
         dm.ai.last_stop_reason = 'end_turn'
@@ -991,6 +1034,7 @@ def full_handler():
     h.dialog_manager.ai.supports_native_thinking.return_value = False
     h.dialog_manager.ai.prefers_byte_prefix_tail.return_value = False
     h.request_data = RequestData("GET", "/api", {"query": "hello"}, {"User-Agent": "test"})
+    h._cut_round_result = None
     return h
 
 
