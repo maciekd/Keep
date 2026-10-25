@@ -1,6 +1,8 @@
 """The Graph v1.0 calls the mail and calendar accounts share: a bearer token on every request,
 paging, and the two answers that need a rule — 401 means the token is gone, 429 is retried once
-after the Retry-After the server names.
+after the Retry-After the server names. A request whose connection Graph drops before answering
+(RemoteDisconnected, a reset) is sent once more on a new connection, unless it is a POST, which
+may already have been carried out.
 
 Everything else that goes wrong becomes a GraphError with the short message Graph sends,
 which the account turns into the error string the LLM reads."""
@@ -15,6 +17,7 @@ from integrations.microsoft.MicrosoftAuth import MicrosoftAuth, NotSignedIn, not
 BASE_URL = "https://graph.microsoft.com/v1.0"
 TIMEOUT = 30
 MAX_RETRY_AFTER = 60
+RETRIED_ON_DROP = {"GET", "PATCH", "DELETE"}
 
 
 class GraphError(Exception):
@@ -64,7 +67,7 @@ class GraphClient:
         token = self._auth.token()
         sent = {"Authorization": f"Bearer {token}", "Accept": "application/json", **(headers or {})}
         started = time.time()
-        response = requests.request(method, url, params=params, headers=sent, json=json, timeout=TIMEOUT)
+        response = self._send(method, url, path, params, sent, json)
         trace(f"{self.name}: {method} {path.split('?')[0]} -> {response.status_code} in {time.time() - started:.1f}s")
         if response.status_code == 401:
             info(f"{self.name}: Graph answered 401 — the token is not accepted")
@@ -83,6 +86,15 @@ class GraphClient:
         if response.status_code == 204 or not response.content:
             return {}
         return response.json()
+
+    def _send(self, method: str, url: str, path: str, params, headers: dict, json):
+        try:
+            return requests.request(method, url, params=params, headers=headers, json=json, timeout=TIMEOUT)
+        except requests.ConnectionError as e:
+            if method not in RETRIED_ON_DROP:
+                raise
+            info(f"{self.name}: {method} {path.split('?')[0]} lost its connection ({e}), retrying once on a new one")
+        return requests.request(method, url, params=params, headers=headers, json=json, timeout=TIMEOUT)
 
     @staticmethod
     def _message(response) -> str:

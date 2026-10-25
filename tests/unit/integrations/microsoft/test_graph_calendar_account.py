@@ -2,16 +2,18 @@
 asked in the home timezone and paged to the end, the event posted with that timezone, and an
 event deleted or moved by its id."""
 from datetime import date, datetime
+from http.client import RemoteDisconnected
 from unittest.mock import patch
 
 import pytest
 import pytz
+import requests
 
 from assistant.integration.calendar.Event import Event
 from integrations.microsoft.GraphCalendarAccount import GraphCalendarAccount
 from integrations.microsoft.GraphClient import BASE_URL, GraphClient, GraphError
 
-from .graph_fakes import FakeGraph, StubAuth
+from .graph_fakes import FakeGraph, FakeResponse, StubAuth
 
 REQUEST = "integrations.microsoft.GraphClient.requests.request"
 CALENDARS = {"value": [{"id": "c-1", "name": "Calendar"}, {"id": "c-2", "name": "Birthdays"}]}
@@ -195,3 +197,43 @@ class TestDeleteAndMove:
         with pytest.raises(GraphError, match="boom") as raised:
             account().delete_event("Calendar", _read())
         assert raised.value.status == 500
+
+
+def dropped(*answers):
+    """A route that loses the connection the way Graph's idle keep-alives do, then gives the answers."""
+    queue = list(answers)
+
+    def answer(params, headers, json):
+        nxt = queue.pop(0)
+        if nxt is None:
+            raise requests.ConnectionError(("Connection aborted.", RemoteDisconnected("Remote end closed connection without response")))
+        return nxt
+    return answer
+
+
+@pytest.mark.unit
+class TestDroppedConnection:
+    def test_a_view_whose_connection_drops_is_fetched_again_once(self, graph):
+        graph.route("GET", "/me/calendars", CALENDARS)
+        graph.route("GET", "/me/calendars/c-1/calendarView",
+                    dropped(None, FakeResponse(200, view(("Standup", "2026-06-15T09:00:00.0000000", "2026-06-15T09:30:00.0000000", False)))))
+
+        event, = account().events(["Calendar"], date(2026, 6, 15), date(2026, 6, 22))
+
+        assert event.title == "Standup"
+        assert len(graph.sent("GET", "/me/calendars/c-1/calendarView")) == 2
+
+    def test_a_second_drop_is_raised(self, graph):
+        graph.route("GET", "/me/calendars", dropped(None, None))
+        with pytest.raises(requests.ConnectionError):
+            account().calendars()
+        assert len(graph.sent("GET", "/me/calendars")) == 2
+
+    def test_a_post_is_not_sent_twice_since_the_first_may_have_landed(self, graph):
+        graph.route("GET", "/me/calendars", CALENDARS)
+        graph.route("POST", "/me/calendars/c-1/events", dropped(None, FakeResponse(201, {"id": "ev-1"})))
+        event = Event(datetime(2026, 6, 15, 7, 0, tzinfo=pytz.UTC), datetime(2026, 6, 15, 8, 30, tzinfo=pytz.UTC), "Dentist Charlotte")
+
+        with pytest.raises(requests.ConnectionError):
+            account().create_event("Calendar", event)
+        assert len(graph.sent("POST", "/me/calendars/c-1/events")) == 1
