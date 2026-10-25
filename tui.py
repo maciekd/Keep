@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import codecs
+import re
 import socket
 import sys
 import time
@@ -96,6 +97,17 @@ def winch_handler(sig, frame):
 signal.signal(signal.SIGWINCH, winch_handler)
 
 
+KITTY_KEY = re.compile(rb"\x1b\[99(?::\d*)*;(\d+)(?::\d+)?u")
+LOCK_MODIFIERS = 64 | 128   # Caps Lock, Num Lock — the terminal reports them with the key
+CTRL = 4
+
+
+def is_kitty_ctrl_c(data):
+    """Ctrl+C as the kitty keyboard protocol reports it, whatever lock keys are on."""
+    match = KITTY_KEY.match(data)
+    return bool(match) and (int(match.group(1)) - 1) & ~LOCK_MODIFIERS == CTRL
+
+
 def get_terminal_dimensions():
     size = get_terminal_size()
     return f"{size.lines} {size.columns}"
@@ -177,9 +189,9 @@ def handle_connection():
                     if not data:
                         continue
 
-                    # Ctrl+C: ASCII 3, or `CSI 99;5u` once the server has the terminal
+                    # Ctrl+C: ASCII 3, or `CSI 99;<mods>u` once the server has the terminal
                     # reporting keys the kitty way
-                    if data[0] == 3 or data.startswith(b"\x1b[99;5u"):
+                    if data[0] == 3 or is_kitty_ctrl_c(data):
                         raise KeyboardInterrupt
 
                     try:

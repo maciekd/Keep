@@ -297,15 +297,31 @@ class TUIFloxyConsole(AssistantObserver):
     }
     # A key the terminal reports with its modifiers: `CSI code;mods u` (the kitty keyboard
     # protocol, which the TUI server turns on) or xterm's `CSI 27;mods;code ~`.
-    _CSI_U = re.compile(r"\x1b\[(\d+)(?:;(\d+))?u")
+    _CSI_U = re.compile(r"\x1b\[(\d+)(?::\d*)*(?:;(\d+)(?::\d+)?)?u")
     _MODIFY_OTHER_KEYS = re.compile(r"\x1b\[27;(\d+);(\d+)~")
+    # A legacy CSI key (arrows, Home/End, PgUp/PgDn, Delete) with its modifiers
+    _CSI_MODIFIED = re.compile(r"\x1b\[(\d*);(\d+)(?::\d+)?([A-DHF~])")
     _MOD_SHIFT, _MOD_ALT, _MOD_CTRL = 1, 2, 4
+    _MOD_LOCKS = 64 | 128   # Caps Lock, Num Lock: reported with the key, never part of its meaning
+
+    @classmethod
+    def _without_locks(cls, key: str) -> str:
+        """`key` as it reads with Caps Lock and Num Lock off: `ESC[1;66A` (Shift+Up, Caps
+        Lock on) is `ESC[1;2A`, `ESC[1;65A` is `ESC[A`, `ESC[3;65~` is `ESC[3~`."""
+        match = cls._CSI_MODIFIED.fullmatch(key)
+        if not match:
+            return key
+        number, mods, final = match.group(1), (int(match.group(2)) - 1) & ~cls._MOD_LOCKS, match.group(3)
+        if mods:
+            return f"\x1b[{number or 1};{mods + 1}{final}"
+        return f"\x1b[{number}~" if final == '~' else f"\x1b[{final}"
 
     @classmethod
     def _parse_key(cls, key: str) -> str:
         """Name a keystroke or escape sequence; "" for sequences the TUI does not use."""
         if not key:
             return ""
+        key = cls._without_locks(key)
         named = cls._NAMED_KEYS.get(key)
         if named is not None:
             return named
@@ -326,7 +342,7 @@ class TUIFloxyConsole(AssistantObserver):
         same name the legacy bytes get: Ctrl+X is '\\x18' either way. Every modified Enter
         is 'shift_enter' — terminals differ in which of Shift, Alt and Ctrl they can report,
         and all of them mean a newline in the composer."""
-        mods -= 1
+        mods = (mods - 1) & ~cls._MOD_LOCKS
         shift, alt, ctrl = mods & cls._MOD_SHIFT, mods & cls._MOD_ALT, mods & cls._MOD_CTRL
         if code in (13, 57414):   # Enter, keypad Enter
             return 'shift_enter' if mods else '\r'

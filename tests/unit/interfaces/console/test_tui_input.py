@@ -173,6 +173,13 @@ class TestKeyNames:
         ("\x1b[127;3u", "alt_backspace"), ("\x1b[120;5u", "\x18"), ("\x1b[114;5u", "\x12"),
         ("\x1b[119;5u", "\x17"), ("\x1b[98;3u", "alt_left"), ("\x1b[102;3u", "alt_right"),
         ("\x1b[27;5;120~", "\x18"), ("\x1b[99;3u", ""),
+        # Caps Lock (+64) and Num Lock (+128) ride along in the modifiers and change nothing
+        ("\x1b[1;65A", "up"), ("\x1b[1;129B", "down"), ("\x1b[1;66D", "shift_left"), ("\x1b[1;194C", "shift_right"),
+        ("\x1b[1;69D", "ctrl_left"), ("\x1b[1;65H", "home"), ("\x1b[5;65~", "pageup"), ("\x1b[3;129~", "delete"),
+        ("\x1b[27;65u", "escape"), ("\x1b[13;65u", "\r"), ("\x1b[13;66u", "shift_enter"),
+        ("\x1b[9;66u", "shift_tab"), ("\x1b[120;69u", "\x18"), ("\x1b[98;67u", "alt_left"),
+        # an event type (`:1` press) after the modifiers
+        ("\x1b[1;2:1A", "shift_up"), ("\x1b[27;1:1u", "escape"),
     ])
     def test_parse_key(self, seq, name):
         from interfaces.console.TUIFloxyConsole import TUIFloxyConsole
