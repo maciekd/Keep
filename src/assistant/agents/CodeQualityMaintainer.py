@@ -37,9 +37,10 @@ API_KEY_ENV = "ANTHROPIC_API_KEY"            # how the CLI takes a key: its envi
 CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS"  # "Name: Value" lines the CLI adds to every request
 NOT_LOGGED_IN_MARKERS = ("not logged in", "please run /login", "invalid api key")
 # What the CLI answers in place of a report when the subscription's credits are gone (2026-10-22:
-# "You're out of usage credits…" after a 24-minute bug analysis) or its spend limit is hit — every
+# "You're out of usage credits…" after a 24-minute bug analysis; "Fable 5.1 requires usage credits"
+# when the model needs credits the plan lacks) or its spend limit is hit — every
 # later run of the night answers the same within a second, so the night stops its Claude steps.
-USAGE_LIMIT_MARKERS = ("out of usage credits", "spend limit", "usage limit")
+USAGE_LIMIT_MARKERS = ("usage credits", "spend limit", "usage limit")
 # A result the CLI did not flag counts as the limit message only when it is one: a sentence or
 # two, never the length of a report that happens to discuss a limit.
 USAGE_LIMIT_MESSAGE_MAX_CHARS = 400
@@ -1025,8 +1026,18 @@ class CodeQualityMaintainer:
             cmd, cwd=WORKING_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL, text=True, env=status.env()
         )
-        timer = threading.Timer(CLAUDE_TIMEOUT, process.kill)
+        timed_out = threading.Event()
+
+        def kill():
+            timed_out.set()
+            process.kill()
+        timer = threading.Timer(CLAUDE_TIMEOUT, kill)
         timer.start()
+        # Read after stdout, a stderr past the pipe buffer would block the CLI forever
+        stderr_chunks = []
+        stderr_reader = threading.Thread(target=lambda: stderr_chunks.append(process.stderr.read()),
+                                         name=f"claude-stderr {label}", daemon=True)
+        stderr_reader.start()
         result_text = ""
         result_is_error = False
         last_assistant_text = ""
@@ -1064,12 +1075,18 @@ class CodeQualityMaintainer:
                 except json.JSONDecodeError:
                     trace(f"CodeQualityMaintainer [{label}] {line}")
             process.wait()
-            stderr = process.stderr.read()
+            stderr_reader.join()
+            stderr = "".join(chunk or "" for chunk in stderr_chunks)
             if stderr and stderr.strip():
                 trace(f"CodeQualityMaintainer [{label}] stderr: {stderr.strip()}")
         finally:
             timer.cancel()
         output = result_text or last_assistant_text
+        if timed_out.is_set():
+            # What it wrote before the kill is a report cut short, not the run's report
+            reason = f"timed out after {CLAUDE_TIMEOUT // 60} minutes and was killed"
+            error(f"CodeQualityMaintainer [{label}] Claude Code {reason}; last text: {output.strip()[:200]}")
+            raise ClaudeRunFailedError(label, reason)
         # A successful report may legitimately discuss login errors in the code under review, so
         # the result text only counts when the CLI itself flagged the run as failed.
         if (result_is_error and CodeQualityMaintainer._is_not_logged_in(output)) \

@@ -8,6 +8,7 @@ from common.ConfigManager import ConfigManager
 import json
 import os
 import subprocess
+import threading
 
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS
 
@@ -979,6 +980,42 @@ class TestRunClaude:
         lines = [json.dumps({"type": "result", "is_error": False, "result": report}) + "\n"]
         mock_popen.return_value = _mock_popen(lines)
         assert CodeQualityMaintainer._run_claude("prompt", "label").startswith("Bug: the retry loop")
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_a_model_that_requires_usage_credits_stops_the_night(self, mock_popen):
+        lines = [json.dumps({"type": "result", "is_error": True,
+                             "result": "Fable 5.1 requires usage credits."}) + "\n"]
+        mock_popen.return_value = _mock_popen(lines)
+        with pytest.raises(ClaudeUsageLimitError) as exc:
+            CodeQualityMaintainer._run_claude("prompt", "bug-analysis")
+        assert exc.value.stops_the_night
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_stderr_is_drained_while_stdout_is_still_open(self, mock_popen):
+        """A CLI filling the stderr pipe blocks until it is read: stdout must not have to end first."""
+        stderr_read = threading.Event()
+
+        def stdout_lines():
+            assert stderr_read.wait(2), "stderr is only read after stdout ends — a full pipe deadlocks"
+            yield '{"type": "result", "result": "done"}\n'
+
+        proc = _mock_popen()
+        proc.stdout = stdout_lines()
+        proc.stderr.read.side_effect = lambda: (stderr_read.set(), "x" * 100_000)[1]
+        mock_popen.return_value = proc
+        assert CodeQualityMaintainer._run_claude("prompt", "label") == "done"
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_a_run_killed_at_the_timeout_fails_instead_of_returning_its_last_text(self, mock_popen):
+        lines = ['{"type": "assistant", "message": {"content": [{"type": "text", "text": "Looking at"}]}}\n']
+        proc = _mock_popen(lines)
+        mock_popen.return_value = proc
+        fire_at_once = lambda _interval, fn: Mock(start=fn)
+        with patch('assistant.agents.CodeQualityMaintainer.threading.Timer', side_effect=fire_at_once):
+            with pytest.raises(ClaudeRunFailedError) as exc:
+                CodeQualityMaintainer._run_claude("prompt", "bug-analysis")
+        proc.kill.assert_called_once()
+        assert "timed out" in str(exc.value) and not exc.value.stops_the_night
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_handles_invalid_json(self, mock_popen):
