@@ -132,8 +132,8 @@ class PullRequestTrial:
             info(f"PullRequestTrial: PR #{number} refused — {e}")
             return f"Cannot try PR #{number}: {e}."
         branch = f"{BRANCH_PREFIX}{number}"
-        previous = CodeQualityMaintainer._current_branch()
         fallback = CodeQualityMaintainer.target_branch()
+        previous = CodeQualityMaintainer._current_branch() or fallback
         # Into FETCH_HEAD, not the branch: a second try of the PR already being tried would
         # otherwise ask git to update the checked-out branch, which it refuses.
         fetch = PullRequestTrial._git("fetch", "origin", f"pull/{number}/head")

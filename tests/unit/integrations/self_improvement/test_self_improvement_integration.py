@@ -175,7 +175,8 @@ class TestGating:
 
     @patch.object(cqm, "claude_path", return_value=None)
     def test_improve_code_reports_the_missing_cli(self, _path):
-        with patch.object(CodeQualityMaintainer, "_run_subprocess"), \
+        git_ok = Mock(stdout="master\n", stderr="", returncode=0)
+        with patch.object(CodeQualityMaintainer, "_run_subprocess", return_value=git_ok), \
                 patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
                 patch.object(CodeQualityMaintainer, "_trial_instructions", return_value=""):

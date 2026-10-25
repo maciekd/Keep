@@ -1,3 +1,4 @@
+import functools
 import html
 import json
 import os
@@ -31,15 +32,17 @@ CLAUDE_TIMEOUT = 60 * 60
 AUTH_STATUS_TIMEOUT = 30
 GIT_TIMEOUT = 60
 CHECK_INTERVAL = 900
+NIGHTLY_WAIT = CLAUDE_TIMEOUT + 2 * GIT_TIMEOUT   # how long the scheduled run waits for an on-demand job
 
 API_KEY_CONFIG_KEY = "api_keys.anthropic"   # stands in for a Claude Code login, billed per token
 API_KEY_ENV = "ANTHROPIC_API_KEY"            # how the CLI takes a key: its environment, never argv
 CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS"  # "Name: Value" lines the CLI adds to every request
 NOT_LOGGED_IN_MARKERS = ("not logged in", "please run /login", "invalid api key")
 # What the CLI answers in place of a report when the subscription's credits are gone (2026-10-22:
-# "You're out of usage credits…" after a 24-minute bug analysis) or its spend limit is hit — every
-# later run of the night answers the same within a second, so the night stops its Claude steps.
-USAGE_LIMIT_MARKERS = ("out of usage credits", "spend limit", "usage limit")
+# "You're out of usage credits…" after a 24-minute bug analysis; "Fable 5.1 requires usage credits"
+# for a model the plan does not cover) or its spend limit is hit — every later run of the night
+# answers the same within a second, so the night stops its Claude steps.
+USAGE_LIMIT_MARKERS = ("usage credits", "spend limit", "usage limit")
 # A result the CLI did not flag counts as the limit message only when it is one: a sentence or
 # two, never the length of a report that happens to discuss a limit.
 USAGE_LIMIT_MESSAGE_MAX_CHARS = 400
@@ -123,7 +126,27 @@ REGISTRY_FILES = frozenset({
     "config.example.yaml",                   # the `# >> section:` pointer line
     "readme.md",                             # the integration's row
 })
-_nightly_lock = threading.Lock()   # the scheduled run and //nightly work in the same checkout
+_nightly_lock = threading.Lock()   # every job that pulls, runs Claude Code or checks out works in the same checkout
+CHECKOUT_BUSY_MESSAGE = ("The {job} did not start: the nightly run or another Claude Code job is working in the "
+                         "server's checkout right now. Try again when it is done.")
+
+
+def _holds_checkout(job: str):
+    """An on-demand job runs only while it holds `_nightly_lock`, so it never pulls, runs Claude
+    Code or checks out a branch under the nightly run or another job — and they never under it.
+    A busy checkout is answered at once with CHECKOUT_BUSY_MESSAGE, never waited for."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def run(*args, **kwargs):
+            if not _nightly_lock.acquire(blocking=False):
+                info(f"CodeQualityMaintainer: the {job} not started — another job holds the checkout")
+                return CHECKOUT_BUSY_MESSAGE.format(job=job)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _nightly_lock.release()
+        return run
+    return wrap
 
 
 class ClaudeUnavailableError(RuntimeError):
@@ -640,13 +663,17 @@ class CodeQualityMaintainer:
 
     def _execute_nightly_run(self, force=False, only=None):
         """The whole night, or with `only` (one of NIGHTLY_STEPS) that step alone. `force` is
-        //nightly: it runs with `self_improvement.nightly_runs` off, never with the integration off."""
+        //nightly: it runs with `self_improvement.nightly_runs` off, never with the integration off.
+        The scheduled run waits for an on-demand job that holds the checkout; //nightly does not."""
         reason = (self.unavailable_reason() if force else self.nightly_skip_reason()) or self.trial_skip_reason()
         if reason:
             info(f"CodeQualityMaintainer: skipping nightly run — {reason}")
             return
-        if not _nightly_lock.acquire(blocking=False):
-            info("CodeQualityMaintainer: a nightly run is already going, not starting another.")
+        if not force and _nightly_lock.locked():
+            info("CodeQualityMaintainer: another job holds the checkout, the nightly run waits for it...")
+        acquired = _nightly_lock.acquire(blocking=False) if force else _nightly_lock.acquire(timeout=NIGHTLY_WAIT)
+        if not acquired:
+            info("CodeQualityMaintainer: another job still holds the checkout, not starting the nightly run.")
             return
         try:
             self._nightly_run(only)
@@ -655,7 +682,7 @@ class CodeQualityMaintainer:
 
     def _nightly_run(self, only):
         note(f"CodeQualityMaintainer: starting nightly run{f' ({only} only)' if only else ''}...")
-        self._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
+        pull_failure = self._git_pull()
         reports = {}
         steps = dict(zip(NIGHTLY_STEPS, [self._step_generate_tests,
                                          self._step_bug_analysis,
@@ -700,12 +727,17 @@ class CodeQualityMaintainer:
                 if e.stops_the_night:
                     claude_down, failed_at = e, title.lower()
             except Exception as e:
-                error(f"CodeQualityMaintainer: {title} exception: {e}")
+                error(f"CodeQualityMaintainer: {title} exception: {e!r}")
+                # Not in `reports`: the fix step must not read a crash as a step's findings
+                sections.append((key, f"**The {title.lower()} crashed:** `{e!r}` — see log/floxy.out."))
         if sections:
             sections.sort(key=lambda section: REPORT_ORDER.index(section[0]))
             combined_md = "\n\n---\n\n".join(
                 f"# {REPORT_TITLES[key]}\n\n{body}" for key, body in sections
             )
+            if pull_failure:
+                combined_md = (f"**git pull failed before the run, the steps worked on the checkout as it was:** "
+                               f"{pull_failure}\n\n---\n\n{combined_md}")
             html_report = self._markdown_to_html(combined_md)
             self._send_email("Keep Nightly Code Quality Report", html_report)
         else:
@@ -964,7 +996,9 @@ class CodeQualityMaintainer:
                     info(f"CodeQualityMaintainer: merged PR #{number} ({title})")
                     merged.append(f"- #{number} {title}")
         finally:
-            self._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+            restore = self._restore_branch(branch)
+        if restore:
+            skipped.append(f"- {restore.strip()}")
         info(f"CodeQualityMaintainer: auto-merge complete, {len(merged)} merged, {len(skipped)} skipped.")
         return merged, skipped
 
@@ -977,6 +1011,43 @@ class CodeQualityMaintainer:
         if result.stderr and result.stderr.strip():
             trace(f"CodeQualityMaintainer [{label}] stderr: {result.stderr.strip()}")
         return result
+
+    @staticmethod
+    def _git_pull() -> str:
+        """`git pull` before a run: "" when it went through, else why not — logged, and for the
+        report, since the run then works on the checkout as it was."""
+        try:
+            result = CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
+            failure = "" if result.returncode == 0 else \
+                (result.stderr or "").strip() or f"git pull exited {result.returncode}"
+        except Exception as e:
+            failure = f"{e}"
+        if failure:
+            error(f"CodeQualityMaintainer: git pull failed, the run works on the checkout as it was: {failure}")
+        return failure
+
+    @staticmethod
+    def _restore_branch(branch: Optional[str]) -> str:
+        """Back on *branch* after a Claude Code run, which may leave the tree on its work branch —
+        on the target branch when the run started on no branch. "" when the checkout is there,
+        else a warning for the report (the error logged): what runs next would otherwise work on
+        whatever branch the run left behind."""
+        if branch is None:
+            branch = CodeQualityMaintainer.target_branch()
+            info(f"CodeQualityMaintainer: the run started on no branch, checking out {branch} "
+                 f"({DEVELOPER_RELEASE_KEY} names it)")
+        try:
+            result = CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+            failure = "" if result.returncode == 0 else \
+                (result.stderr or "").strip() or f"git checkout exited {result.returncode}"
+        except Exception as e:
+            failure = f"{e}"
+        if not failure:
+            return ""
+        error(f"CodeQualityMaintainer: could not check out {branch} again, the checkout stays on the branch "
+              f"the run left: {failure}")
+        return (f"\n\n**Warning:** could not check out `{branch}` again after the run ({failure}) — the "
+                f"server's checkout is still on the branch the run left behind.")
 
     @staticmethod
     def _format_stream_line(obj):
@@ -1025,8 +1096,18 @@ class CodeQualityMaintainer:
             cmd, cwd=WORKING_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL, text=True, env=status.env()
         )
-        timer = threading.Timer(CLAUDE_TIMEOUT, process.kill)
+        timed_out = threading.Event()
+
+        def kill():
+            timed_out.set()
+            process.kill()
+        timer = threading.Timer(CLAUDE_TIMEOUT, kill)
         timer.start()
+        # stderr is drained beside stdout: read after it, a full stderr pipe blocks the CLI forever
+        stderr_chunks = []
+        stderr_reader = threading.Thread(target=lambda: stderr_chunks.append(process.stderr.read()),
+                                         name=f"claude-stderr {label}", daemon=True)
+        stderr_reader.start()
         result_text = ""
         result_is_error = False
         last_assistant_text = ""
@@ -1064,11 +1145,17 @@ class CodeQualityMaintainer:
                 except json.JSONDecodeError:
                     trace(f"CodeQualityMaintainer [{label}] {line}")
             process.wait()
-            stderr = process.stderr.read()
+            stderr_reader.join()
+            stderr = "".join(chunk or "" for chunk in stderr_chunks)
             if stderr and stderr.strip():
                 trace(f"CodeQualityMaintainer [{label}] stderr: {stderr.strip()}")
         finally:
             timer.cancel()
+        if timed_out.is_set():
+            # What it wrote before the kill is a report cut short, not the run's report
+            reason = f"stopped after {CLAUDE_TIMEOUT // 60} minutes, the run is incomplete"
+            error(f"CodeQualityMaintainer [{label}] Claude Code timed out and was killed: {reason}")
+            raise ClaudeRunFailedError(label, reason)
         output = result_text or last_assistant_text
         # A successful report may legitimately discuss login errors in the code under review, so
         # the result text only counts when the CLI itself flagged the run as failed.
@@ -1120,7 +1207,8 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: test generation failed: {e}")
             return ""
         finally:
-            CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+            restore = CodeQualityMaintainer._restore_branch(branch)
+        report += restore
         info("CodeQualityMaintainer: merging the test PR before the fix step...")
         try:
             merged, _ = self._merge_test_prs()
@@ -1137,20 +1225,20 @@ class CodeQualityMaintainer:
     @staticmethod
     def _step_test_health() -> str:
         branch = CodeQualityMaintainer._current_branch()
+        report = ""
         try:
             info(f"CodeQualityMaintainer: test health — flaky tests and tests over {SLOW_TEST_MS} ms "
                  f"across {TEST_HEALTH_RUNS} runs of the unit suite...")
             report = CodeQualityMaintainer._run_claude(
                 TEST_HEALTH_PROMPT.format(runs=TEST_HEALTH_RUNS, slow_ms=SLOW_TEST_MS), "test-health")
             info("CodeQualityMaintainer: test health complete.")
-            return report
         except ClaudeUnavailableError:
             raise   # the night reports it and knows whether to go on
         except Exception as e:
             error(f"CodeQualityMaintainer: test health failed: {e}")
-            return ""
         finally:
-            CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+            restore = CodeQualityMaintainer._restore_branch(branch)
+        return report + restore
 
     @staticmethod
     def _step_bug_analysis() -> str:
@@ -1245,6 +1333,7 @@ class CodeQualityMaintainer:
         return CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), "nightly-fix")
 
     @staticmethod
+    @_holds_checkout("self-analysis")
     def analyze_code(request: str) -> str:
         info("CodeQualityMaintainer: starting self-analysis...")
         prompt = SELF_ANALYSIS_PROMPT.format(request=request)
@@ -1286,6 +1375,7 @@ class CodeQualityMaintainer:
         return Version.version()
 
     @staticmethod
+    @_holds_checkout("self-improvement")
     def improve_code(request: str) -> str:
         reason = CodeQualityMaintainer._github_unavailable()
         if reason:
@@ -1295,6 +1385,7 @@ class CodeQualityMaintainer:
         return CodeQualityMaintainer._pr_job(prompt + CodeQualityMaintainer._trial_instructions(), "self-improvement")
 
     @staticmethod
+    @_holds_checkout("integration improvement")
     def improve_integration(name: str, folder: Optional[str], request: str) -> str:
         """A PR confined to one integration: a change to the integration *name* in *folder*,
         or — *folder* None, no integration of that name — a new one. After the run the PR's
@@ -1358,21 +1449,25 @@ class CodeQualityMaintainer:
     @staticmethod
     def _pr_job(prompt: str, label: str) -> str:
         """One Claude Code run that ends in a pull request: on the pulled current branch,
-        back on it afterwards whatever happened."""
+        back on it afterwards whatever happened. A failed pull is said in the report — the
+        run then works on the checkout as it was (a trial branch has nothing to pull)."""
         branch = CodeQualityMaintainer._current_branch()
+        result = ""
         try:
             info(f"CodeQualityMaintainer: starting {label}...")
-            CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
+            pull_failure = CodeQualityMaintainer._git_pull()
             trace(f"prompt: {prompt}")
-            result = CodeQualityMaintainer._run_claude(prompt, label)
-            return result if result else f"{label.capitalize()} produced no output."
+            result = CodeQualityMaintainer._run_claude(prompt, label) or f"{label.capitalize()} produced no output."
+            if pull_failure:
+                result += f"\n\n**Note:** git pull failed before the run ({pull_failure}), it worked on the checkout as it was."
         except ClaudeUnavailableError as e:
-            return str(e)
+            result = str(e)
         except Exception as e:
             error(f"CodeQualityMaintainer: {label} failed: {e}")
-            return f"{label.capitalize()} failed: {e}"
+            result = f"{label.capitalize()} failed: {e}"
         finally:
-            CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+            restore = CodeQualityMaintainer._restore_branch(branch)
+        return result + restore
 
     @staticmethod
     def _folder_of_path(path: str) -> Optional[str]:
@@ -1432,6 +1527,7 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: could not close PR #{number}: {result.stderr.strip()}")
 
     @staticmethod
+    @_holds_checkout("issue report")
     def report_issue(request: str) -> str:
         """One Claude Code run that investigates and files a GitHub issue; the report names
         the issue's URL (`issue_in`), or says why none was filed."""
@@ -1490,21 +1586,21 @@ class CodeQualityMaintainer:
         return "(empty report)"
 
     @staticmethod
-    def _current_branch() -> str:
+    def _current_branch() -> Optional[str]:
         """The branch this checkout follows — `release` on an install, `master` on the
-        development machine. A Claude Code run may leave the tree on its work branch, so the
-        runs restore this one afterwards; a hard-coded master would move an install onto the
-        development branch."""
+        development machine —, None on a detached HEAD or when git cannot say. A Claude Code
+        run may leave the tree on its work branch, so the runs restore this one afterwards
+        (`_restore_branch`); a guessed master would move an install onto the development branch."""
         try:
             result = CodeQualityMaintainer._run_subprocess(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                                                            "git rev-parse", GIT_TIMEOUT)
-            branch = (result.stdout or "").strip()
+            branch = (result.stdout or "").strip() if result.returncode == 0 else ""
         except Exception as e:
             error(f"CodeQualityMaintainer: could not read the current branch: {e}")
             branch = ""
         if not branch or branch == "HEAD":
-            info(f"CodeQualityMaintainer: no branch checked out ({branch or 'no output'}), assuming master")
-            return "master"
+            info(f"CodeQualityMaintainer: no branch checked out ({branch or 'no output'})")
+            return None
         return branch
 
     @staticmethod
@@ -1527,7 +1623,7 @@ class CodeQualityMaintainer:
                 if result.returncode != 0:
                     error(f"CodeQualityMaintainer: {label} {target} failed: {result.stderr}")
                     return (f"Could not switch to {target}: {(result.stderr or '').strip()} — "
-                            f"still on {current}, the server was not restarted."), ""
+                            f"still on {current or 'a detached HEAD'}, the server was not restarted."), ""
         info(f"CodeQualityMaintainer: pulling latest code on {target}...")
         result = CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
         if result.returncode != 0:
@@ -1543,6 +1639,7 @@ class CodeQualityMaintainer:
         return RequirementsChecker.sync()
 
     @staticmethod
+    @_holds_checkout("server restart")
     def pull_and_restart() -> str:
         failure, output = CodeQualityMaintainer._pull_target()
         if failure:

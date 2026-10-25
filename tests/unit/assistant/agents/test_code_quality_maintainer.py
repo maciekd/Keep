@@ -578,7 +578,7 @@ class TestStepGenerateTests:
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude timed out"))
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_checkout_master_runs_on_claude_error(self, mock_run, mock_claude, maintainer):
-        mock_run.return_value = Mock(stdout="", returncode=0)
+        mock_run.return_value = Mock(stdout="master\n", returncode=0)
         maintainer._step_generate_tests()
         checkout_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "checkout", "master"]]
         assert len(checkout_calls) == 1
@@ -684,7 +684,7 @@ class TestImproveCode:
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=ClaudeNotLoggedInError())
     def test_explains_missing_login(self, mock_claude, mock_sub):
-        mock_sub.return_value = Mock(stdout="", returncode=0)
+        mock_sub.return_value = Mock(stdout="master\n", returncode=0)
         assert CodeQualityMaintainer.improve_code("some bug") == NOT_LOGGED_IN_MESSAGE
         mock_sub.assert_called_with(["git", "checkout", "master"], "git checkout", GIT_TIMEOUT)
 
@@ -714,32 +714,58 @@ class TestImproveCode:
             call(["git", "checkout", "release"], "git checkout", GIT_TIMEOUT)]
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_detached_head_falls_back_to_master(self, mock_sub):
+    def test_no_branch_is_no_branch_not_a_guessed_master(self, mock_sub):
         mock_sub.return_value = Mock(stdout="HEAD\n", returncode=0)
-        assert CodeQualityMaintainer._current_branch() == "master"
+        assert CodeQualityMaintainer._current_branch() is None
+        mock_sub.return_value = Mock(stdout="", stderr="not a git repository", returncode=128)
+        assert CodeQualityMaintainer._current_branch() is None
         mock_sub.side_effect = Exception("no git")
-        assert CodeQualityMaintainer._current_branch() == "master"
+        assert CodeQualityMaintainer._current_branch() is None
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Opened PR #7")
+    def test_a_job_started_on_a_detached_head_goes_back_to_the_target_branch(self, mock_claude, mock_sub):
+        mock_sub.return_value = Mock(stdout="HEAD\n", returncode=0)
+        with developer_release(False):
+            CodeQualityMaintainer._pr_job("prompt", "self-improvement")
+        assert mock_sub.call_args_list[-1] == call(["git", "checkout", "release"], "git checkout", GIT_TIMEOUT)
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Opened PR #7")
+    def test_a_failed_checkout_back_is_in_the_report(self, mock_claude, mock_sub):
+        def git(cmd, label, timeout):
+            if cmd[:2] == ["git", "checkout"]:
+                return Mock(stdout="", stderr="error: your local changes would be overwritten", returncode=1)
+            return Mock(stdout="release\n", stderr="", returncode=0)
+        mock_sub.side_effect = git
+        result = CodeQualityMaintainer._pr_job("prompt", "self-improvement")
+        assert result.startswith("Opened PR #7")
+        assert "`release`" in result and "local changes would be overwritten" in result
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude crashed"))
     def test_checkout_master_runs_on_claude_error(self, mock_claude, mock_sub):
-        mock_sub.return_value = Mock(stdout="", returncode=0)
+        mock_sub.return_value = Mock(stdout="master\n", returncode=0)
         result = CodeQualityMaintainer.improve_code("bug")
         assert "claude crashed" in result
         checkout_calls = [c for c in mock_sub.call_args_list if c[0][0] == ["git", "checkout", "master"]]
         assert len(checkout_calls) == 1
 
+    @pytest.mark.parametrize("pull", [Exception("git pull hung"),
+                                      Mock(stdout="", stderr="fatal: no tracking information", returncode=1)])
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    @patch.object(CodeQualityMaintainer, '_run_claude')
-    def test_checkout_master_runs_on_git_pull_error(self, mock_claude, mock_sub):
-        def fail_pull_allow_checkout(cmd, label, timeout):
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Opened PR #7")
+    def test_a_failed_pull_is_in_the_report_and_master_comes_back(self, mock_claude, mock_sub, pull):
+        def git(cmd, label, timeout):
             if cmd == ["git", "pull"]:
-                raise Exception("git pull failed")
-            return Mock(stdout="", returncode=0)
-        mock_sub.side_effect = fail_pull_allow_checkout
+                if isinstance(pull, Exception):
+                    raise pull
+                return pull
+            return Mock(stdout="master\n", stderr="", returncode=0)
+        mock_sub.side_effect = git
         result = CodeQualityMaintainer.improve_code("bug")
-        assert "git pull failed" in result
-        mock_claude.assert_not_called()
+        assert result.startswith("Opened PR #7")
+        assert "git pull failed" in result and ("hung" in result or "no tracking information" in result)
         checkout_calls = [c for c in mock_sub.call_args_list if c[0][0] == ["git", "checkout", "master"]]
         assert len(checkout_calls) == 1
 
@@ -1532,7 +1558,7 @@ class TestExecuteNightlyRun:
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_a_second_run_does_not_start_while_one_is_going(self, mock_sub, mock_commits, maintainer):
         from assistant.agents.CodeQualityMaintainer import _nightly_lock
-        with _nightly_lock:
+        with _nightly_lock, patch('assistant.agents.CodeQualityMaintainer.NIGHTLY_WAIT', 0.01):
             maintainer._execute_nightly_run()
         mock_sub.assert_not_called()
         self.merge.assert_not_called()
@@ -2017,3 +2043,133 @@ class TestOpenPins:
             '@pytest.mark.xfail(strict=True, reason="a bug")\ndef test_one(): ...\n')
         with patch.object(CodeQualityMaintainer, '_run_claude', side_effect=RuntimeError("claude down")):
             assert CodeQualityMaintainer._step_open_pins() == ""
+
+
+@pytest.mark.unit
+class TestClaudeRunRobustness:
+    @pytest.fixture(autouse=True)
+    def logged_in(self):
+        with patch('assistant.agents.CodeQualityMaintainer.claude_status',
+                   return_value=ClaudeStatus(CLAUDE_PATH, True, "logged in as m@mlab.test (max)")):
+            yield
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_a_model_that_requires_usage_credits_stops_the_night(self, mock_popen):
+        text = "Fable 5.1 requires usage credits. Add credits at https://claude.ai/settings/usage to continue."
+        mock_popen.return_value = _mock_popen([json.dumps({"type": "result", "is_error": True, "result": text}) + "\n"])
+        with pytest.raises(ClaudeUsageLimitError) as exc:
+            CodeQualityMaintainer._run_claude("prompt", "bug-analysis")
+        assert exc.value.stops_the_night
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_stderr_is_drained_while_stdout_is_still_being_read(self, mock_popen):
+        """A CLI filling its stderr pipe blocks until someone reads it: stdout must not have to end first."""
+        import threading
+        stderr_read = threading.Event()
+
+        def stdout():
+            assert stderr_read.wait(2), "stderr was not read until stdout ended"
+            yield json.dumps({"type": "result", "result": "the report"}) + "\n"
+
+        proc = _mock_popen()
+        proc.stdout = stdout()
+        proc.stderr.read.side_effect = lambda: stderr_read.set() or "x" * 100_000
+        mock_popen.return_value = proc
+        assert CodeQualityMaintainer._run_claude("prompt", "label") == "the report"
+
+    @patch('assistant.agents.CodeQualityMaintainer.CLAUDE_TIMEOUT', 0.01)
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_a_killed_run_is_a_failed_run_not_its_last_words(self, mock_popen):
+        import threading
+        killed = threading.Event()
+
+        def stdout():
+            yield json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Halfway"}]}}) + "\n"
+            killed.wait(2)
+
+        proc = _mock_popen()
+        proc.stdout = stdout()
+        proc.kill.side_effect = killed.set
+        mock_popen.return_value = proc
+        with pytest.raises(ClaudeRunFailedError) as exc:
+            CodeQualityMaintainer._run_claude("prompt", "bug-analysis")
+        assert killed.is_set() and "incomplete" in str(exc.value)
+        assert not exc.value.stops_the_night
+
+
+@pytest.mark.unit
+class TestOnDemandJobsHoldTheCheckout:
+    @pytest.fixture
+    def busy(self):
+        from assistant.agents.CodeQualityMaintainer import _nightly_lock
+        with _nightly_lock:
+            yield
+
+    @pytest.mark.parametrize("job", [
+        lambda: CodeQualityMaintainer.improve_code("a bug"),
+        lambda: CodeQualityMaintainer.improve_integration("Tesla", "tesla", "a bug"),
+        lambda: CodeQualityMaintainer.report_issue("a bug"),
+        lambda: CodeQualityMaintainer.analyze_code("a question"),
+        lambda: CodeQualityMaintainer.pull_and_restart(),
+    ])
+    @patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=None)
+    @patch.object(CodeQualityMaintainer, '_run_claude')
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_a_job_does_not_start_while_the_checkout_is_busy(self, mock_sub, mock_claude, _gh, job, busy):
+        assert "did not start" in job()
+        mock_sub.assert_not_called()
+        mock_claude.assert_not_called()
+
+    @patch.object(CodeQualityMaintainer, '_version', return_value="v2026.10.1")
+    @patch.object(CodeQualityMaintainer, '_trial_instructions', return_value="")
+    @patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=None)
+    @patch.object(CodeQualityMaintainer, '_run_subprocess', return_value=Mock(stdout="master\n", stderr="", returncode=0))
+    def test_the_nightly_run_does_not_start_under_a_job_and_the_lock_is_free_after_it(self, _sub, _gh, _trial, _v,
+                                                                                     maintainer):
+        from assistant.agents.CodeQualityMaintainer import _nightly_lock
+        seen = []
+
+        def claude(prompt, label):
+            with patch('assistant.agents.CodeQualityMaintainer.NIGHTLY_WAIT', 0.01), \
+                    patch.object(CodeQualityMaintainer, '_nightly_run') as night:
+                maintainer._execute_nightly_run()
+            seen.append(night.called)
+            return "Opened PR #7"
+        with patch.object(CodeQualityMaintainer, '_run_claude', side_effect=claude):
+            assert CodeQualityMaintainer.improve_code("a bug").startswith("Opened PR #7")
+        assert seen == [False]
+        assert not _nightly_lock.locked()
+
+
+@pytest.mark.unit
+class TestNightlyRunFailuresInTheReport:
+    @pytest.fixture(autouse=True)
+    def quiet_steps(self):
+        with patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True), \
+                patch.object(CodeQualityMaintainer, '_step_generate_tests', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_step_log_triage', return_value="a feed stalled"), \
+                patch.object(CodeQualityMaintainer, '_step_fix_bugs', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_step_test_health', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_step_auto_merge', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_step_open_pins', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_markdown_to_html', side_effect=lambda md: md), \
+                patch.object(CodeQualityMaintainer, '_send_email') as send:
+            self.send = send
+            yield
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess', return_value=Mock(stdout="", stderr="", returncode=0))
+    def test_a_crashed_step_has_its_line_in_the_email(self, _sub, maintainer):
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', side_effect=KeyError("severity")):
+            maintainer._execute_nightly_run()
+        body = self.send.call_args[0][1]
+        assert "bug analysis crashed" in body and "severity" in body
+        assert body.index("# Bug Analysis") < body.index("crashed")
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess',
+                  return_value=Mock(stdout="", stderr="fatal: unable to access the remote", returncode=1))
+    def test_a_failed_pull_before_the_night_is_in_the_email(self, _sub, maintainer):
+        with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value="off by one"):
+            maintainer._execute_nightly_run()
+        body = self.send.call_args[0][1]
+        assert "git pull failed" in body and "unable to access the remote" in body
+        assert "off by one" in body   # the steps still ran, on the checkout as it was
