@@ -7,9 +7,13 @@ import stat
 import time
 from unittest.mock import patch
 
+from http.client import RemoteDisconnected
+
 import pytest
+import requests
 
 from integrations.microsoft import MicrosoftAuth as auth_module
+from integrations.microsoft.GraphClient import GraphClient
 from integrations.microsoft.MicrosoftAuth import MicrosoftAuth, NotSignedIn, delete_all_token_files, token_path
 
 MSAL_APP = "integrations.microsoft.MicrosoftAuth.msal.PublicClientApplication"
@@ -31,8 +35,8 @@ def cache_state(username="marcus@example.com", expires_on=EXPIRES) -> str:
 class FakeApp:
     """What MSAL does with the cache it was handed: the device flow writes an account into it."""
 
-    def __init__(self, client_id, authority=None, token_cache=None):
-        self.client_id, self.authority, self.cache = client_id, authority, token_cache
+    def __init__(self, client_id, authority=None, token_cache=None, timeout=None):
+        self.client_id, self.authority, self.cache, self.timeout = client_id, authority, token_cache, timeout
         self.flow = {"user_code": "ABCD-1234", "verification_uri": "https://microsoft.com/devicelogin",
                      "expires_at": time.time() + 900, "device_code": "dc", "message": "..."}
         self.finish_result = {"access_token": "at"}
@@ -183,8 +187,8 @@ class TestCacheAndApplication:
         settings = {"app": ("client-1", "")}
         built = []
 
-        def build(client_id, authority=None, token_cache=None):
-            built.append(FakeApp(client_id, authority, token_cache))
+        def build(client_id, authority=None, token_cache=None, timeout=None):
+            built.append(FakeApp(client_id, authority, token_cache, timeout))
             return built[-1]
 
         with patch(MSAL_APP, build):
@@ -198,6 +202,7 @@ class TestCacheAndApplication:
             third = a._app()
             assert third is not second and third.client_id == "client-2" and a._app() is third
         assert len(built) == 3 and all(app.cache is a._cache for app in built)
+        assert all(app.timeout and app.timeout > 0 for app in built)
 
     def test_a_declined_consent_carries_entras_description(self, token_dir):
         with patch(MSAL_APP, FakeApp):
@@ -208,3 +213,43 @@ class TestCacheAndApplication:
             outcome = a.finish(flow)
             assert "AADSTS65004" in outcome and "expired" not in outcome.lower()
             assert not a.signed_in() and not token_path("Work").exists()
+
+
+class DroppingApp(FakeApp):
+    """A refresh POST that lands on a keep-alive connection the identity platform has closed, `drops` times."""
+    drops = 1
+
+    def acquire_token_silent(self, scopes, account=None):
+        self.attempts = getattr(self, "attempts", 0) + 1
+        if self.attempts <= self.drops:
+            raise requests.ConnectionError(("Connection aborted.", RemoteDisconnected("Remote end closed connection without response")))
+        return {"access_token": "fresh-token"}
+
+
+@pytest.mark.unit
+class TestDroppedRefresh:
+    @pytest.fixture
+    def signed_in(self, token_dir):
+        token_dir.mkdir()
+        token_path("Jobb").write_text(cache_state())
+
+    def test_a_refresh_whose_connection_drops_is_asked_once_more_and_the_fetch_succeeds(self, signed_in):
+        sent = []
+
+        def graph(method, url, params=None, headers=None, json=None, timeout=None):
+            sent.append(headers["Authorization"])
+            return type("Response", (), {"status_code": 200, "content": b"{}", "json": lambda self: {"value": []}})()
+
+        with patch(MSAL_APP, DroppingApp), patch.object(auth_module, "info") as logged, \
+                patch("integrations.microsoft.GraphClient.requests.request", graph):
+            a = auth("Jobb")
+            assert GraphClient(a).get("/me/calendars") == {"value": []}
+        assert a._application.attempts == 2 and sent == ["Bearer fresh-token"]
+        assert any("Jobb" in c.args[0] and "RemoteDisconnected" in c.args[0] for c in logged.call_args_list)
+
+    def test_a_second_drop_is_raised(self, signed_in):
+        with patch(MSAL_APP, type("TwiceDropping", (DroppingApp,), {"drops": 2})):
+            a = auth("Jobb")
+            with pytest.raises(requests.ConnectionError):
+                a.token()
+        assert a._application.attempts == 2

@@ -11,7 +11,12 @@ code and the URL at once, `finish(flow)` blocks until the user has typed the cod
 has expired (up to fifteen minutes), so a caller runs it on a thread. The app registration
 (`microsoft.app.client_id`, `tenant`) is read at call time so a key set through config_request
 works without a rebuild; the MSAL application is built on first use since its constructor
-discovers the authority over the network."""
+discovers the authority over the network.
+
+MSAL posts the refresh over a long-lived session whose adapter does not retry a POST, so a
+keep-alive connection the identity platform has closed meanwhile surfaces as a ConnectionError
+(RemoteDisconnected) from `acquire_token_silent`. `token()` asks once more: no answer came back,
+so MSAL still holds the old refresh token and the second POST runs on a new connection."""
 import os
 import threading
 import time
@@ -21,6 +26,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import msal
+import requests
 
 from assistant.integration.Accounts import slug
 from common.logging import error, info, trace
@@ -32,6 +38,8 @@ TOKEN_FILE_PREFIX = "microsoft-"
 SCOPES = ["Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite", "User.Read"]
 AUTHORITY = "https://login.microsoftonline.com/{tenant}"
 DEFAULT_TENANT = "common"
+# Seconds MSAL waits on login.microsoftonline.com; without it a stalled refresh blocks the fetch indefinitely.
+TIMEOUT = 30
 
 
 class NotSignedIn(Exception):
@@ -126,7 +134,8 @@ class MicrosoftAuth:
         if self._application is None or self._application_key != key:
             trace(f"Microsoft 365: building the MSAL application for '{self.name}' (tenant {key[1]})")
             self._application = msal.PublicClientApplication(
-                client_id, authority=AUTHORITY.format(tenant=key[1]), token_cache=self._load_cache())
+                client_id, authority=AUTHORITY.format(tenant=key[1]), token_cache=self._load_cache(),
+                timeout=TIMEOUT)
             self._application_key = key
         return self._application
 
@@ -165,7 +174,11 @@ class MicrosoftAuth:
             account = self._msal_account()
             if account is None:
                 raise NotSignedIn(not_signed_in_hint(self.name))
-            result = self._app().acquire_token_silent(SCOPES, account=account)
+            try:
+                result = self._app().acquire_token_silent(SCOPES, account=account)
+            except requests.ConnectionError as e:
+                info(f"Microsoft 365: token refresh of '{self.name}' lost its connection ({e}), retrying once")
+                result = self._app().acquire_token_silent(SCOPES, account=account)
             self._save_cache()
         if not result or "access_token" not in result:
             description = (result or {}).get("error_description") or (result or {}).get("error") or "no token"
