@@ -1,4 +1,5 @@
 import functools
+import http.client
 import re
 import threading
 import time
@@ -7,7 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Optional
 
+import requests
 import soco
+import urllib3
 from soco.plugins.sharelink import ShareLinkPlugin
 from soco.zonegroupstate import ZoneGroupState
 from spotipy import Spotify
@@ -27,6 +30,11 @@ class SpotifyPlaylist:
     name: str
     uri: str
     owner: str = ""
+
+# A keep-alive connection Spotify closed while the client sat idle: the next call on that socket
+# fails before an answer, and a call on a fresh session goes through.
+DROPPED_CONNECTION = (requests.exceptions.ConnectionError, urllib3.exceptions.ProtocolError,
+                      http.client.RemoteDisconnected, ConnectionError)
 
 _zone_state_lock = threading.RLock()
 
@@ -78,7 +86,9 @@ class MusicIntegration(Integration):
     the way to reach Discover Weekly from a development-mode app. A transient Spotify failure
     (`TokenUnavailable`, a timeout) keeps the cached library; only a sign-in the user has to
     renew (`NotSignedIn`) empties it, and that is said once as a system note and in the health
-    check until the next `spotify_login`."""
+    check until the next `spotify_login`. A fetch on a connection Spotify dropped while it sat idle
+    is tried once more on a fresh client, so a fresh session; a 4xx answer is never retried, and a
+    429 holds the fetches back for the Retry-After it names."""
 
     PLAYLISTS_IN_PROMPT = 10
 
@@ -105,6 +115,7 @@ class MusicIntegration(Integration):
         self._spotify_playlists_total = 0
         self._spotify_library_error = ""   # why the last library fetch failed, "" when it did not
         self._sign_in_again_noted = False
+        self._spotify_library_not_before = 0.0   # a 429's Retry-After: no library fetch before then
         self._cache_lock = threading.Lock()
 
         # Cache for Spotify search results with short IDs (persists for conversation)
@@ -224,9 +235,12 @@ class MusicIntegration(Integration):
             trace("Spotify: no user signed in, no playlist library to list (spotify_login())")
             self._spotify_library_error = ""
             return [], 0
+        wait = self._spotify_library_not_before - time.time()
+        if wait > 0:
+            info(f"Spotify: playlist library not reloaded, Spotify asked to wait {wait:.0f} s more (429), the cached list stands")
+            return None
         try:
-            spotify = self._get_user_client()
-            page = spotify.current_user_playlists(limit=self.PLAYLISTS_IN_PROMPT) or {}
+            page = self._user_playlists_page()
             playlists: List[SpotifyPlaylist] = []
             # Spotify answers a null item for a playlist this app may not see at all (a Spotify-owned one).
             for item in page.get('items') or []:
@@ -247,10 +261,38 @@ class MusicIntegration(Integration):
             info(f"Spotify: playlist library not reloaded, the cached list stands — {e}")
             self._spotify_library_error = str(e)
             return None
+        except SpotifyException as e:
+            if e.http_status == 429:
+                self._hold_back_after_429(e)
+            error(f"Error fetching the user's Spotify playlists: HTTP {e.http_status} {e}")
+            self._spotify_library_error = f"HTTP {e.http_status}: {e.msg}"
+            return None
         except Exception as e:
             error(f"Error fetching the user's Spotify playlists: {e}")
             self._spotify_library_error = f"{type(e).__name__}: {e}"
             return None
+
+    def _user_playlists_page(self) -> dict:
+        """The first page of `/me/playlists`, tried once more on a fresh client when the connection
+        dropped. A SpotifyException (a 4xx, a 429, a 5xx spotipy gave up on) is never retried here."""
+        try:
+            return self._get_user_client().current_user_playlists(limit=self.PLAYLISTS_IN_PROMPT) or {}
+        except DROPPED_CONNECTION as e:
+            info(f"Spotify: connection dropped fetching the playlist library ({type(e).__name__}: {e}), "
+                 f"retrying once on a fresh session")
+            self._user_client = None
+            return self._get_user_client().current_user_playlists(limit=self.PLAYLISTS_IN_PROMPT) or {}
+
+    def _hold_back_after_429(self, e: SpotifyException):
+        """No library fetch before the Retry-After of Spotify's 429 has passed."""
+        retry_after = (e.headers or {}).get("Retry-After")
+        try:
+            seconds = max(0, int(retry_after))
+        except (TypeError, ValueError):
+            info(f"Spotify: 429 without a usable Retry-After ({retry_after!r}), the next refresh tries again")
+            return
+        self._spotify_library_not_before = time.time() + seconds
+        info(f"Spotify: 429 on the playlist library, no fetch for {seconds} s (Retry-After)")
 
     def _note_sign_in_again(self):
         """Says once, in every chat and to the LLM, that the Spotify sign-in has to be renewed."""

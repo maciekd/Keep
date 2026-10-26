@@ -1,11 +1,15 @@
+import http.client
 import time
 
 import pytest
+import requests
+import urllib3
 from unittest.mock import PropertyMock, Mock, patch
 import threading
 
 from integrations.music.MusicIntegration import MusicManager, MusicIntegration, SpotifyPlaylist
 from integrations.music.SpotifyAuth import NotSignedIn, TokenUnavailable
+from spotipy.exceptions import SpotifyException
 
 
 ROOM_MAPPING = {"Kitchen Front": "Kitchen", "Kitchen Back": ""}
@@ -26,6 +30,7 @@ def make_music_manager(room_mapping=ROOM_MAPPING):
     mm._spotify_playlists_total = 2
     mm._spotify_library_error = ""
     mm._sign_in_again_noted = False
+    mm._spotify_library_not_before = 0.0
     mm._spotify_auth = Mock()
     mm._spotify_auth.signed_in.return_value = True
     mm._spotify_auth.needs_sign_in_again.return_value = False
@@ -793,3 +798,90 @@ class TestZonesStatusWithAnUnreachableZone:
         mm = make_music_manager()
         with pytest.raises(ConnectionError):
             mm._get_coordinator(self._zone(group=False))
+
+
+LIBRARY_PAGE = {'items': [{'name': 'Road Trip', 'uri': 'spotify:playlist:rt2', 'owner': {}}], 'total': 1}
+
+
+class TestSpotifyLibraryDroppedConnection:
+    def _manager_on_clients(self, *clients):
+        """A manager whose successive Spotify(...) constructions hand out `clients` in turn."""
+        mm = make_music_manager()
+        mm._spotify_auth.token.return_value = "tok-1"
+        spotify_cls = patch("integrations.music.MusicIntegration.Spotify", side_effect=list(clients))
+        return mm, spotify_cls
+
+    @pytest.mark.parametrize("dropped", [
+        http.client.RemoteDisconnected("Remote end closed connection without response"),
+        requests.exceptions.ConnectionError("('Connection aborted.', RemoteDisconnected(...))"),
+        urllib3.exceptions.ProtocolError("Connection aborted."),
+        ConnectionResetError(54, "Connection reset by peer"),
+    ])
+    def test_a_dropped_connection_is_retried_once_on_a_fresh_client(self, dropped):
+        stale, fresh = Mock(), Mock()
+        stale.current_user_playlists.side_effect = dropped
+        fresh.current_user_playlists.return_value = LIBRARY_PAGE
+        mm, spotify_cls = self._manager_on_clients(stale, fresh)
+
+        with spotify_cls as built:
+            playlists, total = mm._fetch_spotify_playlists()
+
+        assert [p.uri for p in playlists] == ["spotify:playlist:rt2"] and total == 1
+        assert built.call_count == 2
+        assert mm._user_client is fresh
+        assert mm.spotify_library_error() == ""
+
+    def test_a_connection_that_drops_twice_keeps_the_cached_library_and_is_not_tried_a_third_time(self):
+        stale, fresh = Mock(), Mock()
+        stale.current_user_playlists.side_effect = http.client.RemoteDisconnected("closed")
+        fresh.current_user_playlists.side_effect = http.client.RemoteDisconnected("closed")
+        mm, spotify_cls = self._manager_on_clients(stale, fresh)
+
+        with spotify_cls as built:
+            assert mm._refresh_spotify_playlists() is False
+
+        assert built.call_count == 2
+        assert fresh.current_user_playlists.call_count == 1
+        assert len(mm.get_spotify_playlists()) == 2
+        assert "RemoteDisconnected" in mm.spotify_library_error()
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 429])
+    def test_a_4xx_answer_is_not_retried(self, status):
+        client = Mock()
+        client.current_user_playlists.side_effect = SpotifyException(status, -1, "refused", headers={})
+        mm, spotify_cls = self._manager_on_clients(client, Mock())
+
+        with spotify_cls as built:
+            assert mm._fetch_spotify_playlists() is None
+
+        assert built.call_count == 1 and client.current_user_playlists.call_count == 1
+        assert str(status) in mm.spotify_library_error()
+
+    def test_a_429_holds_the_fetches_back_for_its_retry_after(self):
+        limited, later = Mock(), Mock()
+        limited.current_user_playlists.side_effect = SpotifyException(429, -1, "rate limited",
+                                                                      headers={"Retry-After": "120"})
+        later.current_user_playlists.return_value = LIBRARY_PAGE
+        mm, spotify_cls = self._manager_on_clients(limited)
+        mm._user_client, mm._user_client_token = None, ""
+
+        with spotify_cls, patch("integrations.music.MusicIntegration.time.time", return_value=1000.0):
+            assert mm._fetch_spotify_playlists() is None
+        mm._user_client = later
+        with patch("integrations.music.MusicIntegration.time.time", return_value=1119.0):
+            assert mm._fetch_spotify_playlists() is None
+        later.current_user_playlists.assert_not_called()
+        with patch("integrations.music.MusicIntegration.time.time", return_value=1121.0):
+            playlists, _ = mm._fetch_spotify_playlists()
+
+        assert [p.uri for p in playlists] == ["spotify:playlist:rt2"]
+
+    def test_a_429_without_a_retry_after_does_not_hold_the_next_fetch_back(self):
+        limited = Mock()
+        limited.current_user_playlists.side_effect = SpotifyException(429, -1, "rate limited", headers={})
+        mm, spotify_cls = self._manager_on_clients(limited)
+
+        with spotify_cls:
+            assert mm._fetch_spotify_playlists() is None
+
+        assert mm._spotify_library_not_before <= time.time()
