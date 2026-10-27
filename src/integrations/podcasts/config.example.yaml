@@ -1,0 +1,28 @@
+# Podcasts, the "Podcasts" integration: every morning after check_time (then hourly) the newest episode of
+# each show's YouTube playlist that has no report yet is downloaded (yt-dlp, best audio), transcribed
+# locally (mlx-whisper large-v3-turbo; YouTube's captions without it), and turned into the artifacts
+# listed below, written to output_folder/<slug>/ with a manifest.json last. The owner gets a message when
+# a run starts and when it is done, and a history row "Moonshots #NNN: <title> — report ready".
+# An episode the output folder already has a report for (a <slug>.md of an older pipeline included) is
+# never redone. State (processed.json, status.json) and the kept transcripts are in state_dir.
+# llm: provider openai (the default) uses model with openai_api_key, else $OPENAI_API_KEY, else
+# api_keys.openai; provider local uses the OpenAI-compatible server at local.endpoint (omlx) for free.
+# Roughly 15-20 calls per episode with gpt-4o: well under a dollar.
+podcasts:
+  shows:
+    - name: Moonshots
+      playlist_url: "https://www.youtube.com/playlist?list=PL1wpF5k0tdIve4idTp3-FX2ZY7ks_BKeU"
+      output_folder: /Users/Shared/Hermes/Output/Moonshots
+  check_time: "05:00"       # HH:MM, local time; no check before it
+  llm:
+    provider: openai        # or "local"
+    model: gpt-4o           # or o3-mini
+    # local:
+    #   endpoint: http://localhost:8000
+    #   model: qwen3-27b
+  openai_api_key: ""        # or set the OPENAI_API_KEY env var
+  artifacts:
+    - explainer
+    - linkedin_ideas
+    - tldr
+  # state_dir: cache/podcasts   # the default

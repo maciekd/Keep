@@ -236,6 +236,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "whatsapp", "telegram", "music", "photos", "dropbox", "location", "calendar",
                "reminders", "weather", "timers", "watch", "cars", "husdata", "history", "vault", "setup", "developer",
                "homeclaw",
+               "podcasts",
                "self_improvement", "voice")
 
 TOOLKITS: tuple[Toolkit, ...] = assemble(CORE_TOOLKITS, discover(), INDEX_ORDER)

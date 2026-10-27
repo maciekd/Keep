@@ -38,6 +38,7 @@ GROUPS = {
     'src/integrations/plejd': ('plejd', 'Plejd lights, covers and scenes over Bluetooth from the server’s own Mac: the site from the Plejd cloud, the state and the commands through any mesh unit in range.'),
     'src/integrations/photos': ('photos', 'The family photo library: iCloud downloads, vision-LLM indexing and a feed into the history.'),
     'src/integrations/reminders': ('reminders', 'Reads, adds to and ticks off the Apple Reminders lists, the shared shopping list among them.'),
+    'src/integrations/podcasts': ('podcasts', 'The podcast explainer pipeline: new YouTube episodes fetched and transcribed, explainer, LinkedIn ideas and TL;DR written by an LLM, a feed of the finished reports.'),
     'src/integrations/ring': ('ring', 'Ring doorbell snapshots, with the login’s 2FA.'),
     'src/integrations/unifi_protect': ('unifi_protect', 'UniFi Protect camera snapshots over the console’s local Integration API, with an API key.'),
     'src/integrations/self_improvement': ('self_improvement', 'The switch and health check for Keep working on its own code through the Claude Code CLI.'),

@@ -49,3 +49,4 @@ tzlocal==5.3.1
 -r src/integrations/whatsapp/requirements.txt
 -r src/integrations/volvo/requirements.txt
 -r src/integrations/hyundai/requirements.txt
+-r src/integrations/podcasts/requirements.txt

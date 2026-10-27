@@ -210,6 +210,8 @@ vault:                      # secrets the LLM never sees — the console's Vault
 
 # >> reminders: src/integrations/reminders/config.example.yaml
 
+# >> podcasts: src/integrations/podcasts/config.example.yaml
+
 # Web search (Serper) tuning. Optional — these are the defaults.
 #search:
 #  country_hint: se          # gl parameter: country to bias results towards
