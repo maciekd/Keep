@@ -1785,6 +1785,23 @@ class TestCommandProcessorSensitiveGate:
         fake_bot.request_approval.assert_not_called()
         processor.kill()
 
+    def test_browser_mutations_are_approved_before_execution(self, monkeypatch):
+        processor, run_calls, approval_calls, _ = self._run_with_decision(
+            "deny", monkeypatch, params=["Click the page action"], command="browse_act")
+        assert len(approval_calls) == 1
+        assert approval_calls[0]["details"] == "Click the page action"
+        assert run_calls == []
+        processor.kill()
+
+    def test_browser_mutation_command_families_use_the_approval_gate(self):
+        processor = CommandProcessor(test_suite_mode=True)
+        for command in ("browse_act", "browse_key", "browse_eval", "browse_click_at"):
+            assert processor.commands.is_sensitive(command)
+        for command in ("browse_open", "browse_inspect", "browse_snapshot"):
+            assert not processor.commands.is_sensitive(command)
+        processor.kill()
+
+
 
 @pytest.mark.unit
 class TestProfileForDialogManager:
