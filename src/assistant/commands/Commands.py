@@ -2120,7 +2120,7 @@ class Commands:
     def describe_open_url(self, p):               return f"Reading {self._short_url(p)}"
     def describe_google(self, p):                 return f"Searching for {p.strip()}"
     def describe_browse_open(self, p):            return f"Browsing {self._short_url(p)}"
-    def describe_browse_eval(self, p):            return "Inspecting the page"
+    def describe_browse_eval(self, p):            return "Running browser code"
     def describe_browse_snapshot(self, p):        return "Re-reading the page"
     def describe_browse_click_at(self, p):        return f"Clicking at {p.strip()}" if p.strip() else "Clicking"
     def describe_browse_extract(self, p):         return "Extracting page text"
