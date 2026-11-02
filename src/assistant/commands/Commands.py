@@ -110,11 +110,11 @@ class Commands:
     derived from the `cmd_` method names of all of them; SENSITIVE_COMMANDS go through the
     notifier's approval gate before running.
     """
-        SENSITIVE_COMMANDS = frozenset({
+    SENSITIVE_COMMANDS = frozenset({
         "send_email", "restart_server", "try_pull_request", "report_issue", "pr_feedback",
         # Browser actions can submit forms or otherwise change state on remote sites.
         "browse_act", "browse_key", "browse_eval", "browse_click_at",
-        })
+    })
     # What the approval prompt shows under the title when the command has no parameters
     # to preview — the user should know what saying yes does before the screen goes blank.
     APPROVAL_NOTES = {
