@@ -52,6 +52,21 @@ def own_last_check_file(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_curation():
+    """The periodic loop starts a real `MemoryCuration` thread at any hour from 04:00 when the
+    isolated journal dir holds no run of the day — on 2026-11-03 a test running the loop on the
+    real clock let that thread curate the developer's live memory/bank.md with the real LLM, and
+    a later test joining `MemoryCuration` threads waited 200 s for it. The curator's run is
+    stubbed for every test here; one that reaches it anyway fails instead of leaking."""
+    with patch('assistant.agents.AutonomousActionManager.LongTermMemoryCurator.run', return_value=None) as run:
+        yield
+        for thread in threading.enumerate():
+            if thread.name == "MemoryCuration":
+                thread.join(timeout=1)
+    assert not run.called, "a test ran the periodic loop on the real clock and started the real memory curation"
+
+
+@pytest.fixture(autouse=True)
 def reset_singleton():
     AutonomousActionManager.reset_instance()
     yield
@@ -533,6 +548,7 @@ class TestAutonomousActionManager:
             return "NO"
 
         with patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=patched_sleep), \
+             patch.object(mgr, '_run_memory_curation'), \
              patch.object(mgr, 'activity_check', side_effect=patched_activity_check):
             mgr._run_periodic_check()
 
@@ -554,6 +570,7 @@ class TestAutonomousActionManager:
 
         with patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=patched_sleep), \
              patch('assistant.agents.AutonomousActionManager.info') as log, \
+             patch.object(mgr, '_run_memory_curation'), \
              patch.object(mgr, 'activity_check', return_value="NO"):
             mgr._run_periodic_check()
         mgr.running = True
@@ -582,6 +599,7 @@ class TestAutonomousActionManager:
         with patch.object(module.time, 'time', side_effect=lambda: clock[0]), \
              patch.object(module.time, 'sleep', side_effect=patched_sleep), \
              patch.object(mgr, 'is_user_interaction_active', return_value=interaction_active), \
+             patch.object(mgr, '_run_memory_curation'), \
              patch.object(mgr, 'activity_check', side_effect=patched_check) as activity:
             mgr._run_periodic_check()
         mgr.running = True  # restore
@@ -766,6 +784,7 @@ class TestAutonomousActionManager:
             return "NO"
 
         with patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=patched_sleep), \
+             patch.object(mgr, '_run_memory_curation'), \
              patch.object(mgr, 'activity_check', side_effect=patched_activity_check):
             mgr._run_periodic_check()
 

@@ -1172,7 +1172,8 @@ class TestResolveRecipient:
 
     def test_unknown_name_returns_error(self, integration):
         integration._name_to_handle = {"alice": "+1"}  # non-empty so we hit "unknown contact" path
-        handle, err = integration.resolve_recipient("Zelda")
+        with patch.object(IMessageIntegration, "_resolve_group", return_value=(None, None)):
+            handle, err = integration.resolve_recipient("Zelda")
         assert handle is None
         assert err is not None and "Zelda" in err
 
@@ -1180,7 +1181,8 @@ class TestResolveRecipient:
         integration._name_to_handle = {}
         integration._contact_cache = {}
         integration._contact_cache_time = 1e18
-        with patch.object(IMessageIntegration, '_notify_contact_cache_empty') as mock_notify:
+        with patch.object(IMessageIntegration, '_notify_contact_cache_empty') as mock_notify, \
+             patch.object(IMessageIntegration, "_resolve_group", return_value=(None, None)):
             handle, err = integration.resolve_recipient("Ingeborg")
         assert handle is None
         assert "Full Disk Access" in err
@@ -1285,7 +1287,8 @@ class TestSend:
     def test_unknown_recipient_returns_error(self, integration):
         integration._name_to_handle = {}
         integration._contact_cache_time = 1e18  # don't trigger refresh
-        with patch('integrations.imessage.IMessageIntegration.subprocess.run') as mock_run:
+        with patch('integrations.imessage.IMessageIntegration.subprocess.run') as mock_run, \
+             patch.object(IMessageIntegration, "_resolve_group", return_value=(None, None)):
             result = integration.send("Zelda", "hi")
         assert "unknown contact" in result
         mock_run.assert_not_called()

@@ -1021,7 +1021,9 @@ class TestPlaySound:
     @patch('integrations.icloud.ICloudIntegration.PyiCloudService')
     def test_an_open_challenge_raises_and_keeps_the_session(self, mock_pyicloud):
         """Dropping the session here (as until 2026-10-16) threw away the challenge the
-        auto-2FA flow was completing, and the next call opened another one."""
+        auto-2FA flow was completing, and the next call opened another one. The ring waits
+        out the challenge since 2026-11-02 (`TestFindMyWaitsOutTheChallenge`); here the wait
+        budget is spent at once, so the refusal is what is checked, not the minute's wait."""
         mock_service = _service_with_sms_challenge()
         mock_pyicloud.return_value = mock_service
 
@@ -1029,7 +1031,8 @@ class TestPlaySound:
         api._api = mock_service
         api._challenge_from_fresh_signin = True
 
-        with patch('assistant.Notifier.NullNotifier.send_message') as notify:
+        with patch('assistant.Notifier.NullNotifier.send_message') as notify, \
+             patch.object(iCloudAPI, "CHALLENGE_WAIT_SECONDS", 0):
             with pytest.raises(iCloudAuthenticationError, match="2FA code"):
                 api.play_sound("iPhone")
         notify.assert_not_called()
