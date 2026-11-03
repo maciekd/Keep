@@ -1,3 +1,5 @@
+import contextlib
+
 import pytest
 
 from common import IntegrationDirs
@@ -104,3 +106,70 @@ def test_a_config_without_the_key_has_no_extra_roots(monkeypatch):
         assert IntegrationDirs.extra_roots() == ()
     finally:
         IntegrationDirs.reset()
+
+
+@contextlib.contextmanager
+def patch_value(value):
+    """The config answering `value` itself for the key (the `layout` fixture answers a list)."""
+    real_get = config.get
+    config.get = lambda key, *a, **kw: value if key == IntegrationDirs.EXTRA_DIRS_KEY else real_get(key, *a, **kw)
+    IntegrationDirs.reset()
+    try:
+        yield
+    finally:
+        config.get = real_get
+        IntegrationDirs.reset()
+
+
+def test_one_directory_given_as_a_string_is_the_one_entry(layout):
+    """`extra_integration_dirs: ~/KeepLocal` reads as the one-item list it means."""
+    tmp_path, listed = layout
+    local = tmp_path / "KeepLocal"
+    _folder(local, "podcasts")
+    with patch_value(str(local)):
+        assert IntegrationDirs.extra_roots() == (local.resolve(),)
+
+
+def test_a_value_that_is_not_a_list_is_ignored_and_logged(layout, monkeypatch):
+    tmp_path, listed = layout
+    errors = []
+    monkeypatch.setattr(IntegrationDirs, "error", errors.append)
+    with patch_value({"dir": str(tmp_path / "KeepLocal")}):
+        assert IntegrationDirs.extra_roots() == ()
+    assert len(errors) == 1 and IntegrationDirs.EXTRA_DIRS_KEY in errors[0]
+
+
+def test_a_local_folders_config_fragment_follows_the_repositorys_in_the_schema(layout, monkeypatch):
+    """`config_help` and the key checks see a local section as they see a repository one."""
+    from common import ConfigSchema
+    tmp_path, listed = layout
+    local = tmp_path / "KeepLocal"
+    _folder(local, "podcasts")
+    (local / "podcasts" / ConfigSchema.FRAGMENT_NAME).write_text("podcasts:\n  feeds: [one]\n")
+    repo_fragment = tmp_path / "repo" / ConfigSchema._FRAGMENTS_FROM_ROOT / "weather" / ConfigSchema.FRAGMENT_NAME
+    repo_fragment.parent.mkdir(parents=True)
+    repo_fragment.write_text("weather:\n  city: Kiruna\n")
+    (tmp_path / "repo" / "config.example.yaml").write_text("vault:\n  key: CHANGE_ME\n")
+    monkeypatch.setattr(ConfigSchema, "EXAMPLE_PATH", tmp_path / "repo" / "config.example.yaml")
+    listed.append(str(local))
+    ConfigSchema.reset()
+    try:
+        assert ConfigSchema.sections() == ["vault", "weather", "podcasts"]
+        assert ConfigSchema.is_scalar_list("podcasts.feeds")
+    finally:
+        ConfigSchema.reset()
+
+
+def test_a_local_folders_toolkit_is_discovered_after_the_repositorys(layout):
+    from assistant.commands import Toolkits
+    tmp_path, listed = layout
+    local = tmp_path / "KeepLocal"
+    _folder(local, "podcasts")
+    (local / "podcasts" / "toolkit.md").write_text(
+        "---\nname: podcasts\nsummary: the podcast feeds\ncommands: [play_podcast]\n---\nText.\n")
+    (tmp_path / "repo" / "integrations" / "tesla" / "toolkit.md").write_text(
+        "---\nname: tesla\nsummary: the car\ncommands: [car_charge]\n---\nText.\n")
+    listed.append(str(local))
+
+    assert [t.name for t in Toolkits.discover()] == ["tesla", "podcasts"]
+    assert Toolkits.discover()[1].folder == "podcasts"

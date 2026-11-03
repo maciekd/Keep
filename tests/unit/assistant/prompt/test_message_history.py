@@ -1564,3 +1564,63 @@ class TestBytePrefixExchange:
         finally:
             patch.stopall()
         assert {r["role"] for r in rows} == {"marcus", "assistant"}
+
+
+@pytest.mark.unit
+class TestARenderThatChangesNothingLogsNothing:
+    """The TUI renders the window many times a second and nothing changes between renders,
+    so the trim's lines fire once per state: on the production server the eviction, the
+    "stays whole" and the "nothing to collapse" lines had made up tens of thousands of lines
+    of the log, dozens within one second."""
+
+    @staticmethod
+    def _turns(n, start_ts, size=100):
+        return [{"role": "Marcus", "content": f"m{i:03d}" + "x" * size, "timestamp": start_ts + i,
+                 "source": None, "location": None} for i in range(n)]
+
+    @staticmethod
+    def _command_row(lead, timestamp, size):
+        return {"role": "command", "content": f"result: \n{lead}\n" + "z" * size,
+                "timestamp": timestamp, "source": None, "location": None}
+
+    @staticmethod
+    def _logged(section, renders=3):
+        """The info and trace calls of each of `renders` renders of an unchanged window."""
+        counts = []
+        with patch("assistant.prompt.MessageHistory.info") as info, patch("assistant.prompt.MessageHistory.trace") as trace:
+            for _ in range(renders):
+                section.get_history_messages()
+                counts.append((info.call_count, trace.call_count))
+        return [(i - pi, t - pt) for (i, t), (pi, pt) in zip(counts, [(0, 0)] + counts[:-1])]
+
+    def test_an_evicted_toolkit_is_logged_at_the_trim_not_on_every_render(self):
+        section = _make_history_section()
+        section.trim_high_bytes = 2_000
+        section.trim_low_bytes = 1_000
+        section.history = [
+            {"role": "Marcus", "content": "open ellos", "timestamp": 1000.0, "source": None, "location": None},
+            {"role": "assistant", "content": 'load_toolkit("browser")', "timestamp": 1001.0},
+            self._command_row("# Toolkit: browser", 1002.0, 800),
+        ] + self._turns(20, 1010.0)
+        first, *later = self._logged(section)
+        assert first[0] >= 1, "the trim and the eviction are logged when they happen"
+        assert later == [(0, 0), (0, 0)]
+        assert len([e for e in section.transient_entries if e["source"] == section.SOURCE_TOOLKIT_EVICTED]) == 1
+
+    def test_a_bulky_row_too_young_to_collapse_is_reported_once_per_window_size(self):
+        """Over the high watermark with a fresh bulky row under the ceiling, the trim waits;
+        the two lines saying so (the row stays whole, the trim is deferred) fire for the
+        window size they describe and not again while it holds still."""
+        section = _make_history_section()
+        section.trim_high_bytes = 4_000
+        section.trim_low_bytes = 2_000
+        section.trim_ceiling_bytes = 8_000
+        section.trim_collapse_bytes = 1_000
+        section.trim_fresh_seconds = 900
+        now = time.time()
+        section.history = self._turns(8, now - 400) + [self._command_row("# Procedure: ha-ui", now - 300, 4_000)] \
+            + self._turns(8, now - 200)
+        first, *later = self._logged(section)
+        assert first[1] >= 1, "the deferral is traced once"
+        assert later == [(0, 0), (0, 0)]
+        assert section._collapsed == set(), "the fresh row stayed whole"

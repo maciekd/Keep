@@ -2244,6 +2244,33 @@ class TestCmdConfigSet:
         assert "restart_integration" not in reply and "restart_server" not in reply
         assert ConfigStore.coerce("ai_message_footer", "false") is False
 
+    @pytest.mark.parametrize("value, wanted", [("true", True), ("false", False)])
+    def test_the_watchdog_key_is_applied_at_once_from_the_value_just_saved(self, commands_instance, value, wanted):
+        """The launchd agent follows the key the moment it is written: the config the sync reads
+        is the one after the save, and the reply offers no restart."""
+        from common import Watchdog
+        saved = Mock()
+        saved.get.side_effect = lambda key, default=None: wanted if key == Watchdog.KEY else default
+        with patch.object(ConfigStore, "set_value", return_value=f"{Watchdog.KEY} saved"), \
+             patch("assistant.commands.Commands.ConfigManager", return_value=saved), \
+             patch.object(Watchdog, "sync", return_value=None) as sync:
+            reply = commands_instance._run_config_set(Watchdog.KEY, value)
+        sync.assert_called_once_with(wanted)
+        assert reply.startswith(f"{Watchdog.KEY} saved")
+        assert "no restart" in reply and "restart_server" not in reply and "restart_integration" not in reply
+
+    def test_a_watchdog_the_mac_refused_is_saved_but_reported_as_not_applied(self, commands_instance):
+        from common import Watchdog
+        saved = Mock()
+        saved.get.return_value = True
+        with patch.object(ConfigStore, "set_value", return_value=f"{Watchdog.KEY} saved") as set_value, \
+             patch("assistant.commands.Commands.ConfigManager", return_value=saved), \
+             patch.object(Watchdog, "sync", return_value="launchctl bootstrap refused the agent"):
+            reply = commands_instance._run_config_set(Watchdog.KEY, "true")
+        set_value.assert_called_once()
+        assert "launchctl bootstrap refused the agent" in reply
+        assert Commands.WATCHDOG_HINT not in reply
+
     @pytest.mark.parametrize("key", ["telemetry.transcripts", "telemetry.enabled"])
     def test_a_telemetry_key_gets_the_telemetry_hint_not_the_server_restart(self, commands_instance, key):
         """The telemetry reads its keys per event, so turning it off needs no restart; the

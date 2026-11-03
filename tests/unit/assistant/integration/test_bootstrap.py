@@ -100,3 +100,39 @@ class TestIntegrationModules:
                 patch.object(bootstrap.importlib, "import_module", side_effect=lambda name: name):
             modules = list(bootstrap._integration_modules())
         assert modules == ["integrations.tesla", "integrations.tesla.TeslaIntegration"]
+
+    def test_a_module_that_fails_to_import_is_left_out_and_its_neighbours_still_load(self):
+        """A local integration folder with a syntax error or a missing package costs only
+        itself: the walk goes on past it and the error names the module."""
+        walked = [(None, "integrations.tesla", True), (None, "integrations.tesla.TeslaIntegration", False),
+                  (None, "integrations.podcasts", True), (None, "integrations.podcasts.PodcastsIntegration", False)]
+
+        def import_or_fail(name):
+            if name == "integrations.podcasts.PodcastsIntegration":
+                raise ModuleNotFoundError("No module named 'feedparser'")
+            return name
+
+        with patch.object(bootstrap.pkgutil, "walk_packages", return_value=walked), \
+                patch.object(bootstrap.importlib, "import_module", side_effect=import_or_fail), \
+                patch.object(bootstrap, "error") as error:
+            modules = list(bootstrap._integration_modules())
+        assert modules == ["integrations.tesla", "integrations.tesla.TeslaIntegration", "integrations.podcasts"]
+        assert error.call_count == 1
+        assert "integrations.podcasts.PodcastsIntegration" in error.call_args.args[0]
+        assert "feedparser" in error.call_args.args[0]
+
+    def test_a_package_the_walker_cannot_read_is_logged_and_the_walk_goes_on(self):
+        """pkgutil reports a package whose __init__ fails through `onerror` and continues
+        without it; without the hook it would raise and no integration after it would load."""
+        walked = [(None, "integrations.tesla", True), (None, "integrations.tesla.TeslaIntegration", False)]
+
+        def walk(path, prefix, onerror):
+            onerror("integrations.broken")
+            return iter(walked)
+
+        with patch.object(bootstrap.pkgutil, "walk_packages", side_effect=walk), \
+                patch.object(bootstrap.importlib, "import_module", side_effect=lambda name: name), \
+                patch.object(bootstrap, "error") as error:
+            modules = list(bootstrap._integration_modules())
+        assert modules == ["integrations.tesla", "integrations.tesla.TeslaIntegration"]
+        assert error.call_count == 1 and "integrations.broken" in error.call_args.args[0]

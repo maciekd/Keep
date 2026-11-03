@@ -181,3 +181,52 @@ class TestArea:
         image = ChartImage.area(values, A, 100.0, self.COLS, ROWS, average=average, average_color=B)
         column = [px(image, x, y_at(0.8)) for x in range(CELL_W, (self.COLS - 1) * CELL_W)]
         assert min(distance(rgb, B) for rgb in column) < 60
+
+
+@pytest.mark.unit
+class TestSmooth:
+    """The rolling average is resampled along a monotone cubic before it is drawn: it bends
+    through its points and never swings past the two either side of it."""
+
+    @staticmethod
+    def segments(run, curve):
+        """The resampled points of each segment of `run`, in order."""
+        steps = ChartImage.CURVE_STEPS
+        return [curve[k * steps:(k + 1) * steps] for k in range(len(run) - 1)]
+
+    def test_the_curve_starts_each_segment_on_its_point_and_ends_on_the_last(self):
+        run = [(0.0, 10.0), (10.0, 30.0), (20.0, 15.0), (30.0, 40.0)]
+        curve = ChartImage._smooth(run)
+        assert len(curve) == (len(run) - 1) * ChartImage.CURVE_STEPS + 1
+        for point, segment in zip(run, self.segments(run, curve)):
+            assert segment[0] == pytest.approx(point)
+        assert curve[-1] == run[-1]
+
+    def test_the_curve_never_leaves_the_band_between_two_neighbouring_points(self):
+        """A plain cubic spline through a near-flat pair beside a steep rise dips below the
+        pair; the monotone one stays between them, so the trend line never shows a trough or
+        a bump the data has not."""
+        run = [(0.0, 0.0), (10.0, 20.0), (20.0, 22.0), (30.0, 90.0), (40.0, 10.0), (50.0, 12.0)]
+        curve = ChartImage._smooth(run)
+        for (_, y0), (_, y1), segment in zip(run, run[1:], self.segments(run, curve)):
+            low, high = min(y0, y1), max(y0, y1)
+            assert all(low - 1e-9 <= y <= high + 1e-9 for _, y in segment), (y0, y1, segment)
+
+    def test_a_peak_is_the_top_of_the_curve_not_overshot(self):
+        run = [(0.0, 0.0), (10.0, 10.0), (20.0, 0.0)]
+        ys = [y for _, y in ChartImage._smooth(run)]
+        assert max(ys) == pytest.approx(10.0) and min(ys) == pytest.approx(0.0)
+
+    def test_a_flat_stretch_stays_flat(self):
+        run = [(0.0, 5.0), (10.0, 5.0), (20.0, 5.0), (30.0, 40.0)]
+        curve = ChartImage._smooth(run)
+        flat = self.segments(run, curve)[0] + self.segments(run, curve)[1]
+        assert all(y == pytest.approx(5.0) for _, y in flat)
+
+    def test_x_only_moves_forward_so_the_line_never_doubles_back(self):
+        run = [(0.0, 3.0), (7.0, 9.0), (9.0, 1.0), (30.0, 4.0)]
+        xs = [x for x, _ in ChartImage._smooth(run)]
+        assert all(a < b for a, b in zip(xs, xs[1:]))
+
+    def test_fewer_than_three_points_are_drawn_as_they_are(self):
+        assert ChartImage._smooth([(0.0, 1.0), (5.0, 2.0)]) == [(0.0, 1.0), (5.0, 2.0)]
