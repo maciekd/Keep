@@ -84,6 +84,21 @@ def test_only_section_generator_modules_are_imported_and_a_broken_one_is_left_ou
     assert f"{package.__name__}.kettle.KettleIntegration" not in sys.modules
 
 
+def test_a_folder_whose_package_raises_costs_only_itself(folders):
+    """pkgutil imports a folder's package to walk it; one raising other than an ImportError
+    ends the walk without the error hook. It is logged and the folders after it are found."""
+    folders("broken", "BrokenSectionGenerator", "")
+    (folders.root / "broken" / "__init__.py").write_text("raise RuntimeError('a folder whose package itself fails')\n")
+    folders("kettle", "KettleSectionGenerator", GENERATOR.format(name="Kettle", key="kettle", content="cold"))
+    package = folders.load()
+
+    with patch.object(SectionGenerators, "error") as error:
+        found = SectionGenerators.find_in(package)
+
+    assert [cls.__name__ for cls in found] == ["KettleSectionGenerator"]
+    assert any(f"{package.__name__}.broken" in call.args[0] for call in error.call_args_list)
+
+
 def test_a_folder_section_stands_in_the_prompt_where_its_placeholder_is(folders, template):
     folders("kettle", "KettleSectionGenerator", GENERATOR.format(name="Kettle", key="kettle", content="the kettle is cold"))
 

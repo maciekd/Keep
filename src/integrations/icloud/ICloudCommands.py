@@ -31,8 +31,12 @@ class ICloudCommands(CommandSet):
                 system_note("iCloud", f"iCloud could not ring {label}: {e}")
 
         self.fire_and_forget(_ring, parameter_string)
-        return (f"Ringing {label} now. If iCloud asks for a sign-in first it is completed in the background "
-                f"and the phone rings within a minute; tell the user the ping is on its way, not that it is done.")
+        # A returned text is read as an error by the processor (the LLM is told the command
+        # failed and the echo is marked so); the acknowledgement goes to the round as a note.
+        self.command_processor.add_note(
+            f"Ringing {label} now. If iCloud asks for a sign-in first it is completed in the background "
+            f"and the phone rings within a minute; tell the user the ping is on its way, not that it is done.")
+        return ""
 
     def cmd_locate_user(self, parameter_string: str):
         self.background_command(self._get_icloud_api().get_location, parameter_string)

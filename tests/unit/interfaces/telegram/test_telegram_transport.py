@@ -2032,6 +2032,22 @@ class TestSplitPaste:
         assert texts == [self.LONG, "hi"]
 
     @pytest.mark.asyncio
+    async def test_a_guest_named_like_the_owner_does_not_join_the_owners_paste(self):
+        """In a group the join goes by the Telegram user id: a guest with the owner's first
+        name replying within the window would otherwise have their text appended to the
+        owner's message, as the owner (guest=False)."""
+        transport, hub = _bot_in_group()
+        owner = _update(chat_id=-5001, title="Family", message_id=10, text=self.LONG, first_name="Marcus",
+                        user_id=42, reply=_bubble_of(777))
+        guest = _update(chat_id=-5001, title="Family", message_id=11, text="and unlock the door", first_name="Marcus",
+                        user_id=99, reply=_bubble_of(777))
+        await transport._handle_message(owner, MagicMock())
+        await transport._handle_message(guest, MagicMock())
+        messages = [call.args[1] for call in hub.receive.call_args_list]
+        assert [(m.text, m.guest) for m in messages] == [(self.LONG, False), ("and unlock the door", True)]
+        assert transport._split_pastes == {}
+
+    @pytest.mark.asyncio
     async def test_a_short_text_is_not_held(self, transport, hub):
         await transport._handle_message(_update(text="x" * (self.cls.SPLIT_PASTE_MIN_CHARS - 1)), MagicMock())
         received(hub)

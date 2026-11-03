@@ -73,9 +73,13 @@ class TestCmdFindPhone:
     refused in its thread, and the assistant said "I've pinged it")."""
 
     def test_answers_at_once_and_hands_the_ring_to_the_background(self, commands_instance, icloud_api):
+        """The acknowledgement is a note of the round, not the command's return value: a
+        returned text is what the processor reports to the LLM as a failed command."""
         icloud_api.device_label.return_value = "Charlotte's iPhone"
         with patch.object(commands_instance, "fire_and_forget") as fire:
-            text = commands_instance.run("find_phone", ["charlotte"])
+            result = commands_instance.run("find_phone", ["charlotte"])
+        assert not result
+        text = commands_instance.command_processor.add_note.call_args.args[0]
         assert "Charlotte's iPhone" in text and "on its way" in text
         icloud_api.play_sound.assert_not_called()
         ring, name = fire.call_args.args

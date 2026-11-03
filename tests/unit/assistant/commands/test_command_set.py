@@ -1,7 +1,7 @@
 """The mechanism that lets an integration folder bring its own commands (CommandSet)."""
 import importlib
 import sys
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -125,6 +125,8 @@ def workshop(tmp_path, monkeypatch):
     root = tmp_path / "workshop"
     files = {
         "__init__.py": "",
+        "broken/__init__.py": "raise RuntimeError('a folder whose package itself fails')\n",
+        "broken/BrokenCommands.py": "",
         "lamp/__init__.py": "",
         "lamp/LampCommands.py": "from assistant.commands.CommandSet import CommandSet\n"
                                 "class WorkshopLamp(CommandSet):\n    def cmd_lamp_on(self, p): return p\n",
@@ -150,6 +152,16 @@ def test_discovery_takes_the_command_modules_and_leaves_a_broken_one_out(worksho
     found = command_set_module.find_in(workshop)
     assert [cls.__name__ for cls in found] == ["WorkshopLamp", "WorkshopRadio"]
     assert "workshop.lamp.LampIntegration" not in sys.modules
+
+
+def test_a_folder_whose_package_raises_costs_only_itself(workshop):
+    """pkgutil imports a folder's package to walk it; `broken` raises something other than an
+    ImportError, which without the error hook ends the walk — and the boot — before the
+    folders after it. It is logged and the walk goes on."""
+    with patch.object(command_set_module, "error") as error:
+        found = command_set_module.find_in(workshop)
+    assert [cls.__name__ for cls in found] == ["WorkshopLamp", "WorkshopRadio"]
+    assert any("workshop.broken" in call.args[0] for call in error.call_args_list)
 
 
 def test_every_command_module_of_this_repository_is_discovered():

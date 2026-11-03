@@ -251,8 +251,9 @@ class TelegramTransport(Integration, ChatTransport):
         # chat_id → (message_id, token, title HTML) of the open secret prompt: while present,
         # the next text in that chat is an answer, not chat.
         self._secret_prompts: dict[int, tuple[int, str, str]] = {}
-        # chat_id → (the held first part, its release timer); only touched on the bot loop.
-        self._split_pastes: dict[int, tuple[IncomingMessage, asyncio.TimerHandle]] = {}
+        # chat_id → (the held first part, its release timer, the sender's (user id, guest));
+        # only touched on the bot loop.
+        self._split_pastes: dict[int, tuple[IncomingMessage, asyncio.TimerHandle, tuple]] = {}
         # The group destinations this bot registered (post_message by group title or id).
         self._group_destinations: list[str] = []
 
@@ -783,29 +784,32 @@ class TelegramTransport(Integration, ChatTransport):
             kind=KIND_TEXT, text=user_text, reply_to_text=self._reply_to_text(update),
             reply_to_bot=self._replies_to_bot(update), chat_name=self._chat_name(update),
             guest=guest, sender_is_bot=is_bot)
+        # The sender is the Telegram user id, never the display name: a guest named like the
+        # owner must not append to the owner's held paste under the owner's privileges.
+        sender_key = (getattr(getattr(update, 'effective_user', None), 'id', None), guest)
         held = self._split_pastes.pop(chat_id, None)
         if held is not None:
-            first, timer = held
+            first, timer, first_key = held
             timer.cancel()
-            if first.sender == msg.sender:
+            if first_key == sender_key:
                 msg = self._join_split_paste(first, msg)
             else:
-                info(f"Telegram [{chat_id}]: the next text is from {msg.sender}, not {first.sender}: "
-                     f"the held text goes on its own")
+                info(f"Telegram [{chat_id}]: the next text is from {msg.sender} (user {sender_key[0]}), not "
+                     f"{first.sender} (user {first_key[0]}): the held text goes on its own")
                 await self._receive(update, first)
         if len(user_text) >= self.SPLIT_PASTE_MIN_CHARS:
             # The part just received may be the last one: a short part ends the paste, a long
             # one may be followed by more.
-            self._hold_split_paste(update, msg)
+            self._hold_split_paste(update, msg, sender_key)
             return
         await self._receive(update, msg)
 
-    def _hold_split_paste(self, update, msg: IncomingMessage):
+    def _hold_split_paste(self, update, msg: IncomingMessage, sender_key: tuple):
         chat_id = msg.conversation
         loop = asyncio.get_running_loop()
         timer = loop.call_later(self.SPLIT_PASTE_WAIT_SECONDS,
                                 lambda: loop.create_task(self._release_split_paste(update, chat_id)))
-        self._split_pastes[chat_id] = (msg, timer)
+        self._split_pastes[chat_id] = (msg, timer, sender_key)
         info(f"Telegram [{chat_id}]: a {len(msg.text)}-character text may be the first part of a split paste, "
              f"held {self.SPLIT_PASTE_WAIT_SECONDS} s for the rest")
 

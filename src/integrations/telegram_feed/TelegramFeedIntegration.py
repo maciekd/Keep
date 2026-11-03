@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import os
 import queue
 import re
@@ -74,6 +75,7 @@ class TelegramFeedIntegration(Integration, Feed):
         self._login_lock = threading.Lock()
         self._loop_lock = threading.Lock()
         self._live: "queue.Queue[FeedEntry]" = queue.Queue()
+        self._reconnect: Optional[concurrent.futures.Future] = None
         self._rate_limiter = RateLimiter(SEND_RATE_LIMIT_MAX, SEND_RATE_LIMIT_WINDOW)
         self._directory: dict[str, dict[int, tuple]] = {}   # lowercase name → {entity id: (entity, display)}
         self._directory_built: float = 0.0
@@ -196,6 +198,7 @@ class TelegramFeedIntegration(Integration, Feed):
 
     def fetch(self, cursor: Optional[str], backfill: bool) -> FeedBatch:
         since = float(cursor) if cursor else 0.0
+        self._reconnect_if_dropped()
         if backfill:
             entries = self._call(self._catch_up(since), timeout=None)
         else:
@@ -255,6 +258,32 @@ class TelegramFeedIntegration(Integration, Feed):
         else:
             fine(f"TelegramFeed: catch-up found nothing new in {len(dialogs)} dialogs")
         return entries
+
+    def _reconnect_if_dropped(self):
+        """A client Telethon gave up on is reconnected on the feed's loop, one attempt at a
+        time, and `fetch` goes on with what the queue holds meanwhile. The Oct 29 outage
+        outlasted Telethon's reconnect retries: the client stayed disconnected for 4.5 days
+        while the feed reported live and every health check failed."""
+        client = self._client
+        if client is None or client.is_connected():
+            return
+        if self._reconnect is not None and not self._reconnect.done():
+            trace("TelegramFeed: the client is disconnected, a reconnect is still under way")
+            return
+        info("TelegramFeed: the client is disconnected — reconnecting")
+
+        async def go():
+            await client.connect()
+            info("TelegramFeed: reconnected")
+
+        self._reconnect = asyncio.run_coroutine_threadsafe(go(), self._get_or_create_loop())
+        self._reconnect.add_done_callback(self._reconnect_done)
+
+    @staticmethod
+    def _reconnect_done(future):
+        e = future.exception() if not future.cancelled() else None
+        if e is not None:
+            error(f"TelegramFeed: reconnect failed, trying again at the next fetch: {type(e).__name__}: {e}")
 
     def _drain_live(self) -> list[FeedEntry]:
         entries: list[FeedEntry] = []
@@ -820,7 +849,9 @@ class TelegramFeedIntegration(Integration, Feed):
 
         async def connect():
             from telethon import TelegramClient
-            self._client = TelegramClient(SESSION_FILE, self._api_id, self._api_hash)
+            # Unlimited reconnect retries: with the default five Telethon gives up on an
+            # outage of minutes and the feed is dead until a restart.
+            self._client = TelegramClient(SESSION_FILE, self._api_id, self._api_hash, connection_retries=None)
             await self._client.connect()
 
         future = asyncio.run_coroutine_threadsafe(connect(), loop)

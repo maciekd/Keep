@@ -36,3 +36,25 @@ def test_only_tab_modules_are_imported_and_a_broken_one_is_skipped(tmp_path, mon
     tabs = IntegrationTabs.discover(importlib.import_module("gadgets"))
 
     assert [tab.__qualname__ for tab in tabs] == ["LampTab"]
+
+
+def test_a_folder_whose_package_raises_costs_only_itself(tmp_path, monkeypatch):
+    """pkgutil imports a folder's package to walk it; one raising other than an ImportError
+    ends the walk without the error hook, and the tabs after it with it."""
+    root = tmp_path / "gizmos"
+    for name, source in {
+        "__init__.py": "",
+        "broken/__init__.py": "raise RuntimeError('a folder whose package itself fails')\n",
+        "broken/BrokenTab.py": "",
+        "lamp/__init__.py": "",
+        "lamp/LampTab.py": ("from interfaces.console.tabs.IntegrationTab import IntegrationTab\n"
+                            "class LampTab(IntegrationTab):\n    pass\n"),
+    }.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    tabs = IntegrationTabs.discover(importlib.import_module("gizmos"))
+
+    assert [tab.__qualname__ for tab in tabs] == ["LampTab"]

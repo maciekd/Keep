@@ -195,7 +195,11 @@ def find_in(package) -> tuple[type[PromptSectionGenerator], ...]:
     the package's walk order. Only those modules are imported; one that fails to import is
     logged and left out, so a broken folder costs its own section and nothing else."""
     found: list[type[PromptSectionGenerator]] = []
-    for _finder, fqn, ispkg in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
+
+    def skipped(fqn):
+        error(f"Package {fqn} could not be walked for section generators, its section is left out")
+
+    for _finder, fqn, ispkg in pkgutil.walk_packages(package.__path__, package.__name__ + ".", onerror=skipped):
         if ispkg or not fqn.endswith(MODULE_SUFFIX):
             continue
         try:

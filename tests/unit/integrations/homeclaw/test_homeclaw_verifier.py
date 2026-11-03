@@ -142,6 +142,34 @@ class TestPlan:
         guarded = morning(conditions=[{"type": "characteristic", "summary": "Someone is home"}])
         assert plan([guarded], datetime(2026, 11, 3, 5, 0, tzinfo=TZ), sun, actions_of) is None
 
+    def test_a_run_that_fired_while_the_previous_one_was_checked_is_still_planned(self):
+        """The check of the 06:30 run waits until 06:33; a run at 06:31 has fired by then and
+        `now` alone would skip it. Planned from the minute after the verified run it is found,
+        and the verified run itself is not found again."""
+        blinds = morning(id="A7000009-0000-4000-8000-000000000009", name="Blinds Up", fire_time="06:31")
+        now = datetime(2026, 11, 3, 6, 33, tzinfo=TZ)
+        assert plan([morning(), blinds], now, sun, actions_of).at == datetime(2026, 11, 4, 6, 30, tzinfo=TZ)
+        run = plan([morning(), blinds], now, sun, actions_of, after=datetime(2026, 11, 3, 6, 31, tzinfo=TZ))
+        assert run.at == datetime(2026, 11, 3, 6, 31, tzinfo=TZ) and run.automations == ["Blinds Up"]
+
+    def test_a_sun_run_in_the_verified_minute_is_not_planned_again(self):
+        """A sunset trigger fires at a second within its minute; the verified run is that minute,
+        so planning from the next minute must not find the same run a second time."""
+        at = fire_at(DUSK_AUTOMATION, TUESDAY, TZ, sun)
+        assert at.second == 0
+        off_the_minute = lambda day: (sun(day)[0], sun(day)[1].replace(second=23))
+        at = fire_at(DUSK_AUTOMATION, TUESDAY, TZ, off_the_minute)
+        verified = at.replace(second=0, microsecond=0)
+        assert plan([DUSK_AUTOMATION], at + timedelta(minutes=3), off_the_minute, actions_of,
+                    after=verified + timedelta(minutes=1)).at == verified + timedelta(days=1)
+
+    def test_planning_from_a_verified_minute_looks_back_across_midnight(self):
+        late = morning(id="A7000009-0000-4000-8000-000000000009", name="Night Lock", fire_time="23:59",
+                       conditions=[])
+        now = datetime(2026, 11, 4, 0, 1, tzinfo=TZ)
+        run = plan([late], now, sun, actions_of, after=datetime(2026, 11, 3, 23, 59, tzinfo=TZ))
+        assert run.at == datetime(2026, 11, 3, 23, 59, tzinfo=TZ)
+
     def test_nothing_timed_means_no_run(self):
         assert plan(AUTOMATIONS[1:], datetime(2026, 11, 3, 5, 0, tzinfo=TZ), sun, actions_of) is None
 
@@ -203,8 +231,10 @@ def verifier(homeclaw):
         yield AutomationVerifier(homeclaw, settle_seconds=0)
 
 
-def past_run(expectations=None):
-    return Run(datetime.now(TZ) - timedelta(minutes=1), ["Weekday Morning"], expectations or [
+def past_run(expectations=None, ahead=timedelta(milliseconds=40)):
+    """A run about to fire — far enough ahead for the reading before it, near enough that the
+    test waits almost nothing; `ahead` negative is a run that has fired."""
+    return Run(datetime.now(TZ) + ahead, ["Weekday Morning"], expectations or [
         Expectation(FLOOR_LAMP, "Floor Lamp", "power", "on", "Weekday Morning"),
         Expectation(FLOOR_LAMP, "Floor Lamp", "brightness", "30", "Weekday Morning")])
 
@@ -232,6 +262,29 @@ class TestVerify:
         assert "Floor Lamp" in text and "reports off" in text and "before the run: off" in text
         assert text.index("false → true") < text.index("true → false") and "Awning" not in text
         assert app.of("events")[0]["type"] == "characteristic_change"
+
+    def test_a_run_found_after_it_fired_is_checked_without_a_reading_before_it(self, app, verifier, chat):
+        """A reading taken after the run would pass the run's own effect off as the state
+        before it: the report says the state before was unread, and the check still runs."""
+        app.replies["get_accessory"] = ok(lamp_detail("false", "30"))
+        run = past_run(ahead=-timedelta(minutes=1))
+        deviations = verifier.verify(run)
+        assert [d.expectation.characteristic for d in deviations] == ["power"]
+        assert len(app.of("get_accessory")) == 1
+        assert "before the run: unread" in chat.open_conversation.call_args.args[0]
+        assert verifier._verified_until == run.at.replace(second=0, microsecond=0) + timedelta(minutes=1)
+
+    def test_the_cycle_after_a_check_plans_from_the_verified_minute(self, app, verifier):
+        """Verified at 06:30, the next cycle at 06:33 finds a 06:31 run that has fired and
+        verifies it at once instead of waiting for tomorrow's."""
+        blinds = {**morning(), "id": "A7000009-0000-4000-8000-000000000009", "name": "Blinds Up", "fire_time": "06:31"}
+        app.replies["list_automations"] = ok([morning(), blinds])
+        app.replies["get_automation"] = lambda args: ok(next(a for a in (morning(), blinds) if a["id"] == args["id"]))
+        verifier._verified_until = datetime(2026, 11, 3, 6, 31, tzinfo=TZ)
+        with patch.object(verifier, "_now", return_value=datetime(2026, 11, 3, 6, 33, tzinfo=TZ)), \
+                patch.object(verifier, "verify") as verify:
+            assert verifier._cycle() == 1
+        assert verify.call_args.args[0].automations == ["Blinds Up"]
 
     def test_without_an_owner_chat_the_report_is_a_system_note(self, app, verifier, chat):
         app.replies["get_accessory"] = ok(lamp_detail("false", "30"))
@@ -294,3 +347,27 @@ class TestSunTimes:
 
     def test_a_polar_night_has_no_times(self):
         assert sun_times(date(2024, 12, 21), 69.65, 18.96, "Europe/Oslo") is None
+
+    def test_an_evening_west_of_greenwich_keeps_its_local_date(self):
+        """Los Angeles' sunset is the next UTC day; anchored on UTC midnight it used to land
+        on the day before."""
+        zone = ZoneInfo("America/Los_Angeles")
+        rise, down = sun_times(date(2026, 11, 3), 34.05, -118.24, "America/Los_Angeles")
+        assert rise.date() == down.date() == date(2026, 11, 3)
+        assert abs((rise - datetime(2026, 11, 3, 6, 14, tzinfo=zone)).total_seconds()) < 600
+        assert abs((down - datetime(2026, 11, 3, 16, 58, tzinfo=zone)).total_seconds()) < 600
+
+    def test_a_morning_far_east_of_greenwich_keeps_its_local_date(self):
+        """Sydney's sunrise is the previous UTC day; it used to land on the day after."""
+        zone = ZoneInfo("Australia/Sydney")
+        rise, down = sun_times(date(2026, 11, 3), -33.87, 151.21, "Australia/Sydney")
+        assert rise.date() == down.date() == date(2026, 11, 3)
+        assert abs((rise - datetime(2026, 11, 3, 5, 53, tzinfo=zone)).total_seconds()) < 600
+        assert abs((down - datetime(2026, 11, 3, 19, 24, tzinfo=zone)).total_seconds()) < 600
+
+    def test_a_zone_hours_off_its_longitude_keeps_its_local_date(self):
+        """Kiritimati is at UTC+14 on a longitude whose mean time is UTC-10: its whole day is
+        the UTC day before, so the day's events come from a neighbouring computation."""
+        rise, down = sun_times(date(2026, 11, 3), 1.87, -157.4, "Pacific/Kiritimati")
+        assert rise.date() == down.date() == date(2026, 11, 3)
+        assert 5 <= rise.hour <= 7 and 17 <= down.hour <= 19

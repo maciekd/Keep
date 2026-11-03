@@ -160,19 +160,23 @@ def expectations_of(automation: dict, actions_of: Callable[[str], list[dict]]) -
 
 
 def plan(automations: list[dict], now: datetime, sun: Callable[[date], Optional[tuple[datetime, datetime]]],
-         actions_of: Callable[[str], list[dict]]) -> Optional[Run]:
+         actions_of: Callable[[str], list[dict]], after: Optional[datetime] = None) -> Optional[Run]:
     """The next run after `now` within HORIZON_DAYS: the earliest minute a verifiable timed
     automation fires, every automation of that minute in it, with what they set. A minute
-    whose automations set nothing the check can read is passed over."""
+    whose automations set nothing the check can read is passed over. With `after` — the
+    minute following the last verified run — the runs from that minute on count even when
+    they have fired: one that fired while the previous run was being checked (the wait
+    outlasts a run a few minutes later) is verified late rather than skipped."""
     tz = now.tzinfo
+    start = now if after is None or after > now else after
     moments: dict[datetime, list[dict]] = {}
     for ahead in range(HORIZON_DAYS + 1):
-        day = (now + timedelta(days=ahead)).date()
+        day = (start + timedelta(days=ahead)).date()
         for automation in automations:
             if automation.get("trigger_type") not in TIMED_TRIGGERS:
                 continue
             at = fire_at(automation, day, tz, sun)
-            if at is None or at <= now:
+            if at is None or (at <= now if after is None else at.replace(second=0, microsecond=0) < after):
                 continue
             verdict = applies(automation, day)
             if verdict is None:
@@ -268,6 +272,7 @@ class AutomationVerifier:
         self._tz = ZoneInfo(config.get_home_timezone())
         self._no_sun_logged = False
         self.last_run: Optional[Run] = None
+        self._verified_until: Optional[datetime] = None     # the minute after the last verified run
 
     def start(self):
         self._thread = threading.Thread(target=self._loop, name="HomeClawVerifier", daemon=True)
@@ -299,7 +304,7 @@ class AutomationVerifier:
         """One turn of the loop: the seconds to wait before the next, having verified a run
         whose snapshot moment has come."""
         now = self._now()
-        run = self.next_run(now)
+        run = self.next_run(now, after=self._verified_until)
         if run is None:
             info("HomeClaw verifier: no timed automation ahead to verify — looking again in an hour")
             return REPLAN_SECONDS
@@ -308,14 +313,17 @@ class AutomationVerifier:
             trace(f"HomeClaw verifier: next run {run.names} at {run.at:%Y-%m-%d %H:%M}, "
                   f"snapshot in {until_snapshot / 60:.0f} min")
             return min(until_snapshot, REPLAN_SECONDS)
+        if run.at <= now:
+            info(f"HomeClaw verifier: {run.names} fired at {run.at:%H:%M} while the previous run was being "
+                 "checked — verified late, without a reading before it")
         self.verify(run)
         return 1
 
     def _now(self) -> datetime:
         return datetime.now(self._tz)
 
-    def next_run(self, now: Optional[datetime] = None) -> Optional[Run]:
-        return plan(self._integration.automations(), now or self._now(), self._sun, self._actions_of)
+    def next_run(self, now: Optional[datetime] = None, after: Optional[datetime] = None) -> Optional[Run]:
+        return plan(self._integration.automations(), now or self._now(), self._sun, self._actions_of, after)
 
     def _sun(self, day: date) -> Optional[tuple[datetime, datetime]]:
         latitude, longitude = config.get_home_latitude(), config.get_home_longitude()
@@ -377,9 +385,12 @@ class AutomationVerifier:
         the comparison, and the assistant woken when something deviates. Empty when the
         thread was stopped while waiting."""
         ids = run.accessory_ids
-        before = self._read(ids)
-        info(f"HomeClaw verifier: {run.names} fires at {run.at:%H:%M} — {len(ids)} accessories read before it, "
-             f"checking {self.settle_seconds} s after")
+        # A run found after it fired has no "before" reading: one taken now would show the
+        # run's own effect as the state before it.
+        fired = run.at <= self._now()
+        before = {} if fired else self._read(ids)
+        info(f"HomeClaw verifier: {run.names} {'fired' if fired else 'fires'} at {run.at:%H:%M} — {len(ids)} "
+             f"accessories {'to check' if fired else 'read before it'}, checking {self.settle_seconds} s after")
         wait = (run.at - self._now()).total_seconds() + self.settle_seconds
         if self._stop.wait(max(wait, 0)):
             trace(f"HomeClaw verifier: stopped while waiting for the run at {run.at:%H:%M}")
@@ -387,6 +398,7 @@ class AutomationVerifier:
         after = self._read(ids)
         deviations = compare(run.expectations, after)
         self.last_run = run
+        self._verified_until = run.at.replace(second=0, microsecond=0) + timedelta(minutes=1)
         if not deviations:
             info(f"HomeClaw verifier: {run.names} at {run.at:%H:%M} — all {len(ids)} accessories report what the run "
                  "sets, nothing to do")

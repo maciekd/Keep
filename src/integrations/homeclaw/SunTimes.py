@@ -13,11 +13,22 @@ def sun_times(day: date, latitude: float, longitude: float, tz: str) -> Optional
     """Sunrise and sunset of `day` (a local date) as aware local datetimes, or None when the
     sun neither rises nor sets that day (a polar night or day)."""
     zone = ZoneInfo(tz)
-    rise = _event(day, latitude, longitude, rising=True)
-    down = _event(day, latitude, longitude, rising=False)
+    rise = _on_day(day, latitude, longitude, zone, rising=True)
+    down = _on_day(day, latitude, longitude, zone, rising=False)
     if rise is None or down is None:
         return None
-    return rise.astimezone(zone), down.astimezone(zone)
+    return rise, down
+
+
+def _on_day(day: date, latitude: float, longitude: float, zone: ZoneInfo, rising: bool) -> Optional[datetime]:
+    """The event whose local date is `day`. The Almanac anchors an event on the UTC midnight
+    of the day it is computed for, so far from Greenwich — or in a zone hours off its
+    longitude's mean time — the event of a neighbouring day is the one that falls on `day`."""
+    for ahead in (0, 1, -1):
+        event = _event(day + timedelta(days=ahead), latitude, longitude, rising)
+        if event is not None and (local := event.astimezone(zone)).date() == day:
+            return local
+    return None
 
 
 def _event(day: date, latitude: float, longitude: float, rising: bool) -> Optional[datetime]:
@@ -37,7 +48,9 @@ def _event(day: date, latitude: float, longitude: float, rising: bool) -> Option
     hour_angle = math.degrees(math.acos(cos_hour))
     hour_angle = (360 - hour_angle if rising else hour_angle) / 15
     local_mean = hour_angle + right_ascension - 0.06571 * t - 6.622
-    universal = (local_mean - longitude_hour) % 24
+    # The local mean time is the day's; the UT it is may be on the UTC day before or after
+    # (an evening in Los Angeles is the next UTC day), so it is not wrapped into the day.
+    universal = local_mean % 24 - longitude_hour
     midnight = datetime.combine(day, time(0), tzinfo=timezone.utc)
     return midnight + timedelta(hours=universal)
 

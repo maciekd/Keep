@@ -13,7 +13,11 @@ def discover(package=None) -> list[type[IntegrationTab]]:
     if package is None:
         import integrations as package
     found: list[type[IntegrationTab]] = []
-    for _finder, fqn, ispkg in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
+
+    def skipped(fqn):
+        info(f"Package {fqn} could not be walked for tabs, skipped")
+
+    for _finder, fqn, ispkg in pkgutil.walk_packages(package.__path__, package.__name__ + ".", onerror=skipped):
         if ispkg or not fqn.endswith("Tab"):
             continue
         try:

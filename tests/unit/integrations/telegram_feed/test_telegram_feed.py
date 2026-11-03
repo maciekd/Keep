@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import patch, Mock
 
 import pytest
@@ -401,6 +402,49 @@ class TestFeed:
             m.close_feed()
         assert batch.entries == []
         assert batch.cursor == repr(20.0)
+
+    def test_a_dropped_client_is_reconnected_at_the_next_fetch(self, feed_no_blacklist):
+        """Telethon stops reconnecting once an outage outlasts its retries (Oct 29: 4.5 days
+        of a 'live' feed whose every health check failed). The fetch reconnects the client
+        on the feed's loop and goes on with the queue meanwhile; a connected client is left alone."""
+        m = feed_no_blacklist
+        client = _FakeClient([])
+        client.connected = False
+        attempts = []
+
+        async def connect():
+            attempts.append(True)
+            client.connected = True
+        client.connect = connect
+        m._client = client
+        try:
+            batch = m.fetch(repr(300.0), backfill=False)
+            m._reconnect.result(timeout=1)
+            assert batch.entries == [] and client.connected and attempts == [True]
+            m.fetch(repr(300.0), backfill=False)
+            assert attempts == [True]
+        finally:
+            m.close_feed()
+
+    def test_a_reconnect_under_way_is_not_started_twice(self, feed_no_blacklist):
+        m = feed_no_blacklist
+        client = _FakeClient([])
+        client.connected = False
+        attempts = []
+
+        async def connect():
+            attempts.append(True)
+            await asyncio.sleep(0.03)
+            client.connected = True
+        client.connect = connect
+        m._client = client
+        try:
+            m.fetch(repr(300.0), backfill=False)
+            m.fetch(repr(300.0), backfill=False)
+            m._reconnect.result(timeout=1)
+            assert attempts == [True] and client.connected
+        finally:
+            m.close_feed()
 
     @pytest.mark.asyncio
     async def test_live_messages_are_queued_and_drained_by_fetch(self, feed_no_blacklist):
