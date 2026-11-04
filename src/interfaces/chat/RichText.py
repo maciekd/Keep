@@ -9,7 +9,7 @@ a tag open, how to split long messages, and how to render markdown into it.
 import re
 from html import escape, unescape
 
-from common.logging import trace
+from common.logging import info, trace
 
 ALLOWED_TAGS = {'b', 'i', 'u', 's', 'a', 'code', 'pre', 'strong', 'em', 'del', 'strike',
                 'tg-spoiler', 'blockquote', 'tg-emoji'}
@@ -163,12 +163,15 @@ def markdown_to_html(md: str) -> str:
     return "\n".join(result)
 
 
-def tables_as_pre(text: str) -> str:
+def tables_as_pre(text: str, max_length: int = 0) -> str:
     """The pipe tables of a reply as `<pre>` blocks, for a platform that cannot draw a table:
     a run of consecutive lines starting with `|` becomes one block whose cells are padded to
     their column (numbers right-aligned), the separator row dropped. Tags inside a cell are
     stripped, since Telegram allows none inside `<pre>`; a line inside an existing `<pre>`
-    block is left alone, as `widgets/ChatTable.py` leaves it."""
+    block is left alone, as `widgets/ChatTable.py` leaves it. With `max_length` — the
+    platform's message limit, which the text was already split to fit — a text the padding
+    would push past it comes back untouched, the rows as the model wrote them: a wide column
+    pads every row to its width, and a message over the limit is one the platform refuses."""
     out: list[str] = []
     rows: list[str] = []
     tables = 0
@@ -190,9 +193,15 @@ def tables_as_pre(text: str) -> str:
         for tag in _PRE_TAG_RE.finditer(line):
             pre_depth = max(0, pre_depth + (-1 if tag.group(1) else 1))
     flush()
-    if tables:
-        trace(f"RichText: {tables} pipe table(s) rendered as <pre> blocks")
-    return "\n".join(out)
+    if not tables:
+        return text
+    rendered = "\n".join(out)
+    if max_length and len(rendered) > max_length:
+        info(f"RichText: the padded table(s) would make the message {len(rendered)} chars, over the limit of "
+             f"{max_length} — the {tables} table(s) stay pipe rows")
+        return text
+    trace(f"RichText: {tables} pipe table(s) rendered as <pre> blocks")
+    return rendered
 
 
 def _aligned_pre(lines: list[str]) -> str:

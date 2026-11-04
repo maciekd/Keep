@@ -156,6 +156,14 @@ class TestTablesAsPre:
         block = RichText.tables_as_pre("| a \\| b | c |")
         assert "a | b" in block
 
+    def test_a_table_the_padding_pushes_past_the_limit_keeps_its_rows(self):
+        """One wide cell pads every row of its column: a text that fit the message limit
+        before the rendering must still fit after it, so such a table is left as written."""
+        wide = "| Title | Note |\n|---|---|\n| " + "x" * 120 + " | 1 |\n" + "\n".join(f"| r{i} | {i} |" for i in range(20))
+        assert len(wide) < 600 < len(RichText.tables_as_pre(wide))
+        assert RichText.tables_as_pre(wide, 600) == wide
+        assert RichText.tables_as_pre(self.TABLE, 600).startswith("<pre>")
+
 
 class TestCommandLine:
     def test_escapes_and_appends_the_detail_in_its_own_italics(self):

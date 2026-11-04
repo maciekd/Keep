@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from interfaces.chat import RichText
 from interfaces.chat.ChatTypes import (KIND_DOCUMENT, KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
                                        PHASE_COMMANDS, PHASE_PREFILL, PHASE_THINKING, PHASE_WAITING, Progress)
 
@@ -1036,6 +1037,16 @@ class TestSendOrEdit:
         sent = t._application.bot.send_message.call_args.kwargs["text"]
         assert sent.startswith("<pre>") and sent.endswith("</pre>")
         assert "|" not in sent and "---" not in sent
+
+    @pytest.mark.asyncio
+    async def test_a_table_whose_padding_would_exceed_the_message_limit_is_sent_as_written(self, t):
+        """The chunk was split to fit 4096 characters; padding it past the limit would have the
+        send refused and the reply lost, so the rows go as the model wrote them."""
+        chunk = "| Title | Note |\n|---|---|\n| " + "x" * 300 + " | 1 |\n" + "\n".join(f"| row {i} | {i} |" for i in range(40))
+        assert len(chunk) <= t.max_message_length < len(RichText.tables_as_pre(chunk))
+        assert await t._send_or_edit_async(123, None, chunk, is_final=True) == (42, True)
+        sent = t._application.bot.send_message.call_args.kwargs["text"]
+        assert len(sent) <= t.max_message_length and "| row 39 |" in sent
 
 
 @pytest.mark.unit
