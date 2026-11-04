@@ -1182,6 +1182,23 @@ class TestGeminiLLM:
 
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
+    def test_thinking_more_is_an_ordinary_request_on_gemini(self, mock_types, mock_config):
+        """The autonomous check's Thinking.MORE buys reasoning only where a backend has levels
+        below its best to give; on Gemini it is a chat turn's floor level, never the deep level
+        FULL asks for — the same contract Claude and ChatGPT keep for MORE."""
+        mock_config.get_api_key.return_value = "k"
+        llm = GeminiLLM("gemini-3.5-flash")
+        llm.client = Mock()
+        llm.client.models.generate_content.return_value = Mock(text="ok")
+        levels = {}
+        for thinking in (Thinking.NORMAL, Thinking.MORE, Thinking.FULL):
+            llm.create_completion([{"role": "user", "content": "hi"}], thinking=thinking)
+            levels[thinking] = mock_types.ThinkingConfig.call_args.kwargs["thinking_level"]
+        assert levels[Thinking.MORE] == levels[Thinking.NORMAL] == llm._min_thinking_level()
+        assert levels[Thinking.FULL] != levels[Thinking.MORE]
+
+    @patch('assistant.llm.GeminiLLM.config')
+    @patch('assistant.llm.GeminiLLM.types')
     def test_streaming_37_flash_never_requests_minimal(self, mock_types, mock_config):
         """The non-thinking streaming path is the production voice loop on the
         fast tier — sending MINIMAL to gemini-3.7-flash 400s every request."""

@@ -682,6 +682,35 @@ class TestAnalyzeCode:
 
 
 @pytest.mark.unit
+class TestAnalyzeCost:
+    """The cost_analysis command's job: the keep-cost-analysis skill run by Claude Code. Its
+    report is delivered from a background thread that only logs an exception, so the job
+    itself must answer with text whatever happens to the run."""
+
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="## Where it goes\n- checks $3.10")
+    def test_the_window_the_llm_gave_reaches_the_skill_contract_with_its_argument(self, run):
+        """The skill parses its window from its arguments (`24h`, `3d`, `7d`); the command's
+        window must stand in the prompt as the skill's argument, and no window means one day."""
+        assert CodeQualityMaintainer.analyze_cost("7d") == "## Where it goes\n- checks $3.10"
+        assert "7d" in run.call_args.args[0]
+        CodeQualityMaintainer.analyze_cost("")
+        assert "24h" in run.call_args.args[0] and "7d" not in run.call_args.args[0]
+
+    @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=ClaudeNotLoggedInError())
+    def test_an_unavailable_cli_is_the_report_not_an_exception(self, run):
+        assert CodeQualityMaintainer.analyze_cost("") == NOT_LOGGED_IN_MESSAGE
+
+    @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=ClaudeRunFailedError("cost-analysis", "timed out"))
+    def test_a_run_that_did_not_finish_says_so_in_the_report(self, run):
+        report = CodeQualityMaintainer.analyze_cost("3d")
+        assert "timed out" in report
+
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
+    def test_a_run_with_no_output_still_delivers_a_line(self, run):
+        assert CodeQualityMaintainer.analyze_cost("").strip()
+
+
+@pytest.mark.unit
 class TestImproveCode:
     @pytest.fixture(autouse=True)
     def gh_logged_in(self):
