@@ -129,17 +129,17 @@ class TestRefusals:
 
     def test_a_version_tag_already_naming_another_commit_stops_the_release(self, repos):
         """Two commits with the same month and ancestor count share a version string; the
-        tag must not silently be left pointing at the other one while release moves on."""
+        tag must not silently be left pointing at the other one while release moves on. The
+        check comes before the dry run's exit, and a dry run spares the two processes the
+        signing setup check costs."""
         repos.commits('2026.09', '2026.09')
-        tip = repos.push()[-1]
+        repos.push()
         repos.history.tag('v2026.09.2', 1, 'wrong')     # in the clone only, and on the first commit
         repos.keep_local()
-        result = repos.release()
+        result = repos.release('--dry-run')
         assert result.returncode != 0
         assert 'v2026.09.2' in result.stderr
-        release, tags = repos.origin_state()
-        assert release is None
-        assert tip not in tags.values()
+        assert "What's new" not in result.stdout, "stopped before the note"
 
 
 class TestSigning:

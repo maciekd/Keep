@@ -2,24 +2,28 @@
 tag signed (or not) by a throwaway ed25519 key, and an install's clone one release behind. The
 install trusts the keys in its own res/release_signers — the maintainer's — and nothing a
 fetched release brings, so a push to `release` signed by anyone else never moves it."""
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from common import SignedRelease as module
 from common.SignedRelease import SignedRelease
 
-from ..git_sandbox import History, empty_repo, git, git_env, signing_key
+from ..git_sandbox import History, empty_repo, git, signing_key, spawn
 
 SIGNERS = 'res/release_signers'
 
 
 class Install:
     """Commit 1 is the release the install runs, commit 2 the one pushed to origin's `release`
-    since; `tag` puts the v-tag on commit 2 in origin."""
+    since — or, when `current`, the one the install runs already; `tag` puts the v-tag on
+    commit 2 in origin."""
 
-    def __init__(self, tmp_path: Path, next_signers: str | None = None, on: str = 'release'):
+    def __init__(self, tmp_path: Path, next_signers: str | None = None, on: str = 'release',
+                 current: bool = False):
         maintainer = signing_key('maintainer')[1]
         history = History()
         history.commit(datetime(2026, 10, 1, 12, tzinfo=timezone.utc), 'feat: one',
@@ -27,11 +31,14 @@ class Install:
         history.branch('release', 1)
         self.origin = empty_repo(tmp_path / 'origin.git', bare=True)
         self.clone = empty_repo(tmp_path / 'install', origin=self.origin)
-        self.running = history.write(self.clone)[0]
+        if not current:
+            self.running = history.write(self.clone)[0]
         history.commit(datetime(2026, 10, 2, 12, tzinfo=timezone.utc), 'feat: two',
                        {'readme.md': 'Keep 2\n', SIGNERS: next_signers or maintainer})
         history.branch('release', 2)
         self.pushed = history.write(self.origin)[1]
+        if current:
+            self.running = history.write(self.clone)[1]
         (self.clone / '.git' / 'HEAD').write_text(f'ref: refs/heads/{on}\n')
         git(self.clone, 'reset', '-q', '--hard')
 
@@ -50,6 +57,13 @@ class Install:
         return git(self.clone, 'rev-parse', '--abbrev-ref', 'HEAD')
 
 
+def _spawned(command: list, cwd: Path, timeout: int, **_) -> subprocess.CompletedProcess:
+    """The module's `subprocess.run`, through the sandbox's `spawn`: the same git in the same
+    directory (`-C` for the `cwd`), but posix_spawned — a `cwd` makes Python fork the worker
+    instead, and forking one with the tree imported costs more than the git it starts."""
+    return spawn([command[0], '-C', str(cwd), *command[1:]], timeout=timeout)
+
+
 @pytest.fixture
 def install(tmp_path, monkeypatch):
     """The install's clone is the repository SignedRelease works on, its git the sandbox's (no
@@ -59,8 +73,7 @@ def install(tmp_path, monkeypatch):
         monkeypatch.setattr(module, 'REPO_DIR', made.clone)
         monkeypatch.setattr(module, 'SIGNERS_FILE', made.clone / SIGNERS)
         return made
-    for key, value in git_env().items():
-        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(module, 'subprocess', SimpleNamespace(run=_spawned))
     return make
 
 
@@ -74,9 +87,8 @@ class TestVerifiedRelease:
         assert 'v2026.10.2' in output
 
     def test_an_install_already_at_the_signed_tip_reports_it_is_up_to_date(self, install):
-        repo = install()
+        repo = install(current=True)
         repo.tag('maintainer')
-        SignedRelease.update('release')
         assert SignedRelease.update('release') == ('', 'Already up to date.'), \
             "pull_and_restart reads this phrase to tell 'no new changes'"
 
