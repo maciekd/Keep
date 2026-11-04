@@ -173,6 +173,30 @@ class TestPlan:
     def test_nothing_timed_means_no_run(self):
         assert plan(AUTOMATIONS[1:], datetime(2026, 11, 3, 5, 0, tzinfo=TZ), sun, actions_of) is None
 
+    def test_after_fridays_run_the_weekend_still_finds_mondays(self):
+        """The horizon is counted from now, not from the last verified minute: anchored to
+        Friday, a Saturday's plan would look at Friday to Sunday and find nothing, forever."""
+        verified = datetime(2026, 11, 6, 6, 31, tzinfo=TZ)     # the minute after Friday's run
+        for now, expected in ((datetime(2026, 11, 7, 10, 0, tzinfo=TZ), datetime(2026, 11, 9, 6, 30, tzinfo=TZ)),
+                              (datetime(2026, 11, 9, 5, 0, tzinfo=TZ), datetime(2026, 11, 9, 6, 30, tzinfo=TZ)),
+                              (datetime(2026, 11, 10, 5, 0, tzinfo=TZ), datetime(2026, 11, 10, 6, 30, tzinfo=TZ))):
+            assert plan([morning()], now, sun, actions_of, after=verified).at == expected
+
+    def test_a_run_an_outage_hid_for_hours_is_not_verified_against_the_state_now(self):
+        """Last verified Monday 06:30, now Tuesday 15:00: Tuesday's 06:30 run is more than
+        LATE_SECONDS old, so the next run is Wednesday's and the stale one is logged, not
+        checked against lamps that have changed hands since."""
+        now = datetime(2026, 11, 3, 15, 0, tzinfo=TZ)
+        with patch.object(verifier_module, "info") as log:
+            run = plan([morning()], now, sun, actions_of, after=datetime(2026, 11, 2, 6, 31, tzinfo=TZ))
+        assert run.at == datetime(2026, 11, 4, 6, 30, tzinfo=TZ)
+        assert any("Weekday Morning" in c.args[0] and "2026-11-03 06:30" in c.args[0] for c in log.call_args_list)
+
+    def test_a_run_a_few_minutes_old_is_still_verified_late(self):
+        now = datetime(2026, 11, 3, 6, 30, tzinfo=TZ) + timedelta(seconds=verifier_module.LATE_SECONDS - 60)
+        run = plan([morning()], now, sun, actions_of, after=datetime(2026, 11, 2, 6, 31, tzinfo=TZ))
+        assert run.at == datetime(2026, 11, 3, 6, 30, tzinfo=TZ)
+
 
 class TestCompare:
     EXPECTED = [Expectation(FLOOR_LAMP, "Floor Lamp", "power", "on", "Weekday Morning"),
@@ -285,6 +309,15 @@ class TestVerify:
                 patch.object(verifier, "verify") as verify:
             assert verifier._cycle() == 1
         assert verify.call_args.args[0].automations == ["Blinds Up"]
+
+    def test_a_cycle_moves_the_verified_mark_past_the_runs_it_gave_up_on(self, app, verifier):
+        """A run an outage hid is logged as missed once: after the cycle the mark stands no
+        further back than the late window, so the next cycle does not find it again."""
+        verifier._verified_until = datetime(2026, 11, 2, 6, 31, tzinfo=TZ)
+        now = datetime(2026, 11, 3, 15, 0, tzinfo=TZ)
+        with patch.object(verifier, "_now", return_value=now):
+            verifier._cycle()
+        assert verifier._verified_until == now - timedelta(seconds=verifier_module.LATE_SECONDS)
 
     def test_without_an_owner_chat_the_report_is_a_system_note(self, app, verifier, chat):
         app.replies["get_accessory"] = ok(lamp_detail("false", "30"))

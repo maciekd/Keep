@@ -39,6 +39,8 @@ DEFAULT_SETTLE_SECONDS = 180    # the wait after a run before the check: the lam
 REPLAN_SECONDS = 3600           # the longest the thread waits before reading the automations again
 RETRY_SECONDS = 300             # after the app could not be read
 HORIZON_DAYS = 2                # how far ahead a run is looked for: a Mon–Fri automation seen on a Saturday
+LATE_SECONDS = 900              # how long after it fired a run is still verified: one that fired while the
+                                # previous run was being checked, never one a bridge outage hid for hours
 TIMED_TRIGGERS = ("calendar", "significant_time")
 CHECKED = ("power", "active", "brightness", "target_position", "target_temperature", "target_heating_cooling")
 SWITCHES = ("power", "active")
@@ -161,28 +163,40 @@ def expectations_of(automation: dict, actions_of: Callable[[str], list[dict]]) -
 
 def plan(automations: list[dict], now: datetime, sun: Callable[[date], Optional[tuple[datetime, datetime]]],
          actions_of: Callable[[str], list[dict]], after: Optional[datetime] = None) -> Optional[Run]:
-    """The next run after `now` within HORIZON_DAYS: the earliest minute a verifiable timed
+    """The next run within HORIZON_DAYS of `now`: the earliest minute a verifiable timed
     automation fires, every automation of that minute in it, with what they set. A minute
     whose automations set nothing the check can read is passed over. With `after` — the
-    minute following the last verified run — the runs from that minute on count even when
-    they have fired: one that fired while the previous run was being checked (the wait
-    outlasts a run a few minutes later) is verified late rather than skipped."""
+    minute following the last verified run — a run from that minute on counts although it
+    has fired, as long as it fired within the last LATE_SECONDS: one that fired while the
+    previous run was being checked (the wait outlasts a run a few minutes later) is verified
+    late rather than skipped. An older one is logged and left out — the state hours later
+    says nothing about it, and a check against it would wake the assistant on nothing."""
     tz = now.tzinfo
-    start = now if after is None or after > now else after
+    earliest = now if after is None else max(after, now - timedelta(seconds=LATE_SECONDS))
+    first_day = earliest.date()
     moments: dict[datetime, list[dict]] = {}
-    for ahead in range(HORIZON_DAYS + 1):
-        day = (start + timedelta(days=ahead)).date()
+    missed: dict[datetime, list[str]] = {}
+    for ahead in range((now.date() - first_day).days + HORIZON_DAYS + 1):
+        day = first_day + timedelta(days=ahead)
         for automation in automations:
             if automation.get("trigger_type") not in TIMED_TRIGGERS:
                 continue
             at = fire_at(automation, day, tz, sun)
-            if at is None or (at <= now if after is None else at.replace(second=0, microsecond=0) < after):
+            if at is None or (after is None and at <= now):
+                continue
+            minute = at.replace(second=0, microsecond=0)
+            if after is not None and minute < earliest:
+                if minute >= after and applies(automation, day):
+                    missed.setdefault(minute, []).append(str(automation.get("name") or automation.get("id")))
                 continue
             verdict = applies(automation, day)
             if verdict is None:
                 trace(f"HomeClaw verifier: {automation.get('name')} has a condition code cannot evaluate — not verified")
             elif verdict:
-                moments.setdefault(at.replace(second=0, microsecond=0), []).append(automation)
+                moments.setdefault(minute, []).append(automation)
+    for minute in sorted(missed):
+        info(f"HomeClaw verifier: {', '.join(missed[minute])} fired at {minute:%Y-%m-%d %H:%M} while no check "
+             f"ran — more than {LATE_SECONDS // 60} min ago, not verified")
     for at in sorted(moments):
         group = moments[at]
         expectations = [e for automation in group for e in expectations_of(automation, actions_of)]
@@ -305,6 +319,10 @@ class AutomationVerifier:
         whose snapshot moment has come."""
         now = self._now()
         run = self.next_run(now, after=self._verified_until)
+        if self._verified_until is not None:
+            # A run older than the late window was logged as missed by `plan`; from here on
+            # it is behind the window, so the next cycle does not log it again.
+            self._verified_until = max(self._verified_until, now - timedelta(seconds=LATE_SECONDS))
         if run is None:
             info("HomeClaw verifier: no timed automation ahead to verify — looking again in an hour")
             return REPLAN_SECONDS
