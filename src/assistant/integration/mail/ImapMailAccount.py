@@ -160,15 +160,36 @@ class ImapMailAccount(MailAccount):
         trace(f"  {self.name}: got {len(messages)} results in {time.time() - start:.1f}s")
         return messages
 
+    # A listing is bounded to this many days first: unbounded, `reverse=True` makes the server
+    # search the whole folder, and on Gmail's "[Gmail]/All Mail" (the entire account) two such
+    # listings hung 5.7 minutes before the socket timed out (2026-11-04). A folder with fewer
+    # than MAX_RESULTS messages in the window is listed whole — such a folder is small.
+    LISTING_DAYS = 30
+
     def _list(self, folder: str, unread_only: bool) -> list:
         fetch_kwargs = dict(limit=self.MAX_RESULTS, reverse=True, mark_seen=False, headers_only=True)
-        if unread_only:
-            fetch_kwargs["criteria"] = AND(seen=False)
+        since = date.today() - timedelta(days=self.LISTING_DAYS)
         try:
             with self._mailbox(folder) as mailbox:
-                return self._timed_fetch(mailbox, "fetch latest", **fetch_kwargs)
+                recent = self._timed_fetch(mailbox, f"fetch latest since {since}",
+                                           criteria=self._listing_criteria(unread_only, since), **fetch_kwargs)
+                if len(recent) >= self.MAX_RESULTS:
+                    return recent
+                trace(f"  {self.name}: {len(recent)} message(s) in the last {self.LISTING_DAYS} days, "
+                      f"listing the whole folder")
+                return self._timed_fetch(mailbox, "fetch latest",
+                                         criteria=self._listing_criteria(unread_only, None), **fetch_kwargs)
         except MailboxFolderSelectError as e:
             raise FolderNotFound(str(e)) from e
+
+    @staticmethod
+    def _listing_criteria(unread_only: bool, since: Optional[date]):
+        terms = {}
+        if unread_only:
+            terms["seen"] = False
+        if since is not None:
+            terms["date_gte"] = since
+        return AND(**terms) if terms else "ALL"
 
     def _search(self, search_string: str) -> list:
         with self._mailbox(self.default_folder) as mailbox:

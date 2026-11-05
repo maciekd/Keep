@@ -1,7 +1,7 @@
 """ImapMailAccount: what reaches the IMAP and SMTP servers — the folders selected, the fetch
 parameters, the Sent copy, and what the presets decide (hosts, Gmail's folded search)."""
 import smtplib
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch, Mock, MagicMock
 
 import pytest
@@ -137,7 +137,9 @@ class TestFetchLatest:
         MockMB.assert_called_once_with("imap.gmail.com", timeout=gmail.IMAP_TIMEOUT)
         MockMB.return_value.login.assert_called_once_with("marcus@example.com", "app_password_123",
                                                           initial_folder="[Gmail]/All Mail")
-        mailbox.fetch.assert_called_once_with(limit=gmail.MAX_RESULTS, reverse=True, mark_seen=False, headers_only=True)
+        kwargs = mailbox.fetch.call_args.kwargs
+        assert (kwargs["limit"], kwargs["reverse"], kwargs["mark_seen"], kwargs["headers_only"]) == (
+            gmail.MAX_RESULTS, True, False, True)
 
     def test_lists_a_named_folder_and_remembers_it(self, gmail, mock_mailbox):
         MockMB, mailbox = mock_mailbox
@@ -155,9 +157,34 @@ class TestFetchLatest:
         gmail.fetch_latest("@SaneLater", unread_only=True)
         gmail.fetch_latest("@SaneLater")
 
-        unread, plain = mailbox.fetch.call_args_list
+        unread, _, plain, _ = mailbox.fetch.call_args_list
         assert "UNSEEN" in str(unread.kwargs["criteria"])
-        assert "criteria" not in plain.kwargs
+        assert "UNSEEN" not in str(plain.kwargs["criteria"])
+
+    def test_the_listing_is_bounded_to_the_last_days_and_a_full_window_is_not_listed_again(self, gmail, mock_mailbox):
+        """Unbounded, `reverse=True` searches the whole folder: on "[Gmail]/All Mail" two listings
+        hung 5.7 minutes (2026-11-04). The newest MAX_RESULTS of an active folder are within the window."""
+        _, mailbox = mock_mailbox
+        mailbox.fetch.return_value = [_message(uid=str(n)) for n in range(gmail.MAX_RESULTS)]
+
+        gmail.fetch_latest(None)
+
+        call, = mailbox.fetch.call_args_list
+        criteria = str(call.kwargs["criteria"])
+        assert "SINCE" in criteria
+        since = (date.today() - timedelta(days=gmail.LISTING_DAYS)).strftime("%-d-%b-%Y")
+        assert since in criteria
+
+    def test_a_folder_short_of_the_window_is_listed_whole(self, gmail, mock_mailbox):
+        _, mailbox = mock_mailbox
+        mailbox.fetch.side_effect = [[_message(uid="1")], [_message(uid="1"), _message(uid="2")]]
+
+        result = gmail.fetch_latest(None, unread_only=True)
+
+        bounded, whole = mailbox.fetch.call_args_list
+        assert "SINCE" in str(bounded.kwargs["criteria"])
+        assert "SINCE" not in str(whole.kwargs["criteria"]) and "UNSEEN" in str(whole.kwargs["criteria"])
+        assert "[GM-AA]" in result and "[GM-AB]" in result
 
     def test_a_missing_folder_lists_as_no_emails(self, gmail, mock_mailbox):
         from imap_tools.errors import MailboxFolderSelectError
