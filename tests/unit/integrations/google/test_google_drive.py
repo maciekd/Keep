@@ -176,8 +176,18 @@ class TestSearch:
             ("1ZyXwVuTsRqPoNmLkJiHgFeDcBa", "Lease.pdf", "PDF", "", False)]
         assert more
         call, = api.sent("GET", "/files")
-        assert call.params["q"] == "fullText contains 'marcus\\'s budget' and trashed = false"
+        assert call.params["q"] == "fullText contains 'marcus\\'s' and fullText contains 'budget' and trashed = false"
         assert "owners" in call.params["fields"] and call.params["pageSize"] == 20
+
+    def test_every_word_is_its_own_predicate_so_the_words_may_stand_apart_in_a_document(self, api, drive):
+        """Drive reads `fullText contains 'a b'` as the phrase: measured 2026-11-05, the phrase form
+        found 4 files where the per-word form found 6. Surrounding blanks add no empty predicate."""
+        api.route("GET", "/files", {"files": []})
+        drive.search("  summer   house budget ")
+        call, = api.sent("GET", "/files")
+        assert call.params["q"] == ("fullText contains 'summer' and fullText contains 'house' "
+                                    "and fullText contains 'budget' and trashed = false")
+        assert call.params["orderBy"] == "modifiedTime desc"
 
     def test_no_match_is_an_empty_list_without_more(self, api, drive):
         api.route("GET", "/files", {"files": []})

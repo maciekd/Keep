@@ -148,7 +148,10 @@ class GoogleDrive:
 
     def search(self, words: str, limit: int = SEARCH_LIMIT) -> tuple[list[DriveFile], bool]:
         """The files whose name or content carries the words, newest first, and whether more exist."""
-        params = {"q": f"fullText contains '{_escape(words)}' and trashed = false", "fields": SEARCH_FIELDS,
+        # One predicate per word: Drive reads `fullText contains 'a b'` as the phrase, which misses
+        # the documents that carry the words apart (measured 2026-11-05: 4 files against 6).
+        query = " and ".join(f"fullText contains '{_escape(word)}'" for word in words.split())
+        params = {"q": f"{query} and trashed = false", "fields": SEARCH_FIELDS,
                   "pageSize": limit, "orderBy": "modifiedTime desc"}
         page = self._call("GET", "/files", params)
         found = [DriveFile(str(f.get("name") or ""), str(f.get("mimeType") or ""), rfc3339_ts(f["modifiedTime"]),
