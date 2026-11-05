@@ -6,7 +6,7 @@ import pytest
 
 from assistant.agents import CodeQualityMaintainer as cqm
 from assistant.agents.CodeQualityMaintainer import (
-    claude_status, claude_path, ClaudeStatus, CodeQualityMaintainer, ClaudeNotInstalledError,
+    claude_status, claude_path, ClaudeStatus, CodeQualityMaintainer, ClaudeNotInstalledError, GithubAccess,
     NOT_INSTALLED_SHORT, NOT_LOGGED_IN_SHORT, DISABLED_MESSAGE, NOT_INSTALLED_MESSAGE,
 )
 from assistant.integration.Integration import IntegrationState
@@ -175,8 +175,9 @@ class TestGating:
 
     @patch.object(cqm, "claude_path", return_value=None)
     def test_improve_code_reports_the_missing_cli(self, _path):
+        pusher = GithubAccess(login="marcus", repo="marcus/keep", permission="WRITE")
         with patch.object(CodeQualityMaintainer, "_run_subprocess"), \
-                patch.object(CodeQualityMaintainer, "_github_unavailable", return_value=None), \
+                patch.object(CodeQualityMaintainer, "_github_access", return_value=(pusher, None)), \
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
                 patch.object(CodeQualityMaintainer, "_trial_instructions", return_value=""):
             assert CodeQualityMaintainer.improve_code("fix it") == (NOT_INSTALLED_MESSAGE, None)
