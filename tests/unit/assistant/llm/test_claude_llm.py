@@ -138,6 +138,19 @@ class TestIsRetryable:
     def test_400_is_not_retryable(self):
         assert ClaudeLLM._is_retryable(_make_api_status_error(400)) is False
 
+    def test_an_api_error_event_of_an_open_stream_is_retryable(self):
+        """The SDK raises an SSE `error` event with the stream's response, status 200
+        (2026-11-04 15:17: 'Internal server error' mid-stream, the round failed unretried)."""
+        assert ClaudeLLM._is_retryable(_make_api_status_error(200, "Internal server error")) is True
+
+    def test_an_invalid_request_event_of_an_open_stream_is_not(self):
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {}
+        err = APIStatusError("bad", response=response,
+                             body={"error": {"type": "invalid_request_error", "message": "bad"}})
+        assert ClaudeLLM._is_retryable(err) is False
+
 @patch("assistant.llm.ClaudeLLM.config")
 class TestStreamingEventHandling:
     """Verify the streaming loop correctly handles the full Anthropic event sequence:
@@ -519,6 +532,33 @@ class TestTransportErrorRetry:
 
         yielded = []
         with pytest.raises(httpx.RemoteProtocolError):
+            for chunk in llm.create_streaming_completion([{"role": "user", "content": "hi"}]):
+                yielded.append(chunk)
+
+        assert yielded == ['partial']
+        assert llm.client.messages.create.call_count == 1
+
+    def test_an_api_error_event_before_any_output_is_retried(self, mock_config):
+        """An `error` SSE event arrives as an APIStatusError of the stream's status, 200."""
+        llm = _make_llm()
+        llm.client.messages.create = Mock(side_effect=[
+            _dropping_stream([], _make_api_status_error(200, "Internal server error")),
+            iter(_text_stream_events('recovered')),
+        ])
+
+        with patch("assistant.llm.ClaudeLLM.time.sleep"):
+            result = list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
+
+        assert result == ['recovered']
+        assert llm.client.messages.create.call_count == 2
+
+    def test_an_api_error_event_after_output_propagates_without_retry(self, mock_config):
+        llm = _make_llm()
+        llm.client.messages.create = Mock(return_value=_dropping_stream(
+            _text_stream_events('partial'), _make_api_status_error(200, "Internal server error")))
+
+        yielded = []
+        with pytest.raises(APIStatusError):
             for chunk in llm.create_streaming_completion([{"role": "user", "content": "hi"}]):
                 yielded.append(chunk)
 

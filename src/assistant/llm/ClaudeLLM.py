@@ -538,11 +538,14 @@ class ClaudeLLM(AbstractLLM):
 
     @staticmethod
     def _is_retryable(e: APIStatusError) -> bool:
+        """A 500 or 529, an overloaded body, or the API's own `api_error` sent as the `error`
+        event of an open stream — the SDK raises that one with the stream's response, status 200
+        (2026-11-04: 'Internal server error' mid-stream failed a round without a retry)."""
         if e.status_code in (500, 529):
             return True
-        return (hasattr(e, 'body') and isinstance(e.body, dict)
-                and isinstance(e.body.get('error'), dict)
-                and e.body['error'].get('type') == 'overloaded_error')
+        body = getattr(e, 'body', None)
+        kind = body['error'].get('type') if isinstance(body, dict) and isinstance(body.get('error'), dict) else None
+        return kind == 'overloaded_error' or (kind == 'api_error' and e.status_code < 400)
 
     def _stream_once(self, api_params: dict) -> Generator[str, None, None]:
         """One streaming request: yield text deltas, log cache/output usage. Each thinking
@@ -610,7 +613,7 @@ class ClaudeLLM(AbstractLLM):
                     yield chunk
                 return
             except APIStatusError as e:
-                if not self._is_retryable(e):
+                if not self._is_retryable(e) or yielded:
                     raise
                 info(f"Claude API error (attempt {attempt}/{max_attempts}, status={e.status_code}), retrying in {delay}s...")
                 time.sleep(delay)
