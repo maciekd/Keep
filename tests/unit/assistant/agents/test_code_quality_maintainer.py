@@ -2356,6 +2356,32 @@ class TestReportIssue:
 
 
 @pytest.mark.unit
+class TestOriginRepo:
+    """The repository a drafted issue is filed on is read from the checkout's origin, so an
+    install without gh still links the right repository whatever form its remote URL takes."""
+
+    @staticmethod
+    def _origin(url, returncode=0):
+        with patch.object(CodeQualityMaintainer, "_run_subprocess",
+                          return_value=Mock(returncode=returncode, stdout=f"{url}\n", stderr="")):
+            return CodeQualityMaintainer._origin_repo()
+
+    @pytest.mark.parametrize("url", [
+        "git@github.com:marcus/keep.git",
+        "ssh://git@github.com/marcus/keep.git",
+        "https://github.com/marcus/keep.git",
+        "https://github.com/marcus/keep",
+        "https://github.com/marcus/keep/",
+    ])
+    def test_every_form_of_a_github_remote_gives_owner_and_name(self, url):
+        assert self._origin(url) == "marcus/keep"
+
+    def test_a_remote_elsewhere_or_none_at_all_is_no_repository(self):
+        assert self._origin("https://gitlab.example/marcus/keep.git") is None
+        assert self._origin("", returncode=128) is None
+
+
+@pytest.mark.unit
 class TestIssueIn:
     def test_a_new_issue_and_a_comment_both_name_the_issue(self):
         assert CodeQualityMaintainer.issue_in("Filed https://github.com/example/keep/issues/7\nsummary") == \

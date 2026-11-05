@@ -2601,6 +2601,18 @@ class TestCmdReportIssue:
         rejoined = "\n".join(unescape(re.sub(r"</?(pre|b)>", "", m)) for m in blocks)
         assert rejoined == f"Reply lost after wake\n{body}", "every line, once, in order"
 
+    def test_a_draft_without_newlines_is_cut_at_a_space_and_only_a_wall_of_letters_mid_word(self):
+        """A block ends at a newline, else a space, else wherever the limit falls: a wall-of-text
+        draft comes back whole when its blocks are joined, and no word is cut in two."""
+        prose = " ".join(f"word{i}" for i in range(60))
+        blocks = Commands._draft_blocks(prose, 64)
+        assert len(blocks) > 1 and all(len(block) <= 64 for block in blocks)
+        assert "".join(blocks) == prose
+        assert [word for block in blocks for word in block.split()] == prose.split(), "no word is cut in two"
+        wall = "x" * 150
+        hard = Commands._draft_blocks(wall, 64)
+        assert "".join(hard) == wall and [len(block) for block in hard] == [64, 64, 22]
+
     def test_the_draft_names_the_reason_gh_could_not_file(self, commands_instance):
         draft = IssueDraft("marcus/keep", "Hallway lights", "Seen at 23:10.",
                            why="the GitHub CLI is not installed on this machine")

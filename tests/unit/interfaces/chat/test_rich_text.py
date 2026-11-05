@@ -156,6 +156,15 @@ class TestTablesAsPre:
         block = RichText.tables_as_pre("| a \\| b | c |")
         assert "a | b" in block
 
+    def test_a_row_short_of_cells_keeps_the_columns_it_has_in_line(self):
+        """A model often leaves the last cell off a row: the block still renders, a number in
+        a short row sits under the numbers of its column, and nothing pads past its last cell."""
+        block = RichText.tables_as_pre("| Item | Count | Note |\n|---|---|---|\n| Chat | 7 |\n| Photos | 12 | nightly |")
+        rows = block.removeprefix("<pre>").removesuffix("</pre>").split("\n")
+        assert len(rows) == 3
+        assert rows[1].index("7") == rows[2].index("12") + 1, "the ones digits line up"
+        assert not rows[1].endswith(" ") and rows[2].endswith("nightly")
+
     def test_a_table_the_padding_pushes_past_the_limit_keeps_its_rows(self):
         """One wide cell pads every row of its column: a text that fit the message limit
         before the rendering must still fit after it, so such a table is left as written."""

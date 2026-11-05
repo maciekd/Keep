@@ -446,6 +446,32 @@ class TestFeed:
         finally:
             m.close_feed()
 
+    def test_a_failed_reconnect_is_tried_again_at_the_next_fetch(self, feed_no_blacklist):
+        """One attempt per fetch: a reconnect that fails leaves the client as it was, and the
+        next fetch starts another — an outage is outwaited, not given up on a second time."""
+        m = feed_no_blacklist
+        client = _FakeClient([])
+        client.connected = False
+        attempts = []
+
+        async def connect():
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise ConnectionError("network is unreachable")
+            client.connected = True
+        client.connect = connect
+        m._client = client
+        try:
+            m.fetch(repr(300.0), backfill=False)
+            with pytest.raises(ConnectionError):
+                m._reconnect.result(timeout=1)
+            assert not client.connected
+            m.fetch(repr(300.0), backfill=False)
+            m._reconnect.result(timeout=1)
+            assert attempts == [True, True] and client.connected
+        finally:
+            m.close_feed()
+
     @pytest.mark.asyncio
     async def test_live_messages_are_queued_and_drained_by_fetch(self, feed_no_blacklist):
         m = feed_no_blacklist

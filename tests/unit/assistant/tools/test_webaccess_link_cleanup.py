@@ -31,6 +31,10 @@ class TestCleanLink:
     def test_a_blank_value_survives(self):
         assert WebAccess.clean_link("https://example.com/p?flag=&utm_x=1") == "https://example.com/p?flag="
 
+    def test_the_fragment_outlives_the_stripping(self):
+        """The query is rebuilt when something goes; the anchor after it is not part of the query."""
+        assert WebAccess.clean_link("https://example.com/p?x=1&utm_source=mail#rooms") == "https://example.com/p?x=1#rooms"
+
 
 class TestExtractedLinks:
     def test_links_lose_their_tracking_parameters(self):

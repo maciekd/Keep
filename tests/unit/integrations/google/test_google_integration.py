@@ -73,6 +73,15 @@ class TestAccounts:
             assert (personal.name, family.name) == ("Personal", "Family")
             assert personal.mail is None and personal.calendar is None and personal.drive is not None
 
+    def test_the_drives_the_read_commands_get_are_the_signed_in_accounts_in_config_order(self, fresh):
+        """A file id is tried account by account, so an account without a token would meet the
+        sign-in verdict on every read: files() holds the Drives of those signed in, in the order
+        of google.accounts — not the order they signed in."""
+        _signed_in(fresh, "Club", "club@example.com")
+        _signed_in(fresh, "Personal", "marcus@example.com")
+        with _config(ENTRIES):
+            assert GoogleIntegration().files().accounts() == ["Personal", "Club"]
+
     def test_the_mail_account_logs_in_with_the_sign_ins_token_and_the_check_reads_one_calendar_entry(self, fresh):
         _signed_in(fresh, "Personal", "marcus@example.com", access_token="ya29.live", expires_in=3000)
         google = FakeGoogle()
