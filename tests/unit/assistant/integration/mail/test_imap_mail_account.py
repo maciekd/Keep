@@ -206,8 +206,7 @@ class TestFetchLatest:
 class TestReadAndMove:
     def test_reads_the_uid_behind_the_short_id_from_the_listed_folder(self, gmail, mock_mailbox):
         MockMB, mailbox = mock_mailbox
-        gmail._format_email_list([_message(uid="100"), _message(uid="200")])
-        gmail._cache_folder = "@SaneLater"
+        gmail._format_email_list([_message(uid="100"), _message(uid="200")], "@SaneLater")
         mailbox.fetch.return_value = []
 
         gmail.read("GM-AB")
@@ -226,8 +225,7 @@ class TestReadAndMove:
 
     def test_moves_from_the_listed_folder(self, gmail, mock_mailbox):
         MockMB, mailbox = mock_mailbox
-        gmail._format_email_list([_message(uid="500")])
-        gmail._cache_folder = "@SaneLater"
+        gmail._format_email_list([_message(uid="500")], "@SaneLater")
 
         result = gmail.move("AA", "@SaneBlackHole")
 

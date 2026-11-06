@@ -94,14 +94,55 @@ class TestListing:
         assert "From: alice@example.com" in result and "Subject: Hello" in result
         assert utc_date.astimezone().strftime("%b %d %H:%M") in result
 
-    def test_ids_count_up_and_reset_on_every_listing(self):
+    def test_ids_count_on_across_listings_so_parallel_searches_never_share_one(self):
         account = _MemoryAccount()
         account._format_email_list([_message(uid="100"), _message(uid="200"), _message(uid="300")])
         assert account._email_id_cache == {"AA": "100", "AB": "200", "AC": "300"}
 
         account._format_email_list([_message(uid="400")])
 
-        assert account._email_id_cache == {"AA": "400"}
+        assert account._email_id_cache == {"AA": "100", "AB": "200", "AC": "300", "AD": "400"}
+
+    def test_a_relisted_uid_keeps_its_id(self):
+        account = _MemoryAccount()
+        account._format_email_list([_message(uid="100"), _message(uid="200")])
+        second = account._format_email_list([_message(uid="200"), _message(uid="300")])
+
+        assert "[FK-AB]" in second and "[FK-AC]" in second and "[FK-AA]" not in second
+        assert account._email_id_cache == {"AA": "100", "AB": "200", "AC": "300"}
+
+    def test_the_same_uid_in_another_folder_is_another_mail(self):
+        account = _MemoryAccount()
+        account._format_email_list([_message(uid="7")], "INBOX")
+        account._format_email_list([_message(uid="7")], "Archive")
+
+        assert account._email_id_cache == {"AA": "7", "AB": "7"}
+        assert account._folder_of("FK-AA") == "INBOX" and account._folder_of("AB") == "Archive"
+
+    def test_the_cache_is_dropped_only_when_the_ids_would_wrap(self):
+        account = _MemoryAccount()
+        account._format_email_list([_message(uid="1")])
+        account._next_cache_id = MailAccount.SHORT_ID_SPACE - 2
+        account._format_email_list([_message(uid="2"), _message(uid="3")])
+        assert set(account._email_id_cache.values()) == {"1", "2", "3"}
+
+        listing = account._format_email_list([_message(uid="4")])
+
+        assert listing.startswith("[FK-AA] ") and account._email_id_cache == {"AA": "4"}
+        assert account.subject_for("ZZ") is None
+
+    def test_parallel_listings_hand_out_distinct_ids(self):
+        import threading
+        account = _MemoryAccount()
+        listings = [[_message(uid=str(n * 10 + k), subject=f"mail {n}-{k}") for k in range(5)] for n in range(4)]
+        threads = [threading.Thread(target=account._format_email_list, args=(batch,)) for batch in listings]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(account._email_id_cache) == 20
+        assert sorted(account._email_id_cache.values()) == sorted(str(n * 10 + k) for n in range(4) for k in range(5))
 
     def test_unread_marker_only_without_the_seen_flag(self):
         account = _MemoryAccount()
@@ -160,12 +201,13 @@ class TestSubjectCache:
         assert account.subject_for("AA") == "Hello there"
         assert account.subject_for("FK-AA") == "Hello there"
 
-    def test_relisting_clears_stale_subjects(self):
+    def test_subjects_follow_the_id_across_listings(self):
         account = _MemoryAccount()
         account._format_email_list([_message(uid="100", subject="First batch")])
         account._format_email_list([_message(uid="200", subject="Second batch")])
 
-        assert account.subject_for("AA") == "Second batch"
+        assert account.subject_for("AA") == "First batch"
+        assert account.subject_for("AB") == "Second batch"
 
     def test_a_short_id_resolves_to_the_uid_and_an_unknown_id_passes_through(self):
         account = _MemoryAccount()
@@ -191,6 +233,14 @@ class TestRead:
         account.fetch_latest("@SaneLater")
 
         assert "later" in account.read("AA")
+
+    def test_reads_from_the_folder_the_id_was_listed_in_after_a_later_listing_elsewhere(self):
+        account = _MemoryAccount({"INBOX": [_message(uid="1", text="inbox mail")],
+                                  "@SaneLater": [_message(uid="500", text="later")]})
+        account.fetch_latest("@SaneLater")
+        account.fetch_latest()
+
+        assert "later" in account.read("AA") and "inbox mail" in account.read("AB")
 
     def test_an_unknown_uid_is_not_found(self):
         assert "not found" in _MemoryAccount().read("999")

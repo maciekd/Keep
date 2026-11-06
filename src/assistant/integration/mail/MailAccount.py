@@ -92,20 +92,24 @@ class MailAccount(ABC):
     AUTH_HELP = "check the account password"
 
     def __init__(self):
+        # Short id -> UID. The ids run on across listings and a UID keeps the id it was
+        # given, so the parallel searches of one reply never label two mails alike;
+        # the cache is cleared only when the counter is about to wrap.
         self._email_id_cache: Dict[str, str] = {}
+        # Short id -> the folder its UID lives in. IMAP UIDs are folder-scoped, so
+        # read() and move() must select that exact folder to resolve the id.
+        self._email_folder_cache: Dict[str, str] = {}
         # Subjects keyed by the same short id, populated alongside the id-cache so
         # the read-email progress notification can name the email instead of
         # leaking the internal short id. Kept separate from _email_id_cache so the
         # UID-resolution path (_resolve_email_id/move) stays untouched.
         self._email_subject_cache: Dict[str, str] = {}
         self._next_cache_id: int = 0
-        # The folder the current id-cache was built from. IMAP UIDs are
-        # folder-scoped, so move() must re-select this exact folder to resolve a
-        # short id back to a live UID. Defaults to the standard listing folder.
+        # The folder of the last listing: where a raw UID the cache never saw is looked up.
         self._cache_folder: Optional[str] = None
         # Listings can run concurrently (background commands of one reply run in
-        # parallel); rebuilding the id-cache is a multi-step write, so it happens
-        # under this lock and the readers take it too. The last listing to finish wins.
+        # parallel); extending the id-cache is a multi-step write, so it happens
+        # under this lock and the readers take it too.
         self._cache_lock = threading.Lock()
         self._rate_limiter = RateLimiter(SEND_RATE_LIMIT_MAX, SEND_RATE_LIMIT_WINDOW)
 
@@ -229,8 +233,7 @@ class MailAccount(ABC):
             scope = "unread " if unread_only else ""
             info(f"Fetching latest {scope}emails from {self.name} ({folder})...")
             messages = self._list(folder, unread_only)
-            self._cache_folder = folder
-            return self._format_email_list(messages)
+            return self._format_email_list(messages, folder)
         except FolderNotFound:
             info(f"{self.name}: folder '{folder}' does not exist here — no emails.")
             return "No emails found."
@@ -242,8 +245,7 @@ class MailAccount(ABC):
         try:
             info(f"Searching {self.name} for: {search_string}")
             messages = self._search(search_string)
-            self._cache_folder = self.default_folder
-            return self._format_email_list(messages)
+            return self._format_email_list(messages, self.default_folder)
         except Exception as e:
             error(f"Failed to search {self.name} emails: {e}")
             return f"Error searching {self.name} emails: {e}"
@@ -251,11 +253,11 @@ class MailAccount(ABC):
     def read(self, email_id) -> str:
         try:
             email_id = str(email_id).strip()
-            email_id = self._resolve_email_id(email_id)
-            # UIDs are scoped to the folder the id-cache was listed from (see move()),
-            # so select that folder — reading from INBOX after listing @SaneLater would
+            # UIDs are scoped to the folder the id was listed from (see move()), so
+            # select that folder — reading from INBOX after listing @SaneLater would
             # resolve the UID against the wrong mailbox.
-            folder = self._cache_folder or self.default_folder
+            folder = self._folder_of(email_id)
+            email_id = self._resolve_email_id(email_id)
             info(f"Reading {self.name} email UID: {email_id} from '{folder}'")
             message = self._fetch(email_id, folder)
             if message is None:
@@ -278,12 +280,12 @@ class MailAccount(ABC):
 
     def move(self, email_id, dest_folder) -> str:
         """Move a previously-listed email to another folder/label. The short id is resolved
-        against `self._cache_folder`, the folder the id-cache was built from."""
+        against the folder it was listed from."""
         try:
             email_id = str(email_id).strip()
             dest_folder = str(dest_folder).strip().strip('"').strip("'")
             uid = self._resolve_email_id(email_id)
-            source = self._cache_folder or self.default_folder
+            source = self._folder_of(email_id)
             info(f"Moving {self.name} email UID {uid}: '{source}' -> '{dest_folder}'")
             self._move(uid, source, dest_folder)
             # Echo the subject back into the result so the model's feedback channel
@@ -320,28 +322,35 @@ class MailAccount(ABC):
 
     # --- the short-id cache -----------------------------------------------------------------
 
+    SHORT_ID_SPACE = 26 * 26
+
     def _generate_short_id(self) -> str:
         id_num = self._next_cache_id
-        self._next_cache_id = (self._next_cache_id + 1) % (26 * 26)
+        self._next_cache_id += 1
         first = chr(65 + (id_num // 26))
         second = chr(65 + (id_num % 26))
         return f"{first}{second}"
 
-    def _resolve_email_id(self, email_id: str) -> str:
+    def _strip_prefix(self, email_id: str) -> str:
         prefix = f"{self.id_prefix}-"
-        if email_id.startswith(prefix):
-            email_id = email_id[len(prefix):]
+        return email_id[len(prefix):] if email_id.startswith(prefix) else email_id
+
+    def _resolve_email_id(self, email_id: str) -> str:
+        email_id = self._strip_prefix(email_id)
         with self._cache_lock:
             return self._email_id_cache.get(email_id, email_id)
+
+    def _folder_of(self, email_id: str) -> str:
+        """The folder a short id was listed from; the last listing's folder for a raw UID."""
+        email_id = self._strip_prefix(email_id)
+        with self._cache_lock:
+            return self._email_folder_cache.get(email_id) or self._cache_folder or self.default_folder
 
     def subject_for(self, email_id: str) -> Optional[str]:
         """Cached subject for a short id from the most recent listing, or None on
         a miss (id never listed, cache cleared since). Used only for the friendly
         read-email notification, so a miss is harmless."""
-        short_id = str(email_id).strip()
-        prefix = f"{self.id_prefix}-"
-        if short_id.startswith(prefix):
-            short_id = short_id[len(prefix):]
+        short_id = self._strip_prefix(str(email_id).strip())
         with self._cache_lock:
             return self._email_subject_cache.get(short_id)
 
@@ -357,17 +366,32 @@ class MailAccount(ABC):
             dt = dt.astimezone()
         return dt.strftime("%b %d %H:%M")
 
-    def _format_email_list(self, messages: list) -> str:
+    def _format_email_list(self, messages: list, folder: Optional[str] = None) -> str:
+        folder = folder or self.default_folder
+        with self._cache_lock:
+            self._cache_folder = folder
         if not messages:
             return "No emails found."
         lines = []
         with self._cache_lock:
-            self._email_id_cache.clear()
-            self._email_subject_cache.clear()
-            self._next_cache_id = 0
+            known = {(self._email_folder_cache.get(short_id), uid): short_id
+                     for short_id, uid in self._email_id_cache.items()}
+            fresh = sum(1 for msg in messages if (folder, msg.uid) not in known)
+            if self._next_cache_id + fresh > self.SHORT_ID_SPACE:
+                info(f"{self.name}: the short ids are about to wrap — "
+                     f"dropping the {len(self._email_id_cache)} ids listed so far")
+                self._email_id_cache.clear()
+                self._email_folder_cache.clear()
+                self._email_subject_cache.clear()
+                self._next_cache_id = 0
+                known = {}
             for msg in messages:
-                short_id = self._generate_short_id()
+                short_id = known.get((folder, msg.uid))
+                if short_id is None:
+                    short_id = self._generate_short_id()
+                    known[(folder, msg.uid)] = short_id
                 self._email_id_cache[short_id] = msg.uid
+                self._email_folder_cache[short_id] = folder
                 date_str = self._format_date(msg.date)
                 from_addr = msg.from_ or "unknown"
                 subject = msg.subject or "(no subject)"
