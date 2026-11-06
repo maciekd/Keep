@@ -683,3 +683,99 @@ class TestLineChartFallback:
         newest = self.plot_cell(screen, self.PLOT_W - 1, CHART_H - 1).style.fg
         older = self.plot_cell(screen, self.PLOT_W - 2, CHART_H - 1).style.fg
         assert newest.r > newest.g and older.g > older.r
+
+
+# --- Utilization meters: the "Total memory" bar ------------------------------------------------
+
+from types import SimpleNamespace
+
+
+def resource_console(**values):
+    fields = dict(photos_indexed=0, photos_total=0, voice_cache_size_gb=0.0, voice_cache_max_gb=1.0, db_size_gb=0.0,
+                  system_total_memory_gb=0.0, system_used_memory_gb=0.0, system_available_memory_gb=0.0,
+                  process_memory_gb=0.0, process_cpu_percent=0.0, system_cpu_percent=0.0, fd_count=0,
+                  target_server_volume=0, current_noise_db=0.0, outpost_latencies={})
+    return SimpleNamespace(**{**fields, **values})
+
+
+def total_memory_row(**memory):
+    tab = make_tab()
+    tab.console = resource_console(**memory)
+    with patch("interfaces.console.tabs.DashboardTab.STTConfidenceMonitor.get_instance") as stt, \
+            patch("interfaces.console.tabs.DashboardTab.PrefillTracker.current_progress", return_value=None):
+        stt.return_value.mics = {}
+        rows = tab._resource_rows()
+    return next(row for row in rows if row.label == "Total memory")
+
+
+@pytest.mark.unit
+class TestTotalMemoryRow:
+    """The bar warns on an absolute floor of available memory, not on the share used: on a
+    large machine most of the RAM is in use as a matter of course, with tens of GB still free."""
+
+    def test_a_large_machine_mostly_in_use_with_gigabytes_free_is_not_a_warning(self):
+        row = total_memory_row(system_total_memory_gb=256.0, system_used_memory_gb=205.0, system_available_memory_gb=50.0)
+        assert row.color != Theme.COLOR_RED
+        assert row.fraction == pytest.approx(205 / 256), "the bar's length is still the share used"
+
+    def test_under_the_floor_warns_whatever_the_share_used(self):
+        # macOS counts the reclaimable cache as neither used nor free: 10 of 16 GB used can leave 1.5 GB available
+        row = total_memory_row(system_total_memory_gb=16.0, system_used_memory_gb=10.0, system_available_memory_gb=1.5)
+        assert row.color == Theme.COLOR_RED
+
+    def test_before_the_first_sample_the_bar_is_not_red(self):
+        row = total_memory_row()
+        assert row.color != Theme.COLOR_RED and row.fraction == 0
+
+
+# --- The live KV-cache chart -------------------------------------------------------------------
+
+from common.TTFTMonitor import TTFTMonitor
+
+SMART, FAST, CURATOR = "claude-opus-5-5", "claude-haiku-5-5", "deepseek-v4"
+CACHE_X, CACHE_Y, CACHE_W, CACHE_H = 1, 1, 60, 4   # wide enough for a three-part legend
+
+
+def draw_cache_chart(samples):
+    monitor = TTFTMonitor()
+    monitor.smart_model, monitor.fast_model = SMART, FAST
+    monitor.smart_model_short, monitor.fast_model_short = "opus", "haiku"
+    for model, pct in samples:
+        monitor.record_cache_pct(model, pct)
+    screen = TUIScreen(CACHE_W + 4, 12)
+    screen.clear_buffer()
+    make_tab()._draw_cache_chart(screen, CACHE_X, CACHE_Y, CACHE_W, CACHE_H, monitor)
+    return screen
+
+
+def title_strip(screen) -> str:
+    return "".join(c.char for c in screen.next_frame[CACHE_Y - 1]).rstrip()
+
+
+def bottom_row(screen):
+    chart_x = CACHE_X + 2 + DashboardTab.Y_AXIS_W
+    chart_w = CACHE_W - 4 - DashboardTab.Y_AXIS_W
+    bottom = CACHE_Y + Tile.CARD_TOP + CACHE_H - 1
+    return [screen.next_frame[bottom - 1][chart_x - 1 + i] for i in range(chart_w)]
+
+
+@pytest.mark.unit
+class TestCacheChart:
+    def test_the_legend_names_the_tiers_and_adds_other_only_when_another_model_served(self):
+        tiers_only = title_strip(draw_cache_chart([(SMART, 80), (FAST, 60)]))
+        assert "opus" in tiers_only and "haiku" in tiers_only and "other" not in tiers_only
+        assert tiers_only.endswith("60%"), "the value is the latest request's hit"
+        with_curator = title_strip(draw_cache_chart([(SMART, 80), (CURATOR, 90)]))
+        assert "other" in with_curator and with_curator.endswith("90%")
+
+    def test_a_request_of_a_model_outside_the_tiers_is_charted_in_its_own_colour(self):
+        # unlike the TTFT chart beside it, which shows the two tiers alone
+        def drawn(samples):
+            return [cell for cell in bottom_row(draw_cache_chart(samples)) if cell.char == "▄"]
+
+        assert len(drawn([(SMART, 50), (CURATOR, 50)])) == 2
+        smart_colour = drawn([(SMART, 50)])[-1].style.fg
+        curator_colour = drawn([(CURATOR, 50)])[-1].style.fg
+        assert smart_colour != curator_colour
+        both = drawn([(SMART, 50), (CURATOR, 50)])
+        assert [cell.style.fg for cell in both] == [smart_colour, curator_colour]

@@ -582,3 +582,18 @@ class TestLocalBackendRouting:
             assert local_only_class() is None
         assert err.call_count == 1
         assert 'ds4llm' in err.call_args[0][0].lower()
+
+
+@pytest.mark.unit
+class TestCacheReportNote:
+    """The server renders the past turns by the reasoning effort, so a request at another effort
+    than the previous one misses the cache with the prompt text unchanged: the report is told."""
+
+    def test_only_a_change_of_effort_since_the_previous_request_is_noted(self):
+        llm, _ = _llm_with_stream([])
+        notes = []
+        with patch.object(llm, 'report_cache_usage', side_effect=lambda m, c, t, note=None: notes.append(note)):
+            for effort in ("medium", "medium", "high", "high"):
+                llm._report_cache([{'role': 'user', 'content': 'hi'}], 0, 10, effort)
+        assert [note is None for note in notes] == [True, True, False, True]
+        assert "medium" in notes[2] and "high" in notes[2]

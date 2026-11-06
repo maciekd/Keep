@@ -5,12 +5,13 @@ import select
 import socket
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from interfaces.console.framework import Curtain
-from interfaces.console.framework.TUIServer import TUIServer, FRAME_INTERVAL
+from interfaces.console.framework.TUIServer import TUIServer, FRAME_INTERVAL, machine_name
 from interfaces.console.framework.TUIScreen import TUIScreen
 
 ADDR = ("test", 0)
@@ -188,3 +189,27 @@ class TestTerminalProgram:
             srv.running = False
             srv.server_socket.close()
             thread.join(timeout=3)
+
+
+class TestMachineName:
+    """The name a tab is titled with: Sharing's ComputerName, the short host name where scutil
+    is missing (a Linux box) or answers nothing."""
+
+    @pytest.fixture(autouse=True)
+    def uncached(self):
+        machine_name.cache_clear()
+        yield
+        machine_name.cache_clear()
+
+    def test_without_scutil_the_short_host_name_stands_in(self):
+        with patch("interfaces.console.framework.TUIServer.subprocess.run", side_effect=FileNotFoundError("scutil")), \
+                patch("interfaces.console.framework.TUIServer.socket.gethostname", return_value="keep-box.local"):
+            assert machine_name() == "keep-box"
+
+    def test_an_empty_answer_from_scutil_is_no_name(self):
+        with patch("interfaces.console.framework.TUIServer.subprocess.run",
+                   return_value=SimpleNamespace(stdout="\n")) as run, \
+                patch("interfaces.console.framework.TUIServer.socket.gethostname", return_value="keep-box.local"):
+            assert machine_name() == "keep-box"
+            assert machine_name() == "keep-box"
+        assert run.call_count == 1, "read once per process"

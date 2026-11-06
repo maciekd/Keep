@@ -490,6 +490,20 @@ class TestStepAutoMerge:
             report = maintainer._step_auto_merge()
         assert "#7" in report.split("Skipped PRs")[0]
 
+    def test_last_nights_merge_is_not_listed_again_tonight(self, gh, maintainer):
+        with patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7]):
+            maintainer._merge_test_prs()          # last night, in the same process
+        with patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[9]), \
+                patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=False), \
+                patch.object(CodeQualityMaintainer, '_step_log_triage', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_step_fix_bugs', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_step_open_pins', return_value=""), \
+                patch.object(CodeQualityMaintainer, '_markdown_to_html', side_effect=lambda md: md), \
+                patch.object(CodeQualityMaintainer, '_send_email') as send:
+            maintainer._nightly_run(only=None)
+        merged = send.call_args[0][1].split("Skipped PRs")[0]
+        assert "#9" in merged and "#7" not in merged
+
     @patch.object(CodeQualityMaintainer, '_auto_merge_candidates', return_value=[7])
     def test_restores_the_starting_branch(self, mock_candidates, gh, maintainer):
         maintainer._step_auto_merge()

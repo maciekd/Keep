@@ -3,12 +3,16 @@ import (the terminal title, the signal handlers), so the pieces under test are l
 source and compiled on their own."""
 import ast
 import re
+import socket
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 TUI_PY = Path(__file__).resolve().parents[2] / 'tui.py'
-LIFTED = {"KITTY_KEY", "LOCK_MODIFIERS", "CTRL", "is_kitty_ctrl_c"}
+LIFTED = {"KITTY_KEY", "LOCK_MODIFIERS", "CTRL", "is_kitty_ctrl_c", "machine_name"}
 
 
 def _lifted():
@@ -17,7 +21,7 @@ def _lifted():
              if (isinstance(node, ast.FunctionDef) and node.name in LIFTED)
              or (isinstance(node, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id in LIFTED for t in node.targets))]
-    namespace = {"re": re}
+    namespace = {"re": re, "socket": socket, "subprocess": subprocess}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(TUI_PY), "exec"), namespace)
     return namespace
 
@@ -58,3 +62,23 @@ class TestKittyCtrlC:
     ])
     def test_any_other_key_goes_to_the_server(self, is_kitty_ctrl_c, data):
         assert not is_kitty_ctrl_c(data)
+
+
+@pytest.mark.unit
+class TestMachineName:
+    """The stand-in title until the server sends its own: Sharing's ComputerName, the short host
+    name where scutil is missing or answers nothing — the same rule as TUIServer.machine_name."""
+
+    @pytest.fixture(scope="class")
+    def machine_name(self):
+        return _lifted()["machine_name"]
+
+    def test_without_scutil_the_short_host_name_stands_in(self, machine_name):
+        with patch("subprocess.run", side_effect=FileNotFoundError("scutil")), \
+                patch("socket.gethostname", return_value="keep-box.local"):
+            assert machine_name() == "keep-box"
+
+    def test_an_empty_answer_from_scutil_is_no_name(self, machine_name):
+        with patch("subprocess.run", return_value=SimpleNamespace(stdout="\n")), \
+                patch("socket.gethostname", return_value="keep-box.local"):
+            assert machine_name() == "keep-box"

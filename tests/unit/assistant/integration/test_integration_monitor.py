@@ -721,6 +721,32 @@ class TestRestartWaitsForTheFeed:
         assert result["status"]["state"] == "warning"
 
 
+    def test_a_ready_hook_that_raises_still_gets_the_health_check(self, mock_config):
+        """The wait is a diagnostic's helper: a bug in it must not leave the restart without a verdict."""
+        RebuildableIntegration.reset_instance()
+        mock_config.register_class(RebuildableIntegration)
+        with patch.object(RebuildableIntegration, "wait_ready", side_effect=RuntimeError("no loop thread")), \
+                patch.object(RebuildableIntegration, "check_health", return_value=True) as check:
+            result = mock_config.restart("Rebuildable")
+        check.assert_called_once()
+        assert result["status"]["state"] == "ok"
+
+    def test_the_ready_hook_gets_what_the_feed_wait_left_of_the_one_budget(self, mock_config):
+        """A feed integration waits for open_feed first; the hook is given the rest of READY_TIMEOUT,
+        so the two waits together never hold a restart past it."""
+        mock_config.register_class(RebuildableFeed)
+        runner = Mock()
+        runner.wait_opened.return_value = True
+        clock = iter([1000.0])            # the start; every later look is ten seconds on
+        timeouts = []
+        with patch.object(RebuildableFeed, "wait_ready", side_effect=lambda timeout: timeouts.append(timeout) or True), \
+                patch("assistant.integration.IntegrationMonitor.Feeds.get_instance") as feeds, \
+                patch("assistant.integration.IntegrationMonitor.time.time", side_effect=lambda: next(clock, 1010.0)):
+            feeds.return_value.runner.return_value = runner
+            mock_config.restart("Rebuildable")
+        assert timeouts == [pytest.approx(IntegrationMonitor.READY_TIMEOUT - 10)]
+
+
 class TestDescribeAll:
     def test_adds_per_key_set_flags_without_values(self, mock_config):
         mock_config.register(FakeIntegration("Mail", keys=["email"]))

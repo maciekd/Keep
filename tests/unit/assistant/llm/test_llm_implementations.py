@@ -2648,6 +2648,28 @@ class TestOllamaLLM:
         }, token=token)
         assert tracker.tps == 350.0
 
+    def test_log_metrics_hands_the_cache_hit_to_the_chart_and_the_break_tracker(self, tracker):
+        """The hit is the cached tokens over cached + remaining of the log's workload line; the
+        break tracker gets it only with the messages — a pre-heat has none to diff."""
+        token = tracker.begin()
+        request = tracker._find(token)
+        request.work, request.anchor = (4000, 1000), None
+        llm = self._make_llm()
+        messages = [{"role": "user", "content": "hi"}]
+        done = {"prompt_eval_count": 1000, "prompt_eval_duration": 1_000_000_000,
+                "eval_count": 5, "eval_duration": 500_000_000, "total_duration": 1_500_000_000}
+        with patch.object(llm, 'record_cache_hit') as hit, patch.object(llm, 'report_cache_usage') as report:
+            llm._log_metrics(done, token=token, messages=messages)
+        hit.assert_called_once_with(4000, 5000)
+        report.assert_called_once_with(messages, 4000, 5000)
+
+        token = tracker.begin()
+        tracker._find(token).work = (4000, 1000)
+        with patch.object(llm, 'record_cache_hit') as hit, patch.object(llm, 'report_cache_usage') as report:
+            llm._log_metrics(done, token=token)
+        hit.assert_called_once()
+        report.assert_not_called()
+
     # --- pre-heat in-flight guard ---------------------------------------
     # Ollama processes one request at a time. The guard ensures at most one
     # pre-heat is ever fired; a newer prompt arriving mid-flight is stored and
