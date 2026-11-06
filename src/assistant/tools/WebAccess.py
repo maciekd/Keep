@@ -3809,6 +3809,10 @@ class WebAccess(Integration):
         await self._async_sync_popup_targets()
         if self._tab is None:
             return "ERROR: browser not available."
+        # The snapshot renders each link's href as the page wrote it, so a root-relative
+        # path the LLM hands back must resolve against the page the snapshot shows —
+        # the tab's, after any redirect or in-page navigation — not the last fetched one.
+        self._anchor_links_to_tab(requested_url)
         try:
             result = await self._evaluate(self._tab, f"({self._BROWSE_COLLECT_JS})(0, '')")
         except Exception as e:
@@ -4315,6 +4319,7 @@ class WebAccess(Integration):
             self._browse_session_url = url
             self._browse_session_generation = self._browser_generation
             self._browse_fail_streak = 0
+            self._anchor_links_to_tab(url)
             if wall is not None and wall[0]:
                 return self._take_dialog_notes() + wall[1]
             prefix = (wall[1] + "\n\n") if wall is not None else ''
@@ -4485,6 +4490,14 @@ class WebAccess(Integration):
             return self._tab.target.url or ''
         except Exception:
             return ''
+
+    def _anchor_links_to_tab(self, fallback: Optional[str] = None) -> None:
+        """Make the tab's page the one a root-relative link is resolved against."""
+        tab_url = self._current_tab_url()
+        base = tab_url if tab_url.startswith(('http://', 'https://')) else fallback
+        if base and base != getattr(self, '_link_base_url', None):
+            trace(f"Links now resolve against {base}")
+            self._link_base_url = base
 
     async def _async_page_probe(self, tab: 'nodriver.Tab') -> Optional[dict]:
         """One read of the page's state: readyState, the text signature and whether a

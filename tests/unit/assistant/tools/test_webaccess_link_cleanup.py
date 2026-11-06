@@ -1,4 +1,5 @@
 """The extractor's links: tracking parameters stripped, a repeated link rendered once."""
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from assistant.tools.WebAccess import WebAccess
@@ -132,3 +133,32 @@ class TestPathResolution:
         with patch.object(wa, "_fetch_webpage_text", return_value="hello") as fetch:
             wa.fetch_webpage("/wiki/Raptor")
         fetch.assert_called_once_with("https://en.wikipedia.org/wiki/Raptor")
+
+
+class TestBrowseLinkBase:
+    """A path the LLM reads off a browse snapshot resolves against the page the browser
+    shows, not the page the last open_url read."""
+
+    def _wa(self, tab_url):
+        wa = WebAccess.__new__(WebAccess)
+        wa._link_base_url = "https://news.example/front"
+        wa._tab = SimpleNamespace(target=SimpleNamespace(url=tab_url))
+        return wa
+
+    def test_the_tab_page_becomes_the_base(self):
+        wa = self._wa("https://shop.example/catalog?page=1")
+        wa._anchor_links_to_tab("https://shop.example/")
+        assert wa._resolve_page_link("/page/2") == "https://shop.example/page/2"
+
+    def test_the_requested_url_is_the_base_when_the_tab_has_none(self):
+        wa = self._wa("")
+        wa._anchor_links_to_tab("https://shop.example/")
+        assert wa._resolve_page_link("/page/2") == "https://shop.example/page/2"
+
+    def test_browse_open_resolves_a_path_against_the_page_it_opened_last(self):
+        wa = self._wa("https://shop.example/catalog")
+        opened = []
+        with patch.object(wa, "_run_browse_op", side_effect=lambda label, coro, _err: (coro.close(), opened.append(label))[1]):
+            wa._link_base_url = "https://shop.example/catalog"
+            wa.browse_open("/page/2")
+        assert opened == ["browse_open(https://shop.example/page/2)"]
