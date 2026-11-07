@@ -940,6 +940,20 @@ class TestRunClaude:
         assert mock_popen.call_args[1]["cwd"] == WORKING_DIR
         assert mock_popen.call_args[1]["env"] is None   # a login keeps its precedence: nothing added
 
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    def test_local_directories_are_added_as_writable_with_the_checkout_still_the_working_directory(self, mock_popen):
+        """Contract with the Claude Code CLI: `--add-dir` takes the extra directories as the
+        arguments after it (#156). The run stays in the checkout, so CLAUDE.md applies."""
+        mock_popen.return_value = _mock_popen()
+        roots = (Path("/home/marcus/KeepLocal"), Path("/home/marcus/KeepExtra"))
+        CodeQualityMaintainer._run_claude("test prompt", "label", add_dirs=roots)
+        cmd = mock_popen.call_args[0][0]
+        assert cmd[cmd.index("--add-dir") + 1:] == ["/home/marcus/KeepLocal", "/home/marcus/KeepExtra"]
+        assert cmd[:cmd.index("--add-dir")] == [CLAUDE_PATH, "--permission-mode", "auto", "-p", "test prompt",
+                                                "--output-format", "stream-json", "--verbose",
+                                                "--model", "claude-fable-5-1"]
+        assert mock_popen.call_args[1]["cwd"] == WORKING_DIR
+
     @patch('assistant.agents.CodeQualityMaintainer.claude_api_key', return_value="sk-ant-test-key")
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_api_key_stands_in_for_a_login_through_the_environment(self, mock_popen, _key):

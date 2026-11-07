@@ -2629,6 +2629,15 @@ class TestCmdImproveLocalIntegration:
         job.assert_not_called()
         assert reply.startswith("improve_local_integration failed") and "Podcasts" in reply
 
+    def test_an_undelivered_report_is_kept_whole_in_the_history_row(self):
+        # the chats got the report when there was one; without a chat the row is all the LLM sees
+        report = "Pushed to forge.local.\n\nThe podcasts folder now has a remote."
+        delivered = Commands._local_outcome(report, sent=True)
+        undelivered = Commands._local_outcome(report, sent=False)
+        assert "now has a remote" not in delivered and "Pushed to forge.local." in delivered
+        assert "now has a remote" in undelivered and "no notification channel" in undelivered
+        assert all("restart_server" in row for row in (delivered, undelivered))
+
     def test_without_a_local_directory_nothing_runs(self, commands_instance):
         reply, job, _ = self._run(commands_instance, "Podcasts, retry the fetch", folder="podcasts", roots=())
         job.assert_not_called()

@@ -411,6 +411,25 @@ class TestResume:
         run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
         assert feed.calls[0] == (1, True)
 
+    def test_an_older_generation_row_without_a_horizon_catches_up_from_the_configured_one(self, floxy_db):
+        # a row from before the horizon column holds none: the configured horizon is all there is
+        floxy_db.save_feed("Scripted", cursor="2")
+        feed = ScriptedFeed([[HORIZON + 10]])
+        feed.cursor_generation = 1
+        run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert feed.calls[0] == (0, True) and feed.horizon_ts == HORIZON
+        row = floxy_db.get_feed("Scripted")
+        assert (row["generation"], row["horizon"]) == (1, HORIZON)
+
+    def test_an_older_generation_row_with_a_newer_horizon_catches_up_from_the_configured_older_one(self, floxy_db):
+        # backfill_months was raised in the same upgrade: the catch-up covers the older of the two
+        floxy_db.save_feed("Scripted", cursor="2", horizon=HORIZON + SECONDS_PER_MONTH)
+        feed = ScriptedFeed([[HORIZON + 10]])
+        feed.cursor_generation = 1
+        run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert feed.horizon_ts == HORIZON
+        assert floxy_db.get_feed("Scripted")["horizon"] == HORIZON
+
     def test_a_first_run_stores_the_feeds_generation(self, floxy_db):
         feed = ScriptedFeed([[HORIZON + 10]])
         feed.cursor_generation = 2

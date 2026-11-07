@@ -1,6 +1,7 @@
 """The extractor's links: tracking parameters stripped, a repeated link rendered once."""
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from assistant.tools.WebAccess import WebAccess
 
@@ -153,6 +154,25 @@ class TestBrowseLinkBase:
     def test_the_requested_url_is_the_base_when_the_tab_has_none(self):
         wa = self._wa("")
         wa._anchor_links_to_tab("https://shop.example/")
+        assert wa._resolve_page_link("/page/2") == "https://shop.example/page/2"
+
+    def test_a_chrome_error_page_never_becomes_the_base(self):
+        # a navigation that failed leaves the tab on chrome-error://; the base stays what it was
+        # (or becomes the requested URL), so a path is never resolved against the error page
+        wa = self._wa("chrome-error://chromewebdata/")
+        wa._anchor_links_to_tab()
+        assert wa._resolve_page_link("/page/2") == "https://news.example/page/2"
+        wa._anchor_links_to_tab("https://shop.example/")
+        assert wa._resolve_page_link("/page/2") == "https://shop.example/page/2"
+
+    def test_a_snapshot_anchors_the_base_to_the_page_the_browser_shows(self):
+        # the bug: browse_act's clicks navigated the tab, the snapshot printed the new page's
+        # links, and a path read off it resolved against the page the last open_url fetched
+        wa = self._wa("https://shop.example/catalog?page=1")
+        wa._browse_snapshot_frame_ids, wa._browse_snapshot_labels = [], []
+        with patch.object(WebAccess, "_async_sync_popup_targets", new=AsyncMock()), \
+                patch.object(WebAccess, "_evaluate", new=AsyncMock(return_value=None)):
+            asyncio.run(wa._async_take_snapshot())
         assert wa._resolve_page_link("/page/2") == "https://shop.example/page/2"
 
     def test_browse_open_resolves_a_path_against_the_page_it_opened_last(self):

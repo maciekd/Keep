@@ -242,6 +242,14 @@ class TestRead:
 
         assert "later" in account.read("AA") and "inbox mail" in account.read("AB")
 
+    def test_a_raw_uid_the_cache_never_saw_is_read_from_the_last_listings_folder(self):
+        # the short ids remember their folder; a bare UID has none, so the last listing's is the guess
+        account = _MemoryAccount({"INBOX": [_message(uid="7", text="inbox mail")],
+                                  "@SaneLater": [_message(uid="7", text="later")]})
+        account.fetch_latest("@SaneLater")
+
+        assert "later" in account.read("7")
+
     def test_an_unknown_uid_is_not_found(self):
         assert "not found" in _MemoryAccount().read("999")
 
@@ -315,6 +323,18 @@ class TestMove:
 
         assert account.move("AA", "Archive") == "Moved email AA to Archive."
         assert account.move("ZZ", "Archive") == "Moved email ZZ to Archive."
+
+    def test_moves_from_the_folder_the_id_was_listed_in_after_a_later_listing_elsewhere(self):
+        # IMAP UIDs are per folder: the id listed from @SaneLater must be moved out of it even
+        # though the INBOX listing came later — the source is the id's folder, not the last one
+        account = _MemoryAccount({"INBOX": [_message(uid="1")], "@SaneLater": [_message(uid="500")], "Archive": []})
+        account.fetch_latest("@SaneLater")
+        account.fetch_latest()
+
+        account.move("AA", "Archive")
+        account.move("AB", "Archive")
+
+        assert account.moved == [("500", "@SaneLater", "Archive"), ("1", "INBOX", "Archive")]
 
     def test_a_missing_destination_is_a_folder_error(self):
         result = _MemoryAccount().move("1", "Nowhere")
