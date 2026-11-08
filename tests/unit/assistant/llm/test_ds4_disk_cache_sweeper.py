@@ -68,11 +68,46 @@ class TestSweep:
         with patch.object(Path, 'unlink', vanish):
             assert Ds4DiskCacheSweeper(tmp_path, max_age_hours=24).sweep(now=NOW) == 0
 
+    @pytest.mark.xfail(strict=True, reason="sweep() catches FileNotFoundError alone: any other OSError from unlink "
+                                           "aborts the whole sweep, so the entries after the stuck one are never removed")
+    def test_an_entry_that_cannot_be_removed_does_not_shield_the_others(self, tmp_path):
+        # One entry the process may not unlink (a stray root-owned file, a directory of that
+        # name) comes back every hour; the sweep must still free the rest of the budget.
+        stuck = _entry(tmp_path, f"{SHA_A}.kv", age_hours=30)
+        other = _entry(tmp_path, f"{SHA_B}.kv", age_hours=30)
+        real_unlink = Path.unlink
+
+        def unlink(self, *args, **kwargs):
+            if self == stuck:
+                raise PermissionError(self)
+            real_unlink(self, *args, **kwargs)
+
+        with patch.object(Path, 'unlink', unlink):
+            removed = Ds4DiskCacheSweeper(tmp_path, max_age_hours=24).sweep(now=NOW)
+
+        assert removed == 1 and not other.exists() and stuck.exists()
+
     def test_uses_the_clock_when_no_time_is_given(self, tmp_path):
         path = tmp_path / f"{SHA_A}.kv"
         path.write_bytes(b"k")
         os.utime(path, (time.time() - 48 * HOUR, time.time() - 48 * HOUR))
         assert Ds4DiskCacheSweeper(tmp_path, max_age_hours=24).sweep() == 1
+
+
+class TestLoop:
+    def test_a_failed_sweep_does_not_end_the_hourly_loop(self, tmp_path):
+        sweeper = Ds4DiskCacheSweeper(tmp_path, max_age_hours=24)
+        outcomes = iter([OSError("directory unreadable"), None])
+
+        def sweep(now=None):
+            if (failure := next(outcomes)) is not None:
+                raise failure
+            sweeper.stop()
+
+        with patch.object(module, 'SWEEP_INTERVAL_S', 0.0), patch.object(sweeper, 'sweep', side_effect=sweep) as sweeps:
+            sweeper._loop()
+
+        assert sweeps.call_count == 2
 
 
 class TestConfig:

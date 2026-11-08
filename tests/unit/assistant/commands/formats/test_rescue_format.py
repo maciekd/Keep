@@ -203,6 +203,14 @@ class TestRewritten:
         stored = fmt.rewritten(dsml.render_call("load_toolkit", [("name", '["email", "web"]', False)]))
         assert KeepFormat(NAMES).extract_all(stored) == [("load_toolkit", ["email", "web"])]
 
+    def test_an_invoke_block_and_a_dsml_block_in_one_reply_are_both_stored_as_keep_calls(self, fmt):
+        raw = ("First. " + bare("turn_on", ("light_name", "Hall")) + "\nThen. "
+               + dsml_block("dim", ("light_name", "Hall"), ("dim_percentage", "20")) + " restart_server() done")
+        stored = fmt.rewritten(raw)
+        assert "<invoke" not in stored and "DSML" not in stored
+        assert stored.startswith("First. ") and "\nThen. " in stored and stored.endswith(" restart_server() done")
+        assert KeepFormat(NAMES).extract_all(stored) == [("turn_on", ["Hall"]), ("dim", ["Hall", "20"]), ("restart_server", [])]
+
     def test_the_invoke_format_itself_stores_the_turn_as_written(self):
         raw = block("dim", ("light_name", "Lamp"), ("dim_percentage", "40"))
         assert InvokeFormat(NAMES, table=TABLE, variadic=VARIADIC).rewritten(raw) is raw

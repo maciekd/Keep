@@ -100,6 +100,15 @@ class TestSetup:
         timeout = openai_cls.call_args.kwargs['timeout']
         assert timeout.read is None and timeout.connect is not None
 
+    def test_initialize_starts_the_disk_cache_sweep_only_when_the_server_is_this_machine(self):
+        # The sweep unlinks files of a local directory, so the verdict is the base_url's host —
+        # the same one that decides whether the server's log is a file here or an ssh read.
+        for base_url, local in (('http://127.0.0.1:8000/v1', True), ('http://192.0.2.7:8000/v1', False)):
+            p1, p2 = _config({'ds4.base_url': base_url})
+            with p1, p2, patch('assistant.llm.Ds4LLM.OpenAI'), patch.object(Ds4DiskCacheSweeper, 'start_once') as start_once:
+                Ds4LLM().initialize()
+            start_once.assert_called_once_with(server_is_local=local)
+
     def test_the_factory_builds_it_by_class_name(self):
         p1, p2 = _config({})
         with p1, p2:
