@@ -29,9 +29,9 @@ import requests
 from .EntityRules import EXCLUDE, INCLUDE, EntityRules, RuleError
 from .HomeAssistantClient import HAError, HomeAssistantClient, NotConnected
 from .HomeAssistantModel import (
-    ACTION_DOMAINS, ASSISTANT, LIGHT_DOMAINS, UNAVAILABLE_HOLD_S, NameIndex, Registries, Unresolved, bridges_unknown,
-    build, domain_of, drop_reason, feed_domains, feed_entry, friendly_name, is_unavailable, is_unknown, outage_row,
-    recovery_row, state_time, tracks_availability)
+    ACTION_DOMAINS, ASSISTANT, HELD_DOMAINS, LIGHT_DOMAINS, UNAVAILABLE_HOLD_S, NameIndex, Registries, Unresolved,
+    bridges_unknown, build, domain_of, drop_reason, feed_domains, feed_entry, friendly_name, is_unavailable, is_unknown,
+    outage_row, recovery_row, state_time, tracks_availability)
 from assistant.integration.HomeAutomation import HomeAutomation, HomeSnapshot
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
 from assistant.integration.Integration import Integration
@@ -63,11 +63,13 @@ EXECUTE = {"scene": ("scene", "turn_on"), "script": ("script", "turn_on"), "auto
 
 @dataclass
 class _Outage:
-    """An entity the feed follows that went unavailable: the state it had before, when, and
-    whether the hold ran out and its row went out."""
+    """A listed entity that went unavailable: the state it had before, when, whether the hold
+    ran out, and whether a row went out then (only for a domain `feed_domains` follows — the
+    hold itself covers every listed entity, so a hub blip never flips the house data)."""
     before: dict
     since: float
     released: bool = False
+    reported: bool = False
 
 
 class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
@@ -197,12 +199,13 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         for entity_id in ended:
             outage = self._outages.pop(entity_id)
             state = self._states.get(entity_id)
-            if outage.released and state is not None:
+            if outage.reported and state is not None:
                 self._recovered.append((entity_id, state_time(state), outage.since))
                 trace(f"Home Assistant: {entity_id} available again since the socket dropped — one row at the next fetch")
             else:
                 trace(f"Home Assistant: {entity_id} {'gone' if state is None else 'available again'} since the socket "
-                      f"dropped, its outage {'reported' if outage.released else 'inside its hold'} — dropped")
+                      f"dropped, its outage {'reported' if outage.reported else 'silent' if outage.released else 'inside its hold'}"
+                      f" — dropped")
         return len(ended)
 
     def _reconcile_unknown(self):
@@ -323,12 +326,16 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         return before
 
     def _outage_began(self, entity_id: str, before: dict, new: dict, index: NameIndex, registry_entry: Optional[dict]):
-        if not tracks_availability(entity_id, index, registry_entry, self.feed_domains):
-            trace(f"Home Assistant: {entity_id} unavailable — not an entity whose availability the feed follows")
+        """Hold any listed entity (HELD_DOMAINS), so the snapshot keeps its last available state
+        through a hub blip; whether the released outage is a row is `feed_domains`' call, made
+        when the hold runs out."""
+        if not tracks_availability(entity_id, index, registry_entry, HELD_DOMAINS):
+            trace(f"Home Assistant: {entity_id} unavailable — not an entity whose availability is held")
             return
         with self._lock:
             self._outages[entity_id] = _Outage(before=before, since=state_time(new))
-        trace(f"Home Assistant: {entity_id} unavailable — held {UNAVAILABLE_HOLD_S // 60} min before it is a row")
+        trace(f"Home Assistant: {entity_id} unavailable — held {UNAVAILABLE_HOLD_S // 60} min"
+              f"{' before it is a row' if domain_of(entity_id) in self.feed_domains else ', no row (feed_domains)'}")
 
     def _outage_ended(self, entity_id: str, new: dict) -> Optional[dict]:
         """The state to word the recovery against: the pre-outage state of an outage still
@@ -337,13 +344,14 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
         began before this process watched is nothing at all."""
         with self._lock:
             outage = self._outages.pop(entity_id, None)
-            if outage is not None and outage.released:
+            if outage is not None and outage.reported:
                 self._recovered.append((entity_id, state_time(new), outage.since))
         if outage is None:
             trace(f"Home Assistant: {entity_id} available again after an outage the feed never saw begin — no row")
             return None
         if outage.released:
-            trace(f"Home Assistant: {entity_id} available again after a reported outage — one row at the next fetch")
+            trace(f"Home Assistant: {entity_id} available again after a {'reported' if outage.reported else 'silent'} "
+                  f"outage — {'one row at the next fetch' if outage.reported else 'no row'}")
             return None
         trace(f"Home Assistant: {entity_id} back within the hold — worded against its state before the outage")
         return outage.before
@@ -351,16 +359,22 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
     def _release_outages(self, now: float) -> list[FeedEntry]:
         """The rows for the outages past the hold and for the recoveries since the last fetch,
         each grouped per device (the hub behind the entity when the registry names one)."""
+        domains = self.feed_domains
         with self._lock:
             due = [(entity_id, outage) for entity_id, outage in self._outages.items()
                    if not outage.released and now - outage.since >= UNAVAILABLE_HOLD_S]
-            for _, outage in due:
+            for entity_id, outage in due:
                 outage.released = True
+                outage.reported = domain_of(entity_id) in domains
             recovered, self._recovered = self._recovered, []
             if due:
                 self._dirty = True      # the snapshot stops holding the pre-outage states
+        silent = [e for e, o in due if not o.reported]
+        if silent:
+            trace(f"Home Assistant: {len(silent)} outage{'s' if len(silent) != 1 else ''} past the hold in a domain "
+                  f"feed_domains leaves out — the house data shows them unavailable, no row")
         rows = []
-        for device, group in self._by_device([e for e, _ in due]).items():
+        for device, group in self._by_device([e for e, o in due if o.reported]).items():
             since = min(self._outages[e].since for e in group)
             rows.append(outage_row([self._name_of(e) for e in group], device, since, now))
             info(f"Home Assistant: {len(group)} entit{'y' if len(group) == 1 else 'ies'} of {device or 'no device'} "

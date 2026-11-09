@@ -41,6 +41,7 @@ SECTION_OF = {**{d: "lights" for d in LIGHT_DOMAINS}, **{d: "sensors" for d in S
 # fed, listed or not: a sensor's every reading would be a row.
 DEFAULT_FEED_DOMAINS = ("automation", "scene", "script", "person")
 TICKING_DOMAINS = ("sensor", "climate", "media_player", "weather")
+HELD_DOMAINS = tuple(d for d in SECTION_OF if d not in TICKING_DOMAINS)   # every domain the outage hold covers
 
 # The voice assistant whose exposure list we read: Assist, the one HA's own LLM agents use.
 ASSISTANT = "conversation"
@@ -428,7 +429,9 @@ def feeds_changes(entity_id: str, index: NameIndex, domains: tuple[str, ...] = D
 def tracks_availability(entity_id: str, index: NameIndex, entry: Optional[dict],
                         domains: tuple[str, ...] = DEFAULT_FEED_DOMAINS) -> bool:
     """Whether an outage of the entity is worth a row once it has lasted: one the dialog follows,
-    not a button, not a diagnostic entity."""
+    not a button, not a diagnostic entity. With HELD_DOMAINS it is whether the outage is held at
+    all — the snapshot keeps the pre-outage state of every listed entity, whatever `feed_domains`
+    says; the list decides only whether the released outage becomes a row."""
     if not feeds_changes(entity_id, index, domains):
         return False
     if domain_of(entity_id) in AVAILABILITY_SILENT_DOMAINS:

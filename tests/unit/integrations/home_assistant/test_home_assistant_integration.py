@@ -719,6 +719,65 @@ class TestAvailabilityHold:
 
 
 @pytest.mark.unit
+class TestAvailabilityHoldOutsideTheFeed:
+    """The hold is the house data's, not the feed's: under the default `feed_domains` a lamp's
+    hub dropping out still keeps the snapshot at the last available state through the hold, and
+    neither the released outage nor the recovery is a row."""
+
+    HUB = ("light.hall", "light.kitchen_spots", "cover.blinds")
+
+    @pytest.fixture
+    def hub(self, integration, fake, cfg):
+        assert "home_assistant.feed_domains" not in cfg, "the default list, which leaves lamps and covers out"
+        for entry in fake.results["config/entity_registry/list"]:
+            if entry["entity_id"] in self.HUB:
+                entry["device_id"] = "dev_hue"
+        integration.snapshot()
+        return {"light.hall": "on", "light.kitchen_spots": "on", "cover.blinds": "open"}
+
+    def _outage(self, fake, hub, seconds):
+        for entity_id, value in hub.items():
+            fake.push("state_changed", {"entity_id": entity_id, "old_state": timed(entity_id, value, 0),
+                                        "new_state": timed(entity_id, "unavailable", seconds)})
+
+    def _recovery(self, fake, hub, seconds):
+        for entity_id, value in hub.items():
+            fake.push("state_changed", {"entity_id": entity_id, "old_state": timed(entity_id, "unavailable", 0),
+                                        "new_state": timed(entity_id, value, seconds)})
+
+    def test_a_hub_blip_leaves_the_house_data_as_it_was(self, integration, fake, hub):
+        self._outage(fake, hub, 0)
+        assert set(integration._outages) == set(self.HUB)
+        with patch(f"{MODULE}.time") as clock:
+            clock.time.return_value = T0 + 30
+            lights = {e.name: e.value for e in integration.snapshot().lights}
+        assert lights["Hall light"] == "on" and lights["Blinds"].startswith("open")
+        self._recovery(fake, hub, 40)
+        assert integration._outages == {}
+        assert integration.fetch(None, backfill=False, now=T0 + 41).entries == []
+
+    def test_an_outage_past_the_hold_shows_in_the_house_data_but_is_no_row_coming_or_going(self, integration, fake, hub):
+        self._outage(fake, hub, 0)
+        assert integration.fetch(None, backfill=False, now=T0 + 360).entries == []
+        with patch(f"{MODULE}.time") as clock:
+            clock.time.return_value = T0 + 400
+            lights = {e.name: e.value for e in integration.snapshot().lights}
+        assert lights["Hall light"] == "unavailable" and lights["Blinds"] == "unavailable"
+        self._recovery(fake, hub, 700)
+        assert integration._outages == {}
+        assert integration.fetch(None, backfill=False, now=T0 + 702).entries == []
+
+    def test_a_domain_listed_after_the_outage_began_gets_its_row_when_the_hold_runs_out(self, integration, fake, hub, cfg):
+        self._outage(fake, hub, 0)
+        cfg["home_assistant.feed_domains"] = ["light", "cover"]
+        rows = integration.fetch(None, backfill=False, now=T0 + 360).entries
+        assert len(rows) == 1 and rows[0].content.startswith("Hue bridge")
+        self._recovery(fake, hub, 700)
+        back = integration.fetch(None, backfill=False, now=T0 + 702).entries
+        assert len(back) == 1 and back[0].content.startswith("Hue bridge")
+
+
+@pytest.mark.unit
 class TestUnknownGap:
     """A person entity goes `unknown` while its trackers blip and comes back to the state it
     had; nobody moved, so there is no row (issue #140: four "arrived home" and "left home"
