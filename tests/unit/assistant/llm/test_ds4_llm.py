@@ -45,6 +45,7 @@ def _llm_with_stream(chunks, values=None) -> tuple[Ds4LLM, MagicMock]:
     with p1, p2:
         llm = Ds4LLM()
     llm.client = MagicMock()
+    llm.client.with_options.return_value = llm.client     # the pre-heat's timeout-bound view of the same client
     llm.client.chat.completions.create.return_value = iter(chunks)
     return llm, llm.client.chat.completions.create
 
@@ -713,11 +714,25 @@ class TestPreHeat:
             llm = Ds4LLM()
         assert llm.client is None
         client = MagicMock()
+        client.with_options.return_value = client
         client.chat.completions.create.return_value = iter([_chunk(content="")])
         with patch.object(llm, 'initialize', side_effect=lambda: setattr(llm, 'client', client)) as init:
             self._pre_heat(llm, SYSTEM_AND_TURN)
         init.assert_called_once()
         client.chat.completions.create.assert_called_once()
+
+    def test_the_request_has_a_bounded_read_timeout_unlike_a_real_turn(self):
+        # A pre-heat on a half-open socket would otherwise hold the in-flight guard and the
+        # interactive slot until restart; a real turn keeps the client's unlimited read.
+        llm, _ = _llm_with_stream([_chunk(content="")])
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        timeout = llm.client.with_options.call_args.kwargs['timeout']
+        assert timeout.read is not None and 0 < timeout.read <= 600
+        assert timeout.connect == Ds4LLM.CONNECT_TIMEOUT_S
+        llm.client.with_options.reset_mock()
+        llm.client.chat.completions.create.return_value = iter([_chunk(content="hi")])
+        _stream(llm)
+        llm.client.with_options.assert_not_called()
 
     def test_the_prefilled_tokens_refine_the_rate_estimate_while_the_request_is_still_tracked(self):
         """The rate the pre-heat observes is the tokens the server prefilled — the prompt minus the

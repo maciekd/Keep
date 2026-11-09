@@ -196,6 +196,7 @@ class Ds4LLM(ChatGPTLLM):
     _pre_heat_in_flight = False
     _pre_heat_pending: list[dict] | None = None
     PRE_HEAT_MAX_TOKENS = 1
+    PRE_HEAT_READ_TIMEOUT_S = 600.0
     _logged_configs: set[tuple[str, str]] = set()
     _replay_store: ReplayStore | None = None
     CONNECT_TIMEOUT_S = 5.0
@@ -367,9 +368,13 @@ class Ds4LLM(ChatGPTLLM):
         """The request: the resolved messages as a real turn sends them (replayed assistant rows,
         the chat tier's effort, no tool), streamed, one output token. The reply is dropped — it is
         no turn, so neither the replay store nor the cache report sees it. Gated as interactive so
-        a photo-indexing request waits, and shown as background on the prefill bar."""
+        a photo-indexing request waits, and shown as background on the prefill bar. Unlike a real
+        turn it has a read timeout (PRE_HEAT_READ_TIMEOUT_S, Ollama's): a half-open socket would
+        otherwise park every later pre-heat and the interactive slot for the life of the process."""
         if self.client is None:
             self.initialize()
+        client = self.client.with_options(
+            timeout=httpx.Timeout(self.PRE_HEAT_READ_TIMEOUT_S, connect=self.CONNECT_TIMEOUT_S))
         if not any(m.get('role') == 'user' for m in messages):
             # A prompt with no user turn yet: the stub stands after the shared system prefix,
             # which is what the pre-heat is for; the real query displaces it at the tail.
@@ -383,7 +388,7 @@ class Ds4LLM(ChatGPTLLM):
         token = self._prefill.begin(interactive=False)
         try:
             usage = None
-            for chunk in self.client.chat.completions.create(**kwargs):
+            for chunk in client.chat.completions.create(**kwargs):
                 if getattr(chunk, 'usage', None) is not None:
                     usage = chunk.usage
             # Read before `end` drops the request from the tracker.
