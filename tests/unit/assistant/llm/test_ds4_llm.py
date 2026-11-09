@@ -718,3 +718,45 @@ class TestPreHeat:
             self._pre_heat(llm, SYSTEM_AND_TURN)
         init.assert_called_once()
         client.chat.completions.create.assert_called_once()
+
+    def test_the_prefilled_tokens_refine_the_rate_estimate_while_the_request_is_still_tracked(self):
+        """The rate the pre-heat observes is the tokens the server prefilled — the prompt minus the
+        cached ones — over the prefill time the tracker read; the read happens before `end`, since
+        the tracker forgets a request it has ended."""
+        llm, _ = _llm_with_stream([_chunk(content="", usage=_usage(5000, 1000))])
+        tracked_at_read = []
+
+        def prefill_seconds(token):
+            tracked_at_read.append(any(r.token == token for r in Ds4LLM._prefill._requests))
+            return 4.0
+        before = Ds4LLM._prefill.tps
+        with patch.object(Ds4LLM._prefill, 'prefill_seconds', side_effect=prefill_seconds):
+            self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert tracked_at_read == [True]
+        assert Ds4LLM._prefill.tps == pytest.approx(0.5 * before + 0.5 * (5000 - 1000) / 4.0)
+
+    def test_without_a_cached_count_every_prompt_token_counts_as_prefilled(self):
+        llm, _ = _llm_with_stream([_chunk(content="", usage=_usage(2000, None))])
+        before = Ds4LLM._prefill.tps
+        with patch.object(Ds4LLM._prefill, 'prefill_seconds', return_value=2.0):
+            self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert Ds4LLM._prefill.tps == pytest.approx(0.5 * before + 0.5 * 2000 / 2.0)
+
+    def test_the_pre_heat_is_background_on_the_prefill_bar_though_interactive_at_the_slot(self):
+        """A photo-indexing request waits behind it (the slot), but the bar a chat UI draws for
+        the user's own turn does not follow it."""
+        seen = []
+        llm, create = _llm_with_stream([])
+        create.side_effect = lambda **kw: seen.append((Ds4LLM._prefill.active(), Ds4LLM._prefill.interactive(),
+                                                       Ds4LLM._slot.interactive_active)) or iter([_chunk(content="")])
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert seen == [(True, False, 1)]
+
+    def test_a_known_assistant_row_goes_out_as_the_model_wrote_it_so_the_prefix_is_the_real_turns(self):
+        """The pre-heat is worth nothing unless its bytes are the next request's: an assistant row
+        the replay store knows carries the model's reasoning, as a real turn's does."""
+        Ds4LLM._replay_store.remember_reply("hi there", "a greeting back", "hi there")
+        llm, create = _llm_with_stream([_chunk(content="")])
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        assistant_rows = [m for m in create.call_args.kwargs['messages'] if m['role'] == 'assistant']
+        assert [m.get('reasoning_content') for m in assistant_rows] == ["a greeting back"]

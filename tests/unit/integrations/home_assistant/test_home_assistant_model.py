@@ -409,6 +409,13 @@ class TestFeedEntry:
         assert feed_domains("person") == ("person",), "one name need not be a list"
         assert all(d in SECTION_OF and d not in TICKING_DOMAINS for d in DEFAULT_FEED_DOMAINS)
 
+    @pytest.mark.xfail(strict=True, reason="feed_domains iterates the config value, so `feed_domains: false` "
+                                           "raises TypeError in the event handler on every state change")
+    def test_a_boolean_value_is_no_domain_and_makes_a_silent_feed_not_an_error_per_event(self):
+        """`feed_domains: false` is a natural way to write "no feed" in config.yaml; the handler
+        the client wraps logs an error per event instead, and the house data's events stop at it."""
+        assert feed_domains(False) == ()
+
     def test_tracks_availability_and_bridges_unknown_follow_the_domain_list(self, index):
         assert tracks_availability("light.hall", index, {}) is False, "not fed by default"
         assert tracks_availability("light.hall", index, {}, ("light",)) is True

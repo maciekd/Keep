@@ -540,6 +540,22 @@ class TestFeed:
         fake.push("state_changed", lamp)
         assert integration.fetch(None, backfill=False).entries == [], "an empty list is a silent feed"
 
+    def test_the_key_is_parsed_once_per_value_not_once_per_event(self, integration, fake, cfg):
+        """The parse logs what it leaves out; asked per event, it would say so per event."""
+        from integrations.home_assistant import HomeAssistantModel
+        integration.snapshot()
+        lamp = {"entity_id": "light.hall", "old_state": state("light.hall", "off"), "new_state": state("light.hall", "on")}
+        with patch(f"{MODULE}.feed_domains", wraps=HomeAssistantModel.feed_domains) as parse:
+            for _ in range(3):
+                fake.push("state_changed", lamp)
+            assert parse.call_count == 1
+            cfg["home_assistant.feed_domains"] = ["light", "sensor"]
+            fake.push("state_changed", lamp)
+            cfg["home_assistant.feed_domains"] = ["light", "sensor"]
+            fake.push("state_changed", lamp)
+            assert parse.call_count == 2, "a new value is parsed once; the same value again is not"
+        assert len(integration.fetch(None, backfill=False).entries) == 2
+
 
 T0 = 1789466400.0       # 2026-09-15T10:00:00+00:00, the fixture's clock
 
