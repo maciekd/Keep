@@ -385,7 +385,7 @@ def is_unknown(state: Optional[dict]) -> bool:
 
 def feed_domains(configured) -> tuple[str, ...]:
     """The domains the feed follows, from the `home_assistant.feed_domains` value: unset is
-    DEFAULT_FEED_DOMAINS, a list is taken as given minus what can never be fed — a ticking
+    DEFAULT_FEED_DOMAINS, a list (or its text, `a, b` or `[a, b]`) is taken as given minus what can never be fed — a ticking
     domain or a name that is no listed domain at all — each of those logged and left out. An
     empty list or `false` is a silent feed, `true` the default list."""
     if configured is None or configured is True:
@@ -393,8 +393,8 @@ def feed_domains(configured) -> tuple[str, ...]:
     if configured is False:
         info("Home Assistant: feed_domains is false — the feed stores nothing, the house data stays")
         return ()
-    if isinstance(configured, str):
-        configured = [configured]
+    if isinstance(configured, str):   # one domain, or a list someone stored as text (issue #174)
+        configured = [part.strip(" \"'") for part in configured.strip().strip("[]").split(",") if part.strip(" \"'")]
     elif not isinstance(configured, (list, tuple, set)):
         info(f"Home Assistant: feed_domains is {configured!r}, not a list of domains — the default list stands")
         return DEFAULT_FEED_DOMAINS

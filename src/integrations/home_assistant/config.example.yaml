@@ -35,6 +35,6 @@ home_assistant:
   # switch, fan, cover, lock, binary_sensor or the input_* helpers to hear about those too; [] or false is a
   # silent feed. A sensor, climate, media_player or weather entity is never an event (it would be a row per reading);
   # an entity the house data does not show (hidden, excluded, not exposed) is no event whatever its domain.
-  # feed_domains: [automation, scene, script, person]
+  feed_domains: [automation, scene, script, person]
   # Lines containing any of these strings are dropped from the HOME AUTOMATION DATA prompt section
   prompt_filters: []

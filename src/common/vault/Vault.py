@@ -84,10 +84,7 @@ def _slugify(text: str) -> str:
 def _config_settings() -> tuple[Optional[str], int]:
     # Imported here so the vault core (and its tests) never need config.yaml.
     from common.ConfigManager import config
-    try:
-        passphrase = config.get("vault.key", None)
-    except KeyError:
-        passphrase = None
+    passphrase = config.get("vault.key", None)
     country_code = int(config.get("vault.default_country_code", DEFAULT_COUNTRY_CODE))
     return (str(passphrase) if passphrase else None), country_code
 

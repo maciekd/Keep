@@ -39,12 +39,10 @@ from common.ConfigManager import config
 from common.logging import info, trace
 
 POLL_INTERVAL = 2               # seconds between drains of the live event queue
-
 CONNECT_WAIT = 10               # seconds a snapshot or command waits for the socket to come up
 REGISTRY_TTL = 600              # seconds between registry refreshes when no registry event arrives
 ERROR_LOG_LINES = 80
 REGISTRY_EVENTS = ("entity_registry_updated", "area_registry_updated", "device_registry_updated")
-_UNSET = object()               # `config.get`'s default for a key that may be unset: None is no default to it
 
 # domain → (service domain, service) per command; a domain missing from a table is the LLM
 # using the wrong command, and the answer says which one to use instead.
@@ -142,10 +140,7 @@ class HomeAssistantIntegration(Integration, Feed, HomeAutomation):
     def feed_domains(self) -> tuple[str, ...]:
         """`home_assistant.feed_domains` parsed (HomeAssistantModel.feed_domains), once per value
         of the key — it is asked per event and the parse logs what it leaves out."""
-        # `config.get` raises for a missing key when the default is None, so unset is asked for with a sentinel.
-        raw = config.get("home_assistant.feed_domains", _UNSET)
-        if raw is _UNSET:
-            raw = None
+        raw = config.get("home_assistant.feed_domains", None)
         if raw != self._feed_domains_raw:
             self._feed_domains_raw = raw
             self._feed_domains = feed_domains(raw)

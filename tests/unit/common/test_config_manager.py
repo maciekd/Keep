@@ -65,6 +65,13 @@ class TestConfigManagerGet:
         cm = self._create_config(config_dir)
         assert cm.get('nonexistent.key', 'fallback') == 'fallback'
 
+    def test_none_is_a_default_like_any_other(self, config_dir):
+        """Issue #174: `get(key, None)` raised for a missing key, so a reader whose "unset" is
+        None failed on every install that had not written the key."""
+        cm = self._create_config(config_dir)
+        assert cm.get('nonexistent.key', None) is None
+        assert cm.get('voice_cache_size_in_gb.deeper', None) is None
+
     def test_get_missing_key_without_default_raises_key_error(self, config_dir):
         cm = self._create_config(config_dir)
         with pytest.raises(KeyError, match="not found"):

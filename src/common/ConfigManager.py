@@ -29,6 +29,7 @@ _PLACEHOLDER_RE = re.compile(r"YOUR_|CHANGE_ME|_HERE\b")
 # The one switch for every integration: a top-level list of names as list_integrations shows
 # them. Unlisted = off, except the ones whose class says `enabled_by_default` (Web Access).
 ENABLED_INTEGRATIONS_KEY = "enabled_integrations"
+_RAISE = object()   # get() without a default: a missing key raises, so None can be a default
 
 
 def integration_key(name: str) -> str:
@@ -118,7 +119,7 @@ class ConfigManager:
         self.load_config()
         info("Config reloaded")
 
-    def get(self, key_path: str, default=None) -> Any:
+    def get(self, key_path: str, default=_RAISE) -> Any:
         """
         Get a configuration value using dot notation.
 
@@ -126,6 +127,9 @@ class ConfigManager:
             config.get('api_keys.openai')
             config.get('tesla.tessie_access_token')
             config.get('voice_cache_size_in_gb', 2)  # Returns 2 if not found
+            config.get('vault.key', None)            # Returns None if not found
+
+        Without a default a missing (or empty) key raises KeyError.
         """
         if self._config is None:
             self.load_config()
@@ -137,11 +141,11 @@ class ConfigManager:
             if isinstance(value, dict):
                 value = value.get(key)
                 if value is None:
-                    if default is not None:
+                    if default is not _RAISE:
                         return default
                     raise KeyError(f"Configuration key '{key_path}' not found")
             else:
-                if default is not None:
+                if default is not _RAISE:
                     return default
                 raise KeyError(f"Configuration key '{key_path}' not found")
 

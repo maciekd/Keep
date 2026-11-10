@@ -60,7 +60,9 @@ class TestRequestLanguage:
         tts.model.text_processor.validate_text.return_value = (True, [])
         vs.text_queue.put("Hej, världen.")
         vs.text_queue.put(None)
-        with patch.object(vs, '_get_tts', return_value=(tts, MagicMock())):
+        # The end-of-stream grace is a real 2 s sleep for the player's sake; nothing here plays.
+        with patch.object(vs, '_get_tts', return_value=(tts, MagicMock())), \
+                patch.object(type(vs), 'END_OF_STREAM_GRACE_S', 0):
             vs._run_synthesis()
         return {c.kwargs['lang'] for c in tts.synthesize.call_args_list}
 

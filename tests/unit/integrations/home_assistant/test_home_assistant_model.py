@@ -407,6 +407,8 @@ class TestFeedEntry:
         assert feed_domains(["light", "sensor", "climate", "camera", "no_such_domain"]) == ("light",), \
             "a ticking domain and an unknown name are left out"
         assert feed_domains("person") == ("person",), "one name need not be a list"
+        for text in ("light, cover", "[light, cover]", '["light", "cover"]'):   # issue #174: a list stored as text
+            assert feed_domains(text) == ("light", "cover"), text
         assert all(d in SECTION_OF and d not in TICKING_DOMAINS for d in DEFAULT_FEED_DOMAINS)
 
     def test_a_boolean_value_is_no_domain_and_makes_a_silent_feed_not_an_error_per_event(self):

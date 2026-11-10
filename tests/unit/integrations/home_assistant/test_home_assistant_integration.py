@@ -12,7 +12,9 @@ import requests
 from integrations.home_assistant.EntityRules import EntityRules
 from integrations.home_assistant.HomeAssistantClient import HAError, NotConnected
 from integrations.home_assistant.HomeAssistantIntegration import HomeAssistantIntegration, ERROR_LOG_LINES, REGISTRY_EVENTS, REGISTRY_TTL
-from integrations.home_assistant.HomeAssistantModel import SECTION_OF, TICKING_DOMAINS
+from integrations.home_assistant.HomeAssistantModel import DEFAULT_FEED_DOMAINS, SECTION_OF, TICKING_DOMAINS
+from common import ConfigSchema, ConfigStore
+from common.ConfigManager import ConfigManager
 from assistant.integration.HomeAutomation import render
 
 MODULE = "integrations.home_assistant.HomeAssistantIntegration"
@@ -102,15 +104,6 @@ def cfg():
     return dict(CONFIG)
 
 
-def _get(cfg, key, default=None):
-    """`ConfigManager.get` as it is: a missing key with no default (None is none) raises."""
-    if key in cfg:
-        return cfg[key]
-    if default is None:
-        raise KeyError(key)
-    return default
-
-
 @pytest.fixture
 def rules_path(tmp_path):
     with patch.object(EntityRules, "PATH", tmp_path / "rules.txt"):
@@ -121,7 +114,7 @@ def rules_path(tmp_path):
 def integration(cfg, rules_path):
     HomeAssistantIntegration.reset_instance()
     with patch(f"{MODULE}.config") as config:
-        config.get.side_effect = lambda key, default=None: _get(cfg, key, default)
+        config.get.side_effect = lambda key, default=None: cfg.get(key, default)
         yield HomeAssistantIntegration()
     HomeAssistantIntegration.reset_instance()
 
@@ -537,17 +530,19 @@ class TestFeed:
         assert [e.content for e in integration.fetch(None, backfill=False).entries] == ["Sunset lights [automation] triggered"]
         assert integration.snapshot().lights, "the lamp is still house data"
 
-    def test_the_default_list_stands_when_config_yaml_has_no_feed_domains_key(self, integration, cfg):
-        """The example config ships the key commented out, and `config.get` raises for a missing
-        key with a None default — so the default install must not fail on every event (2026-11-10)."""
-        assert "home_assistant.feed_domains" not in cfg
-        with pytest.raises(KeyError):
-            integration_config_get = __import__(MODULE, fromlist=["config"]).config.get
-            integration_config_get("home_assistant.feed_domains", None)
-        from integrations.home_assistant.HomeAssistantModel import DEFAULT_FEED_DOMAINS
-        assert integration.feed_domains == DEFAULT_FEED_DOMAINS
-        cfg["home_assistant.feed_domains"] = False
-        assert integration.feed_domains == (), "false is a silent feed, not the default"
+    def test_a_config_file_without_the_key_is_the_default_list_not_an_error(self, integration, tmp_path, monkeypatch):
+        """Issue #174: the dict standing in for the config answers a missing key with the default;
+        the real ConfigManager raised, on every event of every install without the key."""
+        (tmp_path / "config.yaml").write_text("home_assistant:\n  url: http://ha.local:8123\n")
+        monkeypatch.setenv("FLOXY_CONFIG", str(tmp_path / "config.yaml"))
+        with patch(f"{MODULE}.config", ConfigManager()):
+            assert integration.feed_domains == DEFAULT_FEED_DOMAINS
+
+    def test_the_example_lists_the_default_so_one_domain_can_be_set_by_index(self):
+        """Issue #174: with the key commented out the schema knew no list there, and
+        config_set refused `feed_domains[0]`."""
+        assert tuple(ConfigSchema.example_value("home_assistant.feed_domains")) == DEFAULT_FEED_DOMAINS
+        ConfigStore.check_key("home_assistant.feed_domains[0]")
 
     def test_a_changed_key_is_read_again_without_a_restart(self, integration, fake, cfg):
         integration.snapshot()
