@@ -222,7 +222,9 @@ class Ds4LLM(OpenAICompatibleLLM):
     _pre_heat_in_flight = False
     _pre_heat_pending: list[dict] | None = None
     _logged_configs: set[tuple[str | None, str]] = set()
-    _models_checked: set[tuple[str | None, str]] = set()
+    _models_checked: set[tuple[str, str]] = set()
+    _discovered_models: dict[str, str] = {}
+    _discovery_failed: set[str] = set()
     _replay_store: ReplayStore | None = None
 
     def _configure_prefill(self):

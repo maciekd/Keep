@@ -110,7 +110,9 @@ class OpenAICompatibleLLM(ChatGPTLLM):
     PRE_HEAT_READ_TIMEOUT_S = 600.0
     MODELS_READ_TIMEOUT_S = 10.0
     _logged_configs: set[tuple[str | None, str]] = set()
-    _models_checked: set[tuple[str | None, str]] = set()
+    _models_checked: set[tuple[str, str]] = set()
+    _discovered_models: dict[str, str] = {}      # base_url → the first listed model, for every instance with none set
+    _discovery_failed: set[str] = set()          # the base_urls whose empty list was already an error line
     CONNECT_TIMEOUT_S = 5.0
 
     def __init__(self, model: str | None = None, base_url: str | None = None):
@@ -142,13 +144,18 @@ class OpenAICompatibleLLM(ChatGPTLLM):
     def _check_model(self):
         """`GET /v1/models`, once per server and model: the configured model is checked against
         the list — a miss is logged with the ids the server has, not refused, since a server
-        may take a name it does not list — and an unset model becomes the first listed one.
+        may take a name it does not list — and an unset model becomes the first listed one,
+        for this instance and every later one of the same server (the dialog builds one per
+        tier and request, and each must name the model). A list that could not be read pins
+        a configured model as checked, but leaves an unset one to the next instance's try.
         The server also tells the context length there when it knows it (`max_model_len`)."""
         cls = type(self)
-        key = (self.model, self.base_url)
-        if key in cls._models_checked:
+        if self.model is None and self.base_url in cls._discovered_models:
+            self.model = cls._discovered_models[self.base_url]
+            trace(f"{self.LABEL}: no model configured — '{self.model}', the one {self.base_url} listed first, stands")
             return
-        cls._models_checked.add(key)
+        if (self.model, self.base_url) in cls._models_checked:
+            return
         try:
             client = self.client.with_options(timeout=httpx.Timeout(self.MODELS_READ_TIMEOUT_S, connect=self.CONNECT_TIMEOUT_S))
             listed = [m for m in client.models.list() if isinstance(getattr(m, 'id', None), str)]
@@ -157,18 +164,21 @@ class OpenAICompatibleLLM(ChatGPTLLM):
             listed = []
         if not listed:
             if self.model is None:
-                error(f"{self.LABEL}: no model configured ({self.SECTION}.model) and {self.base_url} lists none — "
-                      f"the requests go out without one, which a server serving one model may take")
+                log = trace if self.base_url in cls._discovery_failed else error
+                cls._discovery_failed.add(self.base_url)
+                log(f"{self.LABEL}: no model configured ({self.SECTION}.model) and {self.base_url} lists none — "
+                    f"the requests go out without one, which a server serving one model may take")
             else:
+                cls._models_checked.add((self.model, self.base_url))
                 trace(f"{self.LABEL}: the server lists no models — '{self.model}' stands unchecked")
             return
         ids = [m.id for m in listed]
         if self.model is None:
-            self.model = ids[0]
-            cls._models_checked.add((self.model, self.base_url))
+            self.model = cls._discovered_models[self.base_url] = ids[0]
             info(f"{self.LABEL}: no model configured — using the first the server lists, '{self.model}'"
                  f"{f' (of {len(ids)})' if len(ids) > 1 else ''}")
-        elif self.model not in ids:
+        cls._models_checked.add((self.model, self.base_url))
+        if self.model not in ids:
             note(f"{self.LABEL}: '{self.model}' is not among the models {self.base_url} lists ({', '.join(ids)}) — "
                  f"sending it anyway; set {self.SECTION}.model to one of them if the requests fail")
         mine = next((m for m in listed if m.id == self.model), None)

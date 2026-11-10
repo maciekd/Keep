@@ -56,6 +56,8 @@ def _stream(llm, values=None, **kwargs) -> list[str]:
 @pytest.fixture(autouse=True)
 def _clean_class_state():
     OpenAICompatibleLLM._models_checked.clear()
+    OpenAICompatibleLLM._discovered_models.clear()
+    OpenAICompatibleLLM._discovery_failed.clear()
     with patch.object(LogSource, 'size', return_value=None):
         yield
     OpenAICompatibleLLM._prefill._requests.clear()
@@ -175,6 +177,37 @@ class TestModelCheck:
         llm._check_model()
         llm._check_model()
         assert llm.client.models.list.call_count == 1
+
+    def test_the_discovered_model_reaches_every_later_instance_of_the_server_without_a_second_read(self):
+        """The dialog builds an instance per tier and request; with `model` unset each of them
+        must send the discovered id, not null (2026-11-10: only the first ever did)."""
+        first = _llm({})
+        self._listing(first, [SimpleNamespace(id='qwen3-27b')])
+        first._check_model()
+        second = _llm({})
+        second._check_model()
+        assert second.model == 'qwen3-27b'
+        assert not second.client.models.list.called
+
+    def test_an_unreadable_list_leaves_an_unset_model_to_the_next_instance(self):
+        first = _llm({})
+        first.client.models.list.side_effect = ConnectionError("refused")
+        with patch('assistant.llm.OpenAICompatibleLLM.error') as err:
+            first._check_model()
+            second = _llm({})
+            self._listing(second, [SimpleNamespace(id='qwen3-27b')])
+            second._check_model()
+        assert first.model is None and second.model == 'qwen3-27b'
+        assert err.call_count == 1, "the empty list is one error line per server, not one per instance"
+
+    def test_the_discovery_is_per_server(self):
+        here = _llm({})
+        self._listing(here, [SimpleNamespace(id='qwen3-27b')])
+        here._check_model()
+        there = _llm({'openai_compatible.base_url': 'http://192.0.2.7:8000/v1'})
+        self._listing(there, [SimpleNamespace(id='gemma-4')])
+        there._check_model()
+        assert (here.model, there.model) == ('qwen3-27b', 'gemma-4')
 
 
 class TestTheRequest:
