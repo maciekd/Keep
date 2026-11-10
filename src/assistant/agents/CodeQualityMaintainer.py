@@ -19,11 +19,10 @@ from ..llm import parse_llm_config
 from ..llm.ClaudeLLM import WORKSPACE_HEADER, claude_workspace_id
 from common.ConfigManager import ConfigManager
 from common.Paths import REPO_DIR, LOG_DIR, AISERVER_DIR as _AISERVER_PATH
-from common.RequirementsChecker import RequirementsChecker
-from common.SignedRelease import SignedRelease, RELEASE_BRANCH
+from common.SignedRelease import RELEASE_BRANCH
+from common.Updater import Updater, GIT_TIMEOUT
 
 WORKING_DIR = str(REPO_DIR)
-AISERVER_DIR = str(_AISERVER_PATH)
 CLAUDE_FALLBACK_PATH = os.path.expanduser("~/.local/bin/claude")   # where claude.ai/install.sh puts it
 CLAUDE_PATH = shutil.which("claude") or CLAUDE_FALLBACK_PATH
 RUN_HOUR = 3
@@ -31,7 +30,6 @@ SLOW_TEST_MS = 100
 TEST_HEALTH_RUNS = 10
 CLAUDE_TIMEOUT = 60 * 60
 AUTH_STATUS_TIMEOUT = 30
-GIT_TIMEOUT = 60
 CHECK_INTERVAL = 900
 
 API_KEY_CONFIG_KEY = "api_keys.anthropic"   # stands in for a Claude Code login, billed per token
@@ -90,6 +88,7 @@ NIGHTLY_RUNS_KEY = "self_improvement.nightly_runs"
 DEVELOPER_RELEASE_KEY = "developer_release"
 NIGHTLY_UPDATE_KEY = "nightly_update"
 DEVELOPER_BRANCH = "master"
+START_SCRIPT = "start.sh"   # what relaunches the server: it takes the old process down by the pid it is handed
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
 NIGHTLY_STEPS = ("tests", "bugs", "logs", "fix", "health", "merge", "pins")   # what //nightly takes to run one step alone
 FIX_STEP_INPUTS = ("bugs", "logs", "tests")   # the reports the fix step reads, under the headings REPORT_TITLES gives them
@@ -876,64 +875,37 @@ class CodeQualityMaintainer:
             return False
         try:
             target = self.target_branch()
-            info(f"CodeQualityMaintainer: nightly update — bringing the checkout to the head of {target}...")
-            failure, _ = self._pull_target()
-            if failure:
-                error(f"CodeQualityMaintainer: nightly update failed, not restarting — {failure}")
-                system_note("server", f"Nightly update failed, the server keeps running the old code: {failure}",
-                            push=False)
+            info(f"CodeQualityMaintainer: nightly update — the target is {target}.")
+            update = self._updater().update(target, self._boot_commit)
+            if update.pull_failure:
+                system_note("server", "Nightly update failed, the server keeps running the old code: "
+                                      f"{update.pull_failure}", push=False)
                 return False
-            head = self._head_commit()
-            if not head:
-                error("CodeQualityMaintainer: nightly update could not read HEAD after the pull, not restarting.")
+            if update.sync_failure:
+                system_note("server", f"Nightly update pulled {update.change} on {target} but the server keeps "
+                                      f"running the old code: {update.sync_failure}", push=False)
                 return False
-            if head == self._boot_commit:
-                info(f"CodeQualityMaintainer: nightly update — no new commits on {target} since the start "
-                     f"({head[:8]}), not restarting.")
+            if not update.restart:
                 return False
-            count = self._commits_between(self._boot_commit, head)
-            change = f"{count} new commit{'s' if count != 1 else ''}" if count else f"now at {head[:8]}"
-            failure, installed = self._sync_requirements()
-            if failure:
-                error(f"CodeQualityMaintainer: nightly update pulled {change} but not restarting — {failure}")
-                system_note("server", f"Nightly update pulled {change} on {target} but the server keeps running "
-                                      f"the old code: {failure}", push=False)
-                return False
-            if installed:
-                change += f", {installed}"
-            note(f"CodeQualityMaintainer: nightly update — {change} on {target} "
-                 f"({self._boot_commit[:8]} → {head[:8]}), restarting.")
+            span = f"{self._boot_commit[:8]} → {update.head[:8]}"
+            note(f"CodeQualityMaintainer: nightly update — {update.change} on {target} ({span}), restarting.")
             # History only: the startup announcement of the new process is what the chats get.
-            system_note("server", f"Nightly update: {change} on {target}, the server is restarting.", push=False)
-            self.restart(f"nightly update {self._boot_commit[:8]} → {head[:8]}")
+            system_note("server", f"Nightly update: {update.change} on {target}, the server is restarting.", push=False)
+            self.restart(f"nightly update {span}")
             return True
         finally:
             _nightly_lock.release()
 
     @staticmethod
-    def _head_commit() -> str:
-        """The commit the checkout is on, "" when git cannot say."""
-        try:
-            result = CodeQualityMaintainer._run_subprocess(["git", "rev-parse", "HEAD"], "git rev-parse", GIT_TIMEOUT)
-        except Exception as e:
-            error(f"CodeQualityMaintainer: could not read HEAD: {e}")
-            return ""
-        if result.returncode != 0:
-            error(f"CodeQualityMaintainer: git rev-parse HEAD exited {result.returncode}: {(result.stderr or '').strip()}")
-            return ""
-        return (result.stdout or "").strip()
+    def _updater() -> Updater:
+        """The update machinery of `common/Updater`, running its git commands through
+        `_run_subprocess` like every other git and gh call of the maintainer."""
+        return Updater(run=CodeQualityMaintainer._run_subprocess)
 
     @staticmethod
-    def _commits_between(old: str, new: str) -> int:
-        """How many commits *new* has that *old* lacks; 0 when git cannot say or *new* is not ahead
-        (a switch back to an older release)."""
-        try:
-            result = CodeQualityMaintainer._run_subprocess(["git", "rev-list", "--count", f"{old}..{new}"],
-                                                           "git rev-list", GIT_TIMEOUT)
-            return int((result.stdout or "").strip()) if result.returncode == 0 else 0
-        except Exception as e:
-            error(f"CodeQualityMaintainer: could not count the commits {old[:8]}..{new[:8]}: {e}")
-            return 0
+    def _head_commit() -> str:
+        """The commit the checkout is on, "" when git cannot say."""
+        return CodeQualityMaintainer._updater().head_commit()
 
     @staticmethod
     def _tests_path() -> str:
@@ -1913,17 +1885,7 @@ class CodeQualityMaintainer:
         development machine. A Claude Code run may leave the tree on its work branch, so the
         runs restore this one afterwards; a hard-coded master would move an install onto the
         development branch."""
-        try:
-            result = CodeQualityMaintainer._run_subprocess(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                                                           "git rev-parse", GIT_TIMEOUT)
-            branch = (result.stdout or "").strip()
-        except Exception as e:
-            error(f"CodeQualityMaintainer: could not read the current branch: {e}")
-            branch = ""
-        if not branch or branch == "HEAD":
-            info(f"CodeQualityMaintainer: no branch checked out ({branch or 'no output'}), assuming master")
-            return "master"
-        return branch
+        return CodeQualityMaintainer._updater().current_branch()
 
     @staticmethod
     def target_branch() -> str:
@@ -1932,75 +1894,31 @@ class CodeQualityMaintainer:
         return DEVELOPER_BRANCH if developer else RELEASE_BRANCH
 
     @staticmethod
-    def _pull_target() -> tuple[str, str]:
-        """Check out the target branch if the checkout is on another one, then pull it — the
-        release only as far as a tag signed by a key in res/release_signers (`SignedRelease`).
-        Returns (failure, pull output): *failure* says what went wrong and is "" when the pull
-        went through."""
-        target = CodeQualityMaintainer.target_branch()
-        current = CodeQualityMaintainer._current_branch()
-        if target == RELEASE_BRANCH:
-            info(f"CodeQualityMaintainer: updating {target} to its newest signed release...")
-            return SignedRelease.update(current)
-        if current != target:
-            info(f"CodeQualityMaintainer: on {current}, {DEVELOPER_RELEASE_KEY} asks for {target} — switching before the pull")
-            for cmd, label in ((["git", "fetch", "origin", target], "git fetch"),
-                               (["git", "checkout", target], "git checkout")):
-                result = CodeQualityMaintainer._run_subprocess(cmd, label, GIT_TIMEOUT)
-                if result.returncode != 0:
-                    error(f"CodeQualityMaintainer: {label} {target} failed: {result.stderr}")
-                    return (f"Could not switch to {target}: {(result.stderr or '').strip()} — "
-                            f"still on {current}, the server was not restarted."), ""
-        info(f"CodeQualityMaintainer: pulling latest code on {target}...")
-        result = CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
-        if result.returncode != 0:
-            error(f"CodeQualityMaintainer: git pull failed: {result.stderr}")
-            return f"Git pull failed: {result.stderr}", ""
-        return "", _pull_summary(result.stdout or "")
-
-    @staticmethod
     def _pull_current() -> None:
-        """Bring the current branch up to date before a Claude Code run: `release` only to its
-        newest signed release, any other branch by a plain pull. A failure is logged and the run
-        goes on with the code it has."""
-        branch = CodeQualityMaintainer._current_branch()
-        if branch == RELEASE_BRANCH:
-            failure, _ = SignedRelease.update(branch)
-            if failure:
-                error(f"CodeQualityMaintainer: {failure}")
-            return
-        CodeQualityMaintainer._run_subprocess(["git", "pull"], "git pull", GIT_TIMEOUT)
+        """Bring the current branch up to date before a Claude Code run (`Updater.pull_current`).
+        A failure is logged and the run goes on with the code it has."""
+        CodeQualityMaintainer._updater().pull_current()
 
     @staticmethod
     def _sync_requirements() -> tuple[str, str]:
-        """Between the pull and the restart: pip brings the venv to the pulled pins while the old
-        server still serves, so the new one never dies on its requirements check. Returns
-        (failure, installed) as RequirementsChecker.sync does; a failure means do not restart."""
-        return RequirementsChecker.sync()
+        """Between a checkout and the restart: the venv is brought to the pins of the code now in
+        the tree (`Updater.sync`). Returns (failure, installed); a failure means do not restart."""
+        return Updater.sync()
 
     @staticmethod
     def pull_and_restart(resumes_conversation: bool = False) -> str:
         """Pull the target branch, sync the venv and restart. *resumes_conversation* is the
         `restart_server` command's: the restart was asked for in a chat, and the new process
         picks that conversation up (`restart`)."""
-        failure, output = CodeQualityMaintainer._pull_target()
-        if failure:
-            return failure
+        update = CodeQualityMaintainer._updater().refresh(CodeQualityMaintainer.target_branch())
+        if update.pull_failure:
+            return update.pull_failure
+        if update.sync_failure:
+            return f"The server was not restarted: {update.sync_failure}"
 
-        already_up_to_date = "Already up to date" in output
-        if already_up_to_date:
-            info("CodeQualityMaintainer: already up to date, restarting anyway...")
-        else:
-            info(f"CodeQualityMaintainer: pulled changes: {output}")
-
-        failure, installed = CodeQualityMaintainer._sync_requirements()
-        if failure:
-            error(f"CodeQualityMaintainer: not restarting — {failure}")
-            return f"The server was not restarted: {failure}"
-
-        changes_msg = "no new changes" if already_up_to_date else f"pulled updates: {output}"
-        if installed:
-            changes_msg += f"; {installed}"
+        changes_msg = "no new changes" if update.up_to_date else f"pulled updates: {update.pulled}"
+        if update.installed:
+            changes_msg += f"; {update.installed}"
         CodeQualityMaintainer.restart(f"update requested, {changes_msg}", resumes_conversation=resumes_conversation)
         return f"Update initiated ({changes_msg}). Server is restarting..."
 
@@ -2017,21 +1935,7 @@ class CodeQualityMaintainer:
         if resumes_conversation:
             from common.StartupTracker import StartupTracker
             StartupTracker.write_resume_marker(reason)
-        info(f"CodeQualityMaintainer: spawning start.sh as detached process"
-             f"{f' ({reason})' if reason else ''} (our pid {os.getpid()}"
-             f"{f', fallback {fallback_branch}' if fallback_branch else ''})...")
-        # Pass our own pid so start.sh can kill exactly this process. pgrep -f
-        # inside start.sh has proven unreliable when start.sh is spawned from
-        # within the server itself — every historical auto-restart missed the
-        # old process and the replacement died on a port collision.
-        subprocess.Popen(
-            ['bash', 'start.sh', str(os.getpid())] + ([fallback_branch] if fallback_branch else []),
-            cwd=AISERVER_DIR,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL
-        )
+        Updater.relaunch(START_SCRIPT, reason, *([fallback_branch] if fallback_branch else []))
         return "Server is restarting..."
 
     @staticmethod
@@ -2196,14 +2100,3 @@ class CodeQualityMaintainer:
              + (f" with {len(attachments)} attachment(s)" if attachments else ""))
         return address
 
-
-def _pull_summary(stdout: str) -> str:
-    """`git pull`'s output without the per-file diffstat: its first line ("Updating a..b",
-    "Already up to date.") and the "N files changed" line — the text is logged, sent to the chat
-    and carried through the restart as the resumed turn's query, so the diffstat was repeated
-    a dozen times."""
-    lines = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
-    if not lines:
-        return ""
-    summary = next((line for line in lines[1:] if re.search(r"\d+ files? changed", line)), "")
-    return f"{lines[0]}, {summary}" if summary else lines[0]

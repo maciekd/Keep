@@ -9,18 +9,32 @@ rlog() {
   [ -t 1 ] && printf '\033[2;90m%s\033[0m\n' "$line" || echo "$line"
 }
 
-rlog "Start script invoked (caller-supplied old pid: ${1:-none})"
+# What this install runs — the Keep server or an iMessage satellite — with its ports, and the
+# lookups that see only this user's processes of this checkout (scripts/role.sh says why).
+. scripts/role.sh || { echo "start.sh: scripts/role.sh is missing — this checkout is incomplete" >&2; exit 1; }
+
+rlog "Start script invoked (caller-supplied old pid: ${1:-none}, role: $role)"
+
+# A role or a port the process would refuse to start on stops the script here, before anything
+# is killed: the old process keeps running, as it does after any failed update.
+if [ -n "$role_problem" ]; then
+    rlog "ERROR: $role_problem — nothing stopped, nothing started"
+    exit 1
+fi
 
 # Old server pids from three sources: the pid handed to us by the restarting
 # server itself, the owners of the server's listen ports, and an argv match
 # (anchored with $ to exclude testsuite instances). pgrep -f alone proved
 # unreliable when start.sh is spawned from inside the server — it missed the
 # running process and the replacement then died on a port collision.
-old_pids="${1:-} $(lsof -t -iTCP:8888 -iTCP:43523 -sTCP:LISTEN 2>/dev/null) $(pgrep -f 'floxy_ai_server\.py$')"
+# A satellite is found the same three ways, on its own port (Updater.relaunch hands
+# its pid over exactly as the server's restart does). The two lookups never return
+# another macOS user's process or another checkout's.
+old_pids="${1:-} $(own_listeners $listen_ports) $(own_processes "$KEEP_PROCESS")"
 old_pids=$(printf '%s\n' $old_pids | grep -E '^[0-9]+$' | sort -un)
 
 if [ -n "$old_pids" ]; then
-    rlog "Stopping old server pid(s): $(echo $old_pids)"
+    rlog "Stopping old $what pid(s): $(echo $old_pids)"
     kill $old_pids 2>/dev/null
     # Wait until they're actually gone (up to 10s)
     alive=""
@@ -38,23 +52,23 @@ if [ -n "$old_pids" ]; then
         sleep 1
     fi
 else
-    rlog "no old server process found — nothing to stop"
+    rlog "no old $what process found — nothing to stop"
 fi
 
 # Never launch into occupied ports — the new server would spend ~25s loading
 # models and then die on bind (Errno 48).
 busy=""
 for i in $(seq 1 10); do
-    busy=$(lsof -t -iTCP:8888 -iTCP:43523 -sTCP:LISTEN 2>/dev/null)
+    busy=$(own_listeners $listen_ports)
     [ -z "$busy" ] && break
     sleep 0.5
 done
 if [ -n "$busy" ]; then
-    rlog "ERROR: server port(s) still held by pid(s) $(echo $busy) — aborting launch"
+    rlog "ERROR: $what port(s) still held by pid(s) $(echo $busy) — aborting launch"
     exit 1
 fi
 
-rlog "Ports free — launching new server via Terminal (so mic access works)..."
+rlog "Ports free — launching new $what via Terminal (so the Mac's grants apply to it)..."
 # Remember where the log ends before the launch: the server can fail within
 # milliseconds of starting (dependency check, bad config), and a `tail -n 0`
 # attached after the sleep below would begin past those lines and show nothing.
@@ -105,8 +119,8 @@ if [ -n "$fallback" ]; then
     rlog "PR trial: waiting up to ${timeout}s for the server to listen, falling back to $fallback otherwise"
     up=""
     for i in $(seq 1 "$timeout"); do
-        [ -n "$(lsof -t -iTCP:8888 -sTCP:LISTEN 2>/dev/null)" ] && up=1 && break
-        if [ "$i" -gt 15 ] && [ -z "$(pgrep -f 'floxy_ai_server\.py$')" ]; then
+        [ -n "$(own_listeners $up_port)" ] && up=1 && break
+        if [ "$i" -gt 15 ] && [ -z "$(own_processes "$KEEP_PROCESS")" ]; then
             rlog "PR trial: the server process is gone after ${i}s"
             break
         fi
@@ -138,9 +152,38 @@ if [ -t 1 ]; then
     # A backgrounded job ignores SIGINT, so Ctrl-C would kill the script and
     # leave the tail running in the terminal — take it down on any exit.
     trap 'kill $tail_pid 2>/dev/null' EXIT
-    trap 'rlog "interrupted — leaving the server running"; exit 130' INT TERM
+    trap 'rlog "interrupted — leaving the $what running"; exit 130' INT TERM
+    # A satellite has no console to hand the terminal to. The startup log is shown until its
+    # port listens (at most 60s) or its process is gone again — a refused config ends it within
+    # a second or two — and then the terminal gets one plain verdict and its prompt back; the
+    # satellite runs on without it, like a server whose console was closed.
+    if [ -z "$console_port" ]; then
+        up=""; gone=""
+        for i in $(seq 1 120); do
+            [ -n "$(own_listeners $up_port)" ] && up=1 && break
+            [ "$i" -gt 10 ] && [ -z "$(own_processes "$KEEP_PROCESS")" ] && gone=1 && break
+            sleep 0.5
+        done
+        kill $tail_pid 2>/dev/null
+        if [ -n "$up" ]; then
+            rlog "the satellite listens on port $up_port after ${i}x0.5s — no console to hand over to"
+            echo
+            echo "The Keep iMessage satellite is up on port $up_port and keeps running without this window."
+            echo "Log: $PWD/log/floxy.out    Stop: $PWD/stop.sh"
+            exit 0
+        fi
+        rlog "the satellite is not listening on port $up_port after ${i}x0.5s${gone:+ and its process is gone}"
+        echo
+        if [ -n "$gone" ]; then
+            echo "The Keep iMessage satellite stopped while starting — the lines above say why."
+        else
+            echo "The Keep iMessage satellite is not answering on port $up_port after 60s. It may be waiting for a"
+            echo "macOS dialog on this Mac's screen; $PWD/log/floxy.out says where it is."
+        fi
+        exit 1
+    fi
     for i in $(seq 1 120); do
-        [ "$i" -gt 10 ] && lsof -iTCP:5151 -sTCP:LISTEN >/dev/null 2>&1 && break
+        [ "$i" -gt 10 ] && [ -n "$(own_listeners $console_port)" ] && break
         sleep 0.5
     done
     kill $tail_pid 2>/dev/null

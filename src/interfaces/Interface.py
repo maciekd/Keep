@@ -1,10 +1,10 @@
 """An Interface is one way for people to reach the assistant: HTTP, VoiceToVoice, Telegram,
-the TUI console. Each is a self-contained unit the launcher starts only when its
+the TUI console, iMessage. Each is a self-contained unit the launcher starts only when its
 `interfaces.<name>.enabled` flag says so — a disabled interface's module is never even
 imported, which is what lets a Telegram-only install boot on the base requirements.
 
 Start order (see floxy_ai_server.build): http first (it owns the Quart app the others
-register routes on), then console, voice, telegram. `stop()` runs in reverse."""
+register routes on), then console, voice, telegram, imessage. `stop()` runs in reverse."""
 from abc import ABC, abstractmethod
 
 from common.logging import info, note
@@ -32,8 +32,9 @@ class Interface(ABC):
     """One way for people to reach the assistant, started by the launcher only when enabled."""
 
     name: str = ""
-    # What `interfaces.<name>.enabled` means when the config does not say. Voice is the one
-    # that is off: it needs requirements-voice.txt, microphones and speakers.
+    # What `interfaces.<name>.enabled` means when the config does not say. Voice is off: it
+    # needs requirements-voice.txt, microphones and speakers; so is iMessage, which needs an
+    # Apple ID of the assistant's own.
     enabled_by_default: bool = True
 
     @classmethod

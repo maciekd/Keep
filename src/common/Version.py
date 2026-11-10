@@ -65,6 +65,17 @@ def branch() -> Optional[str]:
 
 
 @lru_cache(maxsize=None)
+def commit() -> str:
+    """The full hash of the commit the process runs, "" when git cannot say. Read once, at the
+    first call — a pull the process has not restarted on does not move it — and that call is
+    the version line every process logs when it starts (`detail`), not whoever asks first later:
+    an integration enabled after the checkout moved would name a commit the process does not
+    run. It is what a server tells its iMessage satellite to follow and what the satellite
+    compares that with."""
+    return _git("rev-parse", "HEAD") or ""
+
+
+@lru_cache(maxsize=None)
 def label() -> str:
     """What the TUI shows: `Keep v2026.09.64` on a release install, `Keep v2026.09.64 dev` on
     master, the branch's own name on any other — a release needs no badge, running something
@@ -79,10 +90,10 @@ def label() -> str:
 def detail() -> str:
     """`v2026.09.3868 (1b6c9ce7, release, dirty)` — for the log and /health. The branch is
     left out of a detached checkout."""
-    commit = _git("rev-parse", "--short=8", "HEAD")
-    if version() == UNKNOWN or not commit:
+    short = commit()[:8]
+    if version() == UNKNOWN or not short:
         return version()
-    parts = [commit]
+    parts = [short]
     if branch():
         parts.append(branch())
     if _git("status", "--porcelain"):

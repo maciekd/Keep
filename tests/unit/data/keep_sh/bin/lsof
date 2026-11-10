@@ -1,6 +1,20 @@
 #!/bin/bash
-# keep.sh's test double for `lsof`: the port listens (exit 0) from the KEEP_TEST_LISTENS_AT-th
-# call on, never when unset; the count lives in KEEP_TEST_COUNTERS/lsof.
+# keep.sh's test double for `lsof`. A port lookup: this user's Keep listens on KEEP_TEST_PORT
+# (8888 unset) from the KEEP_TEST_LISTENS_AT-th call on, never when unset — its pid is printed and
+# the exit is 0; the count lives in KEEP_TEST_COUNTERS/lsof. Another macOS user's Keep listens on
+# KEEP_TEST_FOREIGN_PORT when that is set, and only a lookup not narrowed to the caller (`-u`)
+# sees it. A working-directory lookup (`-d cwd -FDi`) answers the device and the inode of this
+# checkout, or of some other folder when KEEP_TEST_CWD is set, and is not counted.
+case " $* " in *" -d cwd "*)
+    if [ -n "$KEEP_TEST_CWD" ]; then printf 'D0x2f\ni47\n'; else /usr/bin/stat -f 'D0x%Xd%ni%i' .; fi
+    exit 0;;
+esac
 n=0; [ -f "$KEEP_TEST_COUNTERS/lsof" ] && read -r n < "$KEEP_TEST_COUNTERS/lsof"
 n=$((n+1)); echo $n > "$KEEP_TEST_COUNTERS/lsof"
-[ "$n" -ge "${KEEP_TEST_LISTENS_AT:-1000000}" ]
+if [ -n "$KEEP_TEST_FOREIGN_PORT" ] && [[ " $* " != *" -u $UID "* ]] && [[ " $* " == *" -iTCP:$KEEP_TEST_FOREIGN_PORT "* ]]; then
+    echo 4343; exit 0
+fi
+if [ "$n" -ge "${KEEP_TEST_LISTENS_AT:-1000000}" ] && [[ " $* " == *" -iTCP:${KEEP_TEST_PORT:-8888} "* ]]; then
+    echo 4242; exit 0
+fi
+exit 1

@@ -14,6 +14,7 @@ SOURCE_VOICE = "VoiceToVoice"
 SOURCE_TEXT_CHAT = "TextChat"
 SOURCE_TELEGRAM = "Telegram"
 SOURCE_CONSOLE = "Console"
+SOURCE_IMESSAGE = "iMessage"
 SOURCE_AUTONOMOUS = "autonomous"
 
 PHOTO_TARGET_SCREEN = "screen"
@@ -67,6 +68,9 @@ class ChannelProfile:
     # with the window it was loaded for and rendered for that window only, so one spoken
     # request does not leave voice's toolkits (8 KB of them) in every chat prompt after it.
     window: str = WINDOW_TEXT
+    # What the channel asks of every reply beyond the prompt's dialog style, folded onto the
+    # request with the other trailing directives (DialogManager): iMessage's plain short texts.
+    style_directive: str = ""
 
 
 VOICE_TO_VOICE = ChannelProfile(
@@ -101,6 +105,18 @@ CONSOLE = ChannelProfile(
     streams_tokens=True,
 )
 
+# The assistant's own iMessage account (interfaces/imessage): a chat transport on the hub that
+# can neither edit a bubble nor draw a card, so no command echo is sent there, and what the
+# reply is written for — a phone's Messages app — is said with every request.
+IMESSAGE = ChannelProfile(
+    name=SOURCE_IMESSAGE, llm_tier="smart", brevity_directive=False, forward_thinking=False,
+    command_notifications=False, notification_ephemeral=False, notify_observers_of_commands=False,
+    photo_target=PHOTO_TARGET_CHAT, screenshot_allowed=True,
+    streams_tokens=True,
+    style_directive=("This conversation is over iMessage: write the way people text — short, plain text, "
+                     "no HTML tags, no Markdown, no tables. A photo or a video cannot be sent there yet."),
+)
+
 # No dialog at all: the autonomous action manager running commands on its own.
 AUTONOMOUS = ChannelProfile(
     name=SOURCE_AUTONOMOUS, llm_tier="smart", brevity_directive=False, forward_thinking=False,
@@ -114,6 +130,7 @@ PROFILES = {
     SOURCE_TEXT_CHAT: TEXT_CHAT,
     SOURCE_TELEGRAM: TELEGRAM,
     SOURCE_CONSOLE: CONSOLE,
+    SOURCE_IMESSAGE: IMESSAGE,
     SOURCE_AUTONOMOUS: AUTONOMOUS,
 }
 

@@ -797,6 +797,28 @@ class TestWakeAssistant:
         fake.receive_chat_message.assert_not_called()
         assert len(rows) == 1 and "what's for dinner?" in rows[0].content
 
+    @pytest.mark.asyncio
+    async def test_the_feed_decides_by_the_rule_every_chat_platform_shares(self, wake):
+        """assistant/GroupWake.py holds the decision; the iMessage chat transport uses the same
+        object. A feed that kept a rule of its own would wake her whatever the shared one says."""
+        from assistant.GroupWake import GroupWake
+        m, say, fake = wake
+        assert isinstance(m._wake, GroupWake)
+        await say("Dinner is at seven.", sender_id=777, name="Keep")
+        assert m._wake.follows(-5001, 777), "the bot's message was not settled in the shared bookkeeping"
+        with patch.object(m._wake, "reason", return_value="") as reason:
+            rows = await say("Michelle, what's for dinner?")
+        reason.assert_called_once()
+        fake.receive_chat_message.assert_not_called()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_shared_brake_is_what_stops_another_bot(self, wake):
+        m, say, fake = wake
+        with patch.object(m._wake, "brake", return_value=False):
+            await say("Michelle, your move", sender_id=888, bot=True, name="Erik's Keep")
+        fake.receive_chat_message.assert_not_called()
+
     def test_no_wake_word_wakes_on_nothing(self, wake, monkeypatch):
         m, _, _ = wake
         monkeypatch.setitem(self.CONFIG, 'wake_word', '')

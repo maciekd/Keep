@@ -21,6 +21,7 @@ import yaml
 from common.ConfigManager import REQUIRED_KEYS
 
 from .git_sandbox import History, empty_repo, git, git_env, spawn
+from .test_role_sh import REFUSED_CONFIGS, ROLE_SH, SATELLITE_CONFIGS, SERVER_CONFIGS, UNREADABLE_CONFIGS, python_reading
 
 INSTALL_SH = Path(__file__).resolve().parents[2] / 'install.sh'
 WORKSPACE_REQUIRED_BODY = (
@@ -63,7 +64,9 @@ class InstallShHarness:
         self.answers = self.dir / 'answers'
         self.answers.write_text(''.join(f'{line}\n' for line in lines))
 
-    def run(self, script: str, repo_url: str = '', **env) -> subprocess.CompletedProcess:
+    def run(self, script: str, repo_url: str = '', no_terminal: bool = False, **env) -> subprocess.CompletedProcess:
+        """`no_terminal`: in a session of its own, so the script has no controlling terminal
+        whatever pytest was started from — ssh without -t, launchd."""
         prelude = (
             f'source "{self.fns}"\n'
             f'KEEP_DIR="{self.keep_dir}"; LOG="{self.log}"; REPO_URL="{repo_url}"; BRANCH=master\n'
@@ -82,7 +85,7 @@ class InstallShHarness:
                 f'ask() {{ echo "$1" >> "{self.asked}"; IFS= read -r "$2" <&7 || eval "$2=\'\'"; }}\n')
         run_env = {k: v for k, v in git_env().items() if k != 'ANTHROPIC_API_KEY'}
         run_env.update(env)
-        return spawn(['bash', '-c', prelude + script], env=run_env, timeout=30)
+        return spawn(['bash', '-c', prelude + script], env=run_env, timeout=30, start_new_session=no_terminal)
 
     @property
     def prompts(self) -> list[str]:
@@ -304,6 +307,38 @@ class TestObtainApiKey:
         assert result.returncode == 1
         assert 'No terminal to ask on' in result.stdout
         assert 'set the value in the environment' in result.stdout
+
+
+class TestWhetherThereIsATerminal:
+    """`ssh mini 'curl ... | bash'`: /dev/tty is there, readable and writable, and cannot be
+    opened. Taking it for a terminal made the first question the end of the install."""
+
+    SHOW = 'init_ui; printf "TTY=[%s]" "$TTY"'
+
+    def test_a_process_without_a_controlling_terminal_has_none_to_ask_on(self, harness):
+        result = harness.run(self.SHOW, no_terminal=True)
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith('TTY=[]')
+
+    def test_a_terminal_that_can_be_opened_is_the_one_to_ask_on(self, harness):
+        """`script` gives the installer a pseudo-terminal of its own as the controlling one."""
+        command = f'source "{harness.fns}"; {self.SHOW}'
+        result = subprocess.run(['/usr/bin/script', '-q', '/dev/null', '/bin/bash', '-c', command], capture_output=True,
+                                text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=30)
+        assert result.stdout.endswith('TTY=[/dev/tty]'), result.stdout
+
+    def test_a_satellite_installs_without_a_terminal_and_answers_this_mac_only(self, harness):
+        main_on_the_real_terminal_check = MAIN.replace('init_ui() { real_init_ui; TTY=""; }\n', '')
+        result = harness.run(main_on_the_real_terminal_check, no_terminal=True, KEEP_ROLE=SATELLITE, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 0, result.stdout
+        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
+        assert config['imessage_satellite']['lan_access'] is False
+
+    def test_a_server_install_without_a_terminal_names_the_way_out_instead_of_dying_on_its_question(self, harness):
+        result = harness.run('trap on_error ERR; init_ui; obtain_api_key', no_terminal=True)
+        assert result.returncode == 1
+        assert 'ANTHROPIC_API_KEY' in result.stdout or 'environment' in result.stdout
+        assert 'Unexpected error' not in result.stdout
 
 
 class TestWriteConfig:
@@ -537,3 +572,284 @@ class TestTelemetry:
                              'telemetry_event install_started fresh=true; echo survived')
         assert result.returncode == 0
         assert 'survived' in result.stdout
+
+
+# main() with every step that touches the Mac or the network replaced by a line saying it ran;
+# the role, the config, the telemetry, the step counter and the summary are the real ones. The
+# terminal is taken away, so nothing here can wait on a prompt.
+MAIN = (
+    'for step in check_mac ensure_clt ensure_python ensure_repo ensure_venv install_requirements obtain_api_key launch; do\n'
+    '  eval "$step() { echo \\"ran:$step\\"; }"\n'
+    'done\n'
+    'eval "real_$(declare -f init_ui)"\n'
+    'init_ui() { real_init_ui; TTY=""; }\n'
+    'main\n')
+SATELLITE = 'imessage_satellite'
+EXISTING_SATELLITE = ('role: imessage_satellite\nimessage_satellite:\n  port: 8901\n'
+                      '  token: Zq4nB8cR2yH6sD0fG3jA7vK1mX5pL9wT\n  lan_access: false\ntelemetry:\n  enabled: false\n')
+EXISTING_SERVER = 'api_keys:\n  anthropic: sk-ant-typed-47L\nvault:\n  key: x\ntelemetry:\n  enabled: false\n'
+
+
+def ran(result) -> list[str]:
+    return re.findall(r'^ran:(\w+)$', result.stdout, re.M)
+
+
+def steps(result) -> list[tuple[int, int]]:
+    return [(int(n), int(total)) for n, total in re.findall(r'\[(\d+)/(\d+)\]', result.stdout)]
+
+
+def loaded(path: Path):
+    """A ConfigManager on the file, as the process started on that config has it."""
+    import os
+    from unittest.mock import patch
+
+    from common.ConfigManager import ConfigManager
+    with patch.dict(os.environ, FLOXY_CONFIG=str(path)):
+        return ConfigManager()
+
+
+def existing_install(harness, config: str):
+    """A checkout an earlier install left, with its config.yaml."""
+    (harness.keep_dir / '.git').mkdir(parents=True)
+    (harness.keep_dir / 'config.yaml').write_text(config)
+
+
+class TestSatelliteInstall:
+    """KEEP_ROLE=imessage_satellite: the same installer makes an install that runs no assistant —
+    no API key, a small config with a generated token, and a summary with what the Keep server
+    needs to pair. An install without the switch is the server it always was."""
+
+    def test_the_switch_takes_the_value_of_the_config_key(self, harness):
+        """A contract with config.yaml's `role` key (common/Role.py): one spelling for both."""
+        from common import Role
+        result = harness.run('resolve_role; printf "%s" "$ROLE"', KEEP_ROLE=Role.IMESSAGE_SATELLITE)
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith(Role.IMESSAGE_SATELLITE)
+
+    @pytest.mark.parametrize('config', [*SERVER_CONFIGS.values(), *SATELLITE_CONFIGS.values(), *REFUSED_CONFIGS.values()],
+                             ids=[*SERVER_CONFIGS, *SATELLITE_CONFIGS, *REFUSED_CONFIGS])
+    def test_an_existing_installs_role_is_read_as_python_reads_it(self, harness, config):
+        """The installer reads config.yaml with its own awk (it runs before the checkout exists):
+        the verdict must be Role.current()'s, or an upgrade would treat a satellite as a server."""
+        from common import Role
+        role, _ = python_reading(harness.dir, config)
+        existing_install(harness, config)
+        result = harness.run('resolve_role; printf "role=%s" "$ROLE"')
+        if role in Role.ROLES:
+            assert result.stdout.endswith(f'role={role}'), result.stdout
+        else:
+            assert result.returncode == 1 and 'role' in result.stdout
+
+    @pytest.mark.parametrize('config', UNREADABLE_CONFIGS.values(), ids=UNREADABLE_CONFIGS.keys())
+    def test_an_existing_install_whose_role_cannot_be_read_is_refused_not_taken_for_a_server(self, harness, config):
+        """What Python starts as a satellite and the installer's reader does not follow: an
+        upgrade that guessed "server" would ask for an API key and write a server's summary."""
+        existing_install(harness, config)
+        result = harness.run(MAIN, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 1
+        assert ran(result) == [], "the install went on with a role it could not read"
+        assert (harness.keep_dir / 'config.yaml').read_text() == config
+
+    def test_the_installer_reads_config_yaml_with_the_program_the_start_scripts_use(self):
+        """install.sh runs before a checkout exists and cannot source scripts/role.sh: it carries
+        the reader. Two readers that drift apart are an install start.sh takes for another role."""
+        def reader(script: Path) -> str:
+            source = script.read_text()
+            return source[source.index('# >>> config reader'):source.index('# <<< config reader')]
+        assert reader(INSTALL_SH) == reader(ROLE_SH)
+
+    @pytest.mark.parametrize('value', ['imessage', 'satellite', 'imessage-satellite', '1'])
+    def test_any_other_value_stops_the_install_before_it_starts(self, harness, value):
+        result = harness.run(MAIN, KEEP_ROLE=value, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 1
+        assert 'KEEP_ROLE' in result.stdout
+        assert ran(result) == []
+
+    def test_a_fresh_satellite_install_skips_the_api_key_and_counts_its_own_steps(self, harness):
+        result = harness.run(MAIN, KEEP_ROLE=SATELLITE, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 0, result.stdout
+        assert ran(result) == ['check_mac', 'ensure_clt', 'ensure_python', 'ensure_repo', 'ensure_venv',
+                               'install_requirements', 'launch']
+        counted = steps(result)
+        assert counted == [(n, len(counted)) for n in range(1, len(counted) + 1)], "the step counter skips or overruns"
+        assert 'API key' not in result.stdout
+
+    def test_an_install_without_the_switch_is_still_a_server_that_asks_for_its_key(self, harness):
+        result = harness.run(MAIN, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 0, result.stdout
+        assert 'obtain_api_key' in ran(result)
+        counted = steps(result)
+        assert counted == [(n, len(counted)) for n in range(1, len(counted) + 1)]
+        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
+        assert 'role' not in config and 'imessage_satellite' not in config and 'watchdog' not in config
+        assert config['vault']['key']
+        assert 'imessage.host' not in result.stdout
+
+    def test_the_config_it_writes_is_one_the_satellite_starts_on(self, harness):
+        """Contract with floxy_ai_server.py: the role it reads, and a section Satellite.py accepts."""
+        from unittest.mock import patch
+
+        from common import Role
+        from common.imessage import Satellite
+        result = harness.run(MAIN, KEEP_ROLE=SATELLITE, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 0, result.stdout
+        path = harness.keep_dir / 'config.yaml'
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        manager = loaded(path)
+        with patch.object(Role, 'config', manager), patch.object(Satellite, 'config', manager):
+            assert Role.current() == Role.IMESSAGE_SATELLITE
+            assert Satellite.config_problem() == ''
+            assert Satellite._port() == Satellite.DEFAULT_PORT
+            assert Satellite.bind_host() == Satellite.LOOPBACK, "with nobody asked, the satellite opens to this Mac only"
+        config = yaml.safe_load(path.read_text())
+        assert re.fullmatch(r'[A-Za-z0-9]{32}', str(config['imessage_satellite']['token']))
+        assert 'api_keys' not in config and 'vault' not in config
+
+    def test_the_watchdog_is_on_for_a_satellite(self, harness):
+        """Contract with common/Watchdog.KEY, which the satellite applies at each start: nobody is
+        at a satellite to start it again."""
+        from common import Watchdog
+        harness.keep_dir.mkdir()
+        assert harness.run('write_satellite_config').returncode == 0
+        assert yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())[Watchdog.KEY] is True
+
+    def test_two_installs_get_two_tokens(self, harness):
+        harness.keep_dir.mkdir()
+        tokens = set()
+        for _ in range(2):
+            assert harness.run('write_satellite_config').returncode == 0
+            tokens.add(yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())['imessage_satellite']['token'])
+        assert len(tokens) == 2
+
+    def test_the_release_line_and_the_telemetry_are_written_as_for_a_server(self, harness):
+        harness.keep_dir.mkdir()
+        assert harness.run('init_telemetry; write_satellite_config').returncode == 0
+        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
+        assert config['developer_release'] is True                      # the harness installs from master
+        assert config['telemetry']['enabled'] is True and re.fullmatch(r'[0-9a-f-]{36}', config['telemetry']['id'])
+        assert harness.run('BRANCH=release; init_telemetry; write_satellite_config', KEEP_NO_TELEMETRY='1').returncode == 0
+        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
+        assert config['developer_release'] is False and config['telemetry'] == {'enabled': False}
+
+    @pytest.mark.parametrize('env, answers, expected, asked', [
+        ({}, None, False, 0),
+        ({'KEEP_LAN_ACCESS': '1'}, ['2'], True, 0),
+        ({'KEEP_LAN_ACCESS': '0'}, ['2'], False, 0),
+        ({}, [''], False, 1),
+        ({}, ['1'], False, 1),
+        ({}, ['2'], True, 1),
+        ({}, ['yes', ' 2 '], True, 2),
+        ({}, ['a', 'b', 'c', '2'], False, 3),
+    ], ids=['no terminal', 'the variable on', 'the variable off', 'Enter', 'this Mac', 'another Mac',
+            'a wrong answer first', 'three wrong answers'])
+    def test_whether_it_answers_the_network_is_asked_once_and_closed_by_default(self, harness, env, answers, expected, asked):
+        harness.keep_dir.mkdir()
+        if answers is not None:
+            harness.set_answers(*answers)
+        result = harness.run(('TTY=/dev/tty; ' if answers is not None else '') + 'write_satellite_config', **env)
+        assert result.returncode == 0, result.stdout
+        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
+        assert config['imessage_satellite']['lan_access'] is expected
+        assert len(harness.prompts) == asked
+
+    def test_a_lan_variable_that_is_neither_yes_nor_no_stops_the_install(self, harness):
+        harness.keep_dir.mkdir()
+        result = harness.run('write_satellite_config', KEEP_LAN_ACCESS='maybe')
+        assert result.returncode == 1
+        assert not (harness.keep_dir / 'config.yaml').exists()
+
+    def test_the_summary_carries_what_the_server_needs_to_pair_and_the_grants(self, harness):
+        """Contract with the server's config keys (common/imessage/Hosts): what is printed is what
+        the owner types into config_request there."""
+        from common.imessage import Hosts
+        result = harness.run(MAIN, KEEP_ROLE=SATELLITE, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 0, result.stdout
+        token = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())['imessage_satellite']['token']
+        said = result.stdout
+        lines = said.splitlines()
+        host_line = next(line for line in lines if f'imessage.{Hosts.HOST_KEY} ' in line)
+        token_line = next(line for line in lines if f'imessage.{Hosts.TOKEN_KEY} ' in line)
+        assert 'http://127.0.0.1:8898' in host_line
+        assert token in token_line
+        # ... and for the assistant's own Apple ID the same two values go under the chat interface's keys
+        # (interfaces/imessage/Allowlist.SECTION): an owner pairing that account must not be sent to imessage.*
+        from interfaces.imessage.Allowlist import SECTION
+        chat_host = next(line for line in lines if f'{SECTION}.{Hosts.HOST_KEY} ' in line)
+        chat_token = next(line for line in lines if f'{SECTION}.{Hosts.TOKEN_KEY} ' in line)
+        assert 'http://127.0.0.1:8898' in chat_host and token in chat_token
+        assert 'secret' in said
+        assert 'Full Disk Access' in said and 'Automation' in said
+        assert 'Accessibility' in said and 'unlocked' in said, "the typing dots' grant and what else they need"
+        assert token not in (harness.keep_dir / 'log' / 'install.log').read_text(), "the token reached the install log"
+
+    def test_a_satellite_for_a_server_on_another_mac_is_paired_by_this_macs_name(self, harness):
+        from common.imessage import RemoteMessagesHost
+        existing_install(harness, EXISTING_SATELLITE.replace('lan_access: false', 'lan_access: true'))
+        result = harness.run('scutil() { echo keep-mini; }; ROLE=imessage_satellite; summary')
+        address = re.search(r'imessage\.host\s+(\S+)', result.stdout).group(1)
+        assert address == 'http://keep-mini.local:8901'
+        assert re.search(r'imessage_chat\.host\s+(\S+)', result.stdout).group(1) == address
+        assert RemoteMessagesHost.RemoteMessagesHost(address, 'Zq4nB8cR2yH6sD0fG3jA7vK1mX5pL9wT').address == address, \
+            "the server would not take the printed address"
+        assert '127.0.0.1' not in result.stdout
+
+    @pytest.mark.parametrize('env', [{}, {'KEEP_ROLE': SATELLITE}], ids=['the bare command', 'with the switch'])
+    def test_a_rerun_on_a_satellite_keeps_its_config_and_shows_the_pairing_again(self, harness, env):
+        existing_install(harness, EXISTING_SATELLITE)
+        result = harness.run(MAIN, **env)
+        assert result.returncode == 0, result.stdout
+        assert (harness.keep_dir / 'config.yaml').read_text() == EXISTING_SATELLITE
+        assert 'obtain_api_key' not in ran(result) and 'launch' in ran(result)
+        assert len(steps(result)) == steps(result)[-1][1]
+        assert 'http://127.0.0.1:8901' in result.stdout and 'Zq4nB8cR2yH6sD0fG3jA7vK1mX5pL9wT' in result.stdout
+        assert not harness.curl_calls.exists(), "the config's telemetry opt-out was not honoured"
+
+    @pytest.mark.parametrize('config, role', [(EXISTING_SERVER, SATELLITE), (EXISTING_SATELLITE, 'server')],
+                             ids=['a satellite over a server', 'a server over a satellite'])
+    def test_an_install_is_never_turned_into_the_other_role(self, harness, config, role):
+        existing_install(harness, config)
+        result = harness.run(MAIN, KEEP_ROLE=role)
+        assert result.returncode == 1
+        assert ran(result) == []
+        assert (harness.keep_dir / 'config.yaml').read_text() == config
+        assert 'watchdog' in result.stdout, "a second folder under the same user shares one watchdog agent"
+
+    def test_a_satellite_over_a_server_is_sent_to_another_user_or_mac_not_to_a_second_folder(self, harness):
+        existing_install(harness, EXISTING_SERVER)
+        result = harness.run(MAIN, KEEP_ROLE=SATELLITE)
+        said = result.stdout
+        assert 'another macOS user' in said and 'another Mac' in said
+        assert not re.search(r'KEEP_ROLE=\S+ KEEP_DIR=|KEEP_DIR=\S+ KEEP_ROLE=', said), \
+            "the refusal still hands out a command for a second folder under this user"
+
+    def test_a_rerun_on_a_server_is_what_it_was(self, harness):
+        existing_install(harness, EXISTING_SERVER)
+        result = harness.run(MAIN)
+        assert result.returncode == 0, result.stdout
+        assert (harness.keep_dir / 'config.yaml').read_text() == EXISTING_SERVER
+        assert steps(result)[-1] == (8, 8)
+        assert 'imessage.host' not in result.stdout
+
+    MAC = ('sysctl() { echo 1; }; sw_vers() { echo 15.1; }; MIN_FREE_GB=0; MIN_MACOS=14\n'
+           'uname() { if [ "$1" = -m ]; then echo arm64; else echo Darwin; fi; }\n')
+
+    def test_the_mac_check_does_not_ask_for_anthropic_on_a_satellite(self, harness):
+        result = harness.run(self.MAC + 'ROLE=imessage_satellite; check_mac')
+        assert result.returncode == 0, result.stdout
+        reached = harness.curl_calls.read_text()
+        assert 'github.com' in reached and 'anthropic' not in reached
+
+    def test_the_mac_check_still_asks_for_anthropic_on_a_server(self, harness):
+        result = harness.run(self.MAC + 'check_mac')
+        assert result.returncode == 0, result.stdout
+        assert 'api.anthropic.com' in harness.curl_calls.read_text()
+
+    def test_a_satellites_install_events_say_so_and_a_servers_are_as_they_were(self, harness):
+        event = 'TELEMETRY_ID=11111111-2222-4333-8444-555555555555; telemetry_started'
+        harness.run('ROLE=imessage_satellite; ' + event)
+        harness.run(event)
+        satellite, server = (json.loads(re.search(r'-d (\{.*\}) https://', line).group(1))['properties']
+                             for line in harness.curl_calls.read_text().splitlines())
+        assert satellite['role'] == SATELLITE
+        assert {**satellite, 'role': None, 'default_dir': None} == {**server, 'role': None, 'default_dir': None}
+        assert 'role' not in server

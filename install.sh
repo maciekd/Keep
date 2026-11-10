@@ -22,6 +22,18 @@
 #                      an existing checkout keeps the branch it is on unless this is set)
 #   KEEP_NO_TELEMETRY=1  send no install events to PostHog and write telemetry.enabled: false
 #                      into the new config.yaml (see the telemetry section below)
+#   KEEP_ROLE=imessage_satellite  install an iMessage satellite instead of a Keep server: the same
+#                      checkout and venv, but no assistant runs there — floxy_ai_server.py serves
+#                      the Messages account of this macOS user to a Keep server elsewhere (another
+#                      user of this Mac, or another Mac). The value is the one config.yaml's `role`
+#                      key takes. No API key is asked for, config.yaml holds the role, a generated
+#                      token and little else, and the summary prints what the server needs to pair.
+#                      An existing install keeps the role its config.yaml names: a re-run upgrades
+#                      it with or without the variable, and a variable that names the other role
+#                      is refused rather than turning a server into a satellite.
+#   KEEP_LAN_ACCESS=1|0  satellite only: whether it answers the network (1: the Keep server is on
+#                      another Mac) or this Mac alone (0: the server is another user of this Mac).
+#                      Skips that prompt; without a terminal to ask on, 0 is assumed.
 #
 # Written for the bash 3.2 that ships with macOS: no associative arrays, mapfile or ${var,,}.
 # Everything sits inside main() so a truncated download runs nothing at all.
@@ -36,6 +48,7 @@ main() {
   MIN_FREE_GB=10       # the voice stack (torch, spacy, mlx) is close to 3 GB installed
   PIP_EXPECTED_PACKAGES=380   # packages a full install collects (pip freeze | wc -l); scales the progress bar
   TOTAL_STEPS=8
+  ROLE=server          # server | imessage_satellite; settled by resolve_role
   STEP=0
   STEP_NAME="startup"
   SPINNER_PID=""
@@ -54,9 +67,16 @@ main() {
   trap on_exit EXIT
   trap on_interrupt INT TERM
   open_log
+  resolve_role
 
   printf '\n  %sKeep%s - personal AI done right\n' "$C_BOLD" "$C_RESET"
-  dim "Installing into $KEEP_DIR  (override with KEEP_DIR=...)"
+  if satellite; then
+    TOTAL_STEPS=7      # no API key step: no LLM runs on a satellite
+    dim "Installing an iMessage satellite into $KEEP_DIR  (override with KEEP_DIR=...)"
+    dim "No assistant runs here: it lends this Mac user's Messages to your Keep server."
+  else
+    dim "Installing into $KEEP_DIR  (override with KEEP_DIR=...)"
+  fi
   dim "Install log: $LOG"
   init_telemetry
   telemetry_started
@@ -79,7 +99,14 @@ main() {
   step "Python packages"
   install_requirements
 
-  if [ -f "$KEEP_DIR/config.yaml" ]; then
+  if satellite; then
+    step "Configuration"
+    if [ -f "$KEEP_DIR/config.yaml" ]; then
+      ok "config.yaml kept as it is"
+    else
+      write_satellite_config
+    fi
+  elif [ -f "$KEEP_DIR/config.yaml" ]; then
     step "Anthropic API key"
     ok "config.yaml already exists; its key is kept"
     step "Configuration"
@@ -92,9 +119,68 @@ main() {
   fi
 
   summary
+  # shellcheck disable=SC2046
   telemetry_event install_finished elapsed_s="$SECONDS" python="$PY_SOURCE" \
-    commit="$(git -C "$KEEP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    commit="$(git -C "$KEEP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" $(telemetry_role)
   launch
+}
+
+# ------------------------------------------------------------- the role -----
+
+satellite() { [ "${ROLE:-server}" = imessage_satellite ]; }
+
+# The role comes from KEEP_ROLE on a fresh install and from config.yaml on an existing one — the
+# file is what floxy_ai_server.py and start.sh read (common/Role.py, scripts/role.sh), so it is
+# what the install is. Settled before anything is checked or installed: a value that is no role
+# stops here, and so does a variable asking for the other role than the folder's install has.
+resolve_role() {
+  local wanted=${KEEP_ROLE:-} existing unreadable
+  case "$wanted" in
+    ""|server|imessage_satellite) ;;
+    *) fail "KEEP_ROLE=$wanted is not a role." \
+         "Leave it out for a Keep server, or set KEEP_ROLE=imessage_satellite for an iMessage satellite." ;;
+  esac
+  if [ ! -f "$KEEP_DIR/config.yaml" ]; then
+    ROLE=${wanted:-server}
+    log "role: $ROLE (${wanted:+KEEP_ROLE, }a fresh install)"
+    return
+  fi
+  unreadable=$(config_trouble role "")
+  [ -z "$unreadable" ] || fail "$KEEP_DIR/config.yaml: $unreadable." \
+    "Whether this install is a Keep server or an iMessage satellite cannot be told, and is not guessed." \
+    "Write the keys as lines of their own from the first column (role: imessage_satellite), then re-run the installer."
+  # An empty value and yaml's null are no role (a server); "null" in quotes is a word, as to Python.
+  existing=$(config_raw role "")
+  case "$existing" in
+    ""|null|Null|NULL|"~"|'""'|"''") existing=server ;;
+    *) existing=$(printf '%s\n' "$existing" | awk '{ gsub(/["\047]/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); print tolower($0) }') ;;
+  esac
+  case "$existing" in
+    server|imessage_satellite) ;;
+    *) fail "$KEEP_DIR/config.yaml names role: $existing, which is not a role." \
+         "Remove the key for a Keep server, or set it to imessage_satellite, and re-run the installer." ;;
+  esac
+  if [ "$existing" = imessage_satellite ]; then
+    unreadable=$(config_trouble imessage_satellite port)
+    [ -z "$unreadable" ] || fail "$KEEP_DIR/config.yaml: $unreadable." \
+      "start.sh would not know which port the satellite listens on. Write it as the installer does:" \
+      "'port: 8898' on a line indented under 'imessage_satellite:', then re-run the installer."
+  fi
+  if [ -n "$wanted" ] && [ "$wanted" != "$existing" ]; then
+    if [ "$wanted" = imessage_satellite ]; then
+      fail "$KEEP_DIR holds a Keep server's install; a satellite is an install of its own." \
+        "It belongs where the Messages account it serves is signed in: under another macOS user of this Mac," \
+        "or on another Mac. Run the same command there, in that user's Terminal." \
+        "A second folder under this user (KEEP_DIR=...) is not the way: the watchdog that relaunches a dead" \
+        "process is one per macOS user, and the server and the satellite would each point it at themselves."
+    fi
+    fail "$KEEP_DIR holds an iMessage satellite's install; a Keep server is an install of its own." \
+      "Install it under the macOS user it is to run as, or on another Mac. In another folder of this user" \
+      "(curl ... | KEEP_DIR=~/somewhere bash) it shares this user's one watchdog with the satellite:" \
+      "each start points it at its own install."
+  fi
+  ROLE=$existing
+  log "role: $ROLE (from the existing config.yaml)"
 }
 
 # ---------------------------------------------------------------- UI --------
@@ -109,8 +195,10 @@ init_ui() {
     C_BOLD=""; C_DIM=""; C_RESET=""; C_GREEN=""; C_RED=""; C_YELLOW=""; C_CYAN=""
   fi
   # Prompts go through the terminal directly: stdin may be a pipe when the script is
-  # fed to bash by curl, and that pipe must never be what `read` waits on.
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then TTY=/dev/tty; else TTY=""; fi
+  # fed to bash by curl, and that pipe must never be what `read` waits on. Whether there is a
+  # terminal is told by opening it: /dev/tty exists, readable and writable, for a process that
+  # has none (ssh host 'curl ... | bash', launchd), and only the open fails there.
+  if (exec </dev/tty >/dev/tty) 2>/dev/null; then TTY=/dev/tty; else TTY=""; fi
 }
 
 # The log lives in its final place, $KEEP_DIR/log/install.log, from the first line. Only a
@@ -289,11 +377,14 @@ check_mac() {
 
   # The console is a full-screen TUI; Terminal.app renders it noticeably worse than
   # Ghostty or iTerm2. TERM_PROGRAM is what every macOS terminal sets to identify itself.
-  case "${TERM_PROGRAM:-}" in
-    ghostty)   ok "Terminal: Ghostty" ;;
-    iTerm.app) ok "Terminal: iTerm2" ;;
-    *) warn "Ghostty terminal is recommended for the best experience - download here: https://ghostty.org/" ;;
-  esac
+  # (A satellite has no console, so any terminal will do.)
+  if ! satellite; then
+    case "${TERM_PROGRAM:-}" in
+      ghostty)   ok "Terminal: Ghostty" ;;
+      iTerm.app) ok "Terminal: iTerm2" ;;
+      *) warn "Ghostty terminal is recommended for the best experience - download here: https://ghostty.org/" ;;
+    esac
+  fi
 
   # System binaries by absolute path: with Homebrew's GNU coreutils first on PATH, df -g,
   # mktemp -t <prefix> and stat -f are not the BSD commands this script was written for.
@@ -305,6 +396,11 @@ check_mac() {
 
   start_spinner "Testing network"
   reachable https://github.com || fail "Cannot reach github.com." "Check the network connection and try again."
+  if satellite; then   # it talks to GitHub (the code) and to its Keep server, never to Anthropic
+    stop_spinner
+    ok "Network: github.com reachable"
+    return
+  fi
   reachable https://api.anthropic.com || fail "Cannot reach api.anthropic.com." "Check the network connection and try again."
   stop_spinner
   ok "Network: github.com and api.anthropic.com reachable"
@@ -692,6 +788,92 @@ EOF
   note "A random vault passphrase was generated for you. It lives in config.yaml: back that file up."
 }
 
+# The config of an iMessage satellite: the role, the service's section and what keeps the
+# process running and up to date. No API key and no vault — nothing on a satellite uses either,
+# and floxy_ai_server.py asks for neither under this role. The file has to be there before the
+# first start: without one ConfigManager writes the server's skeleton.
+SATELLITE_PORT=8898   # imessage_satellite.port: not the server's 8888, since a second user shares the Mac's ports
+LAN_ACCESS=false      # imessage_satellite.lan_access, settled by choose_lan_access
+
+write_satellite_config() {
+  local token
+  token=$(random_secret)
+  [ "${#token}" -eq 32 ] || fail "Could not generate the satellite's token."
+  choose_lan_access
+  (
+    umask 077
+    cat >"$KEEP_DIR/config.yaml" <<EOF
+# Keep configuration of an iMessage satellite, written by install.sh on $(date '+%Y-%m-%d'). No assistant
+# runs on this install: it serves this Mac user's Messages to a Keep server, which is given the
+# address and the token below — as imessage.host and imessage.host_token when the account is the
+# owner's own, as imessage_chat.host and imessage_chat.host_token when it is the assistant's own
+# Apple ID. config.example.yaml documents the keys.
+role: imessage_satellite
+imessage_satellite:
+  port: $SATELLITE_PORT
+  # What the Keep server must present. A secret: whoever holds it and reaches the port reads and
+  # sends this account's messages. A new value here must be entered on the server as well.
+  token: $token
+  # false: only this Mac reaches the satellite (the Keep server is another user of this Mac).
+  # true: the network does (the server is on another Mac); the token and the messages then cross
+  # it unencrypted, so only on a network you trust. Read at start.
+  lan_access: $LAN_ACCESS
+# Where the install came from. A running satellite follows the Keep server that calls it: it
+# moves itself to that server's line (release or master) and version.
+$(if [ "$BRANCH" = master ]; then echo "developer_release: true   # installed from master, the development line"
+   else echo "developer_release: false  # installed from the release branch"; fi)
+# Nobody sits at a satellite and no assistant is there to restart it, so launchd starts it again
+# within 5 minutes of dying. Applied at each start: to keep a stopped satellite down, set this to
+# false and run start.sh once more, then stop.sh.
+watchdog: true
+telemetry:
+  # The installer's own events (started, finished, or the step it failed in); a running satellite
+  # sends nothing. config.example.yaml says what goes out. enabled: false turns it off.
+$(if [ -n "${KEEP_NO_TELEMETRY:-}" ]; then echo "  enabled: false"
+   else echo "  enabled: true"; echo "  id: $TELEMETRY_ID"; fi)
+EOF
+  )
+  ok "Wrote config.yaml (readable by you only)"
+}
+
+# Whether the satellite answers the network: KEEP_LAN_ACCESS, else one question, else — with no
+# terminal to ask on — this Mac only, the answer that opens nothing.
+choose_lan_access() {
+  LAN_ACCESS=false
+  case "$(printf '%s' "${KEEP_LAN_ACCESS:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)  LAN_ACCESS=true
+                    dim "KEEP_LAN_ACCESS is set: the satellite will answer the network (a Keep server on another Mac)."
+                    return ;;
+    0|false|no|off) dim "KEEP_LAN_ACCESS is off: the satellite will answer this Mac only (a Keep server under another user here)."
+                    return ;;
+    "") ;;
+    *) fail "KEEP_LAN_ACCESS=${KEEP_LAN_ACCESS:-} is neither 1 nor 0." ;;
+  esac
+  if [ -z "$TTY" ]; then
+    dim "No terminal to ask on: the satellite will answer this Mac only (imessage_satellite.lan_access: false)."
+    dim "For a Keep server on another Mac, set it to true in config.yaml and run start.sh again."
+    return
+  fi
+  note "Where does your Keep server run?"
+  note "  1  on this Mac, under another user: the satellite answers this Mac only"
+  note "  2  on another Mac: the satellite answers the network, and the token and the messages"
+  note "     cross it unencrypted — only on a network you trust"
+  local answer="" attempt=0
+  while :; do
+    attempt=$((attempt + 1))
+    ask "1 or 2 (Enter for 1):" answer
+    case "$(printf '%s' "$answer" | tr -d '[:space:]')" in
+      ""|1) ok "This Mac only (lan_access: false)"; return ;;
+      2)    LAN_ACCESS=true; ok "The network (lan_access: true)"; return ;;
+    esac
+    if [ "$attempt" -ge 3 ]; then
+      warn "No 1 or 2 after 3 attempts: this Mac only. imessage_satellite.lan_access in config.yaml changes it."
+      return
+    fi
+    warn "Please answer 1 or 2."
+  done
+}
+
 # --------------------------------------------------------- telemetry --------
 
 # The install reports to the PostHog project the server reports to (assistant/Telemetry.py
@@ -718,13 +900,91 @@ init_telemetry() {
 
 # One value of config.yaml's telemetry section: the key's line among those indented under
 # `telemetry:`, up to the next top-level key, with the comment and any quotes stripped.
-config_telemetry_value() {
-  awk -v key="$1:" '
-    /^telemetry:/ { in_section = 1; next }
-    /^[^ \t#]/   { in_section = 0 }
-    in_section && $1 == key { sub(/^[ \t]*[^ ]+:[ \t]*/, ""); sub(/[ \t]*#.*$/, ""); gsub(/["'"'"']/, ""); print; exit }
-  ' "$KEEP_DIR/config.yaml" 2>/dev/null || true
+config_telemetry_value() { config_value telemetry "$1"; }
+
+# The reader of config.yaml, the same program scripts/role.sh has between the same two marker
+# lines — the installer cannot source that file, it runs before the checkout exists — so that an
+# existing install is what start.sh will take it for (tests/unit/test_install_sh.py compares them).
+# >>> config reader
+CONFIG_READER='
+    # The key a `key: value` line opens, without its quotes ("" when it opens none); what
+    # follows the colon is left in `rest`.
+    function key_of(line,    k) {
+        rest = ""
+        sub(/^[ \t]+/, "", line)
+        if (line ~ /^-([ \t]|$)/) return ""
+        if (!match(line, /^("[^"]*"|\047[^\047]*\047|[^][ \t:#"\047{},&*!|>%@?][^ \t:]*)[ \t]*:([ \t]|$)/)) return ""
+        k = substr(line, 1, RLENGTH); rest = substr(line, RLENGTH + 1)
+        sub(/[ \t]*:[ \t]?$/, "", k); gsub(/["\047]/, "", k)
+        return k
+    }
+    function value_of(text) {
+        sub(/^[ \t]+/, "", text); sub(/(^|[ \t]+)#.*$/, "", text); sub(/[ \t]+$/, "", text)
+        return text
+    }
+    # The key was written without a value: one on the lines under it is not read here.
+    function expect_nothing_under(name, indent) { waiting = name; waiting_indent = indent }
+    NR == 1 { sub(/^\357\273\277/, "") }     # a byte order mark
+    /^[ \t]*(#.*)?$/ { next }
+    !started && /^(---|%)/ { next }
+    {
+        match($0, /^[ \t]*/); indent = RLENGTH
+        key = key_of($0); value = value_of(rest)
+        if (!started) {
+            started = 1
+            if (indent > 0 || key == "") shape = "it does not open with a `key: value` line in the first column"
+        }
+        if (waiting != "") {
+            if (indent > waiting_indent || (indent == waiting_indent && $0 ~ /^[ \t]*-([ \t]|$)/))
+                key_trouble = "the value of " waiting " stands on the lines under the key"
+            waiting = ""
+        }
+        if (indent == 0) {
+            section = key; child = -1
+            if (key != top) next
+            section_trouble = key_trouble = ""
+            if (inner == "") { found = value; seen = 1; if (value == "") expect_nothing_under(top, 0) }
+            else {
+                seen = 0; found = ""
+                if (value !~ /^(null|Null|NULL|~)?$/) section_trouble = top " is not a section of indented lines"
+            }
+            next
+        }
+        if (inner == "" || section != top) next
+        if (child < 0) child = indent
+        if (indent != child) next
+        if (key == inner) {
+            found = value; seen = 1; key_trouble = ""
+            if (value == "") expect_nothing_under(top "." inner, indent)
+        } else if (key == "<<") section_trouble = top " takes its keys from another section (<<)"
+    }
+    END {
+        if (ask != "trouble") { if (seen) print found; exit }
+        if (shape != "") print shape
+        else if (section_trouble != "") print section_trouble
+        else if (key_trouble != "") print key_trouble
+    }
+'
+# <<< config reader
+
+# config_raw <section> <key>: one value as written, without its comment; with an empty key, the
+# value of the top-level key <section> itself (`role`). The last one when the key stands twice,
+# as yaml reads it; nothing when the file or the key is missing.
+config_raw() {
+  LC_ALL=C awk -v top="$1" -v inner="${2:-}" -v ask=value "$CONFIG_READER" "$KEEP_DIR/config.yaml" 2>/dev/null || true
 }
+
+# config_value <section> <key>: the same, with any quotes off.
+config_value() { config_raw "$1" "${2:-}" | tr -d "\"'"; }
+
+# config_trouble <section> <key>: why the key cannot be read from config.yaml — the file is
+# written in a way the reader does not follow — and nothing when it can.
+config_trouble() {
+  LC_ALL=C awk -v top="$1" -v inner="${2:-}" -v ask=trouble "$CONFIG_READER" "$KEEP_DIR/config.yaml" 2>/dev/null || true
+}
+
+# The role as an event property — for a satellite only, so a server's events stay as they were.
+telemetry_role() { if satellite; then printf 'role=%s' "$ROLE"; fi; }
 
 telemetry_started() {
   local fresh=true
@@ -732,7 +992,7 @@ telemetry_started() {
   telemetry_event install_started fresh=$fresh branch="$BRANCH" terminal="${TERM_PROGRAM:-unknown}" \
     macos="$(sw_vers -productVersion 2>/dev/null || echo unknown)" \
     chip="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)" \
-    default_dir=$([ "$KEEP_DIR" = "$HOME/Keep" ] && echo true || echo false)
+    default_dir=$([ "$KEEP_DIR" = "$HOME/Keep" ] && echo true || echo false) $(telemetry_role)
 }
 
 # telemetry_event <event> [name=value ...]: one event, posted right away. A number or
@@ -762,6 +1022,7 @@ telemetry_event() {
 # ----------------------------------------------------------- summary --------
 
 summary() {
+  if satellite; then satellite_summary; return; fi
   printf '\n  %s✔ Keep is installed%s\n\n' "$C_GREEN$C_BOLD" "$C_RESET"
   note "Folder     $KEEP_DIR"
   note "Config     $KEEP_DIR/config.yaml"
@@ -772,17 +1033,87 @@ summary() {
   printf '\n'
 }
 
+# What a satellite's owner needs next, read back from config.yaml as it stands — so a re-run on an
+# existing satellite shows the same lines again, with the port and the token that install really
+# has. This is the one place the token is shown: on the screen (note), never in the install log.
+satellite_summary() {
+  local port token lan name address hint
+  port=$(config_value imessage_satellite port)
+  port=${port:-$SATELLITE_PORT}
+  token=$(config_value imessage_satellite token)
+  lan=$(config_value imessage_satellite lan_access | tr '[:upper:]' '[:lower:]')
+  printf '\n  %s✔ The Keep iMessage satellite is installed%s\n\n' "$C_GREEN$C_BOLD" "$C_RESET"
+  note "Folder     $KEEP_DIR"
+  note "Config     $KEEP_DIR/config.yaml"
+  note "Log        $LOG"
+  note "Start      $KEEP_DIR/start.sh      (the satellite alone: no assistant, no console)"
+  note "Stop       $KEEP_DIR/stop.sh       (with watchdog: true in config.yaml it is started again within 5 minutes)"
+  note "Upgrade    by itself: it follows the version of the Keep server that calls it"
+  printf '\n'
+  note "${C_BOLD}Pair it with your Keep server.${C_RESET} The server needs two values, under the keys that fit whose"
+  note "Messages this Mac user is signed in to. Ask the server's assistant to set it up: it lets you type"
+  note "them where it does not see them (config_request)."
+  printf '\n'
+  hint=""
+  if [ "$lan" = true ]; then
+    name=$(scutil --get LocalHostName 2>/dev/null || true)
+    address="http://<this Mac's address>:$port"
+    [ -z "$name" ] || address="http://$name.local:$port"
+  else
+    address="http://127.0.0.1:$port"
+    hint=local
+  fi
+  note "Your own Messages — the assistant reads and sends your iMessages (the iMessage integration):"
+  note "  imessage.host        $address"
+  [ -z "$token" ] || note "  imessage.host_token  $token"
+  printf '\n'
+  note "The assistant's own Apple ID — people text it and add it to groups (the iMessage chat):"
+  note "  imessage_chat.host        $address"
+  [ -z "$token" ] || note "  imessage_chat.host_token  $token"
+  printf '\n'
+  if [ -n "$hint" ]; then
+    note "The address is this Mac's own: the server runs on this Mac, under another user. For a server on"
+    note "another Mac: imessage_satellite.lan_access: true in config.yaml, then start.sh."
+  else
+    note "The address is this Mac's name or IP address on your network, and the port."
+  fi
+  if [ -z "$token" ]; then
+    warn "config.yaml holds no imessage_satellite.token: the satellite does not start without one (16+ random characters)."
+  fi
+  printf '\n'
+  note "The token is a secret: whoever holds it and reaches the port reads and sends this account's"
+  note "messages. It is shown here only, and stays in $KEEP_DIR/config.yaml."
+  printf '\n'
+  note "On this Mac, under this user ($(id -un)), the satellite needs:"
+  note "  - Messages signed in to iMessage with the Apple ID it serves"
+  note "  - Full Disk Access for Terminal: System Settings > Privacy & Security > Full Disk Access."
+  note "    macOS applies it to a relaunched Terminal: quit Terminal, open it again and run start.sh"
+  note "  - Automation: allow Terminal to control Messages when macOS asks, at the first message sent,"
+  note "    and System Events, asked once Messages is readable — that makes the satellite start at login"
+  note "  - Optional, for typing dots while Keep answers as an iMessage contact of its own: Accessibility"
+  note "    for Terminal (System Settings > Privacy & Security > Accessibility). The dots show only while"
+  note "    this user is logged in on the Mac's screen, the screen is unlocked and Messages is open"
+  printf '\n'
+}
+
 launch() {
+  local what=server
+  if satellite; then what=satellite; fi
   if [ -n "${KEEP_NO_START:-}" ]; then
-    dim "KEEP_NO_START is set; not starting the server."
+    dim "KEEP_NO_START is set; not starting the $what."
     exit 0
   fi
   if [ -z "$TTY" ] || [ -z "$IS_TTY" ]; then
     dim "Not an interactive terminal; start Keep with: $KEEP_DIR/start.sh"
     exit 0
   fi
-  dim "Starting Keep. The first start loads models for a while; the console takes over when the server is up."
-  note "macOS may ask to let Terminal control Terminal and, once voice is enabled, to use the microphone."
+  if satellite; then
+    dim "Starting the satellite. Its start is shown here; it then runs on without this window."
+    note "macOS may ask to let Terminal control Terminal."
+  else
+    dim "Starting Keep. The first start loads models for a while; the console takes over when the server is up."
+    note "macOS may ask to let Terminal control Terminal and, once voice is enabled, to use the microphone."
+  fi
   printf '\n'
   trap - ERR EXIT INT TERM
   cd "$KEEP_DIR"

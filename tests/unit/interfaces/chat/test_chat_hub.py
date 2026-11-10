@@ -813,6 +813,51 @@ class TestQuestionsAreTheOwnersToAnswer:
         t.join(timeout=2)
 
 
+class TellingTransport(FakeTransport):
+    """A platform that shows no prompt of its own and says so in the chat (`asked_elsewhere`)."""
+
+    def asked_elsewhere(self, conversation, what, where):
+        self.calls.append(("asked_elsewhere", conversation, what, where))
+
+
+@pytest.mark.unit
+class TestTheAskingChatIsToldItWaits:
+    """A turn from a chat that is not an owner's has its approval asked in the owner's chats; the
+    transport of the asking chat is told, so a platform without prompts can say the turn waits."""
+
+    @pytest.fixture
+    def phone(self, hub):
+        phone = TellingTransport(owners=[], name="Phone", source="Phone")
+        hub.register(phone)
+        return phone
+
+    def test_an_approval_asked_elsewhere_is_reported_to_the_chat_that_needs_it(self, hub, transport, phone):
+        assert hub.request_approval("send_email", timeout=0.02, source="Phone", conversation="chat-7") == "timeout"
+        assert [c[1] for c in transport.calls if c[0] == "approval"] == [111]
+        assert [c for c in phone.calls if c[0] == "asked_elsewhere"] == [("asked_elsewhere", "chat-7", "approval", ["Fake"])]
+        assert not any(c[0] == "approval" for c in phone.calls)
+
+    def test_a_secret_asked_elsewhere_is_reported_too(self, hub, transport, phone):
+        assert hub.request_secret("Setting x", "", lambda value: "ok", timeout=0.02, source="Phone",
+                                  conversation="chat-7") == "timeout"
+        assert [c for c in phone.calls if c[0] == "asked_elsewhere"] == [("asked_elsewhere", "chat-7", "secret", ["Fake"])]
+
+    def test_a_chat_that_is_asked_itself_is_told_nothing(self, hub, transport):
+        telling = TellingTransport(owners=[5], name="Desk", source="Desk")
+        hub.register(telling)
+        assert hub.request_approval("send_email", timeout=0.02, source="Desk", conversation=5) == "timeout"
+        assert not any(c[0] == "asked_elsewhere" for c in telling.calls)
+
+    def test_a_question_nobody_could_be_asked_is_reported_to_nobody(self, hub, transport, phone):
+        transport.owners = []
+        assert hub.request_approval("send_email", timeout=0.02, source="Phone", conversation="chat-7") == "unavailable"
+        assert phone.calls == []
+
+    def test_a_request_from_outside_the_chat_layer_tells_no_chat(self, hub, transport, phone):
+        assert hub.request_approval("send_email", timeout=0.02) == "timeout"
+        assert phone.calls == []
+
+
 @pytest.mark.unit
 class TestQuestionsReachEveryOwner:
     """telegram_bot.notify_chat_ids narrows the proactive pushes only: an approval or a secret

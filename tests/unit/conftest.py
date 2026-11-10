@@ -45,13 +45,39 @@ sys.modules["sounddevice"] = _sounddevice
 # through the stall forensics and AudioRecovery) kills the developer's running server and the
 # pytest worker, then opens a Terminal window. A subclass, so a test patching Popen or checking
 # isinstance sees nothing unusual; the maintainer's own restart tests patch Popen themselves.
+# common/Updater relaunches through whatever script its caller names and is what pulls, switches
+# branches and runs pip, so the same guard refuses any script handed this process's pid, a git
+# command that moves the checkout the suite runs in, and a pip install into its venv.
 import subprocess
+
+_GIT_MOVES = {"pull", "fetch", "checkout", "switch", "merge", "rebase", "reset", "stash", "push"}
 
 
 class _NoRelaunchPopen(subprocess.Popen):
     def __init__(self, args, *rest, **kwargs):
-        if isinstance(args, (list, tuple)) and list(map(str, args[:2])) == ["bash", "start.sh"]:
-            raise RuntimeError(f"a unit test tried to relaunch the server: {list(args)}")
+        words = list(map(str, args)) if isinstance(args, (list, tuple)) else []
+        if words[:1] == ["bash"] and (words[1:2] == ["start.sh"] or words[2:3] == [str(os.getpid())]):
+            raise RuntimeError(f"a unit test tried to relaunch the server: {words}")
+        if words[:1] == ["git"] and _GIT_MOVES.intersection(words[1:2]) \
+                and Path(kwargs.get("cwd") or os.getcwd()).resolve() == aiserver_dir:
+            raise RuntimeError(f"a unit test tried to move the checkout: {words}")
+        if words[1:4] == ["-m", "pip", "install"]:
+            raise RuntimeError(f"a unit test tried to install into the venv: {words}")
+        if words[:1] == ["osascript"] and any('application "Messages"' in w for w in words):
+            raise RuntimeError("a unit test tried to script the real Messages.app")
+        # The satellite brings the Mac to its `watchdog` key and registers a login item by itself
+        # at each start (common/imessage/Satellite.stay_up): unstubbed, that would load or unload
+        # the developer's own launchd agent and add a login item to their account. Every launchctl
+        # verb is refused, the read-only ones too, and so is the applet's build: `Watchdog.sync`
+        # asks launchd what is loaded before it builds, writes or removes anything, so it gets no
+        # further — and the plist it would write is not the one under ~/Library/LaunchAgents
+        # (`isolated_launch_agent` below).
+        if words[:1] == ["launchctl"]:
+            raise RuntimeError(f"a unit test tried to reach this Mac's launchd agents: {words}")
+        if words[:1] == ["osacompile"]:
+            raise RuntimeError(f"a unit test tried to build an applet in the checkout: {words}")
+        if words[:1] == ["osascript"] and any("login item" in w for w in words):
+            raise RuntimeError("a unit test tried to read or change this Mac's login items")
         super().__init__(args, *rest, **kwargs)
 
 
@@ -84,6 +110,13 @@ CAST_CONFIG = {
     "ai_message_footer": True,
     # The install's local integration folders are not the repository's: no test sees them.
     "extra_integration_dirs": [],
+    # An install whose iMessage account is on a satellite names its address here: no test may build
+    # a host that would read that Mac's real messages. The tests of the remote host patch the key.
+    "imessage.host": "local",
+    # The same for the iMessage chat interface, which is also off for the suite whatever the
+    # install says: its tests build the transport over a fake host and patch the keys they need.
+    "imessage_chat.host": "local",
+    "interfaces.imessage.enabled": False,
 }
 _real_config_get = _config_module.config.get
 
@@ -105,7 +138,18 @@ import sqlite3
 _sqlite_connect = sqlite3.connect
 
 
+# The Mac's own Messages database and AddressBook hold real people. A test reads a fixture
+# database under tmp_path; one that reaches the real folders (a default path left unpinned did,
+# 2026-11-09) is refused here whatever path it built, and the defaults of common/imessage point
+# at a folder that does not exist.
+_REAL_PEOPLE = (str(Path.home() / "Library" / "Messages"),
+                str(Path.home() / "Library" / "Application Support" / "AddressBook"))
+
+
 def _connect_without_fsync(*args, **kwargs):
+    database = str(args[0] if args else kwargs.get("database", ""))
+    if any(folder in database for folder in _REAL_PEOPLE):
+        raise RuntimeError(f"a unit test tried to open the Mac's own Messages or AddressBook database: {database}")
     conn = _sqlite_connect(*args, **kwargs)
     try:
         conn.execute("PRAGMA synchronous=OFF")
@@ -115,6 +159,25 @@ def _connect_without_fsync(*args, **kwargs):
 
 
 sqlite3.connect = _connect_without_fsync
+
+import common.imessage.Contacts as _contacts_module
+import common.imessage.MessagesDatabase as _messages_database_module
+_NO_SUCH_MAC = aiserver_dir / "cache" / "no-such-mac"
+_messages_database_module.CHAT_DB_PATH = str(_NO_SUCH_MAC / "Messages" / "chat.db")
+_contacts_module.ADDRESS_BOOK_DIR = _NO_SUCH_MAC / "AddressBook"
+
+# The typing dots are made through the Mac's Accessibility: a write into the compose field of the
+# real Messages shows dots on a real person's phone, and the windows it opens are the developer's.
+# Every pyobjc call of common/imessage — Accessibility and the login session's state — goes
+# through one loader, refused here; the tests put an in-memory tree in its place (ax_fakes).
+import common.imessage.Accessibility as _accessibility_module
+
+
+def _no_real_accessibility():
+    raise RuntimeError("a unit test tried to reach this Mac's Accessibility API or its login session")
+
+
+_accessibility_module._frameworks = _no_real_accessibility
 
 
 @pytest.fixture(autouse=True)
@@ -144,6 +207,26 @@ def isolated_vault_file(tmp_path_factory):
     """No unit test opens the developer's vault.bin (which the cheap key could not read anyway):
     the Vault singleton gets its own, empty file for the session."""
     common.vault.Vault.VAULT_PATH = tmp_path_factory.mktemp("vault") / "vault.bin"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def isolated_imessage_chat_state(tmp_path_factory):
+    """No unit test reads or writes the install's cache/imessage_chat.json — the iMessage chat's
+    cursor into the assistant's own Messages account and its send counts: a transport built
+    without a path of its own keeps its state in a scratch file."""
+    from interfaces.imessage import ChatState
+    ChatState.STATE_PATH = tmp_path_factory.mktemp("imessage_chat") / "imessage_chat.json"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def isolated_launch_agent(tmp_path_factory):
+    """No unit test writes or removes the watchdog's plist in ~/Library/LaunchAgents — launchd
+    loads whatever lies there at the next login, whoever wrote it: a `Watchdog.sync` that names
+    no plist of its own gets a scratch one, and the log the plist names is beside it."""
+    from common import Watchdog
+    root = tmp_path_factory.mktemp("launch_agent")
+    Watchdog.PLIST = root / "LaunchAgents" / Watchdog.PLIST.name
+    Watchdog.OUT_LOG = root / "Logs" / Watchdog.OUT_LOG.name
 
 
 @pytest.fixture(autouse=True, scope="session")

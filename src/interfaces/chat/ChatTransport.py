@@ -50,6 +50,10 @@ class ChatTransport(ABC):
     source: str = ""          # ChannelProfile key the requests carry (SOURCE_TELEGRAM, …)
     max_message_length: int = 0   # longest single message; 0 = unlimited
     shows_history: bool = False   # renders the dialog history itself, so a system row is not pushed to it
+    # A reply cut short because a request elsewhere superseded it: True delivers what was written
+    # so far (a bubble that is edited in place shows it already), False drops it (a platform that
+    # cannot take a bubble back would send half a sentence only because of the kill).
+    keeps_partial_reply: bool = True
     lang: str = "en"
 
     def start(self, hub) -> None:
@@ -105,6 +109,14 @@ class ChatTransport(ABC):
         and no more drafts will be opened for it. Optional; the TUI uses it to reconcile
         its live bubbles with the dialog history."""
 
+    def turned_away(self, conversation, message_ids: list) -> None:
+        """A guest's turn from *conversation* was not served because a request was in flight
+        — a guest never supersedes one — and was dropped without a word. *message_ids* are
+        the `IncomingMessage.message_id`s the turn was made of. Called from the session's
+        threads, and for a turn refused on the spot before `hub.receive` returns False.
+        Optional: by default the message is gone, as in a Telegram group; a transport that
+        can read the message again offers it later."""
+
     # --- the "• doing X" command echo ------------------------------------------------------
 
     def send_command_line(self, conversation, text: str) -> Any:
@@ -134,6 +146,13 @@ class ChatTransport(ABC):
     @abstractmethod
     def close_approval_prompt(self, conversation, prompt_ref, outcome_text: str) -> None:
         """The question is answered (or timed out): take the buttons away, show the outcome."""
+
+    def asked_elsewhere(self, conversation, what: str, where: list[str]) -> None:
+        """A turn from *conversation* needs an answer only the owner gives — *what* is
+        "approval" or "secret" — and the question went to the owner's chats instead (*where*:
+        the names of the transports asked), because this conversation is not one of them. A
+        platform that shows no prompts at all says here that the turn is waiting. Optional:
+        by default the chat is told nothing, as a Telegram group is not."""
 
     # --- secrets --------------------------------------------------------------------------
 

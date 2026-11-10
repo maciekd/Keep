@@ -1,8 +1,12 @@
 """Floxy AI Server launcher: config → common singletons → Assistant → the enabled
-interfaces (http, console, voice, telegram) → serve.
+interfaces (http, console, voice, telegram, imessage) → serve.
 
 `build()` is importable without serving (tests boot a Telegram-only process with it);
-`main()` runs only under __main__. A disabled interface's module is never imported."""
+`main()` runs only under __main__. A disabled interface's module is never imported.
+
+With the root config key `role: imessage_satellite` (common/Role.py) the same entry point runs
+no assistant at all: `_launch` hands over to `_serve_satellite`, which imports nothing of the
+assistant, integrations or interfaces trees."""
 import sys
 from pathlib import Path
 
@@ -27,7 +31,7 @@ from colorama import init
 import common.DevelopmentConfig as DevelopmentConfig
 from common.DevelopmentConfig import PREPEND_USER_QUERY_OVERRIDE
 from common.logging import error, info, trace, note
-from common import ConfigMigrations, Migrations, Version
+from common import ConfigMigrations, Migrations, Role, Version
 from common.ConfigManager import config, REQUIRED_KEYS
 from common.RequirementsChecker import RequirementsChecker
 from common.StderrLogger import StderrLogger
@@ -35,8 +39,9 @@ from common.StderrLogger import StderrLogger
 init(autoreset=True, strip=False)
 
 # Start order; stop() runs in reverse. http first (owns the Quart app), console early so
-# its log tab sees the rest of the boot, voice before telegram (the Notifier).
-INTERFACE_ORDER = ("http", "console", "voice", "telegram")
+# its log tab sees the rest of the boot, voice before telegram (the Notifier), imessage last
+# (its approvals are asked in the chats started before it).
+INTERFACE_ORDER = ("http", "console", "voice", "telegram", "imessage")
 
 
 def _interface_class(name: str):
@@ -53,6 +58,9 @@ def _interface_class(name: str):
     if name == "telegram":
         from interfaces.telegram.TelegramInterface import TelegramInterface
         return TelegramInterface
+    if name == "imessage":
+        from interfaces.imessage.IMessageInterface import IMessageInterface
+        return IMessageInterface
     raise ValueError(name)
 
 
@@ -62,7 +70,7 @@ def _enabled(name: str, running_as_testsuite: bool) -> bool:
     from common import ConfigStore
     if name == "http":
         return True  # every other interface registers routes on its app
-    if name in ("telegram", "console") and running_as_testsuite:
+    if name in ("telegram", "console", "imessage") and running_as_testsuite:
         # The prompt suite runs one server per worker; a console per server would mean each
         # racing for the one TUI port and a tui.py client landing in a test server.
         info(f"{name.capitalize()} interface skipped in testsuite mode.")
@@ -474,27 +482,57 @@ def _verify_config_or_exit():
         trace("Config check: required keys present")
         return
     names = " and ".join(filter(None, [", ".join(missing[:-1]), missing[-1]]))
+    lines = [f"Please set {names} in {os.path.basename(config.config_path())} and restart."]
+    if config.created_skeleton:
+        lines.insert(0, f"A new {os.path.basename(config.config_path())} was written at {config.config_path()}")
+    _refuse_to_start("server", lines)
+
+
+def _refuse_to_start(what: str, lines: list[str]):
     bar = "=" * 70
     error("")
     error(bar)
-    error("  CONFIG CHECK FAILED — server will not start")
+    error(f"  CONFIG CHECK FAILED — {what} will not start")
     error(bar)
-    if config.created_skeleton:
-        error(f"  A new {os.path.basename(config.config_path())} was written at {config.config_path()}")
-    error(f"  Please set {names} in {os.path.basename(config.config_path())} and restart.")
+    for line in lines:
+        error(f"  {line}")
     error(bar)
     error("")
     sys.exit(1)
 
 
-if __name__ == "__main__":
+def _serve_satellite():
+    """`role: imessage_satellite`: no Assistant, no interface, no integration — the process
+    serves this Mac user's Messages account to a Keep server and follows that server's version
+    (common/imessage/Satellite.py). The port is `imessage_satellite.port`, not argv's: a second
+    macOS user shares the port space of the server's own."""
+    from common.imessage import Satellite
+    problem = Satellite.config_problem()
+    if problem:
+        _refuse_to_start("satellite", [f"{problem}.", f"Set it in {config.config_path()} and start again."])
+    asyncio.run(Satellite.build().serve())
+    info("Clean shutdown complete")
+
+
+def _launch():
     _enable_crash_traces()
     info(_TLS_TRUST)
-    _port, _testsuite = _parse_args()
+    port, testsuite = _parse_args()
     RequirementsChecker.verify_or_exit()
     Migrations.run()
+    role = Role.current()
+    if role == Role.IMESSAGE_SATELLITE:
+        _serve_satellite()
+        return
+    if role != Role.SERVER:
+        _refuse_to_start("Keep", [f"{Role.KEY}: {role!r} in {config.config_path()} is not a role.",
+                                  f"Remove the key for a Keep server, or set it to {Role.IMESSAGE_SATELLITE}."])
     _verify_config_or_exit()
     info("Loading libraries...")
-    _server = build(_port, _testsuite)
-    atexit.register(_server.stop)   # the fallback for a start that never reached main()'s finally
-    asyncio.run(main(_server))
+    server = build(port, testsuite)
+    atexit.register(server.stop)   # the fallback for a start that never reached main()'s finally
+    asyncio.run(main(server))
+
+
+if __name__ == "__main__":
+    _launch()

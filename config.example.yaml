@@ -151,6 +151,111 @@ telegram_bot:
   notify_chat_ids: []  # who gets the proactive pushes (autonomous findings, system notes, photos it sends unasked); empty = every allowed chat. A photo someone asked for goes back to their chat. Read live, no restart.
   link_previews: false  # true = Telegram renders preview cards for URLs in the bot's replies; needs restart_integration("Telegram")
 
+# Looking for the user's own iMessages ("read my messages", send_imessage)? That is the "iMessage"
+# integration, section imessage — not this one.
+# This section is Keep as a contact of its own on iMessage: an Apple ID that belongs to the assistant,
+# which the family texts like a friend and adds to group chats. It is an interface
+# (interfaces.imessage, off by default) that list_integrations shows as "iMessage Chat".
+# What it takes, in this order — ask the user for each step; most of it is done at a Mac, not in a chat:
+# 1. An Apple ID for the assistant, never the user's own: a message sent to the user's own account is
+#    the user's, read by the iMessage integration. The user creates it (appleid.apple.com; Apple asks
+#    for a phone number for its two-factor sign-in). An Apple ID with only an email address is enough
+#    for iMessage: people text that address, and whoever writes by SMS (a phone without iMessage)
+#    cannot reach it.
+# 2. A macOS user whose Messages is signed in to iMessage with that Apple ID. One macOS user has one
+#    Messages login, so the account lives in one of three places:
+#    - Another macOS user on the server's Mac, with a Keep satellite in that user: host is
+#      http://127.0.0.1:8898. It runs only while that user is signed in — after a reboot somebody
+#      signs that user in once; switching back to the own account afterwards is fine — and while that
+#      user is switched away no typing dots are expected.
+#    - Another Mac, with a Keep satellite there: host is the address its installer prints
+#      (http://<that Mac's name>.local:8898), over plain HTTP, so only on a network the user trusts. A
+#      Mac without a display is expected to work, typing dots included, but that has not been tried yet.
+#    - The server's own macOS user, on a Mac that is the assistant's alone: host stays local and there is
+#      no satellite. The user's own Messages is then elsewhere, so the iMessage integration is off or
+#      reads another Mac through a satellite of its own.
+#    config_help("imessage_satellite") has the satellite's install: one command in Terminal at that Mac,
+#    which ends by printing the two values for host and host_token below.
+# 3. The grants, on the Mac and in the macOS user that hold the assistant's Messages, given at that
+#    Mac's own screen: Full Disk Access for Terminal (to read the messages), Automation — macOS asks to
+#    let Terminal control Messages at the first reply — and, for the typing dots only, Accessibility for
+#    Terminal (below). With a satellite, show_full_disk_access_setting() and restart_server() act on the
+#    wrong Mac and do not help; with host: local they are the way, as for the iMessage integration.
+# 4. host and host_token, typed by the user: config_request("imessage_chat.host") and
+#    config_request("imessage_chat.host_token"). config_set refuses both; never state, guess or repeat
+#    either value. With host: local there is nothing to type.
+# 5. Who may text it: the three lists below, every entry typed by the user — one config_request per
+#    entry ("imessage_chat.owners[0]", then [1] …; the same for guests and bots). config_set refuses
+#    all three lists, so nothing the assistant reads can make somebody an owner, or put a stranger on a
+#    list: whoever is listed is answered and is a post_message destination. Never state a handle; to
+#    add or change a person, ask for the entry with config_request.
+# 6. config_set("interfaces.imessage.enabled", "true") and restart_server — the interfaces are read at
+#    startup. From then on restart_integration("iMessage Chat") is enough after a change of host or
+#    host_token; the lists, daily_limit and typing_dots are read live. list_integrations shows what is
+#    missing or wrong, with the fix.
+# The account must be the chat's alone: while the iMessage integration is enabled and imessage.host
+# names the same account as imessage_chat.host, the chat does not start and list_integrations says so.
+# Who may do what: an owner has every right the owner has in the console — commands run. What needs an
+# approval or a typed secret is never shown in iMessage: it is asked in the console or the Telegram bot
+# and the iMessage chat gets one line saying it is waiting (with neither of the two to ask in, the
+# command does not run). An owner is an owner only over iMessage itself: the same number writing by
+# SMS or RCS — an owner without an iPhone — is treated as a guest, since an SMS sender can be forged.
+# A guest is answered, but no command runs for them and nothing private is shared. A sender on no list
+# is never answered.
+# Where it answers: a message in a 1:1 chat always. In a group chat a reply to one of its own messages,
+# a message that says its name (wake_word, wake_word_aliases) and the message right after one of its
+# own; whatever else the group says is not answered and is read as context with the next answer. There
+# is no list of groups: a group is served through the listed people in it, each with the rights they
+# have anywhere. Every person on the lists is a post_message destination by name. A group chat
+# becomes one once an owner has written in it over iMessage — anybody can put a listed number in a
+# group, so a listed member is not enough — and stops being one when that owner has left it, until an
+# owner writes in it again. A group is called by its name without quotes and other marks, cut to 40
+# characters, or by its listed members when that leaves nothing, the name is taken, two such groups
+# have the same name, or the name is a listed person's.
+# A message that waited more than 15 minutes for the server (a restart, a sleeping satellite) is not
+# answered on its own; it is shown to the assistant with the next message of that chat. A guest who
+# writes while another request is being worked on is answered once that is over.
+# What does not work yet: it cannot send a photo or a video (the caption goes out as text). A picture
+# sent to it is seen; any other file is only named to it. An edited or unsent message is not noticed.
+# Typing dots: while it works on a reply the chat sees it typing, as with a person. That is optional
+# and needs one more grant, on the Mac that holds the assistant's Messages (the satellite's Mac, not
+# the server's, when host is a satellite) and in the macOS user Keep runs as there: Accessibility for
+# Terminal — System Settings > Privacy & Security > Accessibility, turned on at that Mac's own screen;
+# no restart, the next reply shows them. Tell the user what the grant is: it lets whatever is started
+# from Terminal control that Mac. Keep then opens the chat in a small Messages window of its own on
+# that Mac while it answers and closes it again. The dots show only while that user is the one logged
+# in on the Mac's screen, the screen is unlocked and Messages is open with its main window: a Mac that
+# locks its screen shows no dots (replies are sent all the same), so a Mac kept for the assistant
+# should not lock (System Settings > Lock Screen). Only a chat among the dozen newest in the Messages
+# sidebar gets them, and one the sidebar names unmistakably: a named group, a person by the contact
+# card on that Mac or else by their number — not an unnamed group, not a name two chats share. While
+# something on that Mac keeps the dots away list_integrations says what, as a warning on "iMessage
+# Chat"; typing_dots: false ends dots and warning. tools/imessage_live_check/imessage_live_check.py,
+# run by the user in Terminal at that Mac with their own number, shows whether the dots reach a phone.
+imessage_chat:
+  host: local                              # local = Messages on this Mac, under the user the server runs as.
+                                           # For a satellite: http://<its address>:8898 (http://127.0.0.1:8898
+                                           # for another user of this Mac). Typed by the user: config_request.
+  host_token: YOUR_SATELLITE_TOKEN_HERE    # only with a satellite: imessage_satellite.token of its config.yaml.
+                                           # A secret — config_request("imessage_chat.host_token").
+  # One entry per person and handle: a phone number with + and the country code, or the email the
+  # person's iMessage uses, with the name the assistant should call them in front: "Marcus +46701740605",
+  # "Charlotte charlotte@example.com". Somebody who writes from a phone number and an email has two
+  # entries with the same name. A number without the leading + matches nobody.
+  owners: []                               # full rights, as in the console: commands run, approvals are asked in
+                                           # the owner's other chats. Only over iMessage itself — the same number
+                                           # writing by SMS is treated as a guest, since an SMS sender can be forged.
+  guests: []                               # answered, but no command runs for them and nothing private is shared.
+                                           # Typed by the user like owners: config_request.
+  bots: []                                 # handles that are another household's assistant: guests that start a turn
+                                           # at most 6 times an hour per chat, so two assistants cannot loop.
+                                           # Typed by the user: config_request.
+  daily_limit: 200                         # messages to one person or group per day; the rest of the day's replies
+                                           # there are not sent (logged). Stops a loop from flooding a phone.
+  typing_dots: true                        # show the chat that a reply is being typed (see above: needs Accessibility
+                                           # for Terminal on the Mac that holds the account). false: never. Read at
+                                           # every reply; without the grant nothing is touched and nothing shows.
+
 # >> telegram_feed: src/integrations/telegram_feed/config.example.yaml
 
 # >> imessage: src/integrations/imessage/config.example.yaml
@@ -192,6 +297,7 @@ interfaces:
   http:     { enabled: true }               # always on (the others register routes on it); port from argv
   voice:    { enabled: false }              # VoiceToVoice, off unless set to true; needs mics and speakers on the server, an ElevenLabs API key and api_keys.gemini (the ai.fast tier).
   telegram: { enabled: true }               # the bot + Notifier; also needs telegram_bot.bot_token
+  imessage: { enabled: false }              # Keep as an iMessage contact of its own; needs the imessage_chat section
   console:  { enabled: true, port: 5151 }   # TUI dashboard (tui.py connects to this port)
 
 # Server-internal microphone outposts: one virtual outpost per connected mic,
@@ -272,7 +378,65 @@ nightly_update: true
 # stays down until the next login or a start by hand. Applied when set and at each start, no restart
 # needed; the agent shows under System Settings > General > Login Items & Extensions, where it can
 # be switched off. It tells nobody that the server died (issue #127 has the external heartbeat).
+# An iMessage satellite (role below) reads the key too, at each start only — there is no assistant
+# on it to set it — and its installer writes true: nobody sits at a satellite. ./stop.sh only stops;
+# with the key on, launchd starts the process again within 5 minutes.
 watchdog: false
+
+# What this install runs. server (or no key): Keep itself, everything this file describes. imessage_satellite:
+# no assistant at all — only a small HTTP service that lends the Messages account of this Mac user to a
+# Keep server elsewhere, which names it under imessage.host or imessage_chat.host (section
+# imessage_satellite below has the install). Not a key the assistant can change (config_set and
+# config_request refuse it): the installer writes it on the Mac it is about. A satellite is an install of
+# its own, in its own folder; a server's install is never turned into one.
+# Read at start, by floxy_ai_server.py and by start.sh (scripts/role.sh), which both take anything but
+# these two values for a mistake and start nothing.
+role: server
+
+# An iMessage satellite: what an install runs under `role: imessage_satellite` — the service that lends
+# the Messages account of one Mac user to a Keep server. One is needed whenever the account is not that
+# of the macOS user the server runs as: the user's own Messages on another Mac (section imessage), or the
+# assistant's own Apple ID under another macOS user or on another Mac (section imessage_chat). Nothing
+# here is read by a server, and none of it is the assistant's to set (config_set and config_request
+# refuse the section): the installer writes it on the satellite's Mac. What to tell the user:
+# 1. At the Mac, signed in as the macOS user whose Messages is signed in to iMessage with the Apple ID
+#    to serve, open Terminal and run Keep's install command with the role in front of bash:
+#      curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/release/install.sh | KEEP_ROLE=imessage_satellite bash
+#    It installs into that user's ~/Keep and asks for no API key. In a folder that already holds a Keep
+#    server it stops and names the way out (KEEP_DIR=~/KeepSatellite in front of bash as well).
+# 2. It asks one thing — where the Keep server runs: 1 for another user of the same Mac (the satellite
+#    then answers that Mac only), 2 for another Mac (it answers the network; the token and the messages
+#    cross it unencrypted, so only on a network the user trusts).
+# 3. At its end it prints the address and the token, under both pairs of keys — imessage.host and
+#    imessage.host_token, imessage_chat.host and imessage_chat.host_token — and starts the satellite:
+#    Terminal shows the start and returns with "is up on port 8898". The token is shown nowhere else;
+#    running the same command again upgrades the install and prints the lines again.
+# 4. The grants, at that Mac's own screen and in that macOS user. Full Disk Access for Terminal: System
+#    Settings > Privacy & Security > Full Disk Access, then quit Terminal, open it again and run
+#    ~/Keep/start.sh (macOS applies the grant only to a relaunched Terminal). Automation: that start
+#    reads Messages, and macOS then asks to let Terminal control System Events — allowing it makes the
+#    satellite start at that user's login — and, at the first message sent, to let Terminal control
+#    Messages. Accessibility for Terminal only for the typing dots of the iMessage chat (section
+#    imessage_chat).
+# 5. On the server the user types the two values: config_request for host and for host_token of the
+#    section the account is for — never state or repeat them — then restart_integration("iMessage") or
+#    restart_integration("iMessage Chat"). list_integrations shows whether the satellite answers.
+# From then on the satellite updates itself to the release line and version of the server that calls
+# it, starts at that user's login and, since its installer writes watchdog: true, is started again by
+# launchd within 5 minutes of dying. It has no console and no assistant: ~/Keep/start.sh shows its start
+# and returns. A satellite under a second macOS user runs only while that user is signed in — after a
+# reboot somebody signs that user in once. To stop one for good: watchdog: false in its config.yaml,
+# ~/Keep/start.sh once, then ~/Keep/stop.sh. One satellite serves one Messages account; a second one on
+# the same Mac is a second macOS user with an install of its own and another port.
+#imessage_satellite:
+#  port: 8898              # its own port, not the server's 8888: a second macOS user on the server's Mac shares
+#                          # the port space
+#  token: CHANGE_ME        # what the server must present with every call; at least 16 random characters (the
+#                          # installer writes 32). Whoever holds it and reaches the port reads and sends this
+#                          # account's messages — treat it like a password
+#  lan_access: false       # false: only this Mac reaches the service (the satellite is another user of the
+#                          # server's Mac). true: the whole network does, which a satellite on another Mac needs;
+#                          # the token and the messages then cross the network unencrypted — only on a network you trust
 
 # Ask before the assistant acts in its browser. true: a browser click, key press or script
 # (browse_act, browse_key, browse_eval, browse_click_at) raises the same Approve/Deny card as

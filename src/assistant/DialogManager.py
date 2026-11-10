@@ -251,11 +251,17 @@ class DialogManager:
             return None
         return self._BREVITY_DIRECTIVE
 
+    def _style_directive(self) -> str | None:
+        """The channel's own word on how a reply is written (ChannelProfile.style_directive)."""
+        ctx = getattr(self.web_request_handler, "ctx", None)
+        return profile_for(getattr(ctx, "source", None)).style_directive or None
+
     def _trailing_directives(self) -> list[str]:
-        """Per-request directives folded onto the end of the request, in read order:
-        brevity first, language last so the reply-language directive stays the final thing
-        the model reads (it must override the English-dominated context — see above)."""
-        return [d for d in (self._brevity_directive(), self._language_directive()) if d]
+        """Per-request directives folded onto the end of the request, in read order: the
+        channel's style and brevity first, language last so the reply-language directive stays
+        the final thing the model reads (it must override the English-dominated context — see
+        above)."""
+        return [d for d in (self._style_directive(), self._brevity_directive(), self._language_directive()) if d]
 
     def _with_trailing_directives(self, messages: list) -> list:
         """Return a copy of `messages` with the per-request trailing directives folded into

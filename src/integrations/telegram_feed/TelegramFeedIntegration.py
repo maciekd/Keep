@@ -2,16 +2,16 @@ import asyncio
 import concurrent.futures
 import os
 import queue
-import re
 import threading
 import time
-from collections import deque
 from pathlib import Path
 from typing import Callable, List, Optional
 
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
 from assistant.integration.Integration import Integration
+from assistant import GroupWake
 from assistant.ChannelProfile import SOURCE_TELEGRAM
+from assistant.GroupWake import BOT_WAKE_CAP, HOW, REFUSED, ROW, TURN
 from assistant.Notifier import SecretRejected, notifier
 from common.logging import info, trace, error, fine
 from assistant.PromptInjectionDetector import is_prompt_injection
@@ -34,9 +34,6 @@ LOGOUT_TIMEOUT = 30         # seconds for //wipe's log-out, connect included
 LOGIN_HINT = "sign the account in with telegram_login(phone) from the console chat, or in the console's Telegram tab"
 CODE_REUSE_NOTE = ("Asked again within a few minutes, Telegram repeats the same code without sending a new message — "
                    "wait for that one before requesting another.")
-BOT_WAKE_CAP = 6            # wakes by another bot per group per hour: the brake if two assistants loop
-TURN, ROW, REFUSED = "turn", "row", "refused"   # what became of a live group message (_hand_over)
-BOT_WAKE_WINDOW = 3600.0
 
 
 class TelegramFeedIntegration(Integration, Feed):
@@ -79,8 +76,10 @@ class TelegramFeedIntegration(Integration, Feed):
         self._rate_limiter = RateLimiter(SEND_RATE_LIMIT_MAX, SEND_RATE_LIMIT_WINDOW)
         self._directory: dict[str, dict[int, tuple]] = {}   # lowercase name → {entity id: (entity, display)}
         self._directory_built: float = 0.0
-        self._bot_wakes: dict[int, deque] = {}   # group chat id → times another bot woke the assistant
-        self._last_sender: dict[int, int] = {}   # group chat id → sender of the last live message there
+        # The group wake rule (assistant/GroupWake.py, shared with the iMessage chat): who wrote
+        # last in each group the bot is in, and how often other bots woke the assistant there.
+        self._wake = GroupWake.GroupWake()
+        self._last_sender: dict[int, int] = self._wake.last_sender   # group chat id → sender of its last live message
         self._bot_bubbles: dict[int, tuple[int, str]] = {}   # group chat id → the bot's latest bubble (id, text)
 
     def _on_reset(self):
@@ -344,22 +343,10 @@ class TelegramFeedIntegration(Integration, Feed):
 
     @staticmethod
     def _names_assistant(text: str) -> bool:
-        names = [n for n in (config.get('wake_word', 'Michelle'), *(config.get('wake_word_aliases', []) or [])) if n]
-        if not names:
-            trace("TelegramFeed: no wake word configured, nothing can wake the assistant from a group")
-            return False
-        pattern = r"\b(" + "|".join(re.escape(n) for n in names) + r")\b"
-        return re.search(pattern, text, re.IGNORECASE) is not None
+        return GroupWake.names_assistant(text, GroupWake.assistant_names(config))
 
     def _bot_wake_allowed(self, chat_id: int) -> bool:
-        recent = self._bot_wakes.setdefault(chat_id, deque())
-        now = time.time()
-        while recent and now - recent[0] > BOT_WAKE_WINDOW:
-            recent.popleft()
-        if len(recent) >= BOT_WAKE_CAP:
-            return False
-        recent.append(now)
-        return True
+        return self._wake.brake(chat_id, BOT_WAKE_CAP)
 
     @staticmethod
     async def _replies_to_the_bot(msg, bot_id: Optional[int]) -> bool:
@@ -384,10 +371,9 @@ class TelegramFeedIntegration(Integration, Feed):
         message itself — in privacy mode Telegram delivers it only replies to its own bubbles —
         but the owner's account sees the whole group, other bots included. True when handed over.
 
-        The "right after the bot" rule reads `_last_sender`, the sender of the group's latest
-        message. Every message moves it but one the chat layer refused (a guest's while a reply
-        was in flight): the group never saw that one answered, so the next message still
-        follows the bot. The bot's reply itself lands as an edit of her draft bubble, which
+        The decision is the group wake rule every chat platform shares (`assistant/GroupWake.py`):
+        the name, the "right after the bot" rule, and the last sender a refused turn leaves in
+        place. The bot's reply itself lands as an edit of her draft bubble, which
         `_note_bot_edit` records."""
         from telethon import utils
         try:
@@ -401,16 +387,11 @@ class TelegramFeedIntegration(Integration, Feed):
                 trace(f"TelegramFeed: '{getattr(chat, 'title', chat_id)}' names the assistant but the bot is not in it")
             return False
         bot_id = self._bot_user_id()
-        follows_bot = bot_id is not None and self._last_sender.get(chat_id) == bot_id
-        outcome = await self._hand_over(msg, chat, chat_id, ids, bot_id, follows_bot)
-        if outcome == REFUSED:
-            trace(f"TelegramFeed: [{chat_id}] the refused turn from {msg.sender_id} leaves the last sender as is")
-        else:
-            self._last_sender[chat_id] = msg.sender_id
+        outcome = await self._hand_over(msg, chat, chat_id, ids, bot_id)
+        self._wake.settle(chat_id, msg.sender_id, outcome)
         return outcome == TURN
 
-    async def _hand_over(self, msg, chat, chat_id: int, ids: list[int], bot_id: Optional[int],
-                         follows_bot: bool) -> str:
+    async def _hand_over(self, msg, chat, chat_id: int, ids: list[int], bot_id: Optional[int]) -> str:
         """`_wake_assistant`'s decision: TURN when handed over, ROW when the message stays a
         context row (or nothing at all), REFUSED when the chat layer would not take the turn."""
         text = msg.text or ""
@@ -425,10 +406,11 @@ class TelegramFeedIntegration(Integration, Feed):
                   f"streaming draft's placeholder (another assistant's bubble, its text arrives as an edit the "
                   f"feed never sees) — not woken")
             return ROW
-        named = self._names_assistant(text)
-        if not named and not follows_bot:
+        # A reply to the bot's bubble is no reason here: the bot is handed those itself (below).
+        why = self._wake.reason(chat_id, text, bot_id, GroupWake.assistant_names(config))
+        if not why:
             return ROW
-        how = "named the assistant" if named else "wrote right after the bot's own message"
+        how = HOW[why]
         is_from_me = msg.sender_id == self._me.id
         if is_from_me:
             sender_name, is_bot, guest = config.get_owner_name(), False, False
@@ -476,7 +458,7 @@ class TelegramFeedIntegration(Integration, Feed):
         if text == bubble[1]:
             return
         self._bot_bubbles[chat_id] = (msg.id, text)
-        self._last_sender[chat_id] = bot_id
+        self._wake.spoke(chat_id, bot_id)
         trace(f"TelegramFeed: [{chat_id}] the bot's bubble got its text — she is the last sender again")
 
     # --- sending ------------------------------------------------------------------------------

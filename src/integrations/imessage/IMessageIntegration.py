@@ -1,113 +1,37 @@
-import os
 import re
-import sqlite3
-import subprocess
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 from assistant.SystemNote import system_note
 
-from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
+from assistant.integration import SatelliteHints
+from assistant.integration.Feed import Feed, FeedBatch, FeedEntry, FeedSourceAway
 from assistant.integration.SmsCodeReader import SmsCodeReader
-from assistant.integration.Integration import Integration
+from assistant.integration.Integration import HealthWarning, Integration
 from common.ConfigManager import config
-from common.Paths import AISERVER_DIR
-from common.logging import info, trace, error, fine, note
+from common.imessage import Hosts
+from common.imessage.Handles import is_group_guid
+from common.imessage.MessagesHost import (Attachment, GroupChat, HostHealth, Message, MessageBatch, MessagesHost,
+                                          NO_ACCESS, NO_DATABASE, Recipient, SCHEDULE_COMPLETED, SCHEDULE_FAILED,
+                                          UNREACHABLE)
+from common.logging import info, trace, error, fine
 from assistant.PromptInjectionDetector import is_prompt_injection
 from assistant.tools.MediaAnalyzer import media_analyzer, media_kind, KIND_VIDEO
-from common.RateLimiter import RateLimiter
 
 
-CHAT_DB_PATH = os.path.expanduser("~/Library/Messages/chat.db")
-# What the LLM relays when macOS keeps the server out of chat.db or the AddressBook. The grant
-# goes to Terminal, the app macOS holds responsible for the server (start.sh launches it from
-# there, whatever terminal the user typed in), and macOS applies a grant to a running Terminal
-# only once it is relaunched: it offers "quit now" or "later" when the toggle goes on, and after
-# "later" every restart_server spawns from the same ungranted Terminal. The user sits in
-# Terminal during the setup, so quitting it takes the chat down too — the way back is
-# start.sh in a fresh Terminal, not restart_server — spelled with the install's real path,
-# since a new Terminal opens in the home folder and the install folder is the user's choice.
-# The prompt shows only the first ~80 characters of an error, so the action leads.
-
-
-def _start_command() -> str:
-    """The line that starts the server from a fresh Terminal: `~/Keep/start.sh` for an install
-    under the home folder (start.sh cds into its own folder first), the full path otherwise,
-    quoted only when it needs it."""
-    script = str(AISERVER_DIR / "start.sh")
-    home = str(Path.home())
-    if script.startswith(home + os.sep):
-        script = "~" + script[len(home):]
-    if re.search(r"[\s'\"$`\\]", script):
-        script = '"' + script.replace("~", "$HOME", 1).replace('"', '\\"') + '"'
-    return script
-
-
-FULL_DISK_ACCESS_HINT = ("needs Full Disk Access for Terminal, then quit Terminal and restart_server(). Tell the user, "
-                         "who must be at the Mac: 1) show_full_disk_access_setting() opens System Settings > Privacy & "
-                         "Security > Full Disk Access — turn on Terminal; 2) macOS offers to quit Terminal: accept (the "
-                         "console closes, the server keeps running, Telegram stays up); 3) restart_server() from "
-                         f"Telegram — or, without Telegram, open Terminal again and type {_start_command()}")
-APPLE_EPOCH_OFFSET = 978_307_200
+CONFIG_SECTION = "imessage"     # holds `host` and `host_token`: whose Messages this integration reads (common/imessage/Hosts)
 POLL_INTERVAL = 5
 FETCH_BATCH_SIZE = 500   # chat.db rows read per fetch; a shorter batch means the catch-up is over
-CONTACT_CACHE_REFRESH_INTERVAL = 30 * 60
 APPLE_2FA_PATTERN = re.compile(r"Apple Account Code is:\s*(\d{6})")
 RING_2FA_PATTERN = re.compile(r"Your Ring verification code is:\s*(\d{6})")
 TFA_CODE_MAX_AGE = 120  # only auto-submit 2FA codes from messages received within this many seconds
 
-SEND_RATE_LIMIT_WINDOW = 60.0
-SEND_RATE_LIMIT_MAX = 5
-APPLESCRIPT_TIMEOUT = 15
-APPLESCRIPT_RESULT_IMESSAGE = "sent:imessage"
-APPLESCRIPT_RESULT_SMS = "sent:sms"
-APPLESCRIPT_RESULT_GROUP = "sent:group"
-GROUP_CHAT_STYLE = 43           # chat.style of a group conversation; 45 is a 1:1 chat
-# how a recipient lists the members of an unnamed group: "Alice, Bob", "Alice & Bob", "Alice and Bob"
-GROUP_MEMBER_SEPARATOR = re.compile(r"\s*(?:,|&|\+|\band\b|\boch\b)\s*", re.IGNORECASE)
-GROUP_HINT_LIMIT = 3            # near-miss groups named in the error for a member list no group has
+# How often a file is asked for again because the host went away over it (a satellite relaunching
+# between the poll and the read, a video too slow to cross) before its row is stored without it.
+ATTACHMENT_TRIES = 3
 
-# chat.db send-later columns: schedule_type=2 marks a scheduled row (Apple resets it to 0
-# on the actual send); schedule_state 3 = completed, 4 = failed (error set, never sent)
-SCHEDULE_TYPE_SEND_LATER = 2
-SCHEDULE_STATE_COMPLETED = 3
-SCHEDULE_STATE_FAILED = 4
-# Send Later arrived with macOS 15; a Sonoma chat.db has neither column, and a query naming them
-# failed on every poll there (a beta tester's Mac, 2026-10-16: the feed and the Apple 2FA codes it
-# forwards were both dead from the first fetch)
-SCHEDULE_COLUMNS = ("schedule_type", "schedule_state")
 # a scheduled message still unsent this long after its send time is never going to send
 # from here (Send Later fires from whichever device is online) — stop tracking it
 SCHEDULED_GRACE_PERIOD = 7 * 24 * 3600
-
-# Which of a contact's handles send_imessage picks, best first: one chat.db knows as an iMessage
-# handle (phone or email), a mobile number (AddressBook label or a Swedish 07x number), any other
-# phone (landline, unlabelled), an email Messages has never seen, a fax/pager. Inside a tier the
-# handle with the most recent conversation wins.
-TIER_IMESSAGE, TIER_MOBILE, TIER_OTHER_PHONE, TIER_UNKNOWN_EMAIL, TIER_FAX = range(5)
-TIER_NAMES = ("iMessage handle", "mobile", "other phone", "email unknown to Messages", "fax")
-MOBILE_LABEL_PATTERN = re.compile(r"iphone|mobil|cell", re.IGNORECASE)     # "Mobile", "mobil" (sv)
-FAX_LABEL_PATTERN = re.compile(r"fax|pager", re.IGNORECASE)
-SWEDISH_MOBILE_PATTERN = re.compile(r"^(?:\+46|0046)7\d{8}$|^07\d{8}$")
-CHAT_ACTIVITY_CHUNK = 500      # handle rowids per chat.db query, well under SQLite's parameter limit
-
-
-@dataclass(frozen=True)
-class GroupChat:
-    """A group conversation of chat.db, named the way the feed names it."""
-    guid: str                   # chat.guid — also the chat's AppleScript id, what a group send addresses
-    name: Optional[str]         # the display name, None for an unnamed group
-    members: tuple[str, ...]    # contact names, sorted — the "Alice, Bob" the feed shows for an unnamed group
-    last_active: int            # Apple date of its latest message; the tiebreak between look-alike groups
-
-    @property
-    def label(self) -> str:
-        return self.name or ", ".join(self.members)
-
-    def describe(self) -> str:
-        members = ", ".join(self.members)
-        return f"{self.name} ({members})" if self.name else members
 
 
 class IMessageIntegration(Integration, Feed, SmsCodeReader):
@@ -117,11 +41,18 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
     sends an iMessage or SMS to a contact when asked. It also catches the 2FA codes Apple and
     Ring text.
 
-    Reads the macOS iMessage database as a Feed (plans/FEED_PLAN.md): `fetch` turns the rows
-    after the cursor (a chat.db ROWID) into history entries; FeedRunner owns the thread, the
-    cursor and the catch-up. Sending is rate-limited; it also resolves contact names to handles,
-    forwards the detected Apple/Ring 2FA codes to their integrations, and dispatches scheduled
-    send-later messages."""
+    Everything that touches Messages.app goes through `self.host`, a `MessagesHost`
+    (`common/imessage/` — chat.db, the AddressBook, the AppleScript sends); what is here is the
+    assistant's side of it. `imessage.host` picks the host (`Hosts.build`): this Mac's own
+    Messages, or a satellite on another Mac or macOS user — whose problems `SatelliteHints`
+    puts into words, since the grants are then needed there and not here. As a Feed
+    (plans/FEED_PLAN.md) `fetch` turns the rows the host returns after the cursor (a chat.db
+    ROWID) into history entries; FeedRunner owns the thread, the cursor and the catch-up — the
+    ROWID is one chat.db's, so the cursor is kept with its account (`cursor_source`) and given
+    up when `imessage.host` names another or the database ends before it (`cursor_lost`). It
+    screens incoming texts for prompt injection, has media described, forwards the detected
+    Apple/Ring 2FA codes to their integrations, follows send-later messages until they send
+    and echoes its own sends into the history."""
     sensitive = True
 
     poll_interval = POLL_INTERVAL
@@ -131,28 +62,28 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
 
     def __init__(self):
         super().__init__()
+        self.host: MessagesHost = Hosts.build(CONFIG_SECTION)
+        self.cursor_source = Hosts.account(CONFIG_SECTION)      # whose chat.db the ROWIDs are of, as the host was built
         self._last_seen_rowid = 0
-        self._scanned_rows = 0          # rows the last _poll_new_messages read (batch-size test)
+        self._exhausted = True          # the last poll read fewer rows than it asked for
         self._open_error: Optional[str] = None
         # history rows produced outside fetch (a sent message) — handed over with the next batch
         self._pending_entries: list[FeedEntry] = []
-        self._contact_cache: dict[str, str] = {}
-        self._name_to_handle: dict[str, str] = {}
-        self._handle_reasons: dict[str, str] = {}     # name key → why its handle won (for the log)
-        self._handle_to_full_name: dict[str, str] = {}
-        self._groups_by_guid: dict[str, GroupChat] = {}   # the groups resolve_recipient handed out
-        self._contact_cache_time = 0.0
-        self._rate_limiter = RateLimiter(SEND_RATE_LIMIT_MAX, SEND_RATE_LIMIT_WINDOW)
+        # what the host resolved, by handle — the approval card and the history echo read it
+        self._recipients: dict[str, Recipient] = {}
         self._notified_cache_empty = False
         # 2FA codes detected but held for one poll cycle — see _settle_and_forward_2fa
         self._pending_apple_code: Optional[Tuple[float, str]] = None
         self._pending_ring_code: Optional[Tuple[float, str]] = None
         # send-later messages composed but not yet sent — see _check_scheduled_messages
         self._scheduled_rowids: set[int] = set()
-        # chat.db has the Send Later columns (macOS 15+); open_feed reads the schema
-        self._has_schedule_columns = True
         # rowids already logged as past-due-but-unsent, so the wait is noted once
         self._past_due_noted: set[int] = set()
+        self._rewind_noted = False      # a host answered a poll with a cursor behind the one it was asked from
+        self._attachment_tries: dict[int, int] = {}     # attachment id → reads that found the host away
+        # attachment id → its description, for the batch being read: a batch read again because
+        # the host went away over a later file costs no second vision call for the earlier ones
+        self._described: dict[int, str] = {}
 
     def _on_reset(self):
         from assistant.integration.FeedRunner import Feeds
@@ -164,25 +95,45 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
 
     @property
     def config_keys(self) -> List[str]:
-        return []
+        """Nothing for this Mac's own Messages; the token when `imessage.host` names a satellite."""
+        return [f"{CONFIG_SECTION}.{Hosts.TOKEN_KEY}"] if Hosts.is_remote(CONFIG_SECTION) else []
 
     def reads_sms_codes(self) -> bool:
         """The feed is the reader: live while its runner polls (or is still opening), dead when
-        it failed, was stopped or never started."""
+        it failed, was stopped or never started — and while its source is away: a satellite
+        whose Mac sleeps reads no code, however long the runner waits for it."""
         from assistant.integration.FeedRunner import Feeds, FeedState
         runner = Feeds.get_instance().runner(self.feed_name)
-        return runner is not None and runner.state in (FeedState.STARTING, FeedState.CATCHING_UP, FeedState.LIVE)
+        if runner is None or runner.state not in (FeedState.STARTING, FeedState.CATCHING_UP, FeedState.LIVE):
+            return False
+        return not runner.away
+
+    def _full_disk_access_hint(self) -> str:
+        """The grant is needed where Messages is: on this Mac, or on the satellite's."""
+        return SatelliteHints.full_disk_access(self.host.address)
+
+    def _health_error(self, health: HostHealth) -> Optional[str]:
+        """What an unhealthy host means to the user: no Messages on the Mac, or — for every
+        other refusal of chat.db — the Full Disk Access grant, the action first. For a
+        satellite, also that it cannot be reached or does not take the token."""
+        if health.contacts:
+            self._notified_cache_empty = False
+        if health.ok:
+            return None
+        if self.host.address:
+            return SatelliteHints.problem(self.host.address, health, CONFIG_SECTION, self.name)
+        if health.reason == NO_DATABASE:
+            return health.detail
+        return f"{self._full_disk_access_hint()} ({health.detail})"
 
     def check_health(self) -> bool:
-        try:
-            with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-                conn.execute("SELECT 1 FROM message LIMIT 1")
-        except sqlite3.OperationalError as e:
-            if not os.path.exists(CHAT_DB_PATH):
-                raise RuntimeError(f"{CHAT_DB_PATH} does not exist — Messages.app is not set up on this Mac") from e
-            # sqlite says "unable to open database file" whether the file is missing or macOS
-            # refused it; the file is there, so it is the TCC refusal
-            raise PermissionError(f"{FULL_DISK_ACCESS_HINT} (cannot read {CHAT_DB_PATH}: {e})") from e
+        health = self.host.health()
+        problem = self._health_error(health)
+        if problem:
+            raise (PermissionError if health.reason == NO_ACCESS else RuntimeError)(problem)
+        warning = SatelliteHints.warning(self.host.address, health.satellite) if health.satellite else ""
+        if warning:
+            raise HealthWarning(warning)
         return True
 
     # --- Feed ---------------------------------------------------------------------------------
@@ -200,48 +151,54 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         return self._open_error
 
     def open_feed(self) -> bool:
-        try:
-            self.check_health()
-        except Exception as e:
-            self._open_error = str(e) if isinstance(e, (PermissionError, RuntimeError)) else \
-                f"{FULL_DISK_ACCESS_HINT} (cannot read {CHAT_DB_PATH}: {e})"
+        health = self.host.health(refresh=True)
+        self._open_error = self._health_error(health)
+        if self._open_error and (health.reason == UNREACHABLE or self.host.away()):
+            # a satellite that sleeps, restarts or is updating itself to a wire version this side
+            # speaks: the runner asks again, the messages wait in its chat.db
+            raise FeedSourceAway(self._open_error)
+        if self._open_error:
             error(f"iMessage: {self._open_error}")
             return False
-        self._open_error = None
-        self._has_schedule_columns = self._schema_has_schedule_columns()
-        self._refresh_contact_cache()
         self._seed_scheduled_messages()
-        info(f"iMessage feed opened (contact cache: {len(self._contact_cache)} entries)")
+        info(f"iMessage feed opened (contact cache: {health.contacts} entries)")
         return True
+
+    def _checked(self, answer):
+        """A host's answer, or its error raised for the runner to report and retry — as
+        `FeedSourceAway` when the host could not be reached at all, which the runner waits out."""
+        if answer.error:
+            raise (FeedSourceAway if self.host.away() else RuntimeError)(answer.error)
+        return answer
 
     def initial_cursor(self, horizon_ts: float) -> Optional[str]:
         """The ROWID just before the first message dated at or after the horizon (past every
-        row when there is none), so the catch-up starts right there. Not the last ROWID from
-        before the horizon: chat.db's ROWIDs are not in date order — Messages in iCloud
-        downloads the history in chunks, newest first, old, recent again — and on such a
-        library that ROWID sits near the end of the table and the catch-up skips years."""
+        row when there is none), so the catch-up starts right there — see
+        `MessagesDatabase.cursor_at` for why it is not the last ROWID from before the horizon."""
         self.horizon_ts = horizon_ts
-        with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-            row = conn.execute("""
-                SELECT COALESCE((SELECT MIN(ROWID) - 1 FROM message WHERE date >= ?),
-                                (SELECT COALESCE(MAX(ROWID), 0) FROM message))
-            """, (self._horizon_apple_ts(),)).fetchone()
-        fine(f"iMessage: initial ROWID {row[0]} (just before the first message dated "
+        rowid = self._checked(self.host.cursor_at(horizon_ts)).value
+        fine(f"iMessage: initial ROWID {rowid} (just before the first message dated "
              f"{time.strftime('%Y-%m-%d', time.localtime(horizon_ts))} or later)")
-        return str(row[0])
+        return str(rowid)
 
-    def _horizon_apple_ts(self) -> int:
-        """The runner's horizon as chat.db stores dates (nanoseconds since 2001); 0 — every
-        row — when no runner has set one (the tests, a one-off read)."""
-        if self.horizon_ts is None:
-            return 0
-        return int((self.horizon_ts - APPLE_EPOCH_OFFSET) * 1_000_000_000)
+    def cursor_lost(self, cursor: Optional[str], source: Optional[str]) -> Optional[str]:
+        """A ROWID is a place in one chat.db. In another account's it skips whatever lies before
+        it there, and past that database's end the feed would be live and read nothing — no
+        messages, no 2FA codes — until the ROWIDs there have grown past it. A row stored before
+        the account was kept is this Mac's own: there was no other."""
+        stored = source or Hosts.LOCAL
+        if stored != self.cursor_source:
+            return (f"is a ROWID of the Messages account '{stored}', and {CONFIG_SECTION}.{Hosts.HOST_KEY} "
+                    f"now names '{self.cursor_source}'")
+        # asked as the table's counter, never by a date: one row dated past any date asked for
+        # would end the table before it
+        last = self._checked(self.host.last_rowid()).value
+        if int(cursor or 0) > last:
+            return f"is past the last row of chat.db (ROWID {last}): another database than the one it was written for"
+        return None
 
     def remaining(self, cursor: Optional[str]) -> Optional[int]:
-        with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-            row = conn.execute("SELECT COUNT(*) FROM message WHERE ROWID > ? AND date >= ? AND is_system_message = 0",
-                               (int(cursor or 0), self._horizon_apple_ts())).fetchone()
-        return row[0]
+        return self._checked(self.host.remaining(int(cursor or 0), self.horizon_ts)).value
 
     def fetch(self, cursor: Optional[str], backfill: bool) -> FeedBatch:
         self._last_seen_rowid = int(cursor or 0)
@@ -249,201 +206,136 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         if self._pending_entries:
             entries = self._pending_entries + entries
             self._pending_entries = []
-        return FeedBatch(entries, cursor=str(self._last_seen_rowid),
-                         exhausted=self._scanned_rows < FETCH_BATCH_SIZE)
-
-    @staticmethod
-    def _schema_has_schedule_columns() -> bool:
-        """Whether this Mac's chat.db has the Send Later columns; without them the feed reads
-        every row as a plain message and tracks no scheduled sends."""
-        try:
-            with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-                columns = {row[1] for row in conn.execute("PRAGMA table_info(message)")}
-        except sqlite3.OperationalError as e:
-            info(f"iMessage: could not read the message table's schema ({e}) — assuming the Send Later columns")
-            return True
-        missing = [c for c in SCHEDULE_COLUMNS if c not in columns]
-        if missing:
-            info(f"iMessage: chat.db has no {', '.join(missing)} column(s) (macOS before 15) — "
-                 "send-later tracking off, messages read as usual")
-            return False
-        trace("iMessage: chat.db has the Send Later columns")
-        return True
+        return FeedBatch(entries, cursor=str(self._last_seen_rowid), exhausted=self._exhausted)
 
     def _seed_scheduled_messages(self):
         """Track the send-later messages composed before this start, so their eventual send
         is reported once (see _check_scheduled_messages)."""
-        if not self._has_schedule_columns:
-            trace("iMessage: no Send Later columns, nothing to seed")
+        batch = self.host.scheduled()
+        if batch.error:
+            error(f"iMessage: failed to read scheduled messages: {batch.error}")
             return
-        try:
-            with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-                scheduled = conn.execute("""
-                    SELECT m.ROWID, m.date, m.is_from_me, m.schedule_state, cmj.chat_id
-                    FROM message m
-                    LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
-                    WHERE m.schedule_type = ?
-                """, (SCHEDULE_TYPE_SEND_LATER,)).fetchall()
-
-            now = time.time()
-            pending, ignored = [], []
-            for rowid, apple_ts, is_from_me, schedule_state, chat_id in scheduled:
-                unix_ts = apple_ts / 1_000_000_000 + APPLE_EPOCH_OFFSET
-                reason = self._not_pending_reason(is_from_me, chat_id is not None, schedule_state, unix_ts, now)
-                (ignored if reason else pending).append((rowid, reason))
-            if ignored:
-                fine(f"iMessage: ignoring {len(ignored)} schedule_type=2 row(s) that are not pending "
-                     f"send-later messages: {', '.join(f'{r} ({why})' for r, why in ignored)}")
-            if pending:
-                self._scheduled_rowids.update(r for r, _ in pending)
-                trace(f"iMessage: tracking {len(pending)} pending send-later message(s) from before "
-                      f"startup (rowids={[r for r, _ in pending]})")
-            else:
-                fine("iMessage: no pending send-later messages")
-        except Exception as e:
-            error(f"iMessage: failed to read scheduled messages: {e}")
+        now = time.time()
+        pending, ignored = [], []
+        for message in batch.messages:
+            reason = self._not_pending_reason(message.is_from_me, message.in_chat, message.schedule_state,
+                                              message.timestamp, now)
+            (ignored if reason else pending).append((message.rowid, reason))
+        if ignored:
+            fine(f"iMessage: ignoring {len(ignored)} schedule_type=2 row(s) that are not pending "
+                 f"send-later messages: {', '.join(f'{r} ({why})' for r, why in ignored)}")
+        if pending:
+            self._scheduled_rowids.update(r for r, _ in pending)
+            trace(f"iMessage: tracking {len(pending)} pending send-later message(s) from before "
+                  f"startup (rowids={[r for r, _ in pending]})")
+        else:
+            fine("iMessage: no pending send-later messages")
 
     def _poll_new_messages(self, backfill: bool = False) -> list[FeedEntry]:
-        """The history entries for the chat.db rows after `_last_seen_rowid` dated at or after
-        the horizon (at most FETCH_BATCH_SIZE of them); advances `_last_seen_rowid` past every
-        row it read. The date test is what keeps a row an iCloud sync writes late — a 2013
-        message at a fresh ROWID — from arriving as an "iMessage received" of today. With
-        `backfill` (catching up on months of history) nothing reacts — no send-later tracking,
-        media as placeholders instead of vision-LLM descriptions — except that a 2FA code
-        still fresh enough to submit is forwarded."""
-        if time.time() - self._contact_cache_time > CONTACT_CACHE_REFRESH_INTERVAL:
-            self._refresh_contact_cache()
+        """The history entries for the messages the host has after `_last_seen_rowid` within
+        the horizon (at most FETCH_BATCH_SIZE rows read); advances `_last_seen_rowid` past every
+        row the host read. With `backfill` (catching up on months of history) nothing reacts —
+        no send-later tracking, media as placeholders instead of vision-LLM descriptions —
+        except that a 2FA code still fresh enough to submit is forwarded."""
+        reported = [] if backfill else self._check_scheduled_messages()
+        try:
+            batch = self._checked(self.host.poll(self._last_seen_rowid, self.horizon_ts, FETCH_BATCH_SIZE))
+            return reported + self._entries_of(batch, backfill)
+        except Exception:
+            # the sends just reported are no longer tracked: they ride with the next batch that goes through
+            self._pending_entries.extend(reported)
+            raise
 
+    def _entries_of(self, batch: MessageBatch, backfill: bool) -> list[FeedEntry]:
+        """The history entries of one polled batch; moves `_last_seen_rowid` past it. Raises
+        `FeedSourceAway` — nothing moved, the batch is read again — when the host went away over
+        one of its files."""
         entries: list[FeedEntry] = []
-        new_max_rowid = self._last_seen_rowid
-        self._scanned_rows = 0
         # (received_at, code) per service — newest wins; forwarded after the batch so an
         # older code in the same batch can never be submitted ahead of a newer one
         apple_code: Optional[Tuple[float, str]] = None
         ring_code: Optional[Tuple[float, str]] = None
+        for message in batch.messages:
+            rowid, unix_ts, text = message.rowid, message.timestamp, message.text
 
-        with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-            if not backfill:
-                entries.extend(self._check_scheduled_messages(conn))
+            if message.send_later:
+                self._note_send_later(message, backfill)
+                continue
 
-            schedule_columns = ("m.schedule_type, m.schedule_state" if self._has_schedule_columns
-                                else "0 AS schedule_type, 0 AS schedule_state")
-            cursor = conn.execute(f"""
-                SELECT m.ROWID, m.text, m.attributedBody, m.date, m.is_from_me,
-                       h.id AS handle_id,
-                       c.display_name AS chat_name,
-                       {schedule_columns}, cmj.chat_id
-                FROM message m
-                LEFT JOIN handle h ON m.handle_id = h.ROWID
-                LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
-                LEFT JOIN chat c ON cmj.chat_id = c.ROWID
-                WHERE m.ROWID > ?
-                  AND m.date >= ?
-                  AND m.is_system_message = 0
-                ORDER BY m.ROWID
-                LIMIT ?
-            """, (self._last_seen_rowid, self._horizon_apple_ts(), FETCH_BATCH_SIZE))
+            media_attachments = self._media_attachments(message)
+            if not text and not media_attachments:
+                continue
+            if not message.is_from_me and text and is_prompt_injection(text):
+                info(f"iMessage: blocked prompt injection from {message.handle}")
+                continue
 
-            for (rowid, text, attributed_body, apple_ts, is_from_me, handle_id, chat_name,
-                 schedule_type, schedule_state, chat_id) in cursor:
-                self._scanned_rows += 1
-                unix_ts = apple_ts / 1_000_000_000 + APPLE_EPOCH_OFFSET
+            sender_name = message.sender if not message.is_from_me else config.get_owner_name()
 
-                if schedule_type == SCHEDULE_TYPE_SEND_LATER:
-                    # Send-later message: chat.db gets the row at compose time with the
-                    # send time in m.date, and Apple resets schedule_type to 0 only when
-                    # it ACTUALLY sends — so schedule_type, not the timestamp, is the
-                    # truth. A past-due row still at 2 (delivery delay, Mac offline at
-                    # fire time) is unsent and must be tracked, not announced. Defer
-                    # reporting to _check_scheduled_messages, the sole emitter.
-                    reason = self._not_pending_reason(
-                        is_from_me, chat_id is not None, schedule_state, unix_ts, time.time())
-                    if reason:
-                        fine(f"iMessage: ignoring schedule_type=2 row that is {reason}, "
-                             f"not a pending send-later message (rowid={rowid})")
-                    elif backfill:
-                        fine(f"iMessage: send-later message seen during catch-up, not tracked (rowid={rowid})")
-                    elif rowid not in self._scheduled_rowids:
-                        sends_at = time.strftime('%Y-%m-%d %H:%M', time.localtime(unix_ts))
-                        info(f"iMessage: send-later message detected (rowid={rowid}, sends {sends_at}), deferring until sent")
-                        self._scheduled_rowids.add(rowid)
-                    new_max_rowid = max(new_max_rowid, rowid)
-                    continue
-
-                if not text:
-                    text = self._extract_attributed_text(attributed_body)
-                text = text.strip() if text else text
-
-                media_attachments = self._get_media_attachments(conn, rowid)
-
-                if not text and not media_attachments:
-                    new_max_rowid = max(new_max_rowid, rowid)
-                    continue
-                if not is_from_me and text and is_prompt_injection(text):
-                    info(f"iMessage: blocked prompt injection from {handle_id}")
-                    new_max_rowid = max(new_max_rowid, rowid)
-                    continue
-
-                sender_name = self._resolve_contact(handle_id) if not is_from_me else config.get_owner_name()
-                group_name = chat_name.strip() if chat_name and chat_name.strip() else None
-
-                photo_desc = ""
-                if media_attachments:
-                    path, mime_type = media_attachments[0]
-                    if backfill:
-                        photo_desc = "[Video]" if media_kind(mime_type) == KIND_VIDEO else "[Photo]"
-                    else:
-                        photo_desc = self._analyze_media_attachment(path, mime_type, sender_name)
-
-                if photo_desc and text:
-                    body = f"{photo_desc}\nText message: {text}"
+            photo_desc = ""
+            if media_attachments:
+                attachment = media_attachments[0]
+                if backfill:
+                    photo_desc = "[Video]" if media_kind(attachment.mime_type) == KIND_VIDEO else "[Photo]"
                 else:
-                    body = photo_desc or text or ""
-                if not body:
-                    new_max_rowid = max(new_max_rowid, rowid)
-                    continue
+                    photo_desc = self._analyze_media_attachment(attachment, sender_name)
 
-                if is_from_me:
-                    content = self._format_sent_content(conn, rowid, group_name, body)
-                else:
-                    target = group_name or config.get_owner_name()
-                    content = f"iMessage received:\nFrom {sender_name} to {target}: {body}"
+            if photo_desc and text:
+                body = f"{photo_desc}\nText message: {text}"
+            else:
+                body = photo_desc or text or ""
+            if not body:
+                continue
 
-                # Also during catch-up: a code requested at startup lands in chat.db before
-                # the feed goes live, so its row is a backfill row. The age check alone
-                # keeps the old codes in the history from being submitted.
-                if not is_from_me and text:
-                    apple_match = APPLE_2FA_PATTERN.search(text)
-                    ring_match = RING_2FA_PATTERN.search(text)
-                    if apple_match or ring_match:
-                        code_age = time.time() - unix_ts
-                        if code_age > TFA_CODE_MAX_AGE:
-                            if backfill:
-                                fine(f"iMessage: old 2FA code in the catch-up, not submitted (rowid={rowid})")
-                            else:
-                                info(f"iMessage: ignoring stale 2FA code (age={code_age:.0f}s > "
-                                     f"{TFA_CODE_MAX_AGE}s, rowid={rowid})")
+            if message.is_from_me:
+                content = self._format_sent_content(message, body)
+            else:
+                target = message.chat_name or config.get_owner_name()
+                content = f"iMessage received:\nFrom {sender_name} to {target}: {body}"
+
+            # Also during catch-up: a code requested at startup lands in chat.db before
+            # the feed goes live, so its row is a backfill row. The age check alone
+            # keeps the old codes in the history from being submitted.
+            if not message.is_from_me and text:
+                apple_match = APPLE_2FA_PATTERN.search(text)
+                ring_match = RING_2FA_PATTERN.search(text)
+                if apple_match or ring_match:
+                    code_age = time.time() - unix_ts
+                    if code_age > TFA_CODE_MAX_AGE:
+                        if backfill:
+                            fine(f"iMessage: old 2FA code in the catch-up, not submitted (rowid={rowid})")
                         else:
-                            if backfill:
-                                info(f"iMessage: fresh 2FA code found during catch-up "
-                                     f"(age={code_age:.0f}s, rowid={rowid})")
-                            if apple_match:
-                                if apple_code:
-                                    info("iMessage: multiple Apple 2FA codes in one poll batch — keeping the newest")
-                                if not apple_code or unix_ts >= apple_code[0]:
-                                    apple_code = (unix_ts, apple_match.group(1))
-                            if ring_match:
-                                if ring_code:
-                                    info("iMessage: multiple Ring 2FA codes in one poll batch — keeping the newest")
-                                if not ring_code or unix_ts >= ring_code[0]:
-                                    ring_code = (unix_ts, ring_match.group(1))
+                            info(f"iMessage: ignoring stale 2FA code (age={code_age:.0f}s > "
+                                 f"{TFA_CODE_MAX_AGE}s, rowid={rowid})")
+                    else:
+                        if backfill:
+                            info(f"iMessage: fresh 2FA code found during catch-up "
+                                 f"(age={code_age:.0f}s, rowid={rowid})")
+                        if apple_match:
+                            if apple_code:
+                                info("iMessage: multiple Apple 2FA codes in one poll batch — keeping the newest")
+                            if not apple_code or unix_ts >= apple_code[0]:
+                                apple_code = (unix_ts, apple_match.group(1))
+                        if ring_match:
+                            if ring_code:
+                                info("iMessage: multiple Ring 2FA codes in one poll batch — keeping the newest")
+                            if not ring_code or unix_ts >= ring_code[0]:
+                                ring_code = (unix_ts, ring_match.group(1))
 
-                if not backfill:
-                    trace(content)
-                entries.append(FeedEntry(unix_ts, content))
-                new_max_rowid = max(new_max_rowid, rowid)
+            if not backfill:
+                trace(content)
+            entries.append(FeedEntry(unix_ts, content))
 
-        self._last_seen_rowid = new_max_rowid
+        self._described.clear()     # the batch went through: nothing of it is read again
+        if batch.cursor < self._last_seen_rowid:
+            # an answer without a cursor, or with an older one: following it would read history again
+            if not self._rewind_noted:
+                error(f"iMessage: the host answered the poll after ROWID {self._last_seen_rowid} with the cursor "
+                      f"{batch.cursor} — the place is kept, a cursor never moves back")
+            self._rewind_noted = True
+        else:
+            self._rewind_noted = False
+            self._last_seen_rowid = batch.cursor
+        self._exhausted = batch.exhausted
 
         self._pending_apple_code = self._settle_and_forward_2fa(
             self._pending_apple_code, apple_code, self._forward_2fa_code, "Apple")
@@ -451,8 +343,28 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
             self._pending_ring_code, ring_code, self._forward_ring_2fa_code, "Ring")
         return entries
 
-    def _format_sent_content(self, conn, rowid: int, group_name: Optional[str], body: str) -> str:
-        target = group_name or self._resolve_chat_recipient(conn, rowid)
+    def _note_send_later(self, message: Message, backfill: bool):
+        """A send-later message among the new rows: chat.db gets the row at compose time with
+        the send time as its date, and Apple un-marks it only when it ACTUALLY sends — so the
+        mark, not the timestamp, is the truth. A past-due row still marked (delivery delay, Mac
+        offline at fire time) is unsent and must be tracked, not announced. Reporting is left to
+        _check_scheduled_messages, the sole emitter."""
+        rowid = message.rowid
+        reason = self._not_pending_reason(message.is_from_me, message.in_chat, message.schedule_state,
+                                          message.timestamp, time.time())
+        if reason:
+            fine(f"iMessage: ignoring schedule_type=2 row that is {reason}, "
+                 f"not a pending send-later message (rowid={rowid})")
+        elif backfill:
+            fine(f"iMessage: send-later message seen during catch-up, not tracked (rowid={rowid})")
+        elif rowid not in self._scheduled_rowids:
+            sends_at = time.strftime('%Y-%m-%d %H:%M', time.localtime(message.timestamp))
+            info(f"iMessage: send-later message detected (rowid={rowid}, sends {sends_at}), deferring until sent")
+            self._scheduled_rowids.add(rowid)
+
+    @staticmethod
+    def _format_sent_content(message: Message, body: str) -> str:
+        target = message.chat_name or ", ".join(message.recipients)
         if target:
             return f"iMessage sent:\n{config.get_owner_name()} to {target}: {body}"
         return f"iMessage sent:\n{config.get_owner_name()}: {body}"
@@ -470,9 +382,9 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
             return "an incoming iCloud sync duplicate"
         if not has_chat:
             return "not attached to any chat"
-        if schedule_state == SCHEDULE_STATE_COMPLETED:
+        if schedule_state == SCHEDULE_COMPLETED:
             return "already completed"
-        if schedule_state == SCHEDULE_STATE_FAILED:
+        if schedule_state == SCHEDULE_FAILED:
             return "marked failed"
         if unix_ts < now - SCHEDULED_GRACE_PERIOD:
             return f"more than {SCHEDULED_GRACE_PERIOD // 86400} days past its send time"
@@ -482,38 +394,29 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         self._scheduled_rowids.discard(rowid)
         self._past_due_noted.discard(rowid)
 
-    def _check_scheduled_messages(self, conn) -> list[FeedEntry]:
+    def _check_scheduled_messages(self) -> list[FeedEntry]:
         """Re-check tracked send-later messages: emit once they actually send, drop
-        them if cancelled, failed or long past due. Apple resets schedule_type to 0
-        when a scheduled message sends; a reschedule only moves m.date on the same
-        row, so no event until then."""
+        them if cancelled, failed or long past due. Apple un-marks a scheduled message
+        when it sends; a reschedule only moves the date on the same row, so no event
+        until then."""
         entries: list[FeedEntry] = []
         if not self._scheduled_rowids:
             return entries
 
-        placeholders = ",".join("?" * len(self._scheduled_rowids))
-        rows = conn.execute(f"""
-            SELECT m.ROWID, m.text, m.attributedBody, m.date, m.schedule_type,
-                   c.display_name AS chat_name, m.schedule_state
-            FROM message m
-            LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
-            LEFT JOIN chat c ON cmj.chat_id = c.ROWID
-            WHERE m.ROWID IN ({placeholders})
-        """, tuple(self._scheduled_rowids)).fetchall()
-
+        batch = self._checked(self.host.messages(sorted(self._scheduled_rowids)))
         now = time.time()
         found = set()
-        for rowid, text, attributed_body, apple_ts, schedule_type, chat_name, schedule_state in rows:
+        for message in batch.messages:
+            rowid, unix_ts = message.rowid, message.timestamp
             found.add(rowid)
-            unix_ts = apple_ts / 1_000_000_000 + APPLE_EPOCH_OFFSET
-            if schedule_state == SCHEDULE_STATE_FAILED:
+            if message.schedule_state == SCHEDULE_FAILED:
                 info(f"iMessage: scheduled message failed to send, no longer tracking (rowid={rowid})")
                 self._untrack_scheduled(rowid)
                 continue
-            if schedule_type == SCHEDULE_TYPE_SEND_LATER and schedule_state != SCHEDULE_STATE_COMPLETED:
+            if message.send_later and message.schedule_state != SCHEDULE_COMPLETED:
                 # Still pending — even past its send time (delivery delay, Mac offline
                 # at fire time). Announcing it as sent here would be a false report;
-                # keep tracking until Apple flips schedule_type to 0, but not forever.
+                # keep tracking until Apple un-marks it, but not forever.
                 if unix_ts < now - SCHEDULED_GRACE_PERIOD:
                     info(f"iMessage: scheduled message still unsent {(now - unix_ts) / 86400:.0f} days "
                          f"past its send time — giving up on it (rowid={rowid})")
@@ -525,15 +428,11 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
                 continue
 
             self._untrack_scheduled(rowid)
-            if not text:
-                text = self._extract_attributed_text(attributed_body)
-            text = text.strip() if text else text
-            if not text:
+            if not message.text:
                 trace(f"iMessage: scheduled message sent with empty body, skipping (rowid={rowid})")
                 continue
 
-            group_name = chat_name.strip() if chat_name and chat_name.strip() else None
-            content = self._format_sent_content(conn, rowid, group_name, text)
+            content = self._format_sent_content(message, message.text)
             info(f"iMessage: scheduled message sent (rowid={rowid})")
             trace(content)
             entries.append(FeedEntry(unix_ts, content))
@@ -580,561 +479,90 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
             info(f"iMessage: could not forward 2FA code to Ring: {e}")
 
     @staticmethod
-    def _extract_attributed_text(blob: bytes) -> str | None:
-        """Extract plain text from an NSAttributedString typedstream blob."""
-        if not blob:
-            return None
-        try:
-            import Foundation
-            ns_data = Foundation.NSData.dataWithBytes_length_(blob, len(blob))
-            attr_str = Foundation.NSUnarchiver.unarchiveObjectWithData_(ns_data)
-            return str(attr_str.string()) if attr_str else None
-        except Exception:
-            return None
-
-    def _resolve_contact(self, handle_id: str) -> str:
-        """Resolve a handle (phone/email) to a contact name."""
-        if not handle_id:
-            return "Unknown"
-
-        normalized = self._normalize_phone(handle_id)
-        if normalized in self._contact_cache:
-            return self._contact_cache[normalized]
-
-        if handle_id in self._contact_cache:
-            return self._contact_cache[handle_id]
-
-        suffix = self._phone_suffix(handle_id)
-        if suffix and suffix in self._contact_cache:
-            return self._contact_cache[suffix]
-
-        return handle_id
-
-    def _resolve_chat_recipient(self, conn, message_rowid: int) -> Optional[str]:
-        """Resolve the recipient(s) of a sent message from the chat's participants.
-
-        Apple stores message.handle_id = 0 for outgoing messages, so the recipient
-        cannot be read from the message row — it lives on the chat. Returns a single
-        contact name for a 1:1 chat, a comma-joined list for an unnamed group, or
-        None when no participants can be found.
-        """
-        rows = conn.execute("""
-            SELECT DISTINCT h.id
-            FROM chat_message_join cmj
-            JOIN chat_handle_join chj ON cmj.chat_id = chj.chat_id
-            JOIN handle h ON chj.handle_id = h.ROWID
-            WHERE cmj.message_id = ?
-        """, (message_rowid,)).fetchall()
-
-        handles = [r[0] for r in rows if r[0]]
-        if not handles:
-            fine(f"iMessage: no chat participants found for sent message (rowid={message_rowid})")
-            return None
-
-        names = sorted(self._resolve_contact(h) for h in handles)
-        return ", ".join(names)
-
-    @staticmethod
-    def _normalize_phone(phone: str) -> str:
-        """Normalize phone number: keep leading + and digits only."""
-        if not phone:
-            return phone
-        digits = re.sub(r'[^\d+]', '', phone)
-        return digits
-
-    @staticmethod
-    def _phone_suffix(phone: str) -> str | None:
-        """Extract last 9 digits for matching local (0xxx) vs international (+46xxx) formats."""
-        if not phone:
-            return None
-        digits = re.sub(r'\D', '', phone)
-        return digits[-9:] if len(digits) >= 7 else None
-
-    @staticmethod
-    def _get_media_attachments(conn, message_rowid: int) -> list[tuple[str, str]]:
-        """Return (local file path, mime type) of the image and video attachments of a message."""
-        rows = conn.execute("""
-            SELECT a.filename, a.mime_type
-            FROM attachment a
-            JOIN message_attachment_join maj ON a.ROWID = maj.attachment_id
-            WHERE maj.message_id = ?
-              AND a.filename IS NOT NULL
-        """, (message_rowid,)).fetchall()
-
-        attachments = []
-        for filename, mime_type in rows:
-            if filename.endswith(".pluginPayloadAttachment"):
-                continue  # iMessage app payloads (link previews, stickers, Apple Pay…) — never media
-            if media_kind(mime_type) is None:
-                trace(f"iMessage: skipping attachment of type {mime_type!r} ({filename})")
+    def _media_attachments(message: Message) -> list[Attachment]:
+        """The image and video attachments of a message."""
+        media = []
+        for attachment in message.attachments:
+            if media_kind(attachment.mime_type) is None:
+                trace(f"iMessage: skipping attachment of type {attachment.mime_type!r} ({attachment.name})")
                 continue
-            expanded = filename.replace("~", str(Path.home()), 1) if filename.startswith("~") else filename
-            if os.path.isfile(expanded):
-                attachments.append((expanded, mime_type))
-            else:
-                fine(f"iMessage: attachment file not found: {expanded}")
-        return attachments
+            media.append(attachment)
+        return media
 
-    @staticmethod
-    def _analyze_media_attachment(path: str, mime_type: str, sender_name: str) -> str:
-        label = "Video" if media_kind(mime_type) == KIND_VIDEO else "Photo"
-        try:
-            with open(path, "rb") as f:
-                raw_bytes = f.read()
-        except OSError as e:
-            error(f"iMessage: could not read {label.lower()} {path}: {e}")
+    def _analyze_media_attachment(self, attachment: Attachment, sender_name: str) -> str:
+        label = "Video" if media_kind(attachment.mime_type) == KIND_VIDEO else "Photo"
+        if attachment.id in self._described:
+            trace(f"iMessage: {label.lower()} {attachment.name} was described before the host went away — "
+                  f"not described again")
+            return self._described[attachment.id]
+        raw_bytes, reason = self.host.read_attachment(attachment.id)
+        if raw_bytes is None and self.host.away():
+            tries = self._attachment_tries[attachment.id] = self._attachment_tries.get(attachment.id, 0) + 1
+            if tries < ATTACHMENT_TRIES:
+                # the row is not stored as a bare placeholder for good: the runner keeps the cursor and asks again
+                info(f"iMessage: the host went away over {label.lower()} {attachment.name} (try {tries} of "
+                     f"{ATTACHMENT_TRIES}) — its message is read again when the host is back: {reason}")
+                raise FeedSourceAway(reason)
+            info(f"iMessage: {label.lower()} {attachment.name} did not cross in {ATTACHMENT_TRIES} tries — "
+                 f"its message is stored without the description")
+        self._attachment_tries.pop(attachment.id, None)
+        if raw_bytes is None:
+            error(f"iMessage: could not read {label.lower()} {attachment.name}: {reason}")
             return f"[{label}]"
-        return media_analyzer().describe_bytes(raw_bytes, mime_type=mime_type, filename=path,
-                                               context=f"{label} sent via iMessage by {sender_name}")
+        description = media_analyzer().describe_bytes(raw_bytes, mime_type=attachment.mime_type,
+                                                      filename=attachment.name,
+                                                      context=f"{label} sent via iMessage by {sender_name}")
+        self._described[attachment.id] = description
+        return description
 
-    @classmethod
-    def _add_candidate(cls, candidates: dict[str, list[tuple[str, Optional[str]]]], name: str,
-                       raw_handle: str, label: Optional[str] = None):
-        """Add a handle (with its AddressBook label) to the candidates of a name. The key is the
-        lowercased, whitespace-collapsed name — callers pass first name, full name, etc. as
-        separate calls; `_rank_candidates` picks one handle per name once the cards are read."""
-        if not name or not raw_handle:
-            return
-        key = " ".join(name.split()).lower()
-        handle = cls._prefer_handle(raw_handle)
-        if not key or not handle:
-            return
-        entries = candidates.setdefault(key, [])
-        if all(h != handle for h, _ in entries):
-            entries.append((handle, label))
-
-    @classmethod
-    def _record_full_name(cls, mapping: dict[str, str], first: str | None, last: str | None, raw_handle: str,
-                          middle: str | None = None):
-        """Map handle → the card's full name ('First Middle Last', the parts that are set). Used to
-        render canonical names in approval dialogs even when the caller passed only a first name."""
-        if not first or not raw_handle:
-            return
-        handle = cls._prefer_handle(raw_handle)
-        if not handle:
-            return
-        parts = [part.strip() for part in (first, middle, last) if part and part.strip()]
-        if not parts:
-            return
-        mapping.setdefault(handle, " ".join(parts))
-
-    def display_name_for_handle(self, handle: str) -> Optional[str]:
-        """Canonical 'First Last' for a resolved handle, or None if unknown."""
-        if not handle:
-            return None
-        return self._handle_to_full_name.get(handle)
-
-    @staticmethod
-    def _name_keys(first: str | None, last: str | None, middle: str | None = None) -> list[str]:
-        """Lookup keys to register for a contact: the first name, then 'first last', and with a middle
-        name on the card also 'first middle' and 'first middle last' — a Swedish double surname is
-        often filed as middle + last, and the user says either half. Last-name-only is intentionally
-        omitted — too easy to collide across contacts."""
-        f = (first or "").strip()
-        m = (middle or "").strip()
-        l = (last or "").strip()
-        if not f:
-            return []
-        keys = [f]
-        if m:
-            keys.append(f"{f} {m}")
-        if l:
-            keys.append(f"{f} {l}")
-        if m and l:
-            keys.append(f"{f} {m} {l}")
-        return keys
-
-    @staticmethod
-    def _prefer_handle(raw_handle: str) -> Optional[str]:
-        """Return a normalized handle suitable for AppleScript (E.164 phone or lowercase email)."""
-        if not raw_handle:
-            return None
-        if "@" in raw_handle:
-            return raw_handle.strip().lower()
-        digits = re.sub(r'[^\d+]', '', raw_handle)
-        return digits or None
-
-    @staticmethod
-    def _handle_priority(handle: str) -> int:
-        """Lower is better. Prefer E.164 phones, then emails, then bare digits."""
-        if not handle:
-            return 99
-        if handle.startswith("+"):
-            return 0
-        if "@" in handle:
-            return 1
-        return 2
-
-    @staticmethod
-    def _handle_tier(handle: str, label: Optional[str], activity: Optional[tuple[bool, int, int]]) -> int:
-        """The preference tier of a handle (`TIER_*`, lower is better) given its AddressBook label
-        and what chat.db knows about it."""
-        if activity and activity[0]:
-            return TIER_IMESSAGE
-        if "@" in handle:
-            return TIER_UNKNOWN_EMAIL
-        if label and FAX_LABEL_PATTERN.search(label):
-            return TIER_FAX
-        if (label and MOBILE_LABEL_PATTERN.search(label)) or SWEDISH_MOBILE_PATTERN.match(handle):
-            return TIER_MOBILE
-        return TIER_OTHER_PHONE
-
-    @classmethod
-    def _chat_activity(cls, handles: Iterable[str]) -> dict[str, tuple[bool, int, int]]:
-        """What chat.db knows about the given handles: (seen on the iMessage service, Apple date of
-        the latest message, message count), keyed by the handle id and, for phones, by its 9-digit
-        suffix so a card's local-format number matches the E.164 handle Messages stores. Messages
-        are counted through the chats the handle takes part in, group chats included — Apple stores
-        handle_id = 0 on outgoing messages (see `_resolve_chat_recipient`), so joining on it would
-        count only the contact's replies and miss a conversation where the owner does the writing.
-        Only the handle rows matching the wanted ids or suffixes are read. Empty when chat.db
-        cannot be read — the ranking then falls back to the card alone."""
-        wanted_ids = {h.lower() for h in handles}
-        wanted_suffixes = {s for h in handles if "@" not in h and (s := cls._phone_suffix(h))}
-        if not wanted_ids:
-            return {}
-        activity: dict[str, tuple[bool, int, int]] = {}
-
-        def merge(key, imessage, last_date, count):
-            seen = activity.get(key, (False, 0, 0))
-            activity[key] = (seen[0] or imessage, max(seen[1], last_date), seen[2] + count)
-
-        matched: dict[int, tuple[str, str, str | None]] = {}
-        counts: dict[int, tuple[int, int]] = {}
-        try:
-            with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-                for rowid, handle_id, service in conn.execute("SELECT ROWID, id, service FROM handle"):
-                    if not handle_id:
-                        continue
-                    suffix = cls._phone_suffix(handle_id) if "@" not in handle_id else None
-                    if handle_id.lower() in wanted_ids or (suffix and suffix in wanted_suffixes):
-                        matched[rowid] = (handle_id, service or "", suffix)
-                rowids = list(matched)
-                for start in range(0, len(rowids), CHAT_ACTIVITY_CHUNK):
-                    chunk = rowids[start:start + CHAT_ACTIVITY_CHUNK]
-                    marks = ",".join("?" * len(chunk))
-                    for rowid, count, last_date in conn.execute(
-                            "SELECT chj.handle_id, COUNT(m.ROWID), COALESCE(MAX(m.date), 0) "
-                            "FROM chat_handle_join chj "
-                            "JOIN chat_message_join cmj ON cmj.chat_id = chj.chat_id "
-                            "JOIN message m ON m.ROWID = cmj.message_id "
-                            f"WHERE chj.handle_id IN ({marks}) GROUP BY chj.handle_id", chunk):
-                        counts[rowid] = (count or 0, last_date or 0)
-        except Exception as e:
-            info(f"iMessage: chat.db handle query failed, ranking contact handles by card only: {e}")
-            return {}
-        for rowid, (handle_id, service, suffix) in matched.items():
-            imessage = service.lower() == "imessage"
-            count, last_date = counts.get(rowid, (0, 0))
-            merge(handle_id.lower(), imessage, last_date, count)
-            if suffix:
-                merge(suffix, imessage, last_date, count)
-        trace(f"iMessage: chat.db knows {len(matched)} handle rows for {len(wanted_ids)} contested handles, "
-              f"{len(counts)} with messages")
-        return activity
-
-    @classmethod
-    def _lookup_activity(cls, activity: dict[str, tuple[bool, int, int]], handle: str) \
-            -> Optional[tuple[bool, int, int]]:
-        """The activity of a handle. A phone is looked up by its suffix first: that entry merges every
-        chat.db row of the number whatever its format, so a local-format id Messages once stored
-        verbatim does not hide the history of its E.164 twin."""
-        suffix = cls._phone_suffix(handle) if "@" not in handle else None
-        found = activity.get(suffix) if suffix else None
-        return found if found is not None else activity.get(handle.lower())
-
-    @classmethod
-    def _rank_candidates(cls, candidates: dict[str, list[tuple[str, Optional[str]]]]) \
-            -> tuple[dict[str, str], dict[str, str]]:
-        """Pick one handle per name: the best tier, then the most recent conversation in chat.db
-        (then the most messages), then E.164 over an email over bare digits, then the card's
-        order. Returns the name → handle map and, per name, why the handle won — the line
-        `resolve_recipient` logs. chat.db is read only for the handles of the names with a choice
-        to make, so the fallback lookup of one name costs one small query."""
-        reverse: dict[str, str] = {}
-        reasons: dict[str, str] = {}
-        contested = {key: entries for key, entries in candidates.items() if len(entries) > 1}
-        contested_handles = {handle for entries in contested.values() for handle, _ in entries}
-        activity = cls._chat_activity(contested_handles) if contested else {}
-        for key, entries in candidates.items():
-            ranked = []
-            for index, (handle, label) in enumerate(entries):
-                seen = cls._lookup_activity(activity, handle)
-                tier = cls._handle_tier(handle, label, seen)
-                last_date, count = (seen[1], seen[2]) if seen else (0, 0)
-                ranked.append(((tier, -last_date, -count, cls._handle_priority(handle), index), handle))
-            (tier, neg_date, neg_count, _, index), handle = min(ranked)
-            reverse[key] = handle
-            history = f", {-neg_count} messages" if neg_count else ", no chat history"
-            reasons[key] = f"{TIER_NAMES[tier]}{history}, listed {index + 1}/{len(entries)} on the card"
-        if contested:
-            overridden = [f"{key}→{reverse[key]} ({reasons[key]})" for key, entries in contested.items()
-                          if reverse[key] != entries[0][0]]
-            shown = "; ".join(overridden[:20]) + (" …" if len(overridden) > 20 else "")
-            fine(f"iMessage: {len(contested)} contacts with several handles, {len(overridden)} resolved to "
-                 f"one other than the card's first" + (f": {shown}" if overridden else ""))
-        return reverse, reasons
-
-    @staticmethod
-    def _looks_like_handle(s: str) -> bool:
-        """Heuristic: does this look like a phone number or email rather than a contact name?"""
-        if not s:
-            return False
-        if "@" in s:
-            return True
-        digits = re.sub(r'\D', '', s)
-        return len(digits) >= 7
+    def _resolved(self, resolved: Recipient) -> Tuple[Optional[str], Optional[str]]:
+        """What a host's resolution means here: (handle, None), remembered for the approval card
+        and the history echo, or (None, error) — with the Full Disk Access hint and one system
+        note when the host has no contacts at all."""
+        if not resolved.error:
+            self._recipients[resolved.handle] = resolved
+            return resolved.handle, None
+        if resolved.no_contacts:
+            self._notify_contact_cache_empty()
+            return None, f"{resolved.error}. Reading the AddressBook likely {self._full_disk_access_hint()}."
+        return None, resolved.error
 
     def resolve_recipient(self, recipient: str) -> Tuple[Optional[str], Optional[str]]:
         """Resolve a recipient string (contact name, raw handle, group name or member list) to a
         sendable handle — for a group chat its guid, see `is_group_guid`. Returns (handle, error).
         On success error is None; on failure handle is None and error is a short human-readable
         string."""
-        if not recipient or not recipient.strip():
-            return None, "empty recipient"
-        candidate = recipient.strip()
-
-        if self._looks_like_handle(candidate):
-            normalized = self._prefer_handle(candidate)
-            return (normalized or candidate), None
-
-        if time.time() - self._contact_cache_time > CONTACT_CACHE_REFRESH_INTERVAL:
-            self._refresh_contact_cache()
-
-        key = " ".join(candidate.split()).lower()
-        handle = self._name_to_handle.get(key)
-        if handle:
-            info(f"iMessage: resolved '{candidate}' → {handle} ({self._handle_reasons.get(key, 'only handle')})")
-            return handle, None
-
-        fallback = self._fallback_lookup(key)
-        if fallback:
-            info(f"iMessage: resolved '{candidate}' via forward-cache fallback → {fallback}")
-            return fallback, None
-
-        group, group_err = self._resolve_group(candidate)
-        if group:
-            return group.guid, None
-        if group_err:
-            return None, group_err
-
-        if not self._contact_cache and not self._name_to_handle:
-            self._notify_contact_cache_empty()
-            return None, (
-                f"contact cache is empty — could not look up '{candidate}'. "
-                f"Reading the AddressBook likely {FULL_DISK_ACCESS_HINT}."
-            )
-        return None, f"unknown contact: {candidate} (cache has {len(self._name_to_handle)} names)"
+        return self._resolved(self.host.resolve(recipient, config.get_owner_name()))
 
     @staticmethod
     def is_group_guid(handle: str) -> bool:
-        """Whether a resolved handle is a group chat's guid (`any;+;chat…`) rather than a buddy —
-        Messages marks a group with `;+;` and a 1:1 chat with `;-;`."""
-        return ";+;" in (handle or "")
+        """Whether a resolved handle is a group chat's guid rather than a buddy."""
+        return is_group_guid(handle)
 
     def group_for_handle(self, handle: str) -> Optional[GroupChat]:
         """The group chat behind a guid `resolve_recipient` handed out, for the approval card and
         the history echo."""
-        return self._groups_by_guid.get(handle)
+        resolved = self._recipients.get(handle)
+        return resolved.group if resolved else None
 
-    def _load_group_chats(self) -> list[GroupChat]:
-        """Every group chat of chat.db with its members named like the feed names them. Read per
-        lookup — a few dozen rows — so a group created a minute ago is already sendable. Empty when
-        chat.db cannot be read."""
-        try:
-            with sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True) as conn:
-                member_rows = conn.execute("""
-                    SELECT c.ROWID, c.guid, c.display_name, h.id
-                    FROM chat c
-                    JOIN chat_handle_join chj ON chj.chat_id = c.ROWID
-                    JOIN handle h ON h.ROWID = chj.handle_id
-                    WHERE c.style = ?
-                """, (GROUP_CHAT_STYLE,)).fetchall()
-                activity = dict(conn.execute("""
-                    SELECT cmj.chat_id, MAX(m.date)
-                    FROM chat c
-                    JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
-                    JOIN message m ON m.ROWID = cmj.message_id
-                    WHERE c.style = ?
-                    GROUP BY cmj.chat_id
-                """, (GROUP_CHAT_STYLE,)).fetchall())
-        except Exception as e:
-            info(f"iMessage: chat.db group chat query failed, no group can be addressed: {e}")
-            return []
-        chats: dict[int, tuple[str, Optional[str], set[str]]] = {}
-        for rowid, guid, name, handle in member_rows:
-            if not guid:
-                continue
-            _, _, members = chats.setdefault(rowid, (guid, (name or "").strip() or None, set()))
-            if handle:
-                members.add(self._resolve_contact(handle))
-        groups = [GroupChat(guid, name, tuple(sorted(members)), activity.get(rowid) or 0)
-                  for rowid, (guid, name, members) in chats.items()]
-        trace(f"iMessage: chat.db holds {len(groups)} group chats, {sum(1 for g in groups if g.name)} named")
-        return groups
-
-    @staticmethod
-    def _member_matches(member: str, part: str) -> bool:
-        """A listed member matches a contact by full name or first name ("Alice" → "Alice Smith")."""
-        name = member.lower()
-        return name == part or name.split()[0] == part
-
-    @classmethod
-    def _has_members(cls, group: GroupChat, wanted: set[str]) -> bool:
-        return all(any(cls._member_matches(m, p) for m in group.members) for p in wanted)
-
-    @classmethod
-    def _has_exactly_members(cls, group: GroupChat, wanted: set[str]) -> bool:
-        return cls._has_members(group, wanted) and \
-            all(any(cls._member_matches(m, p) for p in wanted) for m in group.members)
-
-    def _resolve_group(self, recipient: str) -> Tuple[Optional[GroupChat], Optional[str]]:
-        """The group chat a recipient names — by its display name, or for an unnamed group by its
-        members the way the feed lists them ("Alice, Bob", "Alice & Bob", "Alice and Bob"; the
-        owner's own name may be in the list). Several chats with the same name or members (an
-        iMessage and an SMS incarnation, a recreated group): the most recently active one wins.
-        Returns (group, error): an error only for a member list no group has exactly, naming the
-        groups that contain those people; (None, None) when the recipient is not a group's name."""
-        groups = self._load_group_chats()
-        if not groups:
-            return None, None
-        key = " ".join(recipient.split()).lower()
-        owner = (config.get_owner_name() or "").strip().lower()
-        wanted = {part.strip().lower() for part in GROUP_MEMBER_SEPARATOR.split(recipient)} - {"", owner}
-        matches = [g for g in groups if g.name and g.name.lower() == key]
-        how = "by name"
-        if not matches and len(wanted) >= 2:
-            matches = [g for g in groups if self._has_exactly_members(g, wanted)]
-            how = "by members"
-        if matches:
-            group = max(matches, key=lambda g: g.last_active)
-            self._groups_by_guid[group.guid] = group
-            info(f"iMessage: resolved '{recipient}' {how} → group {group.describe()} ({group.guid}, "
-                 f"{len(matches)} candidate(s))")
-            return group, None
-        if len(wanted) < 2:
-            trace(f"iMessage: '{recipient}' names no group chat")
-            return None, None
-        near = sorted((g for g in groups if self._has_members(g, wanted)),
-                      key=lambda g: g.last_active, reverse=True)[:GROUP_HINT_LIMIT]
-        info(f"iMessage: no group chat with exactly {sorted(wanted)}; {len(near)} group(s) contain them")
-        hint = f"; groups with them: {'; '.join(g.describe() for g in near)}" if near else ""
-        return None, f"no group chat with exactly these members: {', '.join(sorted(wanted))}{hint}"
-
-    def _fallback_lookup(self, name_lower: str) -> Optional[str]:
-        """Last-resort: scan the forward (handle → name) cache for any handle whose name matches
-        and rank them like the card's handles (without labels — the forward cache has none).
-        Useful when the reverse cache missed for any reason."""
-        if not self._contact_cache:
-            return None
-        candidates: dict[str, list[tuple[str, Optional[str]]]] = {}
-        for raw_handle, contact_name in self._contact_cache.items():
-            if contact_name and contact_name.strip().lower() == name_lower:
-                self._add_candidate(candidates, name_lower, raw_handle)
-        if not candidates:
-            return None
-        reverse, reasons = self._rank_candidates(candidates)
-        trace(f"iMessage: fallback lookup of '{name_lower}' → {reverse[name_lower]} ({reasons[name_lower]})")
-        return reverse[name_lower]
-
-    @staticmethod
-    def _applescript_quote(s: str) -> str:
-        """Escape a string for safe interpolation inside AppleScript double quotes,
-        breaking newlines into concatenated `& linefeed &` segments."""
-        if s is None:
-            return '""'
-        parts = s.split("\n")
-        escaped = [p.replace("\\", "\\\\").replace('"', '\\"') for p in parts]
-        if len(escaped) == 1:
-            return f'"{escaped[0]}"'
-        return " & linefeed & ".join(f'"{p}"' for p in escaped)
-
-    @classmethod
-    def _build_send_applescript(cls, handle: str, body: str) -> str:
-        """Build AppleScript that tries iMessage first then falls back to SMS."""
-        target = cls._applescript_quote(handle)
-        message = cls._applescript_quote(body)
-        return f'''
-            tell application "Messages"
-                set targetBuddy to missing value
-                try
-                    set iService to 1st service whose service type = iMessage
-                    set targetBuddy to buddy {target} of iService
-                    send {message} to targetBuddy
-                    return "{APPLESCRIPT_RESULT_IMESSAGE}"
-                on error
-                    try
-                        set smsService to 1st service whose service type = SMS
-                        set targetBuddy to buddy {target} of smsService
-                        send {message} to targetBuddy
-                        return "{APPLESCRIPT_RESULT_SMS}"
-                    on error errMsg2 number errNum2
-                        error errMsg2 number errNum2
-                    end try
-                end try
-            end tell
-        '''
-
-    @classmethod
-    def _build_group_send_applescript(cls, guid: str, body: str) -> str:
-        """Build AppleScript that posts to a group chat. The chat is addressed by its id — the guid
-        chat.db stores is the id Messages exposes — and already knows its service, so there is no
-        SMS fallback to try."""
-        return f'''
-            tell application "Messages"
-                send {cls._applescript_quote(body)} to chat id {cls._applescript_quote(guid)}
-                return "{APPLESCRIPT_RESULT_GROUP}"
-            end tell
-        '''
+    def display_name_for_handle(self, handle: str) -> Optional[str]:
+        """Canonical 'First Last' for a handle `resolve_recipient` handed out, or None if unknown."""
+        resolved = self._recipients.get(handle)
+        return resolved.full_name if resolved else None
 
     def send(self, recipient: str, body: str) -> str:
-        """Send an iMessage/SMS via Messages.app AppleScript, to a contact or a group chat.
+        """Send an iMessage/SMS through the host's Messages.app, to a contact or a group chat.
         Returns "" on success or a short error string on failure."""
-        if not body or not body.strip():
-            info("iMessage send skipped: empty body")
-            return "empty message body"
-
-        rate_err = self._rate_limiter.check()
-        if rate_err:
-            info(f"iMessage send blocked: {rate_err}")
-            return rate_err
-
-        handle, err = self.resolve_recipient(recipient)
-        if err:
-            info(f"iMessage send: could not resolve recipient '{recipient}': {err}")
-            return err
-
-        if self.is_group_guid(handle):
-            script = self._build_group_send_applescript(handle, body)
-        else:
-            script = self._build_send_applescript(handle, body)
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True, text=True, timeout=APPLESCRIPT_TIMEOUT
-            )
-        except subprocess.TimeoutExpired:
-            error(f"iMessage send to {handle} timed out after {APPLESCRIPT_TIMEOUT}s")
-            return "timeout sending iMessage"
-        except Exception as e:
-            error(f"iMessage send to {handle} raised: {e}")
-            return f"{e}"
-
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        if result.returncode != 0:
-            if "-1743" in stderr or "not authorized" in stderr.lower():
-                error(f"iMessage send unauthorized: grant Automation permission to control Messages. stderr={stderr}")
-                self._notify_automation_permission_needed()
-                return "not authorized to control Messages (System Settings → Privacy & Security → Automation)"
-            error(f"iMessage send to {handle} failed: rc={result.returncode} stderr={stderr}")
-            return stderr or f"osascript exit {result.returncode}"
-
-        self._rate_limiter.record()
-        service = stdout if stdout in (APPLESCRIPT_RESULT_IMESSAGE, APPLESCRIPT_RESULT_SMS,
-                                       APPLESCRIPT_RESULT_GROUP) else "sent"
-        group = self.group_for_handle(handle)
-        info(f"iMessage {service} to {group.describe() if group else handle}: {body!r}")
+        result = self.host.send(recipient, body, config.get_owner_name())
+        if result.unauthorized:
+            self._notify_automation_permission_needed()
+        resolved = result.recipient
+        if resolved and resolved.error:
+            return self._resolved(resolved)[1]
+        if result.error:
+            info(f"iMessage: send to '{recipient}' failed: {result.error}")
+            return result.error
+        handle = self._resolved(resolved)[0] if resolved else recipient
         self._log_sent_to_history(recipient, handle, body)
         return ""
 
@@ -1144,13 +572,12 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         self._notified_cache_empty = True
         system_note(self.name,
             "iMessage: contact cache is empty — name-based recipients can't be resolved. "
-            f"Likely cause: reading the AddressBook {FULL_DISK_ACCESS_HINT}. "
+            f"Likely cause: reading the AddressBook {self._full_disk_access_hint()}. "
             "Sends to raw phone numbers / emails still work."
         )
 
-    @classmethod
-    def _notify_automation_permission_needed(cls):
-        system_note("imessage",
+    def _notify_automation_permission_needed(self):
+        system_note("imessage", SatelliteHints.automation(self.host.address) if self.host.address else
             "iMessage send blocked: Keep is not authorized to control Messages. "
             "Grant access in System Settings → Privacy & Security → Automation, then retry."
         )
@@ -1159,69 +586,10 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
         """Mirror the read-path's `iMessage sent:` shape so the LLM sees its own outbound
         message; the entry rides along with the feed's next batch. A group is named the way the
         feed names it: its display name, or its members."""
-        group = self.group_for_handle(handle)
-        if group:
-            target_name = group.label
+        resolved = self._recipients.get(handle)
+        if resolved and resolved.group:
+            target_name = resolved.group.label
         else:
-            target_name = self._resolve_contact(handle) if handle != recipient else recipient
-            if not target_name or target_name == handle:
-                target_name = recipient
+            target_name = (resolved.name if resolved and handle != recipient else None) or recipient
         content = f"iMessage sent:\n{config.get_owner_name()} to {target_name}: {body}"
         self._pending_entries.append(FeedEntry(time.time(), content))
-
-    def _refresh_contact_cache(self):
-        """Build phone/email -> name cache by reading the macOS AddressBook SQLite databases directly."""
-        try:
-            ab_root = Path.home() / "Library" / "Application Support" / "AddressBook"
-            source_dbs = list((ab_root / "Sources").glob("*/AddressBook-v22.abcddb"))
-            if not source_dbs:
-                trace("iMessage: no AddressBook source databases found")
-                self._contact_cache_time = time.time()
-                return
-
-            cache: dict[str, str] = {}
-            candidates: dict[str, list[tuple[str, Optional[str]]]] = {}
-            handle_to_full: dict[str, str] = {}
-            for db_path in source_dbs:
-                try:
-                    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
-                        for first, middle, last, phone, label in conn.execute("""
-                            SELECT r.ZFIRSTNAME, r.ZMIDDLENAME, r.ZLASTNAME, p.ZFULLNUMBER, p.ZLABEL
-                            FROM ZABCDRECORD r JOIN ZABCDPHONENUMBER p ON p.ZOWNER = r.Z_PK
-                            WHERE r.ZFIRSTNAME IS NOT NULL AND p.ZFULLNUMBER IS NOT NULL
-                            ORDER BY r.Z_PK, p.Z_PK
-                        """):
-                            normalized = self._normalize_phone(phone)
-                            if normalized:
-                                cache[normalized] = first
-                            suffix = self._phone_suffix(phone)
-                            if suffix:
-                                cache[suffix] = first
-                            for name_key in self._name_keys(first, last, middle):
-                                self._add_candidate(candidates, name_key, phone, label)
-                            self._record_full_name(handle_to_full, first, last, phone, middle)
-
-                        for first, middle, last, email in conn.execute("""
-                            SELECT r.ZFIRSTNAME, r.ZMIDDLENAME, r.ZLASTNAME, e.ZADDRESS
-                            FROM ZABCDRECORD r JOIN ZABCDEMAILADDRESS e ON e.ZOWNER = r.Z_PK
-                            WHERE r.ZFIRSTNAME IS NOT NULL AND e.ZADDRESS IS NOT NULL
-                        """):
-                            cache[email.lower()] = first
-                            for name_key in self._name_keys(first, last, middle):
-                                self._add_candidate(candidates, name_key, email)
-                            self._record_full_name(handle_to_full, first, last, email, middle)
-                except Exception as e:
-                    fine(f"iMessage: skipping contact source {db_path.parent.name}: {e}")
-
-            reverse, reasons = self._rank_candidates(candidates)
-            self._contact_cache = cache
-            self._name_to_handle = reverse
-            self._handle_reasons = reasons
-            self._handle_to_full_name = handle_to_full
-            self._contact_cache_time = time.time()
-            if cache:
-                self._notified_cache_empty = False
-            fine(f"iMessage: refreshed contact cache ({len(cache)} entries, {len(reverse)} reverse)")
-        except Exception as e:
-            trace(f"iMessage: failed to refresh contact cache: {e}")
-            self._contact_cache_time = time.time()

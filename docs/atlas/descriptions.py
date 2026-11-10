@@ -6,7 +6,7 @@ longer exists, so a rename shows up here instead of as a silently wrong page."""
 
 # Package (directory) blurbs: (display name, one sentence). "root" is the whole system, "launcher" the top-level scripts.
 GROUPS = {
-    'root': ('Keep', 'A home voice assistant server: people reach it by voice, Telegram, HTTP or the terminal console, and an LLM answers and runs commands on the house.'),
+    'root': ('Keep', 'A home voice assistant server: people reach it by voice, Telegram, iMessage, HTTP or the terminal console, and an LLM answers and runs commands on the house.'),
     'launcher': ('scripts', 'The entry points: the server launcher that builds the Assistant and starts every enabled interface, and the TUI client.'),
     'src/assistant': ('assistant', 'The assistant proper: takes a request, builds the prompt, talks to an LLM, runs commands and keeps the history. It never imports an interface.'),
     'src/assistant/agents': ('agents', 'Background agents that run on their own schedule: autonomous actions, memory curation, cache auditing and the Claude Code maintainer.'),
@@ -32,7 +32,7 @@ GROUPS = {
     'src/integrations/google': ('google', 'Gmail, Google Calendar and Google Drive: the mail (IMAP with the sign-in’s token), calendars, a search of Drive with a Google Doc, Sheet or Slides deck read page by page, and a feed of the edits to listed documents, one account per google.accounts entry, signed in once in a browser.'),
     'src/integrations/dropbox': ('dropbox', 'The files in Dropbox, read-only: a search, a folder listing and a document read page by page with a find inside it, one account signed in by PKCE and paste.'),
     'src/integrations/microsoft': ('microsoft','Microsoft 365 over the Graph API: the mail and calendars of one account per microsoft.accounts entry, signed in once with a device code.'),
-    'src/integrations/imessage': ('imessage', 'iMessage and SMS on the server’s Mac: a feed of incoming messages and the way to send one.'),
+    'src/integrations/imessage': ('imessage', 'The owner’s iMessage and SMS — on the server’s Mac or, through a satellite, on another — as a feed of incoming messages and the way to send one.'),
     'src/integrations/indigo': ('indigo', 'Indigo as the home automation backend: REST for commands, a state file for the snapshot and an event feed.'),
     'src/integrations/music': ('music', 'Sonos zones and Spotify: playback, volume, search, favorites and the user\'s own Spotify playlists.'),
     'src/integrations/plejd': ('plejd', 'Plejd lights, covers and scenes over Bluetooth from the server’s own Mac: the site from the Plejd cloud, the state and the commands through any mesh unit in range.'),
@@ -48,12 +48,14 @@ GROUPS = {
     'src/integrations/weather': ('weather', 'The YR (met.no) weather forecast for the home location.'),
     'src/integrations/whatsapp': ('whatsapp', 'The owner’s WhatsApp account as a companion device: a feed of their chats and the way to send a message as them.'),
     'src/integrations/x': ('x', 'Searching X posts through xAI’s server-side search.'),
-    'src/common': ('common', 'Shared plumbing: config, logging, paths, the SQLite database, system monitors and the version.'),
+    'src/common': ('common', 'Shared plumbing: config, logging, paths, the SQLite database, system monitors, the version and the updater that moves an install to newer code.'),
     'src/common/vault': ('vault', 'The encrypted secret store and the redactor that keeps secrets away from LLM providers.'),
+    'src/common/imessage': ('imessage', 'What must run next to Messages.app: reading chat.db, resolving contacts, sending by AppleScript and showing the typing dots, behind the one MessagesHost interface a consumer calls in-process or over HTTP — and the satellite process that serves it from another Mac.'),
     'src/interfaces': ('interfaces', 'One package per way of reaching the assistant; the launcher only imports the enabled ones.'),
     'src/interfaces/http': ('http', 'The Quart web server with /stream and /health, and the wire format the apps speak.'),
     'src/interfaces/chat': ('chat', 'The contract every chat UI shares: transports, drafts, sessions and the hub that fans notifications out.'),
     'src/interfaces/telegram': ('telegram', 'The Telegram bot as a chat transport, with voice notes transcribed by Google Cloud STT.'),
+    'src/interfaces/imessage': ('imessage', 'The assistant as an iMessage contact of its own: a chat transport over the Messages account of its Apple ID, serving the people on its allowlist in plain texts.'),
     'src/interfaces/console': ('console', 'The terminal ops console: a tabbed dashboard with the Home chat, served over TCP to tui.py.'),
     'src/interfaces/console/crystal': ('crystal', 'A 90s-demo software 3D renderer that draws the console’s logo and startup intro in terminal cells.'),
     'src/interfaces/console/framework': ('framework', 'The TUI engine: a double-buffered cell screen with a picture layer (kitty graphics protocol or half-block pixels), a frame server over TCP and text-width helpers.'),
@@ -148,7 +150,8 @@ MODULES = {
     'src/assistant/tools/ImageAnalyzer.py': 'Describes images with the vision-tier LLM.',
     'src/common/vault/Redactor.py': 'Swaps secrets for {{secret:id}} placeholders on the way to an LLM and back again on the way out, even mid-stream.',
     'src/common/RequestKilledException.py': 'Raised inside a request when a newer request has killed or superseded it.',
-    'src/integrations/imessage/IMessageIntegration.py': 'Reads the macOS iMessage database as a feed, turning new rows into history entries.',
+    'src/assistant/GroupWake.py': 'The group wake rule every chat platform shares: which message of a group chat is said to the assistant.',
+    'src/integrations/imessage/IMessageIntegration.py': 'The assistant’s side of iMessage: turns the rows a MessagesHost reads from chat.db into history entries as a feed, and sends through it.',
     'src/integrations/telegram_feed/TelegramFeedIntegration.py': 'The personal Telegram account (Telethon) as a feed — catches up on recent dialogs, then queues new messages live — and the sender behind send_telegram.',
     'src/common/MemoryLogMonitor.py': 'Charts the long-term memory’s size per day for the Dashboard tab.',
     'src/interfaces/chat/ChatSession.py': 'One conversation on one chat platform: user messages become assistant requests, and the event stream becomes chat bubbles.',
@@ -196,17 +199,17 @@ CLASSES = {
 
 # The top-level scripts shown under "scripts".
 SCRIPTS = {
-    'floxy_ai_server.py': 'The launcher: loads config, builds the Assistant and starts every enabled interface, then serves.',
+    'floxy_ai_server.py': 'The launcher: loads config, builds the Assistant and starts every enabled interface, then serves — or, under the satellite role, serves only an iMessage satellite.',
     'tui.py': 'The terminal client that connects to the running server’s console over TCP.',
     'scripts/release.sh': 'Fast-forwards the release branch to master and signs the version tag the installs verify before updating.',
-    'install.sh': 'Installs the server on a new machine from the release branch.',
+    'install.sh': 'Installs the server on a new machine from the release branch — or, with the role switch, an iMessage satellite.',
 }
 
 PROMPT_DESCRIPTION = 'The system prompt template: the assistant’s persona, rules and core commands, with slots for live sections.'
 
 # "Follow a request": the node each step zooms to, and what the step says.
 TOUR = [
-    ('src/interfaces', 'A request starts at one of the interfaces. People speak to a microphone Outpost, message the Telegram bot, call HTTP from the iOS app, or type into the terminal console.'),
+    ('src/interfaces', 'A request starts at one of the interfaces. People speak to a microphone Outpost, message the Telegram bot, text the assistant’s own iMessage contact, call HTTP from the iOS app, or type into the terminal console.'),
     ('src/interfaces/voice/microphones/local_outposts/WhisperWorker.py', 'Spoken words are transcribed. Local mics run Whisper on the GPU; phones transcribe on the device and send text.'),
     ('src/interfaces/voice/microphones/speech_analysis/SpeechAnalyzer.py', 'Several mics often hear the same sentence. Their transcriptions vote, and the most probable phrase wins.'),
     ('src/interfaces/chat/ChatSession.py', 'Chat messages take a parallel path: a session per conversation turns what the user typed, or a voice note, into a request.'),

@@ -169,6 +169,9 @@ class TestSetValue:
         ("indigo.prompt_file", "cannot be changed"),
         ("vault.key[0]", "cannot be changed"),              # an indexed spelling still changes the key
         ("indigo.ssh_user[0].host", "cannot be changed"),
+        ("role", "cannot be changed"),                      # whether this install is a server at all
+        ("imessage_satellite.token", "cannot be changed"),  # … and what guards an account's messages
+        ("imessage_satellite.lan_access", "cannot be changed"),
         ("interfaces", "not a single value"),
         ("gmail.password", "not a known setting"),
         ("pager/password", "not a known setting"),
@@ -180,6 +183,54 @@ class TestSetValue:
             ConfigStore.check_key(key)
         with pytest.raises(ConfigStoreError, match=reason):
             ConfigStore.set_value(key, "x")
+
+    @pytest.mark.parametrize("key", ["imessage_chat.owners[0]", "imessage_chat.owners[3]", "imessage_chat.owners"])
+    def test_who_commands_the_house_from_a_phone_is_typed_by_the_user_and_never_stated(self, files, key):
+        """A handle on the iMessage chat's owners list has the owner's rights: an instruction read
+        in a mail must not be able to add one. config_request still writes the entry."""
+        with pytest.raises(ConfigStoreError, match="config_request"):
+            ConfigStore.check_stated(key)
+
+    @pytest.mark.parametrize("key", ["imessage_chat.guests[0]", "imessage_chat.bots[0]", "imessage_chat.guests",
+                                     "imessage_chat.bots[7]", "imessage_chat.guests[0].x", "imessage_chat[0].guests"])
+    def test_nobody_is_put_on_the_imessage_chats_lists_by_a_stated_value(self, files, key):
+        """A guest is answered by a model that holds the household's memory and is a place it
+        posts to without an approval: a handle an instruction in a mail made it state would be
+        an address to send anything to."""
+        with pytest.raises(ConfigStoreError, match="config_request"):
+            ConfigStore.check_stated(key)
+
+    @pytest.mark.parametrize("key", ["imessage_chat.daily_limit", "imessage_chat.typing_dots",
+                                     "imessage_chat.ownership", "interfaces.imessage.enabled"])
+    def test_what_serves_nobody_new_may_be_stated(self, files, key):
+        """Neither a limit, the dots nor the switch of the interface puts anybody on a list."""
+        ConfigStore.check_stated(key)
+
+    @pytest.mark.parametrize("key", ["imessage.host", "imessage.host_token", "imessage_chat.host",
+                                     "imessage_chat.host_token"])
+    def test_where_messages_go_is_typed_by_the_user_and_never_stated(self, files, key):
+        """A stated address would be handed the token at the next connect: config_set's extra
+        check refuses the key (config_request, which skips that check, still writes it)."""
+        with pytest.raises(ConfigStoreError, match="config_request"):
+            ConfigStore.check_stated(key)
+
+    def test_an_ordinary_key_may_be_stated(self, files):
+        ConfigStore.check_stated("owner_name")
+
+    def test_every_key_only_the_user_types_says_in_words_what_its_value_grants(self, files):
+        """The prompt's title is the key alone; "imessage_chat.owners[1]" does not tell the
+        user that whoever they type there commands the house."""
+        for prefix in ConfigStore.OWNER_TYPED_PREFIXES:
+            assert len(ConfigStore.grants(prefix).split()) > 5, f"{prefix} is asked for by its name alone"
+        lists = [ConfigStore.grants(f"imessage_chat.{name}[1]") for name in ("owners", "guests", "bots")]
+        assert all(lists) and len(set(lists)) == 3, "an owner, a guest and another assistant are told apart"
+        owners, guests, _ = (words.lower() for words in lists)
+        assert "every command" in owners and "no command" in guests
+
+    @pytest.mark.parametrize("key", ["owner_name", "imessage_chat.daily_limit", "imessage_chat.ownership",
+                                     "imessage.host_tokens"])
+    def test_a_key_the_assistant_may_state_grants_nothing_to_spell_out(self, files, key):
+        assert ConfigStore.grants(key) == ""
 
     def test_a_denied_key_bars_its_own_names_and_not_a_sibling_that_begins_the_same(self, files):
         """`vault.key` is denied in every spelling; `vault.keyring` only shares its letters and

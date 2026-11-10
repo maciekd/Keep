@@ -9,7 +9,10 @@ the one the feed had, then carries on from there. Inside the window it had alrea
 the old horizon up to the newest entry stored before the move — an entry is dropped only when
 the history holds a row of this feed at its moment (live rows can carry a media description the
 backfill path does not, so the history's dedup index would not catch those); a hole in the
-window, and anything past it, was never stored and is kept. Once live and idle the runner also
+window, and anything past it, was never stored and is kept. A catch-up started over because the
+stored cursor was given up (`_void`) reads what the feed had read before, and drops by the same
+test — a row of this feed at the entry's moment — everything dated up to the moment it started
+over, until it is live again (`_drop_reread`). Once live and idle the runner also
 asks the feed to `sweep` for items behind the cursor it has no row for (a batch the provider
 refused, rows a migration forgot) — holes that nothing else would ever close. A batch the
 history refuses is held and stored again on the next pass, never refetched: a Photos batch's
@@ -18,6 +21,7 @@ process-wide registry the bootstrap start hook, `restart_integration` and the st
 go through."""
 import threading
 import time
+from dataclasses import replace
 from enum import Enum
 from typing import Optional
 
@@ -26,7 +30,7 @@ from common.DevelopmentConfig import RUNNING_UNDER_TEST
 from common.FloxyDatabase import FloxyDatabase
 from common.logging import info, trace, error, fine, note
 from ..Telemetry import Telemetry
-from .Feed import Feed, FeedBatch, FEED_ROLE
+from .Feed import Feed, FeedBatch, FeedSourceAway, FEED_ROLE
 
 SECONDS_PER_MONTH = 30.44 * 24 * 3600
 
@@ -41,6 +45,9 @@ class FeedState(Enum):
 
 class FeedRunner:
     FAILURE_LIMIT = 5   # consecutive fetch failures before the feed gives up
+    # A source that is away (`FeedSourceAway`) is asked again at the feed's own pace at first —
+    # a restart is over in seconds — and at this one once it has been away for a while.
+    AWAY_POLL_SECONDS = 30.0
     # An ETA needs a rate worth trusting: this much of the catch-up done in this process, over this long.
     ETA_MIN_ITEMS = 5
     ETA_MIN_SECONDS = 30.0
@@ -82,10 +89,14 @@ class FeedRunner:
         # The newest entry stored before the move-back: the covered window's far edge. None
         # (a gap opened before this was recorded) drops everything past `_gap_until`.
         self._gap_covered_until: Optional[float] = None
+        # A catch-up started over after a given-up cursor: entries dated up to here may have a
+        # row in the history already, under another content. None once the feed is live again.
+        self._reread_until: Optional[float] = None
         self._unstored: Optional[tuple[FeedBatch, bool]] = None    # a batch the history refused, stored again next pass
         self._sweep_due: Optional[float] = None    # when the live feed is next asked to sweep; None: at the first idle poll
         self._last_error: Optional[str] = None
         self._failures = 0
+        self._away = 0               # consecutive tries that found the source away
 
     @property
     def name(self) -> str:
@@ -98,6 +109,11 @@ class FeedRunner:
     @property
     def paused(self) -> bool:
         return not self._running.is_set()
+
+    @property
+    def away(self) -> bool:
+        """The last try found the source out of reach (`FeedSourceAway`): nothing is read until it is back."""
+        return self._away > 0
 
     def pause(self) -> bool:
         """Stop fetching after the current batch. Returns False when already paused."""
@@ -167,6 +183,7 @@ class FeedRunner:
                 "last_entry_ts": self._last_entry_ts,
                 "live_since": self._live_since,
                 "last_error": self._last_error,
+                "away": self.away,
             }
 
     def _in_flight(self) -> int:
@@ -222,13 +239,49 @@ class FeedRunner:
         warning that stands until the monitor's next cycle, 15 minutes later."""
         return self._opened.wait(timeout)
 
+    def _source_away(self, e: FeedSourceAway):
+        """The source is out of reach, not broken: say so once, keep the place, wait, ask again."""
+        self._away += 1
+        with self._lock:
+            self._last_error = str(e)
+        self._opened.set()      # whoever waits for the feed to open is not kept waiting for another Mac
+        if self._away == 1:
+            info(f"Feed '{self.name}': its source is away — keeping the cursor and asking again: {e}")
+        else:
+            trace(f"Feed '{self.name}': its source is still away (try {self._away}): {e}")
+        patient = self._away > self.FAILURE_LIMIT
+        self._stop_event.wait(max(self._feed.poll_interval, self.AWAY_POLL_SECONDS) if patient else self._feed.poll_interval)
+
+    def _source_back(self):
+        """The source answered. What it said may be the reason the feed ends (a refusal at open):
+        that reason stays, only a feed that goes on drops the note about the wait."""
+        if not self._away:
+            return
+        info(f"Feed '{self.name}': its source is back after {self._away} tries")
+        self._away = 0
+        with self._lock:
+            if self._state not in (FeedState.STOPPED, FeedState.FAILED):
+                self._last_error = None
+
+    def _patiently(self, step):
+        """`step()`, tried again for as long as it finds the source away; None once the feed is stopped."""
+        while not self._stop_event.is_set():
+            try:
+                result = step()
+            except FeedSourceAway as e:
+                self._source_away(e)
+                continue
+            self._source_back()
+            return result
+        return None
+
     def _run(self):
         try:
-            opened = self._open()
+            opened = self._patiently(self._open)
             self._opened.set()
             if not opened:
                 return
-            self._load_cursor()
+            self._patiently(self._load_cursor)
             self._loop()
         except Exception as e:
             error(f"Feed '{self.name}' crashed: {type(e).__name__}: {e}")
@@ -263,6 +316,8 @@ class FeedRunner:
     def _open(self) -> bool:
         try:
             opened = self._feed.open_feed()
+        except FeedSourceAway:
+            raise
         except Exception as e:
             error(f"Feed '{self.name}': open failed: {type(e).__name__}: {e}")
             with self._lock:
@@ -302,8 +357,18 @@ class FeedRunner:
         except Exception as e:
             error(f"Feed '{self.name}': telemetry count failed: {type(e).__name__}: {e}")
 
+    def _void(self, row: dict) -> Optional[str]:
+        """Why the stored cursor cannot be resumed from, None when it can: written under an older
+        meaning of the cursor (`Feed.cursor_generation`), or no place in what the feed reads
+        now (`Feed.cursor_lost`)."""
+        generation = row.get("generation") or 0
+        if generation < self._feed.cursor_generation:
+            return f"is of generation {generation}, the feed's is {self._feed.cursor_generation}"
+        return self._feed.cursor_lost(row["cursor"], row.get("source"))
+
     def _load_cursor(self):
-        """Resume from the feeds row; start at the horizon when there is none. A horizon
+        """Resume from the feeds row; start at the horizon when there is none, and again when
+        the stored cursor is void (`_void`). A horizon
         moved further back in the config resets the cursor there and opens a gap up to the
         old horizon, with the cursor it had as the place to jump back to (see `_trim_to_gap`).
         Moved back again while a gap is still being read, the boundary and the resume cursor
@@ -311,32 +376,44 @@ class FeedRunner:
         read twice dedupes since both passes are backfill rows."""
         self._recount_stored()
         row = self._database().get_feed(self.name)
+        void = self._void(row) if row is not None else None
         if row is None:
             cursor = self._feed.initial_cursor(self._horizon_ts)
             note(f"Feed '{self.name}': first run, catching up from "
                  f"{time.strftime('%Y-%m-%d', time.localtime(self._horizon_ts))} (cursor={cursor}"
                  f"{f', {self._stored} rows already in the history' if self._stored else ''})")
             self._database().save_feed(self.name, cursor=cursor, horizon=self._horizon_ts,
-                                       generation=self._feed.cursor_generation)
-        elif (row.get("generation") or 0) < self._feed.cursor_generation:
-            # the stored position was written under an older meaning of the cursor: start the
-            # catch-up over from the horizon it was read with; what is stored dedupes
+                                       generation=self._feed.cursor_generation, source=self._feed.cursor_source)
+        elif void:
+            # the stored position says nothing about what the feed reads now: start the catch-up
+            # over from the horizon it was read with. What it stored is read again and told by its
+            # moment (`_drop_reread`), not by the dedup index: a live row and the catch-up's row
+            # for the same message differ in content
             horizon = row["horizon"] if row["horizon"] is not None else self._horizon_ts
             self._horizon_ts = min(horizon, self._horizon_ts)
             cursor = self._feed.initial_cursor(self._horizon_ts)
-            note(f"Feed '{self.name}': the stored cursor={row['cursor']} is of generation "
-                 f"{row.get('generation') or 0}, the feed's is {self._feed.cursor_generation} — catching up again from "
+            self._reread_until = time.time()
+            note(f"Feed '{self.name}': the stored cursor={row['cursor']} {void} — catching up again from "
                  f"{time.strftime('%Y-%m-%d', time.localtime(self._horizon_ts))} (cursor={cursor}, "
                  f"{self._stored} rows already in the history)")
             self._database().save_feed(self.name, cursor=cursor, horizon=self._horizon_ts,
-                                       generation=self._feed.cursor_generation,
-                                       gap_until=None, resume_cursor=None, gap_covered_until=None)
+                                       generation=self._feed.cursor_generation, source=self._feed.cursor_source,
+                                       gap_until=None, resume_cursor=None, gap_covered_until=None,
+                                       reread_until=self._reread_until)
         else:
             cursor = row["cursor"]
+            if row.get("source") != self._feed.cursor_source:
+                # a row from before sources were kept, which the feed takes for its own
+                trace(f"Feed '{self.name}': the cursor is now kept as one of {self._feed.cursor_source!r}")
+                self._database().save_feed(self.name, source=self._feed.cursor_source)
             self._last_entry_ts = row["last_entry_ts"]
             self._gap_until = row["gap_until"]
             self._resume_cursor = row["resume_cursor"]
             self._gap_covered_until = row["gap_covered_until"]
+            self._reread_until = row.get("reread_until")
+            if self._reread_until is not None:
+                info(f"Feed '{self.name}': still reading again what it had stored before its cursor was given up — "
+                     f"entries the history has a row for are dropped")
             stored_horizon = row["horizon"]
             if stored_horizon is not None and self._horizon_ts < stored_horizon - 86400:
                 if self._gap_until is None:
@@ -410,11 +487,15 @@ class FeedRunner:
                     info(f"Feed '{self.name}': storing the {len(batch.entries)} entries the history refused last pass")
                 else:
                     batch = self._feed.fetch(self._cursor, backfill=self._state == FeedState.CATCHING_UP)
-                    batch, gap_closed = self._trim_to_gap(batch)
+                    batch, gap_closed = self._trim_to_gap(self._drop_reread(batch))
                 self._store(batch, gap_closed)
                 self._failures = 0
+                self._source_back()
                 if self._state == FeedState.LIVE and batch.exhausted and not batch.entries and not gap_closed:
                     swept = self._sweep()
+            except FeedSourceAway as e:
+                self._source_away(e)
+                continue
             except Exception as e:
                 self._failures += 1
                 error(f"Feed '{self.name}': fetch or store failed ({self._failures}/{self.FAILURE_LIMIT}): "
@@ -465,6 +546,24 @@ class FeedRunner:
         self._store(FeedBatch(batch.entries, cursor=self._cursor))
         self._sweep_due = now if not batch.exhausted else now + self.SWEEP_SECONDS
         return not batch.exhausted
+
+    def _drop_reread(self, batch: FeedBatch) -> FeedBatch:
+        """While a catch-up started over after a given-up cursor is under way, drop the entries
+        the history already holds a row of this feed for, at their moment. The dedup index
+        (timestamp, role, content) is no test for them: the row stored live carries a media
+        description where the catch-up writes a placeholder, or the name a contact had then, so
+        the same message would be stored a second time under another content. Entries dated
+        after the catch-up started over were never stored and are kept."""
+        if self._reread_until is None:
+            return batch
+        inside = [e.timestamp for e in batch.entries if e.timestamp <= self._reread_until]
+        stored = self._database().history_timestamps(self.name, inside) if inside else set()
+        if not stored:
+            return batch
+        kept = [e for e in batch.entries if not (e.timestamp <= self._reread_until and e.timestamp in stored)]
+        trace(f"Feed '{self.name}': {len(batch.entries) - len(kept)} of {len(batch.entries)} entries read again "
+              f"already have a row in the history and are dropped")
+        return replace(batch, entries=kept)
 
     def _trim_to_gap(self, batch: FeedBatch) -> tuple[FeedBatch, bool]:
         """While a gap is open, drop the entries the feed already covered (`_already_covered`);
@@ -553,11 +652,16 @@ class FeedRunner:
             self._state = FeedState.LIVE
             self._live_since = now
             self._remaining = 0
+            reread, self._reread_until = self._reread_until is not None, None
         took = now - (self._live_boundary or now)
         caught_up = f"caught up {self._caught_up} row(s) in {took:.0f}s, " if self._caught_up else ""
         note(f"Feed '{self.name}' is live: {caught_up}{self._stored} rows in the history, "
              f"polling every {self._feed.poll_interval:.0f}s")
-        self._database().save_feed(self.name, cursor=self._cursor, live_since=now)
+        fields = dict(cursor=self._cursor, live_since=now)
+        if reread:
+            info(f"Feed '{self.name}': everything it had stored before its cursor was given up is read again")
+            fields.update(reread_until=None)
+        self._database().save_feed(self.name, **fields)
 
 
 def describe_feed_status(status: Optional[dict]) -> str:
@@ -566,6 +670,9 @@ def describe_feed_status(status: Optional[dict]) -> str:
     if status is None:
         return "not started"
     state = status["state"]
+    if status.get("away") and state not in (FeedState.STOPPED.value, FeedState.FAILED.value):
+        reason = status.get("last_error")
+        return f"waiting for its source: {reason}" if reason else "waiting for its source, which does not answer"
     paused = "paused, " if status.get("paused") else ""
     if state == FeedState.CATCHING_UP.value:
         text = "catching up"

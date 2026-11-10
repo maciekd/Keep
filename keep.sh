@@ -25,8 +25,23 @@ if [ ! -t 0 ]; then
     exec open -a Terminal "$script"
 fi
 
-listening() { lsof -iTCP:8888 -sTCP:LISTEN >/dev/null 2>&1; }
-process()   { pgrep -f 'floxy_ai_server\.py$' >/dev/null 2>&1; }
+# This user's processes of this checkout only (scripts/role.sh): the Keep of the Mac's other
+# user is neither attached to nor waited for.
+. scripts/role.sh || { echo "keep.sh: scripts/role.sh is missing — this checkout is incomplete" >&2; exit 1; }
+listening() { [ -n "$(own_listeners $up_port)" ]; }
+process()   { [ -n "$(own_processes "$KEEP_PROCESS")" ]; }
+
+# An iMessage satellite has no console to attach: one that is up is reported and left alone,
+# anything else is start.sh's to start or to refuse with the reason.
+if [ -z "$console_port" ]; then
+    if listening; then
+        rlog "satellite listening on port $up_port — it has no console, nothing to open"
+        echo "The Keep iMessage satellite is running on port $up_port. It has no console; its log is $PWD/log/floxy.out."
+        exit 0
+    fi
+    rlog "no satellite listening — handing over to start.sh"
+    exec ./start.sh
+fi
 
 if listening; then
     rlog "server listening — attaching the console"

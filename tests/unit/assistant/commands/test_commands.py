@@ -1640,9 +1640,10 @@ class TestDescribeDispatcher:
     def test_describe_send_imessage_uses_full_name_when_available(self, commands_instance):
         from integrations.imessage.IMessageIntegration import IMessageIntegration
         m = IMessageIntegration.get_instance()
-        m._name_to_handle = {"alice": "+12345678901"}
-        m._handle_to_full_name = {"+12345678901": "Alice Smith"}
-        m._contact_cache_time = 1e18
+        contacts = m.host.contacts
+        contacts._name_to_handle = {"alice": "+12345678901"}
+        contacts._handle_to_full_name = {"+12345678901": "Alice Smith"}
+        contacts._contact_cache_time = 1e18
         try:
             assert commands_instance.describe("send_imessage", "Alice, hi") == \
                 "Sending iMessage to Alice Smith (+12345678901)"
@@ -1652,9 +1653,10 @@ class TestDescribeDispatcher:
     def test_describe_send_imessage_falls_back_to_recipient_when_no_full_name(self, commands_instance):
         from integrations.imessage.IMessageIntegration import IMessageIntegration
         m = IMessageIntegration.get_instance()
-        m._name_to_handle = {"alice": "+12345678901"}
-        m._handle_to_full_name = {}
-        m._contact_cache_time = 1e18
+        contacts = m.host.contacts
+        contacts._name_to_handle = {"alice": "+12345678901"}
+        contacts._handle_to_full_name = {}
+        contacts._contact_cache_time = 1e18
         try:
             assert commands_instance.describe("send_imessage", "Alice, hi") == \
                 "Sending iMessage to Alice (+12345678901)"
@@ -2194,6 +2196,19 @@ class TestCmdConfigRequest:
             commands_instance._run_config_request("owner_name")
         assert fake.calls == [("Setting owner_name", "This replaces the current value.")]
 
+    @pytest.mark.parametrize("key", ["imessage_chat.owners[1]", "imessage_chat.guests[0]", "imessage_chat.bots[0]"])
+    def test_the_prompt_for_a_list_entry_says_what_the_entry_grants(self, commands_instance, key):
+        """A model that asks for owners[1] while calling it "adding her as a guest" must be
+        contradicted by more than one word of a key's name."""
+        fake = _secret_notifier("Charlotte +46701740606")
+        with patch("assistant.commands.Commands.notifier", return_value=fake), \
+             patch.object(ConfigStore, "is_set", return_value=True), patch.object(ConfigStore, "set_value"):
+            commands_instance._run_config_request(key)
+        ((title, details),) = fake.calls
+        assert key in title
+        assert ConfigStore.grants(key) and ConfigStore.grants(key) in details
+        assert details != ConfigStore.grants(key), "that a value is replaced is still said"
+
     def test_a_value_of_the_wrong_shape_is_asked_again(self, commands_instance):
         fake = _secret_notifier("abc", "12345")
         calls = []
@@ -2250,6 +2265,16 @@ class TestCmdConfigSet:
             commands_instance.cmd_config_request("icloud.devices(1).id")
         check.assert_called_once_with("icloud.devices[1].id")
 
+    def test_the_satellite_address_is_refused_by_config_set_and_asked_for_by_config_request(self, commands_instance):
+        """An injected instruction can make the prompt appear; it cannot make the address."""
+        with patch.object(commands_instance, "background_command") as bg:
+            answer = commands_instance.cmd_config_set("imessage.host", "http://203.0.113.9:8898")
+            assert answer.startswith("config_set failed") and "config_request" in answer
+            bg.assert_not_called()
+            commands_instance._current_context = Mock(source="Console", conversation="tui")
+            assert commands_instance.cmd_config_request("imessage.host") is None
+            bg.assert_called_once()
+
     def test_a_denied_key_is_refused_before_anything_runs(self, commands_instance):
         with patch.object(ConfigStore, "check_key",
                           side_effect=ConfigStoreError("'vault.key' cannot be changed from here — edit config.yaml by hand")), \
@@ -2291,6 +2316,17 @@ class TestCmdConfigSet:
         with patch.object(ConfigStore, "set_value", return_value="api_keys.serper saved"):
             reply = commands_instance._run_config_set("api_keys.serper", "x")
         assert reply == "api_keys.serper saved. " + Commands.RESTART_HINT
+
+    def test_the_imessage_chats_lists_are_live_and_only_its_host_needs_the_chat_restarted(self, commands_instance):
+        """The transport reads its lists at every message; where its account lives is fixed when
+        it is built — and neither takes a server restart."""
+        with patch.object(ConfigStore, "set_value", return_value="saved"):
+            guests = commands_instance._run_config_set("imessage_chat.guests[0]", "Charlotte +46701740606")
+        assert "restart_server" not in guests and "next message" in guests
+        for key in ("imessage_chat.host", "imessage_chat.host_token"):
+            hint = Commands._restart_hint(key)
+            assert 'restart_integration("iMessage Chat")' in hint and "restart_server" not in hint
+        assert "restart_server" in Commands._restart_hint("interfaces.imessage.enabled")
 
     def test_is_developer_needs_no_restart(self, commands_instance):
         """The toolkit index is rendered at each prompt build, so the hint must not send the

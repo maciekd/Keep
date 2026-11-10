@@ -5,7 +5,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from common.ConfigManager import ConfigManager
 from .Feed import Feed
 from .FeedRunner import Feeds
-from .Integration import Integration, IntegrationState
+from .Integration import HealthWarning, Integration, IntegrationState
 from common.logging import info, error, trace
 from common.DevelopmentConfig import RUNNING_UNDER_TEST
 
@@ -439,6 +439,9 @@ class IntegrationMonitor:
             else:
                 info(f"{integration.name} is not healthy")
                 self._record_failure(integration, "Health check returned False")
+        except HealthWarning as e:
+            integration._last_check_time = time.time()
+            self._record_warning(integration, str(e))
         except Exception as e:
             integration._last_check_time = time.time()
             self._record_failure(integration, str(e))
@@ -454,6 +457,17 @@ class IntegrationMonitor:
             integration.state = IntegrationState.ERROR
         elif integration.state in (IntegrationState.OK, IntegrationState.UNKNOWN):
             integration.state = IntegrationState.WARNING
+
+    @staticmethod
+    def _record_warning(integration: Integration, text: str):
+        """The integration works: the text is shown with WARNING and never adds up to ERROR."""
+        if integration.state == IntegrationState.RATE_LIMITED:
+            return
+        if text != integration._last_error:
+            info(f"Integration '{integration.name}' works, with a warning: {text}")
+        integration._consecutive_failures = 0
+        integration._last_error = text
+        integration.state = IntegrationState.WARNING
 
     def check_now(self, name: str) -> Optional[IntegrationState]:
         integration = self._integrations.get(name)

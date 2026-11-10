@@ -2,7 +2,9 @@
 `Keep Autostart.app` every `INTERVAL` seconds, so the login item's script (`autostart.sh`: start
 the server through start.sh unless one is up or starting) runs between logins too. The root
 config key `watchdog` (off by default) turns it on; `sync` brings the Mac to the key's state at
-boot and whenever the key is set.
+boot and whenever the key is set. An iMessage satellite applies the key at each start as well
+(`common/imessage/Satellite.stay_up`; its installer writes it on). The agent is one per macOS user,
+not per install: two installs under one user would each bring it to their own key.
 
 The agent itself touches nothing of the checkout: launchd runs only the system `open`, and the
 applet — a program macOS holds responsible, with the grants it was given when the setup first
@@ -28,7 +30,8 @@ OUT_LOG = Path.home() / "Library" / "Logs" / "Keep" / "watchdog.log"
 LAUNCHCTL_TIMEOUT = 30
 
 
-def plist_text(app: Path = Autostart.APP, out_log: Path = OUT_LOG) -> str:
+def plist_text(app: Path = Autostart.APP, out_log: Path | None = None) -> str:
+    out_log = out_log or OUT_LOG
     return f'''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -74,24 +77,29 @@ def loaded(run=subprocess.run) -> bool:
     return ok
 
 
-def sync(enabled: bool, app: Path = Autostart.APP, script: Path = Autostart.SCRIPT, plist: Path = PLIST,
+def sync(enabled: bool, app: Path = Autostart.APP, script: Path = Autostart.SCRIPT, plist: Path | None = None,
          run=subprocess.run) -> str | None:
     """Install and load the agent, or unload and remove it, to match the config key. Returns None
-    when the Mac is in the wanted state, else why not (logged as well)."""
+    when the Mac is in the wanted state, else why not (logged as well). `plist`: `PLIST` unless
+    named — read at the call, so whoever moves the module's path moves every write."""
     return enable(app, script, plist, run) if enabled else disable(plist, run)
 
 
-def enable(app: Path = Autostart.APP, script: Path = Autostart.SCRIPT, plist: Path = PLIST,
+def enable(app: Path = Autostart.APP, script: Path = Autostart.SCRIPT, plist: Path | None = None,
            run=subprocess.run) -> str | None:
+    plist = plist or PLIST
+    # launchd is asked before anything is built or written: a caller that may not reach it (the
+    # unit suite's guard) is stopped here, with the applet and the plist as they were
+    is_loaded = loaded(run)
     fresh = not Applet.current(app)
     if not Applet.build(app, script, run=run):
         return _fail(f"{app.name} could not be built (the log says why)")
     text = plist_text(app)
     same = plist.exists() and plist.read_text() == text
-    if same and loaded(run):
+    if same and is_loaded:
         info(f"Watchdog: the agent is installed and loaded — the server is relaunched within {INTERVAL}s of dying")
         return None
-    if plist.exists() and loaded(run):
+    if plist.exists() and is_loaded:
         trace("Watchdog: the agent's plist changed — reloading it")
         _launchctl(["bootout", f"{_domain()}/{LABEL}"], run)
     plist.parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +114,8 @@ def enable(app: Path = Autostart.APP, script: Path = Autostart.SCRIPT, plist: Pa
     return None
 
 
-def disable(plist: Path = PLIST, run=subprocess.run) -> str | None:
+def disable(plist: Path | None = None, run=subprocess.run) -> str | None:
+    plist = plist or PLIST
     if loaded(run):
         ok, said = _launchctl(["bootout", f"{_domain()}/{LABEL}"], run)
         if not ok:

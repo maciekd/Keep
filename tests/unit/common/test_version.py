@@ -13,7 +13,7 @@ def fresh_cache():
 
 
 def clear():
-    for f in (Version.version, Version.branch, Version.label, Version.detail, Version.release_notes):
+    for f in (Version.version, Version.branch, Version.commit, Version.label, Version.detail, Version.release_notes):
         f.cache_clear()
 
 
@@ -103,3 +103,28 @@ def test_no_release_notes_on_an_untagged_commit():
 def test_a_tag_without_a_note_gives_no_release_notes():
     with fake_git({"log": "2026.09", "rev-list": "3868", TAG_COMMIT: "abc123", HEAD: "abc123", TAG_BODY: "\n"}):
         assert Version.release_notes() == ""
+
+
+@pytest.mark.unit
+def test_the_commit_is_the_one_the_process_first_saw_whatever_the_checkout_does_later():
+    """What a server tells its iMessage satellite to follow: a pull it has not restarted on must not move it."""
+    heads = iter(["1b6c9ce7" + "0" * 32, "9f9f9f9f" + "1" * 32])
+    with patch.object(Version, "_git", side_effect=lambda *args: next(heads)):
+        assert Version.commit() == Version.commit() == "1b6c9ce7" + "0" * 32
+
+
+@pytest.mark.unit
+def test_the_commit_is_read_with_the_version_line_of_the_start_not_by_whoever_asks_first_later():
+    """A satellite's host built after the checkout moved (an integration enabled later) must
+    still name the commit the process started on."""
+    git = {"log": "2026.11", "rev-list": "4100", HEAD: "1b6c9ce7" + "0" * 32, BRANCH: "release", "status": ""}
+    with fake_git(git):
+        Version.detail()
+    with fake_git({**git, HEAD: "9f9f9f9f" + "1" * 32}):
+        assert Version.commit() == "1b6c9ce7" + "0" * 32
+
+
+@pytest.mark.unit
+def test_an_unknown_commit_is_empty_not_missing():
+    with fake_git({}):
+        assert Version.commit() == ""

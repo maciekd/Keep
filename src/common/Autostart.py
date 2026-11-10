@@ -4,9 +4,11 @@
 
 `autostart.sh` starts the server the way it always starts — start.sh, through Terminal, so the
 Mac's grants apply — and opens no console; a server that is already up is left alone. The
-first-time setup registers the item with the Desktop shortcut (`assistant/FirstRun`); the user
-removes it in that pane. The applet lives in the tree, not on the Desktop, so a tidied Desktop cannot break it;
-it is gitignored and rebuilt when missing.
+first-time setup registers the item with the Desktop shortcut (`assistant/FirstRun`); an iMessage
+satellite, which has no setup, registers it at its first start that can read Messages
+(`common/imessage/Satellite.stay_up`). The user removes it in that pane. The applet lives in the
+tree, not on the Desktop, so a tidied Desktop cannot break it; it is gitignored and rebuilt when
+missing.
 
 The login item is made through System Events, so the first call asks the user to let Terminal
 (the app held responsible for the server) control System Events; a declined dialog is reported

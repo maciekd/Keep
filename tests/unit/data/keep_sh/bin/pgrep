@@ -1,9 +1,13 @@
 #!/bin/bash
-# keep.sh's test double for `pgrep`: the server process exists (exit 0) until the
-# KEEP_TEST_GONE_AT-th call, for good when unset; the count lives in KEEP_TEST_COUNTERS/pgrep.
-# A query for a start.sh process (autostart.sh's second check) is answered from
-# KEEP_TEST_START_SH_RUNNING alone and leaves the count untouched.
-case "$*" in *'start\.sh'*) [ -n "$KEEP_TEST_START_SH_RUNNING" ]; exit;; esac
+# keep.sh's test double for `pgrep`: this user's server process exists (its pid printed, exit 0)
+# until the KEEP_TEST_GONE_AT-th call, for good when unset; the count lives in
+# KEEP_TEST_COUNTERS/pgrep. A query for a start.sh process (autostart.sh's second check) is
+# answered from KEEP_TEST_START_SH_RUNNING alone and leaves the count untouched. Another macOS
+# user's Keep process exists when KEEP_TEST_FOREIGN_PROCESS is set, and only a query not narrowed
+# to the caller (`-u`) sees it.
+case "$*" in *'start\.sh'*) [ -n "$KEEP_TEST_START_SH_RUNNING" ] && echo 4444; [ -n "$KEEP_TEST_START_SH_RUNNING" ]; exit;; esac
+if [ -n "$KEEP_TEST_FOREIGN_PROCESS" ] && [[ " $* " != *" -u $UID "* ]]; then echo 4343; exit 0; fi
 n=0; [ -f "$KEEP_TEST_COUNTERS/pgrep" ] && read -r n < "$KEEP_TEST_COUNTERS/pgrep"
 n=$((n+1)); echo $n > "$KEEP_TEST_COUNTERS/pgrep"
-[ "$n" -lt "${KEEP_TEST_GONE_AT:-1000000}" ]
+if [ "$n" -lt "${KEEP_TEST_GONE_AT:-1000000}" ]; then echo 4242; exit 0; fi
+exit 1

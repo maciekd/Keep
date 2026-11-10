@@ -28,9 +28,40 @@ from common.logging import info, trace
 # they take effect at the next server restart (config_set says so). The last four are run
 # as commands — over ssh on the Indigo Mac, in a shell before a photo opens — so a value the
 # LLM could write (a prompt injection reaching config_set) would run within the next poll.
+# `role` decides whether this install is a Keep server at all, and `imessage_satellite` holds the
+# token and the network switch of a process that hands out an account's messages: both are set
+# on the Mac they are about, by hand or by the installer.
 DENIED_PREFIXES = ("vault.key", "interfaces.http",
                    "indigo.ssh_user", "indigo.prompt_file", "indigo.log_refiner",
-                   "photos.screen_prepare_command")
+                   "photos.screen_prepare_command",
+                   "role", "imessage_satellite")
+# Where an account's messages are read from and sent through. The assistant may ask for these
+# (config_request: the user types the value into the masked prompt) and never state them
+# (config_set): an address it wrote on an instruction it read in a mail or on a web page would be
+# handed the token at the next connect, and every message after it.
+# The same holds for the chat interface's host, and for everybody on its lists: a handle on
+# imessage_chat.owners commands the whole household from a phone, and one on guests or bots is
+# answered by a model that holds the household's memory and is a post_message destination
+# no approval stands in front of — a stated handle would be an address to send anything to.
+# Each with what its value grants, in plain words: the prompt the user types into shows them
+# (config_request), since the key's name alone — "imessage_chat.owners[1]" — does not say that
+# whoever is typed there commands the house.
+_READS_THE_ACCOUNT = ("Every message of this Messages account is read by the Mac at the address typed here, "
+                      "and what is sent goes through it.")
+_SATELLITE_TOKEN = "The token of that Mac: it is sent to the address of the host with every request."
+OWNER_TYPED = {
+    "imessage.host": _READS_THE_ACCOUNT,
+    "imessage.host_token": _SATELLITE_TOKEN,
+    "imessage_chat.host": _READS_THE_ACCOUNT,
+    "imessage_chat.host_token": _SATELLITE_TOKEN,
+    "imessage_chat.owners": "Whoever is typed here becomes an OWNER over iMessage: every command of the house "
+                            "runs for a message from this number or address.",
+    "imessage_chat.guests": "Whoever is typed here becomes a guest over iMessage: the assistant chats with them "
+                            "and can be told to text them, and runs no command for them.",
+    "imessage_chat.bots": "Whoever is typed here is treated as another household's assistant over iMessage: a "
+                          "guest without commands, answered only a few times an hour.",
+}
+OWNER_TYPED_PREFIXES = tuple(OWNER_TYPED)
 BACKUP_DIR = CACHE_DIR / "config-backups"
 BACKUPS_KEPT = 10
 
@@ -45,14 +76,33 @@ class ConfigStoreError(Exception):
     """The value cannot be stored as given; the message is fit to show the user."""
 
 
-def is_denied(key: str) -> bool:
+def _under(key: str, prefixes: tuple) -> bool:
     """Compared on the key's names, indexes aside: vault.key[0] and indigo.ssh_user[0].x
     would change a denied key as surely as the plain spelling does."""
     try:
         names = [p for p in ConfigSchema.split_key(key) if isinstance(p, str)]
     except ValueError:
         return False
-    return any(names[:len(denied)] == denied for denied in (p.split(".") for p in DENIED_PREFIXES))
+    return any(names[:len(prefix)] == prefix for prefix in (p.split(".") for p in prefixes))
+
+
+def is_denied(key: str) -> bool:
+    return _under(key, DENIED_PREFIXES)
+
+
+def check_stated(key: str) -> None:
+    """Raises ConfigStoreError for a key whose value only the user may type (config_request):
+    what config_set checks on top of `check_key` before it writes a value the LLM stated."""
+    if _under(key.strip(), OWNER_TYPED_PREFIXES):
+        info(f"ConfigStore: '{key}' is typed by the user alone, a stated value is refused")
+        raise ConfigStoreError(f"'{key}' is typed by the user, never stated here — config_request(\"{key}\") "
+                               f"asks them for it")
+
+
+def grants(key: str) -> str:
+    """What the value typed for *key* grants, in plain words — "" for a key whose value the
+    assistant may state as well."""
+    return next((words for prefix, words in OWNER_TYPED.items() if _under(key.strip(), (prefix,))), "")
 
 
 def check_key(key: str) -> None:
@@ -90,8 +140,9 @@ def _list_length(key: str) -> int:
 
 # What `interfaces.<name>.enabled` means when config.yaml does not say — the launcher decides
 # before importing an interface's module (voice pulls in the audio stack), so it cannot read
-# the class's `enabled_by_default`; http is always on and never read.
-INTERFACE_ENABLED_BY_DEFAULT = {"voice": False}
+# the class's `enabled_by_default`; http is always on and never read. The iMessage chat is off
+# too: it needs an Apple ID of the assistant's own.
+INTERFACE_ENABLED_BY_DEFAULT = {"voice": False, "imessage": False}
 _INTERFACE_FLAG_RE = re.compile(r"^interfaces\.([a-z]+)\.enabled$")
 
 

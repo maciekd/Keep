@@ -26,7 +26,7 @@ class FakeDraft:
 
     def finalize(self, html):
         self._log("finalize", html)
-        return True
+        return self.transport.finalize_ok
 
     def discard(self):
         self._log("discard")
@@ -63,6 +63,8 @@ class FakeTransport(ChatTransport):
         self.calls = []
         self.drafts = []
         self.update_ok = True
+        self.finalize_ok = True     # False: the platform does not take a bubble's final text
+        self.turned = []            # (conversation, message ids) of the guest turns turned away as busy
         self.accept = True
         self.prompt_ref = 101
         self.hub = None
@@ -104,6 +106,9 @@ class FakeTransport(ChatTransport):
 
     def set_status_line(self, conversation, html):
         self.calls.append(("status", conversation, html))
+
+    def turned_away(self, conversation, message_ids):
+        self.turned.append((conversation, list(message_ids)))
 
     def reply_started(self, conversation):
         self.calls.append(("reply_started", conversation))

@@ -37,10 +37,12 @@ class _Request:
     stream and the worker rendering it, so cancelling (a newer message arrived) kills the
     assistant request even when the cancel lands before the dispatch returned."""
 
-    def __init__(self):
+    def __init__(self, message_ids: Optional[list] = None):
         self._lock = threading.Lock()
         self.stream = None
         self.cancelled = False
+        self.superseded = False     # the stream was killed by a request elsewhere, not by this chat
+        self.message_ids = message_ids or []    # the IncomingMessage ids the turn was made of
 
     def attach(self, stream) -> bool:
         """Record the dispatched stream; returns False (and kills it) when already cancelled."""
@@ -67,6 +69,8 @@ class _Album:
         # with the facts of its photos — a guest's captioned photo is a guest turn.
         self.guest = False
         self.sender_is_bot = False
+        self.context: Optional[str] = None    # IncomingMessage.context of the first photo that brought one
+        self.message_ids: list = []           # of the messages batched, for a turn that is turned away
         self.images: list[dict] = []
         self.captions: list[str] = []
         self.timer: Optional[threading.Timer] = None
@@ -170,6 +174,7 @@ class ChatSession:
         if msg.kind == KIND_TEXT and album is not None:
             with self._lock:
                 album.captions.append(msg.text)
+                album.message_ids.append(msg.message_id)
                 # The batch runs with the facts of everything in it: a guest's text folded into
                 # an owner's album makes it a guest turn, as a guest's photo does (_add_to_album).
                 album.guest = album.guest or msg.guest
@@ -215,18 +220,13 @@ class ChatSession:
             info(f"{self._log_prefix()}: cancelling the in-flight reply")
             request.cancel()
 
-    def _start(self, msg: IncomingMessage, images: Optional[list] = None) -> bool:
+    def _start(self, msg: IncomingMessage, images: Optional[list] = None, message_ids: Optional[list] = None) -> bool:
         """False when the message is dropped instead of starting (or waiting for) a turn."""
-        request = _Request()
+        request = _Request([msg.message_id] if message_ids is None else message_ids)
         with self._lock:
             previous = self._request
-            if previous is not None and msg.guest:
-                # A guest never supersedes a turn in flight here: the guard in Assistant.stream
-                # refuses the guest's request, but only once this conversation's previous one
-                # is cancelled — too late for the owner. Dropped without a word, like there.
-                info(f"{self._log_prefix()}: a reply is in flight, the guest turn from {msg.sender} is dropped")
-                return False
-            if previous is not None and msg.kind == KIND_REACTION:
+            refused = previous is not None and msg.guest
+            if previous is not None and msg.kind == KIND_REACTION and not refused:
                 # A reaction to the bubble still being written must not kill the reply: a killed
                 # request writes no history, and the retyped question that justifies losing it
                 # never comes with a reaction. It waits its turn (the latest one, when several)
@@ -236,13 +236,29 @@ class ChatSession:
                 info(f"{self._log_prefix()}: a reply is in flight, the reaction {msg.reaction} from {msg.sender} "
                      f"waits for it" + (f" (replacing the {replaced.reaction} held before)" if replaced else ""))
                 return True
-            self._request = request
+            if not refused:
+                self._request = request
+        if refused:
+            # A guest never supersedes a turn in flight here: the guard in Assistant.stream
+            # refuses the guest's request, but only once this conversation's previous one
+            # is cancelled — too late for the owner. Dropped without a word, like there.
+            info(f"{self._log_prefix()}: a reply is in flight, the guest turn from {msg.sender} is dropped")
+            self._turned_away(request)
+            return False
         if previous is not None:
             info(f"{self._log_prefix()}: cancelling previous response (new message arrived)")
             previous.cancel()
         threading.Thread(target=self._serve, args=(request, msg, images),
                          name=f"{self._transport.name}Chat", daemon=True).start()
         return True
+
+    def _turned_away(self, request: _Request):
+        """Tell the transport that a guest's turn was dropped because a request was in flight
+        (`ChatTransport.turned_away`): one that can read the message again offers it later."""
+        try:
+            self._transport.turned_away(self._conversation, [i for i in request.message_ids if i is not None])
+        except Exception as e:
+            error(f"{self._log_prefix()}: turned_away failed: {e}")
 
     # --- albums ---------------------------------------------------------------------------
 
@@ -285,8 +301,10 @@ class ChatSession:
                 album.touched = time.monotonic()
             album.guest = album.guest or msg.guest
             album.sender_is_bot = album.sender_is_bot or msg.sender_is_bot
+            album.context = album.context or msg.context
             if msg.text:
                 album.captions.append(msg.text)
+            album.message_ids.append(msg.message_id)
             for att in msg.attachments:
                 album.images.append({'data': base64.b64encode(att.data).decode('utf-8'),
                                      'media_type': att.mime_type})
@@ -322,8 +340,8 @@ class ChatSession:
         query = " ".join(album.captions) if album.captions else self.IMAGES_ONLY_QUERY
         info(f"{self._log_prefix()} dispatching batch: {len(album.images)} image(s), query: {query}")
         self._start(IncomingMessage(conversation=self._conversation, sender=album.sender, text=query,
-                                    guest=album.guest, sender_is_bot=album.sender_is_bot),
-                    images=album.images)
+                                    guest=album.guest, sender_is_bot=album.sender_is_bot, context=album.context),
+                    images=album.images, message_ids=album.message_ids)
 
     def _cancel_album(self):
         with self._lock:
@@ -416,6 +434,9 @@ class ChatSession:
             return None
 
         query = self._with_reply_context(msg.reply_to_text, user_text)
+        if msg.context:
+            trace(f"{prefix}: {len(msg.context)} chars of the chat's earlier messages go in front of the query")
+            query = f"{msg.context}\n{query}"
         shown = shown if msg.kind == KIND_DOCUMENT else user_text
         info(f"{prefix}: {shown}")
         self._hub.record(self._transport, self._conversation, "user", shown)
@@ -518,6 +539,7 @@ class ChatSession:
                     # A guest's turn is dropped while an owner's request runs (Assistant.stream);
                     # an apology bubble in the group for every such wake would be noise.
                     info(f"{prefix}: assistant busy, the guest's turn is dropped without a word: {busy}")
+                    self._turned_away(request)
                     return
                 info(f"{prefix}: assistant busy, apologising: {busy}")
                 events.put(Notice(f"Sorry, I'm busy right now ({busy})."))
@@ -529,6 +551,7 @@ class ChatSession:
                 events.put(event)
             if stream.killed:
                 trace(f"{prefix}: assistant stream ended killed (superseded).")
+                request.superseded = not request.cancelled
         except Exception as e:
             error(f"{prefix}: assistant request failed: {e}")
             events.put(Notice("Sorry, something went wrong."))
@@ -568,6 +591,7 @@ class ChatSession:
         buffer = ""
         draft = transport.begin_draft(conversation)
         all_responses: list[str] = []
+        undelivered = 0     # bubbles the transport said did not go out
         spinner_mode = True
         tick = 0
         round_start = time.time()
@@ -615,6 +639,16 @@ class ChatSession:
             draft.show_progress(Progress(phase=phase, thinking_text=thinking_text, output_tokens=token_count,
                                          elapsed=elapsed, tick=tick, commands=running, prefill=prefill, rate=rate))
 
+        def close(text: str):
+            """Deliver a finished bubble. One the transport reports as not delivered was never
+            said: it stays out of the transcript, and the transport is the one that knows why."""
+            nonlocal undelivered
+            if draft.finalize(text) is False:
+                undelivered += 1
+                note(f"{prefix}: a bubble of {len(text)} chars was not delivered — not recorded as said")
+                return
+            all_responses.append(text)
+
         def new_round():
             nonlocal buffer, draft, spinner_mode, tick, round_start, in_thinking, thinking_text, token_count
             nonlocal thinking_rate
@@ -647,8 +681,7 @@ class ChatSession:
                         info(f"{prefix}: AI declined to react (replied {buffer.strip()!r}), suppressing")
                         draft.discard()
                     elif buffer.strip():
-                        draft.finalize(buffer)
-                        all_responses.append(buffer)
+                        close(buffer)
                     else:
                         # Whatever is on screen for this round (usually a leftover spinner)
                         # must go, or it hangs in the chat.
@@ -696,8 +729,7 @@ class ChatSession:
                 while max_len and len(buffer) > max_len:
                     # This bubble is full: close it on the part and continue in a new one.
                     part = buffer[:max_len]
-                    draft.finalize(part)
-                    all_responses.append(part)
+                    close(part)
                     buffer = buffer[len(part):]
                     draft = transport.begin_draft(conversation)
 
@@ -707,6 +739,12 @@ class ChatSession:
 
             if request.cancelled:
                 info(f"{prefix}: response cancelled (new message arrived)")
+                draft.discard()
+                return
+
+            if request.superseded and not transport.keeps_partial_reply:
+                info(f"{prefix}: superseded by a request elsewhere — what was written so far is not sent "
+                     f"({len(buffer)} chars)")
                 draft.discard()
                 return
 
@@ -723,12 +761,10 @@ class ChatSession:
                     for i, part in enumerate(RichText.split(buffer, max_len)):
                         if i > 0:
                             draft = transport.begin_draft(conversation)
-                        draft.finalize(part)
-                        all_responses.append(part)
+                        close(part)
                 else:
-                    draft.finalize(buffer)
-                    all_responses.append(buffer)
-            elif not all_responses:
+                    close(buffer)
+            elif not all_responses and not undelivered:
                 note(f"{prefix}: LLM replied with empty message. Assume the AI did not want to reply with anything.")
         finally:
             # Safety net: an empty/suppressed/cancelled response must not leave the

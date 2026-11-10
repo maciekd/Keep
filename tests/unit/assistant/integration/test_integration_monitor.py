@@ -6,7 +6,7 @@ from unittest.mock import patch, Mock
 import pytest
 
 from assistant.integration.Feed import Feed
-from assistant.integration.Integration import Integration, IntegrationState
+from assistant.integration.Integration import HealthWarning, Integration, IntegrationState
 from assistant.integration.IntegrationMonitor import IntegrationMonitor, DisabledIntegration
 
 
@@ -188,6 +188,40 @@ class TestStateTransitions:
         mock_config._check_integration(integration)
         assert integration.state == IntegrationState.WARNING
         assert integration.consecutive_failures == 2
+
+
+class TestAWarningFromAWorkingIntegration:
+    """`HealthWarning`: the integration works and has something for the owner — shown, never an error."""
+
+    @pytest.fixture
+    def integration(self, mock_config):
+        integration = FakeIntegration()
+        mock_config.register(integration)
+        integration.check_health = Mock(side_effect=HealthWarning("the satellite could not update itself"))
+        return integration
+
+    def test_it_is_shown_as_a_warning_with_its_text(self, mock_config, integration):
+        mock_config._check_integration(integration)
+        assert integration.state == IntegrationState.WARNING
+        assert integration.last_error == "the satellite could not update itself"
+
+    def test_however_often_it_repeats_it_never_becomes_an_error(self, mock_config, integration):
+        for _ in range(IntegrationMonitor.FAILURE_THRESHOLD + 3):
+            mock_config._check_integration(integration)
+        assert integration.state == IntegrationState.WARNING and integration.consecutive_failures == 0
+
+    def test_it_does_not_hide_a_real_failure_that_follows(self, mock_config, integration):
+        mock_config._check_integration(integration)
+        integration.check_health = Mock(side_effect=ConnectionError("no route to host"))
+        for _ in range(IntegrationMonitor.FAILURE_THRESHOLD):
+            mock_config._check_integration(integration)
+        assert integration.state == IntegrationState.ERROR and integration.last_error == "no route to host"
+
+    def test_a_clean_check_clears_it(self, mock_config, integration):
+        mock_config._check_integration(integration)
+        integration.check_health = Mock(return_value=True)
+        mock_config._check_integration(integration)
+        assert integration.state == IntegrationState.OK and integration.last_error is None
 
 
 class TestCheckNow:

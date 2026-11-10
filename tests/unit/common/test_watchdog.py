@@ -72,10 +72,21 @@ class TestPlist:
         assert data["StartInterval"] == Watchdog.INTERVAL and data["RunAtLoad"] is False
 
     def test_the_agents_files_live_outside_the_checkout(self):
+        """Read from a copy of the module loaded for this test: the suite's conftest moves the
+        two paths of the imported one to a scratch folder."""
+        import importlib.util
         from common.Paths import AISERVER_DIR
-        for path in (Watchdog.PLIST, Watchdog.OUT_LOG):
+        spec = importlib.util.spec_from_file_location("watchdog_as_installed", Watchdog.__file__)
+        installed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installed)
+        for path in (installed.PLIST, installed.OUT_LOG):
             assert not path.is_relative_to(AISERVER_DIR)
             assert Path.home() / "Library" in path.parents
+
+    def test_the_plist_and_its_log_are_the_modules_at_the_time_of_the_call(self, tree, monkeypatch):
+        app, _, _ = tree
+        monkeypatch.setattr(Watchdog, "OUT_LOG", app.parent / "Logs" / "watchdog.log")
+        assert str(app.parent / "Logs" / "watchdog.log") in Watchdog.plist_text(app)
 
 
 class TestEnable:
@@ -88,6 +99,19 @@ class TestEnable:
         assert Watchdog.LABEL in mac.loaded
         assert mac.launchctl("bootstrap")[0][-1] == str(plist)
         assert mac.opened() == [], "a current applet already has its grants — no run for them"
+
+    def test_launchd_is_asked_before_anything_is_built_or_written(self, tree):
+        """Whoever may not reach launchd is stopped with the Mac as it was — also where nothing
+        was left to build and no plist to compare."""
+        app, script, plist = tree
+        current_bundle(app)
+        seen = []
+
+        def refusing(argv, **kwargs):
+            seen.append((argv[0], plist.parent.exists()))
+            raise PermissionError("launchd is not to be reached from here")
+        assert Watchdog.sync(True, app, script, plist, run=refusing)
+        assert seen[0] == ("launchctl", False)
 
     def test_a_missing_applet_is_built_and_run_once_for_its_grants(self, tree):
         app, script, plist = tree

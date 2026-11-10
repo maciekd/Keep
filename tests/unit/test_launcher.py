@@ -32,8 +32,9 @@ def telegram_only_config():
 @pytest.fixture
 def quiet_heavy_startup():
     """Everything that would talk to the world: LLM pre-heat, integrations, agents, the bot,
-    both history markers (they would otherwise land in the suite's database), and the first-run
-    files (the memory stub and first_run.json would land in the developer's checkout). No LLM
+    both history markers (they would otherwise land in the suite's database), the first-run
+    files (the memory stub and first_run.json would land in the developer's checkout), and the
+    launchd agent of the developer's account, which build() brings to the `watchdog` key. No LLM
     backend is built either — the CacheAuditor is stubbed whole and the handlers' DialogManagers
     get a fake per tier: the fast tier is Gemini by default and importing its client is ~0.3 s,
     paid by the first test on each worker that built one."""
@@ -44,6 +45,7 @@ def quiet_heavy_startup():
          patch('assistant.FirstRun.begin_if_fresh'), \
          patch('assistant.FirstRun.Pipeline') as pipeline, \
          patch('common.StartupTracker.StartupTracker.record_shutdown'), \
+         patch('common.Watchdog.sync'), \
          patch('assistant.integration.bootstrap.discover_integrations', return_value=Mock()) as monitor, \
          patch('assistant.integration.bootstrap.start_feeds'), \
          patch('assistant.agents.CacheAuditor.CacheAuditor'), \
@@ -180,7 +182,7 @@ class TestInterfaceFlags:
         from interfaces.http.HttpInterface import HttpInterface
         assert Interface.enabled_by_default is True and HttpInterface.enabled_by_default is True
         from common import ConfigStore
-        assert ConfigStore.INTERFACE_ENABLED_BY_DEFAULT == {"voice": False}
+        assert ConfigStore.INTERFACE_ENABLED_BY_DEFAULT == {"voice": False, "imessage": False}
 
     def test_every_interface_flag_is_honoured(self, quiet_heavy_startup):
         real_get = config.get
@@ -194,6 +196,29 @@ class TestInterfaceFlags:
             quiet_heavy_startup["bot_start"].assert_not_called()
         finally:
             server.stop()
+
+    def test_the_imessage_chat_is_built_only_when_its_flag_is_on(self, quiet_heavy_startup):
+        """Off by default: an install that never set the flag starts no poll of a Messages account."""
+        from assistant.integration.IntegrationMonitor import IntegrationMonitor
+        real_get = config.get
+        overrides = {'interfaces.voice.enabled': False, 'interfaces.console.enabled': False,
+                     'interfaces.telegram.enabled': False, 'interfaces.imessage.enabled': True,
+                     'imessage_chat.owners': [], 'imessage_chat.guests': [], 'imessage_chat.bots': []}
+        import floxy_ai_server
+        from interfaces.imessage.IMessageTransport import IMessageTransport
+        IntegrationMonitor.reset_instance()
+        IntegrationMonitor.get_instance()._config_manager = config     # the monitor reads the file itself otherwise
+        with patch.object(config, 'get', side_effect=lambda key, default=None: overrides.get(key, real_get(key, default))):
+            server = floxy_ai_server.build(8999, running_as_testsuite=False)
+            try:
+                assert [i.name for i in server.interfaces] == ["http", "imessage"]
+                transport = server.interface("imessage").transport
+                assert isinstance(transport, IMessageTransport)
+                assert transport._thread is None, "nobody is on its lists: it must not poll"
+            finally:
+                server.stop()
+                IMessageTransport.reset_instance()
+                IntegrationMonitor.reset_instance()
 
     def test_telegram_starts_on_the_flag_alone_the_token_comes_later(self):
         """Without a token the interface still starts: the bot is listed as not configured

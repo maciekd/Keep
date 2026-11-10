@@ -5,13 +5,15 @@ import pytest
 from pathlib import Path
 
 from common.ConfigManager import ConfigManager
+from common.Paths import AISERVER_DIR
+from common.Updater import Updater
 
 import json
 import os
 import subprocess
 import threading
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest, WORKING_DIR, AISERVER_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS, GH_NOT_INSTALLED_MESSAGE, GithubAccess, IssueDraft, PREFILL_URL_LIMIT, ISSUE_LABEL
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest, WORKING_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS, GH_NOT_INSTALLED_MESSAGE, GithubAccess, IssueDraft, PREFILL_URL_LIMIT, ISSUE_LABEL
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -53,7 +55,7 @@ def signed_release():
     on this repository, from its origin. Here it is a mock that finds the release current; a
     test that is about it sets its return value. (SignedRelease's own tests run it on throwaway
     repositories.)"""
-    with patch("assistant.agents.CodeQualityMaintainer.SignedRelease.update",
+    with patch("common.SignedRelease.SignedRelease.update",
                return_value=("", "Already up to date.")) as update:
         yield update
 
@@ -221,10 +223,10 @@ class TestNightlyUpdate:
         maintainer._boot_commit = BOOT
         self.config = {"nightly_update": True, "developer_release": True}
         with patch.object(ConfigManager, 'get', side_effect=lambda key, default=None: self.config.get(key, default)), \
-                patch.object(CodeQualityMaintainer, '_pull_target', return_value=("", "")) as pull, \
-                patch.object(CodeQualityMaintainer, '_head_commit', return_value=NEWER) as head, \
-                patch.object(CodeQualityMaintainer, '_commits_between', return_value=2), \
-                patch.object(CodeQualityMaintainer, '_sync_requirements', return_value=("", "")) as sync, \
+                patch.object(Updater, 'pull', return_value=("", "")) as pull, \
+                patch.object(Updater, 'head_commit', return_value=NEWER) as head, \
+                patch.object(Updater, 'commits_between', return_value=2), \
+                patch.object(Updater, 'sync', return_value=("", "")) as sync, \
                 patch.object(CodeQualityMaintainer, 'restart') as restart, \
                 patch('assistant.SystemNote.system_note') as note_:
             self.pull, self.head, self.sync, self.restart, self.note = pull, head, sync, restart, note_
@@ -232,7 +234,7 @@ class TestNightlyUpdate:
 
     def test_new_commits_restart_the_server_with_a_history_only_note(self, maintainer):
         maintainer._nightly_update()
-        self.pull.assert_called_once_with()
+        self.pull.assert_called_once_with("master")
         self.restart.assert_called_once()
         (source, text), kwargs = self.note.call_args
         assert source == "server" and "2 new commits" in text and "master" in text
@@ -241,7 +243,7 @@ class TestNightlyUpdate:
     def test_no_new_commits_means_no_restart(self, maintainer):
         self.head.return_value = BOOT
         maintainer._nightly_update()
-        self.pull.assert_called_once_with()
+        self.pull.assert_called_once_with("master")
         self.restart.assert_not_called()
         self.note.assert_not_called()
         self.sync.assert_not_called()   # pip only runs ahead of a restart
@@ -308,33 +310,11 @@ class TestNightlyUpdate:
         """release may sit behind the commit a master process booted on: nothing is "new", the
         code is still different."""
         self.config["developer_release"] = False
-        with patch.object(CodeQualityMaintainer, '_commits_between', return_value=0):
+        with patch.object(Updater, 'commits_between', return_value=0):
             maintainer._nightly_update()
+        self.pull.assert_called_once_with("release")
         self.restart.assert_called_once()
         assert "release" in self.note.call_args[0][1]
-
-
-@pytest.mark.unit
-class TestHeadCommitAndCount:
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_head_commit_is_empty_when_git_fails(self, mock_sub):
-        mock_sub.return_value = Mock(stdout="", stderr="fatal: not a git repository", returncode=128)
-        assert CodeQualityMaintainer._head_commit() == ""
-        mock_sub.side_effect = OSError("no git")
-        assert CodeQualityMaintainer._head_commit() == ""
-
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_head_commit_is_the_trimmed_hash(self, mock_sub):
-        mock_sub.return_value = Mock(stdout=NEWER + "\n", stderr="", returncode=0)
-        assert CodeQualityMaintainer._head_commit() == NEWER
-
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_commits_between_counts_the_range_and_is_zero_on_failure(self, mock_sub):
-        mock_sub.return_value = Mock(stdout="3\n", stderr="", returncode=0)
-        assert CodeQualityMaintainer._commits_between(BOOT, NEWER) == 3
-        assert mock_sub.call_args[0][0][-1] == f"{BOOT}..{NEWER}"
-        mock_sub.return_value = Mock(stdout="", stderr="bad revision", returncode=128)
-        assert CodeQualityMaintainer._commits_between(BOOT, NEWER) == 0
 
 
 def _pr(number, login, fork=False):
@@ -860,13 +840,6 @@ class TestImproveCode:
         # The open PRs are listed before and after the run — what was open before is never the job's.
         listings = [i for i, c in enumerate(commands) if c[:3] == ["gh", "pr", "list"]]
         assert len(listings) == 2 and listings[0] < commands.index(["git", "pull"]) < listings[1]
-
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_detached_head_falls_back_to_master(self, mock_sub):
-        mock_sub.return_value = Mock(stdout="HEAD\n", returncode=0)
-        assert CodeQualityMaintainer._current_branch() == "master"
-        mock_sub.side_effect = Exception("no git")
-        assert CodeQualityMaintainer._current_branch() == "master"
 
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude crashed"))
@@ -1736,7 +1709,7 @@ class TestExecuteNightlyRun:
         self.merge.assert_not_called()
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="master")
+    @patch.object(Updater, 'current_branch', return_value="master")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_pulls_before_checking_commits(self, mock_sub, mock_branch, mock_commits, maintainer):
         with patch.object(CodeQualityMaintainer, '_step_bug_analysis', return_value=""):
@@ -1745,7 +1718,7 @@ class TestExecuteNightlyRun:
                 mock_sub.assert_called_once_with(["git", "pull"], "git pull", GIT_TIMEOUT)
 
     @patch.object(CodeQualityMaintainer, '_has_recent_commits', return_value=True)
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
+    @patch.object(Updater, 'current_branch', return_value="release")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_on_release_the_night_starts_from_the_signed_release_not_a_plain_pull(
             self, mock_sub, mock_branch, mock_commits, maintainer, signed_release):
@@ -1765,11 +1738,44 @@ def developer_release(value: bool):
 
 
 @pytest.mark.unit
+class TestUpdaterDelegates:
+    """The update machinery is common/Updater's (tests/unit/common/test_updater.py); the maintainer
+    keeps the names its callers use and adds the branch `developer_release` names."""
+
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_the_delegates_run_git_through_the_maintainer_s_own_runner(self, mock_sub):
+        """The jobs, PullRequestTrial and their tests fake git at `_run_subprocess`: a delegate
+        running git any other way would reach the real checkout past every one of those fakes."""
+        mock_sub.return_value = Mock(stdout="release\n", stderr="", returncode=0)
+        assert CodeQualityMaintainer._current_branch() == "release"
+        mock_sub.return_value = Mock(stdout=NEWER + "\n", stderr="", returncode=0)
+        assert CodeQualityMaintainer._head_commit() == NEWER
+        mock_sub.return_value = Mock(stdout="Already up to date.\n", stderr="", returncode=0)
+        with patch.object(Updater, 'current_branch', return_value="master"):
+            CodeQualityMaintainer._pull_current()
+        assert mock_sub.call_args.args[0] == ["git", "pull"]
+
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
+    @patch.object(Updater, 'sync', return_value=("", ""))
+    @patch.object(CodeQualityMaintainer, '_run_subprocess')
+    def test_the_pull_goes_to_the_branch_the_config_key_names(self, mock_sub, mock_sync, mock_popen, signed_release):
+        mock_sub.return_value = Mock(stdout="Already up to date.\n", stderr="", returncode=0)
+        with developer_release(True), patch.object(Updater, 'current_branch', return_value="release"):
+            CodeQualityMaintainer.pull_and_restart()
+        assert [c.args[0] for c in mock_sub.call_args_list] == [
+            ["git", "fetch", "origin", "master"], ["git", "checkout", "master"], ["git", "pull"]]
+        signed_release.assert_not_called()
+        with developer_release(False), patch.object(Updater, 'current_branch', return_value="master"):
+            CodeQualityMaintainer.pull_and_restart()
+        signed_release.assert_called_once_with("master")
+
+
+@pytest.mark.unit
 class TestPullAndRestart:
     @pytest.fixture(autouse=True)
     def venv_in_sync(self):
         """The venv matches the pins unless a test says otherwise — nothing here runs pip."""
-        with patch.object(CodeQualityMaintainer, '_sync_requirements', return_value=("", "")) as sync:
+        with patch.object(Updater, 'sync', return_value=("", "")) as sync:
             self.sync = sync
             yield
 
@@ -1814,7 +1820,7 @@ class TestPullAndRestart:
         assert "pulled updates" in result
         mock_popen.assert_called_once()
         popen_kwargs = mock_popen.call_args[1]
-        assert popen_kwargs["cwd"] == AISERVER_DIR
+        assert popen_kwargs["cwd"] == str(AISERVER_DIR)
         assert popen_kwargs["start_new_session"] is True
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
@@ -1827,7 +1833,7 @@ class TestPullAndRestart:
         mock_popen.assert_called_once()
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="master")
+    @patch.object(Updater, 'current_branch', return_value="master")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_git_pull_failure_does_not_restart(self, mock_sub, mock_branch, mock_popen):
         mock_sub.return_value = Mock(stdout="", stderr="fatal: not a git repository", returncode=128)
@@ -1837,7 +1843,7 @@ class TestPullAndRestart:
         mock_popen.assert_not_called()
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
+    @patch.object(Updater, 'current_branch', return_value="release")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_a_release_that_fails_verification_does_not_restart(self, mock_sub, mock_branch, mock_popen,
                                                                  signed_release):
@@ -1850,7 +1856,7 @@ class TestPullAndRestart:
         mock_popen.assert_not_called()
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
+    @patch.object(Updater, 'current_branch', return_value="release")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_release_is_updated_only_through_the_signed_release(self, mock_sub, mock_branch, mock_popen,
                                                                  signed_release):
@@ -1861,30 +1867,7 @@ class TestPullAndRestart:
         mock_popen.assert_called_once()
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="master")
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_pulls_in_place_when_already_on_the_target_branch(self, mock_sub, mock_branch, mock_popen,
-                                                              signed_release):
-        mock_sub.return_value = Mock(stdout="Already up to date.", stderr="", returncode=0)
-        with developer_release(True):
-            CodeQualityMaintainer.pull_and_restart()
-        assert [c[0][0] for c in mock_sub.call_args_list] == [["git", "pull"]]
-        signed_release.assert_not_called()
-        mock_popen.assert_called_once()
-
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
-    @patch.object(CodeQualityMaintainer, '_run_subprocess')
-    def test_developer_release_switches_to_master_before_pulling(self, mock_sub, mock_branch, mock_popen):
-        mock_sub.return_value = Mock(stdout="Already up to date.", stderr="", returncode=0)
-        with developer_release(True):
-            CodeQualityMaintainer.pull_and_restart()
-        assert [c[0][0] for c in mock_sub.call_args_list] == [
-            ["git", "fetch", "origin", "master"], ["git", "checkout", "master"], ["git", "pull"]]
-        mock_popen.assert_called_once()
-
-    @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
-    @patch.object(CodeQualityMaintainer, '_current_branch', return_value="release")
+    @patch.object(Updater, 'current_branch', return_value="release")
     @patch.object(CodeQualityMaintainer, '_run_subprocess')
     def test_failed_switch_leaves_the_branch_and_does_not_restart(self, mock_sub, mock_branch, mock_popen):
         def git(cmd, label, timeout):
@@ -2195,7 +2178,7 @@ class TestJobPullRequest:
     def test_the_pr_job_hands_the_pr_the_run_left_the_tree_on_back(self):
         after = _prs((133, "tesla-trunk"))
         with patch.object(CodeQualityMaintainer, "_run_subprocess", return_value=Mock(returncode=0, stdout="")), \
-                patch.object(CodeQualityMaintainer, "_current_branch", side_effect=["release", "release", "tesla-trunk"]), \
+                patch.object(Updater, "current_branch", side_effect=["release", "release", "tesla-trunk"]), \
                 patch.object(CodeQualityMaintainer, "_open_pull_requests", side_effect=[{}, after]), \
                 patch.object(CodeQualityMaintainer, "_run_claude", return_value="Opened the PR."), \
                 patch("assistant.agents.PullRequestTrial.PullRequestTrial.current", return_value=None):
@@ -2586,7 +2569,7 @@ class TestFixBugsStep:
 
 @pytest.mark.unit
 class TestNightlyUpdateFailures:
-    """What a git process that hangs past GIT_TIMEOUT at 03:00 costs: _pull_target handles a
+    """What a git process that hangs past GIT_TIMEOUT at 03:00 costs: the update handles a
     failing exit code (the night runs on the old code), a raise must not cost more."""
 
     @patch('assistant.agents.CodeQualityMaintainer.time.sleep')
@@ -2658,18 +2641,3 @@ class TestOpenPins:
         with patch.object(CodeQualityMaintainer, '_run_claude', side_effect=RuntimeError("claude down")):
             assert CodeQualityMaintainer._step_open_pins() == ""
 
-
-@pytest.mark.unit
-class TestPullSummary:
-    """The pull output is logged, sent to the chat and carried through the restart as the
-    resumed turn's query, so the per-file diffstat was repeated a dozen times."""
-
-    def test_the_diffstat_is_dropped_and_the_first_and_summary_lines_kept(self):
-        from assistant.agents.CodeQualityMaintainer import _pull_summary
-        stdout = ("Updating 5e70670..bcff709\nFast-forward\n src/a.py | 12 ++--\n tests/b.py | 40 +++\n"
-                  " 13 files changed, 176 insertions(+), 51 deletions(-)\n")
-        assert _pull_summary(stdout) == "Updating 5e70670..bcff709, 13 files changed, 176 insertions(+), 51 deletions(-)"
-        assert _pull_summary("Already up to date.\n") == "Already up to date."
-        assert _pull_summary("Updating a..b\nFast-forward\n src/a.py | 1 +\n 1 file changed, 1 insertion(+)") == \
-            "Updating a..b, 1 file changed, 1 insertion(+)"
-        assert _pull_summary("") == ""

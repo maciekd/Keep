@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 KEEP_SH = Path(__file__).resolve().parents[2] / 'keep.sh'
+ROLE_SH = KEEP_SH.parent / 'scripts' / 'role.sh'
+SATELLITE_PORT = 8901
 STUBS = Path(__file__).parent / 'data' / 'keep_sh'
 BASH = shutil.which('bash')
 
@@ -25,6 +27,8 @@ class Harness:
         self.root = tmp_path / 'Keep'
         self.root.mkdir()
         (self.root / 'keep.sh').write_text(KEEP_SH.read_text())
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts' / 'role.sh').write_text(ROLE_SH.read_text())
         (self.root / 'start.sh').symlink_to(STUBS / 'start.sh')
         self.calls = tmp_path / 'calls.log'
         counters = tmp_path / 'counters'
@@ -40,6 +44,12 @@ class Harness:
     def server(self, listening, process):
         self.booting_server(listens_at_call=1 if listening else None)
         self.env['KEEP_TEST_GONE_AT'] = None if process else '1'
+
+    def satellite(self, listening):
+        """This install is an iMessage satellite, listening on its port or not running."""
+        (self.root / 'config.yaml').write_text(f'role: imessage_satellite\nimessage_satellite:\n  port: {SATELLITE_PORT}\n')
+        self.env['KEEP_TEST_PORT'] = str(SATELLITE_PORT)
+        self.server(listening=listening, process=listening)
 
     def booting_server(self, listens_at_call):
         """A process from the start; the port listens from the given lsof call on."""
@@ -131,6 +141,34 @@ class TestInsideTheTerminal:
         assert harness.recorded() == ['sleep 1'] * 3 + ['python3 tui.py localhost']
 
     def test_no_server_starts_one(self, harness):
+        result = harness.run(with_tty=True)
+        assert 'start.sh ran' in result.stdout
+        assert harness.recorded() == []
+
+
+class TestSatellite:
+    """An iMessage satellite has no console: keep.sh never launches one for it."""
+
+    def test_a_running_satellite_is_reported_and_left_alone(self, harness):
+        harness.satellite(listening=True)
+        result = harness.run(with_tty=True)
+        assert result.returncode == 0
+        assert str(SATELLITE_PORT) in result.stdout
+        assert 'start.sh ran' not in result.stdout
+        assert harness.recorded() == []
+
+    def test_a_satellite_that_is_down_is_started_without_a_console(self, harness):
+        harness.satellite(listening=False)
+        result = harness.run(with_tty=True)
+        assert 'start.sh ran' in result.stdout
+        assert harness.recorded() == []
+
+
+class TestOnlyThisUsersServer:
+    def test_the_console_is_not_attached_to_the_other_users_server(self, harness):
+        """The Mac's other user runs a Keep on the same port; this user's is not running."""
+        harness.env['KEEP_TEST_FOREIGN_PROCESS'] = '1'
+        harness.env['KEEP_TEST_FOREIGN_PORT'] = '8888'
         result = harness.run(with_tty=True)
         assert 'start.sh ran' in result.stdout
         assert harness.recorded() == []

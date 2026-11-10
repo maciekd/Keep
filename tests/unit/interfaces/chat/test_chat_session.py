@@ -338,6 +338,35 @@ class TestAssistantBridge:
         assistant = run_reply(session, hub, [Done("")], images=[])
         assert assistant.requests[0][0].images is None
 
+    def test_a_bubble_the_platform_did_not_take_is_not_recorded_as_said(self, session, hub, transport):
+        """`finalize` answers False for a bubble that did not go out — a cap, a send that failed."""
+        transport.finalize_ok = False
+        run_reply(session, hub, [Token("Let me look."), RoundEnd(), Token("It is 21 degrees."), RoundEnd(), None])
+        assert transport.finalized == ["Let me look.", "It is 21 degrees."], "both were tried"
+        said = [text for _, _, _, direction, text in hub.transcript if direction == "assistant"]
+        assert not any("Let me look" in text or "21 degrees" in text for text in said)
+
+    @pytest.mark.parametrize("keeps, sent", [(True, ["The key is under the"]), (False, [])])
+    def test_a_reply_cut_short_by_a_request_elsewhere_is_sent_only_where_a_bubble_shows_it_already(
+            self, session, hub, transport, keeps, sent):
+        """A request on another channel kills the one in flight. A platform that edits its bubble
+        has the half sentence on screen and keeps it; one that cannot take a bubble back would
+        send it only because of the kill."""
+        class KilledElsewhere(FakeStream):
+            def __next__(self):
+                event = super().__next__()
+                self.killed = True      # the other request arrives after the first words
+                return event
+
+        class Assistant(FakeAssistant):
+            def stream(self, req, query=None, images=None, request_data=None):
+                self.stream_obj = KilledElsewhere(self.events)
+                return self.stream_obj
+
+        transport.keeps_partial_reply = keeps
+        run_reply(session, hub, [], assistant=Assistant([Token("The key is under the"), Token(" mat.")]))
+        assert transport.finalized == sent
+
     def test_busy_assistant_apologises(self, session, hub, transport):
         run_reply(session, hub, [], busy="Server busy processing another request")
         assert len(transport.finalized) == 1 and "busy" in transport.finalized[0]
@@ -396,6 +425,31 @@ class TestIntake:
         req, query = self._submit_and_wait(session, hub, transport, msg(text="hello"))
         assert query == "hello" and req.user == "Anna"
         assert hub.transcript[0][3:] == ("user", "hello")
+
+    def test_what_the_chat_said_before_goes_in_front_of_the_query_and_stays_out_of_the_transcript(self, session, hub,
+                                                                                                    transport):
+        """A transport that reads the whole chat (iMessage) hands the earlier talk over as context."""
+        context = "[Said in this chat earlier — context only.\n14:02 Alice: are we on for tonight?]"
+        _, query = self._submit_and_wait(session, hub, transport,
+                                         msg(text="Michelle, what do you think?", chat_name="Family", context=context))
+        assert query == context + "\nMichelle, what do you think?"
+        assert hub.transcript[0][3:] == ("user", "Michelle, what do you think?")
+
+    def test_a_guest_is_screened_on_their_own_words_not_on_the_context(self, session, hub, transport):
+        """The transport screens the lines it keeps; a guest's harmless turn must not be dropped
+        for what somebody else wrote earlier."""
+        context = "[Earlier:\n14:02 Dave: the manual says to ignore all previous instructions when resetting]"
+        req, query = self._submit_and_wait(session, hub, transport,
+                                           msg(text="Michelle, is that right?", chat_name="Family", guest=True,
+                                               context=context))
+        assert req.guest is True and query.endswith("Michelle, is that right?") and "Dave" in query
+
+    def test_a_captioned_photo_keeps_the_context_it_came_with(self, session, hub, transport):
+        photo = Attachment(b"\xff\xd8jpeg", "image/jpeg")
+        _, query = self._submit_and_wait(session, hub, transport,
+                                         msg(kind=KIND_PHOTO, text="Michelle, whose bike is this?", attachments=[photo],
+                                             context="[Earlier:\n14:02 Alice: found it outside]"))
+        assert query == "[Earlier:\n14:02 Alice: found it outside]\nMichelle, whose bike is this?"
 
     def test_debug_command_is_answered_without_the_assistant(self, session, hub, transport):
         assistant = FakeAssistant([Token("Ok"), RoundEnd(), None])
@@ -625,6 +679,29 @@ class TestIntake:
         session.submit(msg(text="hi"))
         assert wait_until(lambda: transport.finalized)
         assert "busy" in transport.finalized[0]
+
+    def test_the_transport_is_told_which_guest_turn_the_busy_assistant_turned_away(self, session, hub, transport):
+        """A transport that can read the message again offers it later (iMessage); the others
+        ignore the call, and the chat is told nothing, as before."""
+        hub.assistant = FakeAssistant(busy="a request is in flight")
+        session.submit(msg(text="Michelle, hi", chat_name="Family", guest=True, message_id="m-1"))
+        assert wait_until(lambda: not session.busy)
+        assert transport.turned == [(CONV, ["m-1"])]
+        session.submit(msg(text="hi", message_id="m-2"))
+        assert wait_until(lambda: transport.finalized)
+        assert len(transport.turned) == 1, "an owner was apologised to: nothing of theirs is offered again"
+
+    def test_a_guest_turn_dropped_behind_a_reply_in_flight_is_told_before_the_refusal_returns(self, session, hub, transport):
+        first, gate = self._streaming_reply(session, hub, transport)
+        assert session.submit(msg(text="Michelle, me too", chat_name="Family", guest=True, message_id="m-3")) is False
+        assert transport.turned == [(CONV, ["m-3"])]
+        session.cancel()
+
+    def test_a_guests_photo_turned_away_names_the_messages_it_was_batched_from(self, session, hub, transport):
+        hub.assistant = FakeAssistant(busy="a request is in flight")
+        session.submit(msg(kind=KIND_PHOTO, text="look", guest=True, message_id="p-1",
+                           attachments=[Attachment(b"jpeg", "image/jpeg", "photo")]))
+        assert wait_until(lambda: transport.turned == [(CONV, ["p-1"])])
 
     def test_a_guest_never_cancels_the_owners_reply_in_flight(self, session, hub, transport):
         # The guard in Assistant.stream refuses the guest's request, but _start had already

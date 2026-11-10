@@ -272,6 +272,22 @@ class ChatHub(SingletonMixin):
                 info(f"{source} chat {conversation} is not an owner conversation — the owner chats are asked instead.")
         return origin
 
+    def _tell_origin(self, source: Optional[str], conversation: Any, what: str,
+                     asked: list[tuple[ChatTransport, Any]]) -> None:
+        """The question of a chat's own turn was shown in other chats (the conversation is not
+        an owner's): its transport is told, so it can say the turn is waiting there
+        (`ChatTransport.asked_elsewhere`). Nothing for a request from outside the chat layer."""
+        if source is None or conversation is None:
+            return
+        where = list(dict.fromkeys(t.name for t, _ in asked))
+        for transport in self.transports:
+            if transport.source != source or (transport, conversation) in asked:
+                continue
+            try:
+                transport.asked_elsewhere(conversation, what, where)
+            except Exception as e:
+                error(f"{transport.name} [{conversation}]: asked_elsewhere failed: {e}")
+
     @staticmethod
     def _owners_of(transport: ChatTransport) -> list:
         try:
@@ -425,6 +441,8 @@ class ChatHub(SingletonMixin):
                 self._pending_approvals.pop(token, None)
             info(f"Approval [{token[:8]}] could not be shown anywhere, answering 'unavailable'")
             return DECISION_UNAVAILABLE
+        if not origin:
+            self._tell_origin(source, conversation, "approval", [(t, c) for t, c, _ in entry["prompts"]])
 
         result = self._await_approval(entry, wait_seconds, cancelled)
         if result == DECISION_TIMEOUT:
@@ -525,6 +543,9 @@ class ChatHub(SingletonMixin):
                 self._pending_secrets.pop(token, None)
             info(f"Secret [{token[:8]}] could not be asked anywhere, answering 'unavailable'")
             return DECISION_UNAVAILABLE
+        with self._approvals_lock:
+            asked = [(t, c) for t, c, _ in entry["prompts"]]
+        self._tell_origin(source, conversation, "secret", asked)
 
         try:
             result = entry["future"].result(timeout=wait_seconds)

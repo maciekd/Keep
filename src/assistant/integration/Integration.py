@@ -24,6 +24,12 @@ class IntegrationState(Enum):
     UNKNOWN = "unknown"
 
 
+class HealthWarning(Exception):
+    """Raised by `check_health` of an integration that works and still has something the owner
+    should act on (the iMessage satellite could not update itself). The monitor shows the text
+    with the state WARNING and does not count it towards ERROR, however often it repeats."""
+
+
 class Integration(SingletonMixin, ABC):
     """Base class for the external service integrations (Tesla, Ring, YR, CalDAV, etc.).
 
@@ -133,7 +139,8 @@ class Integration(SingletonMixin, ABC):
     @abstractmethod
     def check_health(self) -> bool:
         """Return True if the integration is reachable and functional.
-        May raise an exception on failure — the monitor will catch it."""
+        May raise an exception on failure — the monitor will catch it. `HealthWarning` is the
+        one for an integration that works and has something to report all the same."""
         ...
 
     def wait_ready(self, timeout: float) -> bool:

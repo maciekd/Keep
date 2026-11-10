@@ -1613,7 +1613,10 @@ class Commands:
             outcome["saved"] = True
             return f"Saved {key}"
 
-        details = "This replaces the current value." if replaces else ""
+        # What a key the user alone may type grants stands in the prompt in plain words: the
+        # model's own account of what is being asked for is not what the user decides on.
+        details = " ".join(part for part in (ConfigStore.grants(key), "This replaces the current value." if replaces else "")
+                           if part)
         decision = notifier().request_secret(title=f"Setting {key}", details=details, accept=accept,
                                              source=source, conversation=conversation)
         if decision == "accepted":
@@ -1636,6 +1639,13 @@ class Commands:
     # which killed that very conversation and left its spinner stuck.
     TELEGRAM_LIVE_HINT = "In force from the next message on — the bot reads it live, no restart needed."
     TELEGRAM_RESTART_KEYS = frozenset({"telegram_bot.bot_token", "telegram_bot.link_previews"})
+    # The iMessage chat reads its lists and its daily limit at every message; only where its
+    # account lives is fixed when the transport is built.
+    IMESSAGE_CHAT_RESTART_KEYS = frozenset({"imessage_chat.host", "imessage_chat.host_token"})
+    IMESSAGE_CHAT_RESTART_HINT = ('Run restart_integration("iMessage Chat") for the chat to pick it up — no server '
+                                  'restart.')
+    IMESSAGE_CHAT_LIVE_HINT = ("In force from the next message on — the iMessage chat reads it live. If the chat "
+                               'was listed as not configured, restart_integration("iMessage Chat") starts it.')
     SERVER_RESTART_HINT = ("The server reads interfaces.* only at startup — offer restart_server "
                            "(developer toolkit) for the change to take effect.")
     # The FTUE assistant once saved api_keys.gemini, found no integration owning it in the
@@ -1675,6 +1685,8 @@ class Commands:
             return cls.SERVER_RESTART_HINT
         if key.startswith("telegram_bot."):
             return cls.TELEGRAM_RESTART_HINT if key.split("[", 1)[0] in cls.TELEGRAM_RESTART_KEYS else cls.TELEGRAM_LIVE_HINT
+        if key.startswith("imessage_chat."):
+            return cls.IMESSAGE_CHAT_RESTART_HINT if key in cls.IMESSAGE_CHAT_RESTART_KEYS else cls.IMESSAGE_CHAT_LIVE_HINT
         if key.startswith("api_keys.") and key.split(".", 1)[1] in cls.MODEL_PROVIDER_KEYS:
             return cls.MODEL_KEY_HINT
         return cls.RESTART_HINT
@@ -1690,6 +1702,7 @@ class Commands:
         value = ", ".join(args[1:]).strip().strip('"\'')
         try:
             ConfigStore.check_key(key)
+            ConfigStore.check_stated(key)
         except ConfigStoreError as e:
             info(f"config_set: refused — {e}")
             return f"config_set failed: {e}"

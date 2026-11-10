@@ -25,6 +25,13 @@ class FeedBatch:
     remaining: Optional[int] = None    # what the feed knows is still waiting after this batch (a sweep's count)
 
 
+class FeedSourceAway(Exception):
+    """Raised by `open_feed`, `initial_cursor` or `fetch` of a feed whose source cannot be reached
+    right now and is not broken — a host on another Mac that sleeps, restarts or updates itself.
+    The runner keeps the feed's place and asks again for as long as it takes, instead of
+    counting the failure towards giving up: what the source holds waits behind the cursor."""
+
+
 class Feed(ABC):
     """What a feed implements. The cursor is an opaque string the feed alone interprets
     (a ROWID, a timestamp, a JSON blob); the runner stores whatever `fetch` hands back."""
@@ -35,8 +42,14 @@ class Feed(ABC):
     # The version of what the cursor means. A feed bumps it when a stored cursor no longer
     # says what it said when it was written (iMessage: a ROWID that once meant "everything
     # below is read", now "everything below dated in the horizon"); the runner then catches
-    # up from the horizon once more, the history's dedup dropping what is already stored.
+    # up from the horizon once more and drops what the history already holds a row for at the
+    # same moment — not by the dedup index, which a row stored live under another content
+    # (a described photo, a contact's earlier name) would pass (`FeedRunner._drop_reread`).
     cursor_generation: int = 0
+    # What the cursor is a position in, for a feed that can be pointed at another source under
+    # the same name (iMessage: the Messages account its ROWIDs are of). The runner keeps it with
+    # the cursor and hands it back to `cursor_lost`; None for a feed with one source for good.
+    cursor_source: Optional[str] = None
     # The runner's horizon, set before `initial_cursor` and kept current — the persisted one
     # after a restart, since a horizon only moves back. A feed whose cursor is not in time
     # order (an iMessage ROWID: Messages in iCloud writes the history in any order) keeps
@@ -69,6 +82,14 @@ class Feed(ABC):
 
     def remaining(self, cursor: Optional[str]) -> Optional[int]:
         """How many items are still ahead of `cursor`, when that is cheap to know; None otherwise."""
+        return None
+
+    def cursor_lost(self, cursor: Optional[str], source: Optional[str]) -> Optional[str]:
+        """Why the stored cursor is no place in what the feed reads now, None (the default) when
+        it is. `source` is the `cursor_source` it was stored with — None for a row from before
+        sources were kept. The runner asks before it resumes and catches up from the horizon
+        again on a reason: a cursor of another source would skip what lies before it there, or
+        sit past the end and leave a live, healthy feed that reads nothing."""
         return None
 
     def sweep(self, horizon_ts: float, cursor: Optional[str]) -> Optional[FeedBatch]:

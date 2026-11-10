@@ -42,7 +42,8 @@ die() { printf '\n  ✖ %s\n\n' "$1" >&2; exit 1; }
 require_stopped() {
   # Chrome writes into its profile and SQLite into the database while the server runs:
   # a copy taken then is torn. Same rule either way: nothing runs during a pack or unpack.
-  if pgrep -f floxy_ai_server >/dev/null 2>&1; then
+  # This user's processes only: the Keep of another macOS user on this Mac writes into its own tree.
+  if pgrep -u "$(id -u)" -f floxy_ai_server >/dev/null 2>&1; then
     die "Keep is running. Stop it first (./stop.sh), then run this again."
   fi
 }

@@ -6,8 +6,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from assistant.integration.Feed import Feed, FeedBatch, FeedEntry, FEED_ROLE
-from assistant.integration.FeedRunner import FeedRunner, FeedState, Feeds, SECONDS_PER_MONTH
+from assistant.integration.Feed import Feed, FeedBatch, FeedEntry, FeedSourceAway, FEED_ROLE
+from assistant.integration.FeedRunner import FeedRunner, FeedState, Feeds, SECONDS_PER_MONTH, describe_feed_status
 from common.FloxyDatabase import FloxyDatabase
 
 
@@ -287,6 +287,85 @@ class TestResume:
         assert feed.calls[0] == (1, True)
         assert [e.timestamp for _, batch in history.batches for e in batch] == [HORIZON + 2]
         assert runner.status()["stored"] == 8
+
+    def test_a_cursor_the_feed_calls_lost_is_given_up_for_a_catch_up_from_the_horizon(self, floxy_db):
+        """`Feed.cursor_lost`: the feed was pointed at another source under the same name. The
+        runner hands it the source the cursor was stored with and keeps the new one."""
+        floxy_db.save_feed("Scripted", cursor="2", horizon=HORIZON, source="the old account",
+                           gap_until=HORIZON + 50, resume_cursor="2", gap_covered_until=HORIZON + 60)
+        feed = ScriptedFeed([[HORIZON + 1], [HORIZON + 2]])
+        feed.cursor_source = "the new account"
+        asked = []
+        feed.cursor_lost = lambda cursor, source: asked.append((cursor, source)) or "is of another account"
+        history = RecordingHistory()
+        run(FeedRunner(feed, history, HORIZON, db=floxy_db), feed)
+        assert asked == [("2", "the old account")]
+        assert feed.calls[0] == (0, True), "from the feed's initial cursor, as a catch-up"
+        assert [e.timestamp for _, batch in history.batches for e in batch] == [HORIZON + 1, HORIZON + 2]
+        row = floxy_db.get_feed("Scripted")
+        assert (row["source"], row["gap_until"], row["resume_cursor"]) == ("the new account", None, None)
+
+    @staticmethod
+    def _rows(db, source="Scripted"):
+        import sqlite3
+        with sqlite3.connect(db.db_path) as conn:
+            return conn.execute("SELECT timestamp, content FROM history WHERE source = ? ORDER BY timestamp",
+                                (source,)).fetchall()
+
+    def test_the_catch_up_after_a_given_up_cursor_stores_no_second_row_for_what_was_stored_under_another_content(self, floxy_db):
+        """The dedup index is (timestamp, role, content): a row stored live with a photo's
+        description, and the catch-up's row for the same message with a placeholder, are two
+        rows to it. The re-read drops by the moment instead, and keeps what was never stored."""
+        floxy_db.add_history_entries([(FEED_ROLE, "From Alice: a photo of a red bicycle", HORIZON + 1, None)], "Scripted")
+        floxy_db.save_feed("Scripted", cursor="2", horizon=HORIZON, source="the old account", last_entry_ts=HORIZON + 1)
+        feed = ScriptedFeed([[HORIZON + 1, HORIZON + 2], [HORIZON + 3]])
+        feed.cursor_source = "the new account"
+        feed.cursor_lost = lambda cursor, source: "is of another account"
+        run(FeedRunner(feed, DbHistory(floxy_db), HORIZON, db=floxy_db), feed)
+        assert self._rows(floxy_db) == [(HORIZON + 1, "From Alice: a photo of a red bicycle"),
+                                        (HORIZON + 2, f"msg@{HORIZON + 2}"), (HORIZON + 3, f"msg@{HORIZON + 3}")]
+
+    def test_a_restart_in_the_middle_of_that_catch_up_goes_on_dropping_and_a_live_feed_stops(self, floxy_db):
+        """The re-read is five years of an iMessage library: it is kept with the cursor, and
+        over once the feed is live — an entry that arrives then is stored whatever its moment."""
+        floxy_db.add_history_entries([(FEED_ROLE, "stored live", HORIZON + 2, None)], "Scripted")
+        floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON, reread_until=NOW)
+        feed = ScriptedFeed([[HORIZON + 1], [HORIZON + 2, HORIZON + 3]])
+        runner = run(FeedRunner(feed, DbHistory(floxy_db), HORIZON, db=floxy_db), feed)
+        assert [content for _, content in self._rows(floxy_db)] == ["stored live", f"msg@{HORIZON + 3}"]
+        assert floxy_db.get_feed("Scripted")["reread_until"] is None
+        assert runner._drop_reread(FeedBatch([FeedEntry(HORIZON + 2, "the same moment, live")])).entries, \
+            "a live feed drops nothing by its moment"
+
+    def test_a_cursor_given_up_for_its_generation_reads_again_without_second_rows_too(self, floxy_db):
+        floxy_db.add_history_entries([(FEED_ROLE, "stored live", HORIZON + 10, None)], "Scripted")
+        floxy_db.save_feed("Scripted", cursor="2", horizon=HORIZON, last_entry_ts=HORIZON + 10)
+        feed = ScriptedFeed([[HORIZON + 10, HORIZON + 20]])
+        feed.cursor_generation = 1
+        run(FeedRunner(feed, DbHistory(floxy_db), HORIZON, db=floxy_db), feed)
+        assert [content for _, content in self._rows(floxy_db)] == ["stored live", f"msg@{HORIZON + 20}"]
+
+    def test_a_resumed_cursor_drops_nothing_by_its_moment(self, floxy_db):
+        """Only the re-read does: two messages of one second are two rows in a plain catch-up."""
+        floxy_db.add_history_entries([(FEED_ROLE, "another message of that second", HORIZON + 2, None)], "Scripted")
+        floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON)
+        feed = ScriptedFeed([[HORIZON + 1], [HORIZON + 2]])
+        run(FeedRunner(feed, DbHistory(floxy_db), HORIZON, db=floxy_db), feed)
+        assert len(self._rows(floxy_db)) == 2
+
+    def test_a_cursor_the_feed_stands_by_is_resumed_and_its_source_kept_from_then_on(self, floxy_db):
+        floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON)
+        feed = ScriptedFeed([[HORIZON + 1], [HORIZON + 2]])
+        feed.cursor_source = "the account"
+        run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert feed.calls[0] == (1, True)
+        assert floxy_db.get_feed("Scripted")["source"] == "the account"
+
+    def test_a_first_run_keeps_the_source_with_the_cursor(self, floxy_db):
+        feed = ScriptedFeed([[HORIZON + 1]])
+        feed.cursor_source = "the account"
+        run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert floxy_db.get_feed("Scripted")["source"] == "the account"
 
     def test_restart_mid_catch_up_shows_the_same_total(self, floxy_db):
         """The total is the history's rows plus what is ahead of the cursor: a restart counts
@@ -720,6 +799,12 @@ class TestDescribeFeedStatus:
         text = describe_feed_status(self._status(remaining=2273))
         assert text.startswith("live") and "2273" in text
 
+    def test_a_feed_waiting_for_its_source_says_why(self):
+        """Not every source that is waited for "does not answer": one may answer that it is updating itself."""
+        waiting = self._status(away=True, last_error="the satellite speaks wire version 3, this side 1")
+        assert "wire version 3" in describe_feed_status(waiting)
+        assert describe_feed_status(self._status(away=True)) != describe_feed_status(self._status())
+
     def test_a_live_feed_with_nothing_behind_the_cursor_is_just_live(self):
         from assistant.integration.FeedRunner import describe_feed_status
         assert describe_feed_status(self._status(remaining=0)) == describe_feed_status(self._status(remaining=None))
@@ -765,6 +850,94 @@ class TestFailures:
         assert "gone" in runner.status()["last_error"]
         assert floxy_db.get_feed("Scripted")["cursor"] == "1"
         assert feed.closed == 1
+
+    def test_a_source_that_is_away_is_waited_out_however_long_and_the_place_kept(self, floxy_db):
+        """`FeedSourceAway`: a host on another Mac that sleeps or restarts. Far more tries than a
+        failing feed gets, and the feed goes on from the same cursor when the source is back."""
+        feed = ScriptedFeed([[HORIZON + 1], [HORIZON + 2]])
+        real_fetch = feed.fetch
+        away, seen = [], []
+
+        def asleep(cursor, backfill):
+            if cursor == "1" and len(away) < 4 * FeedRunner.FAILURE_LIMIT:
+                away.append(cursor)
+                seen.append(describe_feed_status(runner.status()))
+                raise FeedSourceAway("the satellite at http://192.0.2.7:8898 does not answer")
+            return real_fetch(cursor, backfill)
+
+        feed.fetch = asleep
+        history = RecordingHistory()
+        runner = FeedRunner(feed, history, HORIZON, db=floxy_db)
+        runner.AWAY_POLL_SECONDS = 0.0
+        run(runner, feed)
+        assert len(away) == 4 * FeedRunner.FAILURE_LIMIT and runner.state != FeedState.FAILED
+        assert [e.timestamp for _, batch in history.batches for e in batch] == [HORIZON + 1, HORIZON + 2]
+        assert runner.status()["last_error"] is None and runner.status()["away"] is False
+        assert "catching up" in seen[0] and "source" in seen[1], "while it waits the status says what for"
+
+    def test_a_source_away_when_the_feed_opens_or_first_asks_where_to_start_is_waited_for_too(self, floxy_db):
+        feed = ScriptedFeed([[HORIZON + 1]])
+        opens, starts = [], []
+
+        def open_feed():
+            opens.append(1)
+            if len(opens) < 3:
+                raise FeedSourceAway("asleep")
+            return True
+
+        def initial_cursor(horizon_ts):
+            starts.append(1)
+            if len(starts) < 3:
+                raise FeedSourceAway("restarting")
+            return "0"
+
+        feed.open_feed, feed.initial_cursor = open_feed, initial_cursor
+        runner = run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        assert (len(opens), len(starts)) == (3, 3)
+        assert floxy_db.get_feed("Scripted")["cursor"] == "1" and runner.state != FeedState.FAILED
+
+    def test_a_source_that_comes_back_with_a_refusal_leaves_its_reason_in_the_status(self, floxy_db):
+        """Away, then there and refusing: the feed stops, and the status must still say why."""
+        feed = ScriptedFeed([[HORIZON + 1]])
+        opens = []
+
+        def open_feed():
+            opens.append(1)
+            if len(opens) == 1:
+                raise FeedSourceAway("asleep")
+            return False
+
+        feed.open_feed = open_feed
+        type(feed).open_error = property(lambda self: "the satellite refused the token")
+        try:
+            runner = run(FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db), feed)
+        finally:
+            del type(feed).open_error
+        assert runner.state == FeedState.STOPPED
+        assert "refused the token" in describe_feed_status(runner.status())
+
+    def test_a_feed_stopped_while_its_source_is_away_stops(self, floxy_db):
+        feed = ScriptedFeed([[HORIZON + 1]])
+        runner = FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db)
+
+        def open_feed():
+            runner._stop_event.set()        # the stop arrives while the open is being retried
+            raise FeedSourceAway("asleep")
+
+        feed.open_feed = open_feed
+        run(runner, feed)
+        assert runner.state == FeedState.STOPPED and feed.calls == []
+        assert runner.wait_opened(0), "a restart waiting for the feed to open is not kept waiting for another Mac"
+
+    def test_a_source_long_away_is_asked_less_often(self, floxy_db):
+        feed = ScriptedFeed([[HORIZON + 1]])
+        feed.poll_interval = 5.0
+        runner = FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db)
+        runner._stop_event = Mock(wait=Mock(return_value=False), is_set=Mock(return_value=False))
+        for _ in range(FeedRunner.FAILURE_LIMIT + 2):
+            runner._source_away(FeedSourceAway("asleep"))
+        waits = [call.args[0] for call in runner._stop_event.wait.call_args_list]
+        assert waits[0] == 5.0 and waits[-1] == FeedRunner.AWAY_POLL_SECONDS > waits[0]
 
     def test_a_single_failure_is_retried(self, floxy_db):
         feed = ScriptedFeed([[HORIZON + 1]])
@@ -1057,6 +1230,19 @@ class TestDatabase:
         floxy_db.save_feed("X", cursor="1", gap_until=2.0, resume_cursor="9", gap_covered_until=3.0)
         row = floxy_db.get_feed("X")
         assert (row["gap_until"], row["resume_cursor"], row["gap_covered_until"]) == (2.0, "9", 3.0)
+
+    def test_the_reread_column_is_added_to_an_older_feeds_table_and_its_rows_kept(self, floxy_db):
+        import sqlite3
+        floxy_db.save_feed("X", cursor="7", horizon=2.0)
+        conn = sqlite3.connect(floxy_db.db_path)
+        conn.execute("ALTER TABLE feeds DROP COLUMN reread_until")
+        conn.commit()
+        conn.close()
+        floxy_db._init_database()
+        row = floxy_db.get_feed("X")
+        assert (row["cursor"], row["horizon"], row["reread_until"]) == ("7", 2.0, None)
+        floxy_db.save_feed("X", reread_until=5.0)
+        assert floxy_db.get_feed("X")["reread_until"] == 5.0
 
     def test_the_old_counter_columns_are_dropped_from_an_older_feeds_table(self, floxy_db):
         import sqlite3

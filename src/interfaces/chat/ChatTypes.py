@@ -47,6 +47,10 @@ class IncomingMessage:
     chat_name: Optional[str] = None       # a group's title → RequestContext.location; None in a private chat
     guest: bool = False                   # the sender is not one of the household's owners
     sender_is_bot: bool = False           # the sender is another assistant (a Telegram bot)
+    # What was said in the chat and never became a turn, rendered by a transport that reads the
+    # whole chat (iMessage): put in front of the query, outside the text that is screened, logged
+    # and recorded as the sender's own words.
+    context: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -61,6 +61,35 @@ class TestDialogManagerReadsProfile:
         assert dm._brevity_directive() == expected
 
 
+class TestTheChannelsOwnStyle:
+    """ChannelProfile.style_directive rides on every request of the channel, in front of the language."""
+
+    @pytest.fixture
+    def dm(self):
+        from assistant.DialogManager import DialogManager
+        dm = DialogManager.__new__(DialogManager)
+        dm.web_request_handler = Mock()
+        dm.byte_prefix_tail = False
+        dm.reply_from_role = "user"
+        return dm
+
+    def test_an_imessage_request_is_told_to_write_plain_texts(self, dm):
+        dm.web_request_handler.ctx = Mock(source="iMessage", lang="en")
+        (last,) = dm._with_trailing_directives([{"role": "user", "content": "what's for dinner?"}])
+        assert last["content"].startswith("what's for dinner?")
+        assert "iMessage" in last["content"] and "plain text" in last["content"]
+
+    @pytest.mark.parametrize("source", ["Telegram", "Console", "TextChat", "VoiceToVoice", None])
+    def test_no_other_channel_gets_a_word_of_it(self, dm, source):
+        dm.web_request_handler.ctx = Mock(source=source, lang="en")
+        assert dm._style_directive() is None
+
+    def test_the_language_stays_the_last_thing_the_model_reads(self, dm):
+        dm.web_request_handler.ctx = Mock(source="iMessage", lang="sv")
+        directives = dm._trailing_directives()
+        assert len(directives) == 2 and directives[0] == profile_for("iMessage").style_directive
+
+
 class TestCommandProcessorReadsProfile:
     """Thinking forwarding and command-notification routing read the profile."""
 

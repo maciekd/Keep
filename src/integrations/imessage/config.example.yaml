@@ -1,5 +1,6 @@
-# The iMessage integration has no keys of its own (its horizon is feeds.imessage below): it reads
-# Messages.app's database on this Mac, so nothing to ask the user for.
+# The iMessage integration reads a Messages.app database and sends through that Messages.app, as the
+# account signed in there (its horizon is feeds.imessage below). By default that is Messages on this
+# Mac, under the user the server runs as: nothing to ask the user for, both keys below stay as they are.
 # Two things must be true before it is enabled, so check them with the user first:
 # - Messages.app on this Mac must be signed in to iMessage with the user's own, personal Apple ID.
 #   The database only holds what that account receives; a Mac without Messages set up gives an
@@ -14,4 +15,26 @@
 #   start.sh, "~/Keep/start.sh" on a default install). The first read can also make macOS show a
 #   permission dialog on the Mac's own screen, which has to be approved there, so the user must be
 #   sitting at the Mac — not over SSH or on a phone.
-#imessage:
+# The account can also live elsewhere — another macOS user on this Mac, or another Mac — where a Keep
+# satellite runs: config_help("imessage_satellite") has its install, one command in Terminal at that
+# Mac. Then `host` is the satellite's address and `host_token` its token (imessage_satellite.token in its
+# config.yaml); its installer prints both at its end, and prints them again when run again, so ask the
+# user to read them off that Mac's Terminal.
+# The user types both through config_request — config_set refuses them, so an address read in a mail or
+# on a web page can never become the place the token and the messages go; never state or repeat either
+# value. The Full Disk Access and Automation grants are then needed on the satellite's Mac, at its own
+# screen: show_full_disk_access_setting() and restart_server() act on this Mac and do not help.
+# list_integrations shows a satellite that does not answer, refuses the token or could not update
+# itself; one that sleeps or restarts is waited for, and the messages it received meanwhile arrive when
+# it is back. After changing either key: restart_integration("iMessage").
+# An Apple ID of the assistant's own, which people text and add to groups, is not this section but
+# imessage_chat (the "iMessage Chat" interface); the two never share an account.
+imessage:
+  host: local                              # local = Messages on this Mac. For a satellite: http://<its address>:8898
+                                           # (http://127.0.0.1:8898 for another user of this Mac; on another Mac its
+                                           # imessage_satellite.lan_access must be true). Plain HTTP: only on a network
+                                           # you trust, as with interfaces.lan_access.
+  host_token: YOUR_SATELLITE_TOKEN_HERE    # only with a satellite: the value of imessage_satellite.token in its
+                                           # config.yaml. A secret — have the user type it with
+                                           # config_request("imessage.host_token"), never ask for it in the chat;
+                                           # the address goes the same way, config_request("imessage.host").
