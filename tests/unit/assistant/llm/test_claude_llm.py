@@ -26,7 +26,7 @@ def _make_overloaded_error() -> APIStatusError:
 
 class TestReasoningRequests:
     @pytest.mark.parametrize("model, refuses", [
-        ("claude-sonnet-5-5", True), ("claude-opus-5-5", True), ("claude-fable-5-1", True),
+        ("claude-sonnet-5-5", True), ("claude-opus-5-5", True), ("claude-fable-5-2", True),
         ("claude-haiku-5-5", False),
     ])
     def test_contract_with_anthropics_reasoning_extraction_safeguard(self, model, refuses):
@@ -41,12 +41,12 @@ class TestReasoningRequests:
 class TestProvider:
     def test_display_model_is_the_spoken_family(self):
         llm = _make_llm()
-        llm.model = "claude-fable-5-1"
+        llm.model = "claude-fable-5-2"
         assert llm.display_model() == "Fable"
         llm.model = "claude-opus-5"
         assert llm.display_model() == "Opus"
 
-    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"])
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5"])
     def test_every_claude_model_writes_commands_in_keep_syntax_unless_the_tier_says_otherwise(self, model):
         """Keep's own syntax is the default for the whole family — the shorter prompt, and the
         processor rescues the <invoke> block Opus writes now and then; `command_format:` on the
@@ -66,7 +66,7 @@ class TestProvider:
 class TestRefusalFallback:
     def test_fable_falls_back_to_opus_5_with_short_lived_cache_without_fast_mode(self, mock_config):
         llm = _make_llm()
-        llm.model = "claude-fable-5-1"
+        llm.model = "claude-fable-5-2"
         llm.speed = "fast"
 
         fallback = llm.refusal_fallback()
@@ -86,7 +86,7 @@ class TestRefusalFallback:
 
 
     @pytest.mark.parametrize("model", [
-        "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5", "claude-sonnet-5",
+        "claude-fable-5-2", "claude-mythos-5-1", "claude-opus-5", "claude-sonnet-5",
         "claude-opus-4-8", "claude-sonnet-4-5", "claude-haiku-4-5",
     ])
     def test_a_fallback_thinks_the_way_its_primary_does(self, mock_config, model):
@@ -112,7 +112,7 @@ class TestCacheTtlOrder:
         assert llm.history_cache_ttl == "5m"
 
     def test_the_fallback_gets_a_history_ttl_its_short_static_ttl_allows(self, mock_config):
-        fallback = ClaudeLLM("claude-fable-5-1", static_cache_ttl="1h", history_cache_ttl="1h").refusal_fallback()
+        fallback = ClaudeLLM("claude-fable-5-2", static_cache_ttl="1h", history_cache_ttl="1h").refusal_fallback()
         assert ClaudeLLM.CACHE_TTL_RANK[fallback.history_cache_ttl] <= ClaudeLLM.CACHE_TTL_RANK[fallback.static_cache_ttl]
 
     def test_a_shorter_history_ttl_is_left_alone(self, mock_config):
@@ -647,7 +647,7 @@ class TestEffort:
     """The wire contract with the Messages API: every request on a model whose effort default
     may be below high carries output_config.effort = high; a model without the parameter gets none."""
 
-    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"])
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5"])
     def test_api_contract_high_effort_sent_on_5_generation_models(self, model):
         params = ClaudeLLM(model)._build_api_params(MESSAGES, thinking=False, stream=True)
         assert params['output_config'] == {"effort": "high"}
@@ -698,7 +698,7 @@ class TestThinkingSummary:
     """The thinking of every Claude call is traced. The 5-generation models return it only as a
     summary, and only when the request asks for one."""
 
-    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"])
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5"])
     @pytest.mark.parametrize("thinking", [Thinking.NORMAL, Thinking.MORE, Thinking.FULL])
     def test_api_contract_every_request_to_a_5_generation_model_asks_for_the_summary(self, model, thinking):
         """One thinking parameter on every request alike: it is part of the cached prompt, and

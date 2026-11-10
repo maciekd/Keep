@@ -467,7 +467,7 @@ local_backend: none
 #    # model: claude-haiku-5-5    # well (Haiku 5.5). GeminiLLM / gemini-3.8-flash on either tier indexes its
 #                           # videos natively, no `video` tier needed.
 #  code_quality:            # model for the nightly Claude Code CLI runs (CodeQualityMaintainer)
-#    model: claude-fable-5-1
+#    model: claude-fable-5-2
 
 language: en-US         # drives TTS synthesis language for every engine that accepts a hint
                         # (Gemini uses the full tag, Grok/Supertonic use the primary subtag, e.g. "sv").

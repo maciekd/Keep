@@ -936,7 +936,7 @@ class TestRunClaude:
         cmd = mock_popen.call_args[0][0]
         assert cmd == [CLAUDE_PATH, "--permission-mode", "auto", "-p", "test prompt",
                        "--output-format", "stream-json", "--verbose",
-                       "--model", "claude-fable-5-1"]
+                       "--model", "claude-fable-5-2"]
         assert mock_popen.call_args[1]["cwd"] == WORKING_DIR
         assert mock_popen.call_args[1]["env"] is None   # a login keeps its precedence: nothing added
 
@@ -951,7 +951,7 @@ class TestRunClaude:
         assert cmd[cmd.index("--add-dir") + 1:] == ["/home/marcus/KeepLocal", "/home/marcus/KeepExtra"]
         assert cmd[:cmd.index("--add-dir")] == [CLAUDE_PATH, "--permission-mode", "auto", "-p", "test prompt",
                                                 "--output-format", "stream-json", "--verbose",
-                                                "--model", "claude-fable-5-1"]
+                                                "--model", "claude-fable-5-2"]
         assert mock_popen.call_args[1]["cwd"] == WORKING_DIR
 
     @patch('assistant.agents.CodeQualityMaintainer.claude_api_key', return_value="sk-ant-test-key")
@@ -1035,7 +1035,7 @@ class TestRunClaude:
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_auto_permission_mode_is_not_an_error(self, mock_popen):
-        lines = ['{"type": "system", "subtype": "init", "permissionMode": "auto", "model": "claude-fable-5-1"}\n',
+        lines = ['{"type": "system", "subtype": "init", "permissionMode": "auto", "model": "claude-fable-5-2"}\n',
                  '{"type": "result", "result": "done"}\n']
         mock_popen.return_value = _mock_popen(lines)
         with patch('assistant.agents.CodeQualityMaintainer.error') as mock_error:

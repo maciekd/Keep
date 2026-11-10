@@ -301,7 +301,7 @@ class TestChatGPTLLM:
 
 class TestClaudeLLM:
     @pytest.mark.parametrize("model, internal", [
-        ("claude-fable-5-1", True), ("claude-mythos-5-1", True), ("claude-opus-5", True), ("claude-sonnet-5", True),
+        ("claude-fable-5-2", True), ("claude-mythos-5-1", True), ("claude-opus-5", True), ("claude-sonnet-5", True),
         ("claude-opus-4-8", False), ("claude-sonnet-4-5", False), ("claude-haiku-4-5", False),
     ])
     @patch('assistant.llm.ClaudeLLM.config')
@@ -640,7 +640,7 @@ class TestClaudeLLM:
         one history breakpoint goes — a command result is then written once and read after."""
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        params = ClaudeLLM("claude-fable-5-1")._build_api_params(self._ROUNDS, thinking=False, stream=True)
+        params = ClaudeLLM("claude-fable-5-2")._build_api_params(self._ROUNDS, thinking=False, stream=True)
         assert self._marked(params) == [len(params['messages']) - 1]
 
     @patch('assistant.llm.ClaudeLLM.config')
@@ -656,7 +656,7 @@ class TestClaudeLLM:
         breakpoint there is a write no later request reads, so it goes on the message before."""
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM("claude-fable-5-1")
+        llm = ClaudeLLM("claude-fable-5-2")
         params = llm._build_api_params(self._ROUNDS, thinking=False, stream=False, volatile_tail=1)
         assert self._marked(params) == [len(params['messages']) - 2]
         assert llm._message_cache_index(volatile_tail=2) == -3
@@ -671,7 +671,7 @@ class TestClaudeLLM:
         result, the whole tail re-sent uncached by every later round."""
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM("claude-fable-5-1", history_cache_ttl="1h")
+        llm = ClaudeLLM("claude-fable-5-2", history_cache_ttl="1h")
         params = llm._build_api_params(self._ROUNDS, thinking=False, stream=True, volatile_tail=3, follow_up=True)
         assert self._marked(params) == [len(params['messages']) - 1]
         breakpoint = params['messages'][-1]['content'][-1]['cache_control']
@@ -694,7 +694,7 @@ class TestClaudeLLM:
         """A chat round's follow-up is streamed, so the flag must travel that path."""
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM("claude-fable-5-1")
+        llm = ClaudeLLM("claude-fable-5-2")
         llm.client = Mock()
         seen = {}
         def capture(api_params):
@@ -708,7 +708,7 @@ class TestClaudeLLM:
     def test_the_volatile_tail_reaches_the_request_through_create_completion(self, mock_config):
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM("claude-fable-5-1")
+        llm = ClaudeLLM("claude-fable-5-2")
         llm.client = Mock()
         text = Mock(); text.type = "text"; text.text = "NO"
         llm.client.messages.create.return_value = Mock(content=[text], usage=None, stop_reason="end_turn")
@@ -723,7 +723,7 @@ class TestClaudeLLM:
         must move the breakpoint there too, not only on the non-streaming path."""
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM("claude-fable-5-1")
+        llm = ClaudeLLM("claude-fable-5-2")
         llm.client = Mock()
         seen = {}
         def capture(api_params):
@@ -747,7 +747,7 @@ class TestClaudeLLM:
                 {"type": "text", "text": "Marcus (Telegram): what is this?"},
             ]},
         ]
-        params = ClaudeLLM("claude-fable-5-1")._build_api_params(messages, thinking=False, stream=True)
+        params = ClaudeLLM("claude-fable-5-2")._build_api_params(messages, thinking=False, stream=True)
         assert self._marked(params) == [len(params['messages']) - 2]
 
     @patch('assistant.llm.ClaudeLLM.config')
@@ -755,9 +755,9 @@ class TestClaudeLLM:
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
         lone = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
-        params = ClaudeLLM("claude-fable-5-1")._build_api_params(lone, thinking=False, stream=True)
+        params = ClaudeLLM("claude-fable-5-2")._build_api_params(lone, thinking=False, stream=True)
         assert self._marked(params) == []
-        params = ClaudeLLM("claude-fable-5-1")._build_api_params(lone, thinking=False, stream=True, volatile_tail=1)
+        params = ClaudeLLM("claude-fable-5-2")._build_api_params(lone, thinking=False, stream=True, volatile_tail=1)
         assert self._marked(params) == []
 
     @patch('assistant.llm.ClaudeLLM.BYTE_PREFIX_TAIL', False)
@@ -765,7 +765,7 @@ class TestClaudeLLM:
     def test_with_the_byte_prefix_tail_switched_off_the_last_message_is_not_cached(self, mock_config):
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        params = ClaudeLLM("claude-fable-5-1")._build_api_params(self._ROUNDS, thinking=False, stream=True)
+        params = ClaudeLLM("claude-fable-5-2")._build_api_params(self._ROUNDS, thinking=False, stream=True)
         assert self._marked(params) == [len(params['messages']) - 2]
 
     @patch('assistant.llm.ClaudeLLM.config')
@@ -774,7 +774,7 @@ class TestClaudeLLM:
         gets the query prepended to the prompt has no prefix cache to protect."""
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        assert ClaudeLLM("claude-fable-5-1").prefers_byte_prefix_tail()
+        assert ClaudeLLM("claude-fable-5-2").prefers_byte_prefix_tail()
         assert ClaudeLLM("claude-opus-5-5").prefers_byte_prefix_tail()
         assert not ClaudeLLM("claude-sonnet-4-5").prefers_byte_prefix_tail()
         assert not ClaudeLLM("claude-opus-5").prefers_byte_prefix_tail()
@@ -812,7 +812,7 @@ class TestClaudeLLM:
         # the order Anthropic accepts (longer first); the reverse is rejected by the API.
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM("claude-fable-5-1", static_cache_ttl="1h", history_cache_ttl="5m")
+        llm = ClaudeLLM("claude-fable-5-2", static_cache_ttl="1h", history_cache_ttl="5m")
         messages = [
             {"role": "system", "content": f"stable{ClaudeLLM.CACHE_BREAKPOINT_MARKER}tail"},
             {"role": "user", "content": "first"},

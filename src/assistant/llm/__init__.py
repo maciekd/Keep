@@ -50,11 +50,11 @@ _TIER_DEFAULTS = {
     'vision': ('ClaudeLLM', 'claude-opus-5-5'),  # used when image processing is needed, overrides smart/fast in that case
     'video': ('GeminiLLM', 'gemini-3.8-flash'),  # describes videos (iMessage/Telegram/email); must be an LLM with native video input — Claude has none
     'autonomous_action': ('ClaudeLLM', 'claude-opus-5-5'),  # used for the heartbeat/autonomous actions
-    'memory_curator': ('ClaudeLLM', 'claude-fable-5-1'),  # memory curation: nightly, or more often while the bank is being built up
+    'memory_curator': ('ClaudeLLM', 'claude-fable-5-2'),  # memory curation: nightly, or more often while the bank is being built up
     'cache_auditor': ('GeminiLLM', 'gemini-3.8-flash'),  # used to decide is a user query is cachable or not, fairly simple decision so a cost efficient AI is good here
     'photo_indexing': ('ClaudeLLM', 'claude-sonnet-5-5'),  # describes each new Apple Photos still as the feed sees it (one call each, a few a day); a Claude model takes stills only — the clips go to the `video` tier's backend
     'photo_backfill': ('ClaudeLLM', 'claude-haiku-5-5'),  # the backlog: thousands of stills on a first run, the sweep behind the cursor, a bulk run — nobody waits for it, so the cheapest model that describes well
-    'code_quality': ('ClaudeLLM', 'claude-fable-5-1'),  # model for the nightly Claude Code CLI runs (CodeQualityMaintainer); only the model is used, the class is always the `claude` CLI
+    'code_quality': ('ClaudeLLM', 'claude-fable-5-2'),  # model for the nightly Claude Code CLI runs (CodeQualityMaintainer); only the model is used, the class is always the `claude` CLI
 }
 
 

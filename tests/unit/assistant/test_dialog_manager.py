@@ -525,7 +525,7 @@ def test_llm_refusal_with_fallback_answers_on_fallback_and_appends_notice(monkey
 
     dm, _ = make_dialog_manager(monkeypatch, [])
     opus = FallbackAI([["Sure, let's set up Telegram."]], fallback=None, model="Opus")
-    fable = FallbackAI([[LLMRefusalError("claude-fable-5-1 refused the request")]], fallback=opus)
+    fable = FallbackAI([[LLMRefusalError("claude-fable-5-2 refused the request")]], fallback=opus)
     dm.ai = fable
     _patch_stream_time(monkeypatch, [100.0 + i / 10 for i in range(6)])
 

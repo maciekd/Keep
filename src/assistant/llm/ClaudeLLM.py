@@ -168,7 +168,7 @@ class ClaudeLLM(AbstractLLM):
         return "Claude"
 
     def display_model(self) -> str:
-        """"Fable" from claude-fable-5-1, "Opus" from claude-opus-5 — the family, spoken."""
+        """"Fable" from claude-fable-5-2, "Opus" from claude-opus-5 — the family, spoken."""
         parts = self.model.split("-")
         return parts[1].capitalize() if len(parts) > 1 else self.model
 

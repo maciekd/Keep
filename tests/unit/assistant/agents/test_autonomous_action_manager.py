@@ -127,7 +127,7 @@ class TestAutonomousActionManager:
         fallback.name.return_value = "Claude (claude-opus-4-6)"
         fallback.think_with_messages.return_value = "<thinking>check</thinking>\nNO"
         mock_llm = Mock()
-        mock_llm.name.return_value = "Claude (claude-fable-5-1)"
+        mock_llm.name.return_value = "Claude (claude-fable-5-2)"
         mock_llm.think_with_messages.side_effect = LLMRefusalError("refused")
         mock_llm.refusal_fallback.return_value = fallback
         mock_claude.return_value = mock_llm
@@ -160,7 +160,7 @@ class TestAutonomousActionManager:
         fallback.name.return_value = "Claude (claude-opus-5)"
         fallback.think_with_messages.side_effect = LLMRefusalError("refused again")
         mock_llm = Mock()
-        mock_llm.name.return_value = "Claude (claude-fable-5-1)"
+        mock_llm.name.return_value = "Claude (claude-fable-5-2)"
         mock_llm.think_with_messages.side_effect = LLMRefusalError("refused")
         mock_llm.refusal_fallback.return_value = fallback
         mock_claude.return_value = mock_llm
