@@ -1368,6 +1368,39 @@ def test_a_reply_past_the_command_cap_is_cut_and_the_stream_closed(monkeypatch):
     processor.kill()
 
 
+class ResumingAI(FakeAI):
+    """A backend that thinks again after a call (ds4), so the processor holds the text after
+    the first call until the end of the stream and parses it in the flush."""
+
+    def resumes_thinking_after_calls(self):
+        return True
+
+
+@pytest.mark.unit
+def test_a_reply_cut_in_the_flush_keeps_only_the_calls_that_ran(monkeypatch):
+    """With the post-call hold on, every call after the first is parsed when the stream has
+    ended; a cut raised there (the cap here) must trim the stored turn as a cut mid-stream
+    does, or the next prompt shows the model calls that never ran (2026-11-10)."""
+    processor = CommandProcessor(test_suite_mode=True)
+    dm, console = make_dialog_manager(monkeypatch, [], command_processor=processor)
+    dm.ai = ResumingAI([])
+    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.0, 1.1]))
+    cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
+    chunks = ["On it. "] + [f"turn_on(lamp {i}) " for i in range(cap + 5)] + ["All done."]
+    stream = ClosableStream(chunks)
+
+    output = list(dm.process_llm_stream(stream, 1.0, False))
+    processor.command_queue.join()
+
+    assert stream.consumed == len(chunks), "the hold reads the stream to its end"
+    assert processor.commands_dispatched == cap and processor.reply_cut
+    calls = processor.format.extract_all(dm.llm_response_raw)
+    assert [p for _, p in calls] == [[f"lamp {i}"] for i in range(cap)]
+    assert "All done." not in dm.llm_response_raw
+    assert "".join(c for c in output if isinstance(c, str)).strip() == "On it."
+    processor.kill()
+
+
 @pytest.mark.unit
 def test_a_reply_within_the_command_cap_is_read_to_its_end(monkeypatch):
     processor = CommandProcessor(test_suite_mode=True)

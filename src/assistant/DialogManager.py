@@ -532,14 +532,18 @@ class DialogManager:
         turn exactly the calls that ran — the text up to the last of them, its block closed —
         so the follow-up round reads a reply of that many commands and nothing says there
         were more."""
-        ran = self.command_processor.commands_dispatched
-        before = len(self.llm_response_raw)
-        self.llm_response_raw = self.command_processor.kept_of(self.llm_response_raw)
-        info(f"Reply cut after {ran} commands — stream closed, the turn kept as those calls "
-             f"({before} → {len(self.llm_response_raw)} chars received)")
+        self._keep_the_cut_turn("stream closed")
         close = getattr(response, "close", None)
         if close is not None:
             close()
+
+    def _keep_the_cut_turn(self, how: str):
+        """Store of the cut reply exactly the calls that ran (CommandProcessor.kept_of)."""
+        ran = self.command_processor.commands_dispatched
+        before = len(self.llm_response_raw)
+        self.llm_response_raw = self.command_processor.kept_of(self.llm_response_raw)
+        info(f"Reply cut after {ran} commands — {how}, the turn kept as those calls "
+             f"({before} → {len(self.llm_response_raw)} chars received)")
 
     def process_llm_stream(self, response, t: float, time_shown: bool) -> Generator[str, None, None]:
         # Emotion tags ([laughing], [sighing], ...) are synthesis directives, not display
@@ -619,8 +623,13 @@ class DialogManager:
                 self._leave_stream_at_the_cut(response)
                 break
 
+        cut_in_stream = getattr(self.command_processor, "reply_cut", False)
         flushed = self.command_processor.flush_buffer(self)
         yield from self.drain_events()
+        # The flush parses what the stream held back (the post-call hold, a call split across
+        # chunks); a cut it raises there would otherwise leave the calls that never ran in the turn.
+        if not cut_in_stream and getattr(self.command_processor, "reply_cut", False):
+            self._keep_the_cut_turn("at the end of the stream")
         if flushed:
             self.llm_response += flushed
             observers().on_tokens(flushed)
