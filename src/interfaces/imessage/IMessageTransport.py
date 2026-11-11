@@ -668,10 +668,11 @@ class IMessageTransport(Integration, ChatTransport):
         if self._hub is None:
             error(f"iMessage chat [{chat}]: no chat hub attached, the message from {name} is not a turn")
             return REFUSED
-        if offer.overheard and self._hub.replying(self, chat):
-            # An owner's new message ends the reply in flight. One that was only overheard must
-            # not: it waits for that reply, as a guest's does.
-            trace(f"iMessage chat [{chat}]: a reply is in flight — the overheard message from {name} waits for it")
+        if offer.overheard and self._hub.in_flight():
+            # An owner's new message ends the request in flight, in whichever conversation it
+            # runs (Assistant.stream). One that was only overheard must not: it waits for that
+            # reply, as a guest's does.
+            trace(f"iMessage chat [{chat}]: a request is in flight — the overheard message from {name} waits for it")
             return HELD
         images, notes = self._read_attachments(message)
         body = "\n".join(part for part in (self._words(message), *notes) if part)

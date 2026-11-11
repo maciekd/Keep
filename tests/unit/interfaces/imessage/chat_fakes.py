@@ -69,7 +69,7 @@ class FakeHub:
             self.accepted.append(message)
         return self.taken
 
-    def replying(self, transport, conversation) -> bool:
+    def in_flight(self) -> bool:
         return self.busy
 
     def record(self, transport, conversation, direction, text):

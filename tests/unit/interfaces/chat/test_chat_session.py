@@ -525,14 +525,20 @@ class TestIntake:
         assert "not addressed to you" in overheard and "not addressed to you" not in addressed
         assert ("disabled" in overheard) is guest, "an overheard guest is still a guest"
 
-    def test_the_hub_says_which_conversation_has_a_reply_in_flight(self, hub, transport):
+    def test_the_hub_says_whether_a_request_is_in_flight_in_any_conversation(self, hub, transport):
         busy = hub.session_for(transport, 4711)
+        hub.session_for(transport, 4712)
+        assert hub.in_flight() is False, "two conversations, neither replying"
         busy._request = object()
         try:
-            assert hub.replying(transport, 4711) is True
-            assert hub.replying(transport, 4712) is False, "a conversation nobody wrote in"
+            assert hub.in_flight() is True
         finally:
             busy._request = None
+
+    def test_a_request_from_outside_the_chats_is_in_flight_too(self, hub):
+        # a voice or HTTP turn has no chat session: only the assistant knows of it
+        hub.assistant = type("Busy", (), {"is_busy": lambda self: True})()
+        assert hub.in_flight() is True
 
     def test_a_group_turn_may_stay_silent_with_no(self, session, hub, transport):
         session.submit(msg(text="hello", chat_name="Family"))  # learn the group

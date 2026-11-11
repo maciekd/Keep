@@ -1041,9 +1041,6 @@ class TestThroughTheChatLayer:
         assert wait_until(lambda: assistant.requests and not hub.session_for(chat.transport, FAMILY).busy)
         assert chat.host.sent() == []
 
-    @pytest.mark.xfail(strict=True, reason="the transport holds an overheard message only while its own chat has a reply "
-                                           "in flight (ChatHub.replying): an owner's chatter in a group is dispatched and "
-                                           "Assistant.stream ends the request running in any other conversation")
     def test_an_owners_overheard_message_does_not_end_a_reply_in_flight_in_another_chat(self, listening):
         chat = listening
         ChatHub.reset_instance()
