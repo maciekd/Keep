@@ -18,6 +18,7 @@ beside the script; without one the install is a server, as on the Python side.
 """
 import os
 import select
+import shutil
 import signal
 import subprocess
 import time
@@ -34,6 +35,10 @@ SATELLITE_PORT = 8901
 SATELLITE_CONFIG = (f'role: imessage_satellite\nimessage_satellite:\n  port: {SATELLITE_PORT}\n'
                     '  token: kT7vQ2mX9pL4wZ8nB3cR6yH1sD5fG0jA\n  lan_access: false\n')
 
+# By its full path and with `close_fds=False` Python spawns the script; a bare name or descriptors
+# to close make it fork the whole pytest worker first (~6 ms a process).
+BASH = shutil.which('bash')
+
 # Far above macOS's pid range, so "a pid that is not alive" is guaranteed.
 DEAD_PID = 4999999
 
@@ -45,8 +50,8 @@ def spawn_orphan(cmd: str) -> int:
     subprocess.Popen child would linger as a zombie after start.sh kills it,
     and the script's `kill -0` would still report it alive.
     """
-    out = subprocess.run(['bash', '-c', f'{cmd} >/dev/null 2>&1 & echo $!'],
-                         capture_output=True, text=True, check=True)
+    out = subprocess.run([BASH, '-c', f'{cmd} >/dev/null 2>&1 & echo $!'],
+                         capture_output=True, text=True, check=True, close_fds=False)
     return int(out.stdout.strip())
 
 
@@ -57,7 +62,7 @@ def wait_dead(pid: int, timeout: float = 5.0) -> bool:
             os.kill(pid, 0)
         except ProcessLookupError:
             return True
-        time.sleep(0.05)
+        time.sleep(0.002)
     return False
 
 
@@ -91,7 +96,8 @@ def run_on_a_terminal(command: list[str], env: dict) -> subprocess.CompletedProc
     printed there is the result's stdout."""
     master, slave = os.openpty()
     try:
-        process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=slave, stderr=subprocess.PIPE)
+        process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=slave, stderr=subprocess.PIPE,
+                                   close_fds=False)
     finally:
         os.close(slave)
     shown = b''
@@ -173,12 +179,12 @@ class StartShHarness:
 
     def run(self, *args, terminal: bool = False) -> subprocess.CompletedProcess:
         env = dict(os.environ, BASH_ENV=str(self.env_file), KEEP_TEST_CALLS=str(self.tui_calls))
-        command = ['bash', str(self.script), *map(str, args)]
+        command = [BASH, str(self.script), *map(str, args)]
         if terminal:
             return run_on_a_terminal(command, env)
         # capture_output also makes stdout a pipe, so [ -t 1 ] is false and the
         # interactive tail is skipped, matching a detached auto-restart.
-        return subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+        return subprocess.run(command, env=env, capture_output=True, text=True, close_fds=False, timeout=30)
 
     @property
     def restart_log(self) -> str:
@@ -510,7 +516,8 @@ class TestSatellite:
         harness.table.process(DEAD_PID)       # there, in the table, and never listening
         with harness.env_file.open('a') as env:
             # the kill finds DEAD_PID gone at once; the port wait is what this test is about
-            env.write('seq() { if [ "$2" = 120 ]; then command seq 1 14; else command seq "$@"; fi; }\n')
+            # (11 rounds: the first ten never ask whether the process is still there)
+            env.write('seq() { if [ "$2" = 120 ]; then command seq 1 11; else command seq "$@"; fi; }\n')
         result = harness.run(terminal=True)
         assert result.returncode == 1
         assert 'process is gone' not in harness.restart_log

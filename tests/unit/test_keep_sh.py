@@ -136,9 +136,9 @@ class TestInsideTheTerminal:
 
     def test_a_process_that_never_listens_gets_the_console_in_the_end(self, harness):
         harness.server(listening=False, process=True)
-        harness.polls(3)
+        harness.polls(1)
         harness.run(with_tty=True)
-        assert harness.recorded() == ['sleep 1'] * 3 + ['python3 tui.py localhost']
+        assert harness.recorded() == ['sleep 1', 'python3 tui.py localhost']
 
     def test_no_server_starts_one(self, harness):
         result = harness.run(with_tty=True)

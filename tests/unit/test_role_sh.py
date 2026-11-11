@@ -11,6 +11,8 @@ Which processes are this checkout's is asked of the Mac's real `lsof` and `pgrep
 show how lsof spells a folder."""
 import itertools
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -22,7 +24,10 @@ from common.ConfigManager import ConfigManager
 from common.imessage import Satellite
 
 ROLE_SH = Path(__file__).resolve().parents[2] / 'scripts' / 'role.sh'
-SHOW = '. scripts/role.sh; printf "%s|%s|%s|%s|%s" "$role" "$listen_ports" "$up_port" "$console_port" "$role_problem"'
+BASH = shutil.which('bash')
+# The folder is the script's to enter ($0): handed a `cwd`, or a program to look up, Python forks
+# the whole pytest worker for the process instead of spawning it.
+SHOW = 'cd "$0" && . scripts/role.sh; printf "%s|%s|%s|%s|%s" "$role" "$listen_ports" "$up_port" "$console_port" "$role_problem"'
 
 
 def script_reading(tmp_path: Path, config: str | None, **env) -> dict:
@@ -30,8 +35,8 @@ def script_reading(tmp_path: Path, config: str | None, **env) -> dict:
     (tmp_path / 'scripts' / 'role.sh').write_text(ROLE_SH.read_text())
     if config is not None:
         (tmp_path / 'config.yaml').write_text(config)
-    out = subprocess.run(['bash', '-c', SHOW], cwd=tmp_path, env=dict(os.environ, **env), capture_output=True, text=True,
-                         timeout=10)
+    out = subprocess.run([BASH, '-c', SHOW, str(tmp_path)], env=dict(os.environ, **env), capture_output=True, text=True,
+                         close_fds=False, timeout=10)
     assert out.returncode == 0, out.stderr
     role, listen_ports, up_port, console_port, problem = out.stdout.split('|', 4)
     return {'role': role, 'listen_ports': listen_ports.split(), 'up_port': up_port, 'console_port': console_port,
@@ -175,8 +180,8 @@ def sleeper(folder: Path) -> tuple[subprocess.Popen, str]:
 def own_processes(checkout: Path, pattern: str, **env) -> list[int]:
     (checkout / 'scripts').mkdir(exist_ok=True)
     (checkout / 'scripts' / 'role.sh').write_text(ROLE_SH.read_text())
-    out = subprocess.run(['bash', '-c', f". scripts/role.sh; own_processes '{pattern}'"], cwd=checkout, env=env,
-                         capture_output=True, text=True, timeout=10)
+    out = subprocess.run(['/bin/bash', '-c', 'cd "$0" && . scripts/role.sh; own_processes "$1"', str(checkout), pattern],
+                         env=env, capture_output=True, text=True, close_fds=False, timeout=10)
     assert out.returncode == 0, out.stderr
     return [int(pid) for pid in out.stdout.split()]
 
@@ -191,16 +196,26 @@ class TestWhichProcessesAreThisCheckouts:
 
     @pytest.mark.parametrize('name', ['Keep', 'Kęp-ö', 'tab\tdir', 'back\\slash', 'with space'])
     def test_a_process_of_this_checkout_is_found_whatever_the_folder_is_called(self, tmp_path, name):
-        checkout, elsewhere = tmp_path / name, tmp_path / 'elsewhere'
-        checkout.mkdir(), elsewhere.mkdir()
+        checkout = tmp_path / name
+        checkout.mkdir()
         ours, pattern = sleeper(checkout)
-        theirs = subprocess.Popen(ours.args, cwd=elsewhere)     # the same command line from another folder
         try:
             assert own_processes(checkout, pattern, **self.WITHOUT_A_LOCALE) == [ours.pid]
         finally:
-            for process in (ours, theirs):
-                process.kill()
-                process.wait(timeout=5)
+            ours.kill()
+            ours.wait(timeout=5)
+
+    def test_the_same_command_line_from_another_folder_is_not_this_checkouts(self, tmp_path):
+        """A test of its own: every process pgrep finds costs an lsof (~30 ms on this Mac's real one)."""
+        checkout, elsewhere = tmp_path / 'Keep', tmp_path / 'elsewhere'
+        checkout.mkdir(), elsewhere.mkdir()
+        theirs, pattern = sleeper(elsewhere)
+        try:
+            assert re.search(pattern, ' '.join(theirs.args)), "the pattern does not name the process: nothing was asked"
+            assert own_processes(checkout, pattern, **self.WITHOUT_A_LOCALE) == []
+        finally:
+            theirs.kill()
+            theirs.wait(timeout=5)
 
     def test_a_checkout_reached_through_a_symlink_is_the_same_checkout(self, tmp_path):
         checkout, link = tmp_path / 'Keep', tmp_path / 'link'

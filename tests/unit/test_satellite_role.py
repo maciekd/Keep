@@ -105,8 +105,9 @@ SATELLITE_BOOT = textwrap.dedent("""
     database.CHAT_DB_PATH = {nowhere!r} + "/chat.db"
     contacts.ADDRESS_BOOK_DIR = Path({nowhere!r}) / "AddressBook"
     import floxy_ai_server
-    from common import Role
+    from common import Role, Version
     from common.imessage import Satellite
+    Version._git = lambda *args: None     # the version line would ask git about the real checkout, five processes
     assert Role.current() == Role.IMESSAGE_SATELLITE and Satellite.config_problem() == ""
     satellite = Satellite.build()
     trees = sorted(name for name in sys.modules if name.split(".")[0] in ("assistant", "integrations", "interfaces"))

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from .process_table import OTHER_CHECKOUT, OTHER_USER, ProcessTable, stubs
-from .test_start_sh import alive, bystander, spawn_orphan, wait_dead  # noqa: F401  (bystander is a fixture)
+from .test_start_sh import BASH, alive, bystander, spawn_orphan, wait_dead  # noqa: F401  (bystander is a fixture)
 
 STOP_SH = Path(__file__).resolve().parents[2] / 'stop.sh'
 ROLE_SH = STOP_SH.parent / 'scripts' / 'role.sh'
@@ -28,8 +28,8 @@ class Harness:
         self.env_file.write_text('date() { echo "2026-10-13 03:00:00"; }\n' + stubs(tmp_path))
 
     def run(self) -> subprocess.CompletedProcess:
-        return subprocess.run(['bash', str(self.dir / 'stop.sh')], env=dict(os.environ, BASH_ENV=str(self.env_file)),
-                              capture_output=True, text=True, timeout=30)
+        return subprocess.run([BASH, str(self.dir / 'stop.sh')], env=dict(os.environ, BASH_ENV=str(self.env_file)),
+                              capture_output=True, text=True, close_fds=False, timeout=30)
 
 
 @pytest.fixture
@@ -94,15 +94,11 @@ class TestStopSh:
         assert result.returncode == 0
         assert 'nothing to stop' in result.stdout
 
-    def test_it_says_when_the_watchdog_will_start_the_process_again(self, harness):
+    @pytest.mark.parametrize('watchdog', [True, False], ids=['the watchdog on', 'the watchdog off'])
+    def test_it_says_when_the_watchdog_will_start_the_process_again(self, harness, watchdog):
         victim = spawn_orphan('/bin/sleep 300')
-        (harness.dir / 'config.yaml').write_text('role: imessage_satellite\nwatchdog: true\n')
+        (harness.dir / 'config.yaml').write_text(f'role: imessage_satellite\nwatchdog: {str(watchdog).lower()}\n')
         harness.table.process(victim)
-        with_watchdog = harness.run().stdout
+        said = harness.run().stdout
         assert wait_dead(victim)
-        (harness.dir / 'config.yaml').write_text('role: imessage_satellite\nwatchdog: false\n')
-        victim = spawn_orphan('/bin/sleep 300')
-        harness.table.process(victim)
-        without = harness.run().stdout
-        assert wait_dead(victim)
-        assert 'watchdog' in with_watchdog and 'watchdog' not in without
+        assert ('watchdog' in said) == watchdog
