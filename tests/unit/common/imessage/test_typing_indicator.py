@@ -469,6 +469,15 @@ class TestSeveralChatsAtOnce:
         dots.off(chats[0][0])
         assert dots.on(*chats[-1]).showing, "a window that closed makes room"
 
+    def test_a_chat_that_shows_dots_already_keeps_them_while_every_window_is_taken(self, dots):
+        """The next round of a long turn asks again: the bound is on windows, and it has one."""
+        chats = [(f"iMessage;+;chat-{number}", f"Group {number}") for number in range(MAX_WINDOWS)]
+        for chat, name in chats:
+            dots.mac.chat(name)
+            dots.on(chat, name)
+        again = dots.on(*chats[0])
+        assert again.showing and len(dots.mac.opened) == MAX_WINDOWS
+
     def test_two_threads_asking_for_two_chats_both_get_their_dots(self, dots):
         results = {}
         threads = [threading.Thread(target=lambda c=chat, n=name: results.__setitem__(c, dots.on(c, n)))
@@ -511,6 +520,28 @@ class TestNeverLeavingAMess:
         assert dots.on().showing, "the stale window is cleared and closed before the chat's is opened anew"
         assert dots.mac.closed == [FAMILY_NAME] and len(dots.mac.windows) == 2
 
+    def test_a_window_that_fails_to_close_at_shutdown_does_not_keep_the_others_open(self, dots):
+        dots.on()
+        dots.on(CHARLOTTE, CHARLOTTE_NAME)
+        button = dots.mac.window(FAMILY_NAME).attributes[module.CLOSE_BUTTON]
+        button.actions[module.PRESS] = lambda: (_ for _ in ()).throw(ValueError("depythonifying 'pointer'"))
+        dots.indicator.shutdown()
+        assert dots.mac.closed == [CHARLOTTE_NAME] and dots.mac.draft(FAMILY_NAME) == ""
+        assert dots.indicator.showing() == [] and not dots.timers.armed
+
+    def test_an_off_that_failed_leaves_a_window_the_next_reply_clears_and_closes(self, dots):
+        """The seam raised under `off`: the window is still on screen with its draft, and it is
+        this object's own — not "a window Keep did not open" that keeps the chat without dots."""
+        dots.on()
+        stale, session = dots.mac.window(FAMILY_NAME), dots.mac.session
+        dots.mac.session = lambda: (_ for _ in ()).throw(ValueError("depythonifying 'pointer', got 'NoneType'"))
+        assert not dots.off().showing and dots.indicator.showing() == []
+        dots.mac.session = session
+        assert dots.on().showing
+        assert stale.dead and dots.mac.closed == [FAMILY_NAME] and len(dots.mac.windows) == 2
+        dots.off()
+        assert dots.nothing_left()
+
     def test_a_reason_is_logged_once_per_chat_not_at_every_reply(self, dots):
         with patch.object(module, "info") as said:
             for _ in range(5):
@@ -545,6 +576,14 @@ class TestAWindowLeftBehindByAnEarlierProcess:
         dots.mac.field_of(FAMILY_NAME).attributes[VALUE] = "On my way"
         assert not after.on(FAMILY, FAMILY_NAME).showing
         assert dots.mac.closed == [] and dots.mac.draft(FAMILY_NAME) == "On my way"
+
+    def test_one_whose_field_cannot_be_cleared_is_not_closed_over_its_draft(self, dots, tmp_path):
+        """A window closed over text keeps the text as the conversation's draft, where nothing clears it."""
+        after = self.left_behind(dots, tmp_path)
+        dots.mac.field_of(FAMILY_NAME).frozen = True
+        result = after.on(FAMILY, FAMILY_NAME)
+        assert (result.showing, result.reason) == (False, TYPING_FAILED)
+        assert dots.mac.closed == [] and dots.mac.opened == [FAMILY_NAME], "nor is a second window opened beside it"
 
     def test_a_window_closed_properly_is_not_on_the_record(self, dots, tmp_path):
         record = tmp_path / "windows.json"

@@ -217,6 +217,25 @@ class TestAWarningFromAWorkingIntegration:
             mock_config._check_integration(integration)
         assert integration.state == IntegrationState.ERROR and integration.last_error == "no route to host"
 
+    def test_failures_on_either_side_of_it_are_not_one_run_of_failures(self, mock_config, integration):
+        """A check that ends in a warning reached the service: the failures before it are over."""
+        warned, failed = HealthWarning("the satellite could not update itself"), ConnectionError("no route to host")
+        short = [failed] * (IntegrationMonitor.FAILURE_THRESHOLD - 1)
+        integration.check_health = Mock(side_effect=[*short, warned, *short])
+        for _ in range(2 * len(short) + 1):
+            mock_config._check_integration(integration)
+        assert integration.state == IntegrationState.WARNING
+
+    def test_it_ends_an_error_the_integration_was_in(self, mock_config, integration):
+        integration.check_health = Mock(side_effect=ConnectionError("no route to host"))
+        for _ in range(IntegrationMonitor.FAILURE_THRESHOLD):
+            mock_config._check_integration(integration)
+        assert integration.state == IntegrationState.ERROR
+        integration.check_health = Mock(side_effect=HealthWarning("the satellite could not update itself"))
+        mock_config._check_integration(integration)
+        assert integration.state == IntegrationState.WARNING
+        assert integration.last_error == "the satellite could not update itself"
+
     def test_a_clean_check_clears_it(self, mock_config, integration):
         mock_config._check_integration(integration)
         integration.check_health = Mock(return_value=True)

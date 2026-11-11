@@ -114,6 +114,13 @@ class TestPull:
         assert "master" in failure and "still on release" in failure and "local changes" in failure
         assert output == "" and ["git", "pull"] not in checkout.moves
 
+    def test_a_target_that_cannot_be_fetched_is_neither_checked_out_nor_pulled(self):
+        """A local branch of that name left from long ago would otherwise be what the process restarts on."""
+        checkout = FakeCheckout(branch="release", failing={"fetch": "fatal: couldn't find remote ref next"})
+        failure, output = Updater(run=checkout).pull("next")
+        assert "remote ref next" in failure and "release" in failure and output == ""
+        assert checkout.moves == [["git", "fetch", "origin", "next"]] and checkout.branch == "release"
+
     def test_a_failed_pull_is_the_failure(self):
         failure, output = Updater(run=FakeCheckout(failing={"pull": "fatal: unable to access the remote"})).pull("master")
         assert "unable to access the remote" in failure and output == ""

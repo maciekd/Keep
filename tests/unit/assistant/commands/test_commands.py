@@ -2284,6 +2284,20 @@ class TestCmdConfigSet:
             assert commands_instance.cmd_config_request("imessage.host") is None
             bg.assert_called_once()
 
+    @pytest.mark.parametrize("spelling", [
+        "imessage_chat.owners(0)", "imessage_chat.owners.0", "imessage_chat.owners[00]", "imessage_chat.owners[０]",
+        "imessage_chat.owners [0]", "imessage_chat. owners[0]", "imessage_chat['owners'][0]", "imessage_chat..owners[0]",
+        "imessage_chat.owners[0][0]", "imessage_chat.owners[-1]", "IMESSAGE_CHAT.owners[0]", "'imessage_chat.owners[1]'",
+        "imessage_chat.owners", "imessage_chat",
+    ])
+    def test_no_spelling_of_the_owners_list_gets_a_stated_handle_past_config_set(self, commands_instance, spelling):
+        """Two checks stand in front of the write — a known key, and one the assistant may state:
+        a spelling one of them does not recognise must be one the other refuses."""
+        with patch.object(commands_instance, "background_command") as bg:
+            answer = commands_instance.cmd_config_set(spelling, "+46701740606")
+        assert answer.startswith("config_set failed")
+        bg.assert_not_called()
+
     def test_a_denied_key_is_refused_before_anything_runs(self, commands_instance):
         with patch.object(ConfigStore, "check_key",
                           side_effect=ConfigStoreError("'vault.key' cannot be changed from here — edit config.yaml by hand")), \
@@ -3124,3 +3138,22 @@ class TestServerLogsSearch:
             commands_instance.cmd_server_logs("", '"boom"')
             bg.call_args.args[0]("")
         fetch.assert_called_once_with(None, "boom", self.TURN_START)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("params, said", [
+    (["Charlotte", "The sofa comes Friday", " carried in", " and assembled"], "The sofa comes Friday, carried in, and assembled"),
+    ("Charlotte, The sofa comes Friday, carried in", "The sofa comes Friday, carried in"),
+    (["Charlotte"], None),
+    ("Charlotte", None),
+    (["Charlotte", "  "], None),
+])
+def test_what_a_post_message_said_is_everything_after_its_destination(commands_instance, params, said):
+    """The console shows it under the "Posting to …" notice: the text whole, whether its
+    commas split it into pieces or it came as one string, and never the destination."""
+    assert commands_instance.echo_body("post_message", params) == said
+
+
+@pytest.mark.unit
+def test_a_command_that_addresses_nobody_has_nothing_to_quote(commands_instance):
+    assert commands_instance.echo_body("google", ["Charlotte, the sofa"]) is None

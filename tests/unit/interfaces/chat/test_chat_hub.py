@@ -857,6 +857,21 @@ class TestTheAskingChatIsToldItWaits:
         assert hub.request_approval("send_email", timeout=0.02) == "timeout"
         assert phone.calls == []
 
+    def test_a_chat_that_fails_at_saying_it_waits_does_not_cost_the_question(self, hub, transport, phone):
+        def broken(conversation, what, where):
+            raise RuntimeError("the chat is gone")
+
+        phone.asked_elsewhere = broken
+        answers = []
+        asking = threading.Thread(target=lambda: answers.append(
+            hub.request_approval("send_email", timeout=2, source="Phone", conversation="chat-7")), daemon=True)
+        asking.start()
+        assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
+        token = next(c[2] for c in transport.calls if c[0] == "approval")
+        assert hub.resolve_approval(token, "approve", who="marcus") is True
+        asking.join(timeout=2)
+        assert answers == ["approve"]
+
 
 @pytest.mark.unit
 class TestQuestionsReachEveryOwner:

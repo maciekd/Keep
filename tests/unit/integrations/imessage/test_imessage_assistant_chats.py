@@ -8,7 +8,7 @@ import pytest
 from common.ConfigManager import config
 from common.imessage.MessagesHost import HostHealth, Message, UNREACHABLE
 from integrations.imessage import IMessageIntegration as module
-from integrations.imessage.IMessageIntegration import CHAT_ENABLED_KEY, IMessageIntegration
+from integrations.imessage.IMessageIntegration import CHAT_ADDRESSES_RETRY, CHAT_ENABLED_KEY, IMessageIntegration
 
 from .host_fakes import FUTURE, FakeHost, RECENT, received, send_later, sent
 
@@ -99,6 +99,12 @@ class TestChatsTheAssistantIsIn:
                 in_chat(sent(2, "By phone", ["Keep"]), "+46701740607")]
         assert stored(feed, *rows) == []
 
+    def test_a_participant_is_the_same_however_the_owners_chat_db_spells_it(self, feed):
+        """The owner's chat.db keeps a handle as it was first typed; the assistant's host names it normalised."""
+        rows = [in_chat(sent(1, "By mail", ["Keep"]), " Keep@Example.COM"),
+                in_chat(received(2, "Dinner?", "Alice", ALICE, chat_name="Family"), ALICE, "KEEP@example.com")]
+        assert stored(feed, *rows) == []
+
     def test_a_message_from_the_assistant_is_known_by_its_sender_when_the_host_names_no_participants(self, feed):
         """The owner's host a version behind: `Message.participants` is empty."""
         assert stored(feed, received(1, "Will do", "Keep", ASSISTANT)) == []
@@ -155,4 +161,33 @@ class TestReadingTheAddresses:
         rows = [in_chat(sent(2, "To the old one", ["Somebody"]), ASSISTANT),
                 in_chat(sent(3, "To the new one", ["Keep"]), "new@example.com")]
         contents = stored(feed, *rows)
+        assert len(contents) == 1 and "To the old one" in contents[0]
+
+    def test_a_host_away_at_the_first_read_is_asked_again_soon_and_then_left_alone(self, feed, chat_host):
+        """Until the account has named an address every bubble with the assistant is stored twice:
+        that is not waited out for as long as addresses already read are trusted."""
+        chat_host.health_answer = HostHealth(False, UNREACHABLE)
+        clock = [5000.0]
+        with patch.object(module.time, "monotonic", side_effect=lambda: clock[0]):
+            assert len(stored(feed, in_chat(sent(1, "Hello", ["Keep"]), ASSISTANT))) == 1
+            chat_host.health_answer = HostHealth(True, addresses=[ASSISTANT])
+            clock[0] += CHAT_ADDRESSES_RETRY - 1
+            assert len(stored(feed, in_chat(sent(2, "Hello?", ["Keep"]), ASSISTANT))) == 1
+            assert len(chat_host.calls) == 1, "not at every poll either"
+            clock[0] += 2
+            assert stored(feed, in_chat(sent(3, "There you are", ["Keep"]), ASSISTANT)) == []
+            clock[0] += CHAT_ADDRESSES_RETRY + 1
+            stored(feed, in_chat(sent(4, "Still there", ["Keep"]), ASSISTANT))
+            assert len(chat_host.calls) == 2, "once it has answered, the next read is the refresh's"
+
+    def test_a_chat_moved_to_another_account_is_asked_who_it_is_at_the_next_poll(self, feed, settings):
+        """`imessage_chat.host` now names another Mac: the chats of the account before are the
+        feed's again, and the new account's are left out without waiting for the refresh."""
+        stored(feed, in_chat(sent(1, "Hello", ["Keep"]), ASSISTANT))
+        moved = FakeHost()
+        moved.health_answer = HostHealth(True, addresses=["new@example.com"])
+        settings["imessage_chat.host"] = "http://192.0.2.8:8898"
+        with patch.object(module.Hosts, "build", return_value=moved):
+            contents = stored(feed, in_chat(sent(2, "To the old one", ["Somebody"]), ASSISTANT),
+                              in_chat(sent(3, "To the new one", ["Keep"]), "new@example.com"))
         assert len(contents) == 1 and "To the old one" in contents[0]

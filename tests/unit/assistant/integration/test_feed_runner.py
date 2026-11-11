@@ -929,6 +929,29 @@ class TestFailures:
         assert runner.state == FeedState.STOPPED and feed.calls == []
         assert runner.wait_opened(0), "a restart waiting for the feed to open is not kept waiting for another Mac"
 
+    def test_a_source_away_when_the_stored_cursor_is_checked_is_waited_for_and_the_cursor_kept(self, floxy_db):
+        """A restart while the other Mac sleeps: `cursor_lost` cannot ask it where its table
+        ends. Not knowing is not "lost" — the catch-up from the horizon would read years again."""
+        floxy_db.save_feed("Scripted", cursor="1", horizon=HORIZON, source="the account")
+        feed = ScriptedFeed([[HORIZON + 1], [HORIZON + 2]])
+        feed.cursor_source = "the account"
+        asked = []
+
+        def cursor_lost(cursor, source):
+            asked.append(cursor)
+            if len(asked) < 3:
+                raise FeedSourceAway("asleep")
+            return None
+
+        feed.cursor_lost = cursor_lost
+        feed.initial_cursor = Mock(side_effect=AssertionError("the stored cursor was given up"))
+        history = RecordingHistory()
+        runner = run(FeedRunner(feed, history, HORIZON, db=floxy_db), feed)
+        assert asked == ["1", "1", "1"] and runner.state != FeedState.FAILED
+        assert feed.calls[0] == (1, True), "it goes on from where it was"
+        assert [e.timestamp for _, batch in history.batches for e in batch] == [HORIZON + 2]
+        assert runner.status()["away"] is False and runner.status()["last_error"] is None
+
     def test_a_source_long_away_is_asked_less_often(self, floxy_db):
         feed = ScriptedFeed([[HORIZON + 1]])
         feed.poll_interval = 5.0

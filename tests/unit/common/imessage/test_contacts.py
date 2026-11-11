@@ -246,6 +246,31 @@ class TestRefreshRanking:
         assert c.full_name("0701740605") == "Marcus Berg"
         assert c.name_for("0701740609") == "Farfar"
 
+    @pytest.mark.parametrize("child_source", ["AAA", "ZZZ"])
+    def test_a_name_on_cards_of_both_lists_is_sent_to_the_owners_contact(self, tmp_path, child_source):
+        """The child has an Alice of their own: a message "to Alice" must not go to her."""
+        own = [("Alice", "Ek", [("070-174 06 07", "_$!<Mobile>!$_")], []), ("Bob", "Jones", [], ["bob@example.com"]),
+               ("Carol", "King", [], ["carol@example.com"])]
+        child = [("Alice", None, [("070-174 06 10", "_$!<Mobile>!$_")], [])]
+        address_book(tmp_path, own, source="MMM")
+        folder = address_book(tmp_path, child, source=child_source)
+        database = Mock()
+        database.chat_activity.return_value = {}
+        database.group_chats.return_value = []
+        c = Contacts(database, folder)
+        c.refresh()
+        resolved = c.resolve("Alice")
+        assert (resolved.handle, resolved.full_name) == ("0701740607", "Alice Ek")
+
+    def test_a_source_that_cannot_be_read_costs_only_its_own_cards(self, tmp_path):
+        folder = address_book(tmp_path, [("Bob", "Jones", [("070-174 06 06", "_$!<Mobile>!$_")], [])])
+        broken = folder / "Sources" / "AAA" / "AddressBook-v22.abcddb"
+        broken.parent.mkdir()
+        broken.write_bytes(b"not a database at all")
+        c = Contacts(Mock(chat_activity=Mock(return_value={})), folder)
+        c.refresh()
+        assert c.name_for("+46701740606") == "Bob" and c.resolve("Bob Jones").handle == "0701740606"
+
     def test_landline_first_on_card_still_resolves_to_mobile(self, tmp_path):
         people = [("Bob", "Jones", [("031-12 34 56", "_$!<Home>!$_"), ("070-174 06 05", "_$!<Mobile>!$_")], [])]
         resolved, c = self._resolve(tmp_path, people, {}, "Bob")

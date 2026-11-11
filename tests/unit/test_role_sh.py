@@ -96,6 +96,7 @@ UNREADABLE_CONFIGS = {
     'the role on the line under its key': 'role:\n  imessage_satellite\n',
     'the section in braces': 'role: imessage_satellite\nimessage_satellite: {port: 8901, token: x}\n',
     'the port on the line under its key': 'role: imessage_satellite\nimessage_satellite:\n  port:\n    8901\n',
+    'the line endings of another system': 'role: imessage_satellite\r\nimessage_satellite:\r\n  port: 8901\r\n',
     'the port merged in from another section': 'base: &base\n  port: 8901\nrole: imessage_satellite\nimessage_satellite:\n  <<: *base\n',
 }
 

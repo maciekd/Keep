@@ -261,6 +261,27 @@ class TestSnapshotFrameMerging:
         assert 'Cross-origin iframes on this page' in result
         assert 'https://pay.klarna.com/frame' in result
 
+    def test_the_snapshot_leaves_browse_network_the_hosts_it_cannot_capture(self):
+        """Each cross-origin host once, however its frames are addressed; gone with the frames."""
+        wa = make_wa()
+        wa._tab = SimpleNamespace(target=FakeTargetInfo('main', 'page', 'https://shop.example/kassa'))
+        pages = [{'records': [], 'crossOriginFrames': ['https://pay.example/card', '//pay.example/3ds', '',
+                                                         'https://card.bank.example/form?session=1']},
+                 {'records': [{'tag': 'button', 'label': 'Main'}], 'crossOriginFrames': []}]
+
+        async def fake_eval(_tab, expr):
+            return 'Checkout' if 'document.title' in expr else pages[0]
+
+        with patch.object(WebAccess, '_evaluate', side_effect=fake_eval), \
+                patch.object(WebAccess, '_async_sync_popup_targets', new=AsyncMock()), \
+                patch.object(WebAccess, '_async_list_frame_targets', new=AsyncMock(return_value=[])), \
+                patch.object(WebAccess, '_OOPIF_SETTLE_TIMEOUT', 0):
+            run(wa._async_take_snapshot())
+            assert wa._browse_cross_origin_frame_hosts == ['card.bank.example', 'pay.example']
+            pages.pop(0)
+            run(wa._async_take_snapshot())
+        assert wa._browse_cross_origin_frame_hosts == []
+
 
 @pytest.mark.unit
 class TestExecuteActionFrameRouting:
@@ -280,6 +301,46 @@ class TestExecuteActionFrameRouting:
         assert all(call.args[0] == 'ft9' for call in frame_eval.await_args_list)
         main_eval.assert_not_awaited()
         mouse.assert_not_awaited()
+
+    def test_a_frame_element_the_real_click_reached_gets_no_js_click_on_top(self):
+        """A Pay button pressed twice is an order paid twice."""
+        wa = make_wa()
+        wa._tab = SimpleNamespace()
+        wa._browse_snapshot_frame_ids = [None, 'ft9']
+        frame_eval = AsyncMock(side_effect=[self.META, None])   # meta, scroll — and nothing after
+        with patch.object(WebAccess, '_async_eval_in_frame_target', new=frame_eval), \
+                patch.object(WebAccess, '_async_trusted_frame_click', new=AsyncMock(return_value=True)) as real, \
+                patch.object(WebAccess, '_async_trusted_click', new=AsyncMock()) as main_click:
+            assert run(wa._async_execute_action(1, None)) is None
+        assert real.await_args.args[0] == 'ft9'
+        assert frame_eval.await_count == 2
+        main_click.assert_not_awaited()
+
+    @pytest.mark.parametrize("field", [
+        {'type': 'password', 'hint': 'pw  current-password  '},
+        {'type': 'text', 'hint': 'cardSecurityCode   CVC '},
+        {'type': 'tel', 'hint': '  cc-exp MM / ÅÅ '},
+    ])
+    def test_a_fill_of_a_card_or_credential_field_never_logs_what_was_typed(self, field):
+        wa = make_wa()
+        wa._tab = SimpleNamespace()
+        wa._browse_snapshot_frame_ids = [None]
+        meta = {**self.META, 'tag': 'input', **field}
+
+        async def ev(_tab, expr):
+            if meta is not None and 'getAttribute' in expr:
+                return meta
+            raise RuntimeError('the page is gone')
+
+        logged = []
+        with patch.object(WebAccess, '_evaluate', side_effect=ev), \
+                patch('assistant.tools.WebAccess.info', side_effect=lambda *a, **k: logged.append(str(a))), \
+                patch('assistant.tools.WebAccess.trace', side_effect=lambda *a, **k: logged.append(str(a))), \
+                patch('assistant.tools.WebAccess.note', side_effect=lambda *a, **k: logged.append(str(a))):
+            outcome = run(wa._async_execute_action(0, '7731'))
+        assert any('fill [0]' in line for line in logged)
+        assert not any('7731' in line for line in logged)
+        assert '7731' not in (outcome or '')
 
     def test_main_page_element_evaluates_on_tab(self):
         wa = make_wa()

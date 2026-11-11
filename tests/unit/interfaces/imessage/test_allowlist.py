@@ -1,6 +1,9 @@
 """The iMessage chat's allowlist: who an entry names, who is an owner, and what is refused."""
+from unittest.mock import patch
+
 import pytest
 
+from interfaces.imessage import Allowlist as allowlist
 from interfaces.imessage.Allowlist import Allowlist, normalize, parse_entry
 
 from .chat_fakes import CHARLOTTE, BOBS_KEEP, MARCUS, STRANGER, configured
@@ -87,3 +90,15 @@ class TestTheLists:
             assert allowed.find(STRANGER).name == "Dave"
             keys["imessage_chat.owners"] = []
             assert allowed.refresh() is True and allowed.find(MARCUS) is None
+
+    def test_a_handle_on_no_list_is_said_once_until_the_lists_change(self):
+        """The transport looks every member of a group up at each poll: a line per miss buries the log."""
+        with configured() as keys, patch.object(allowlist, "trace") as said:
+            allowed = Allowlist()
+            misses = lambda: sum(STRANGER in call.args[0] for call in said.call_args_list)
+            for _ in range(3):
+                allowed.find(STRANGER)
+            assert misses() == 1
+            keys["imessage_chat.guests"] = []
+            allowed.find(STRANGER)
+            assert misses() == 2, "after an edit a handle that is still on no list says so again"

@@ -47,6 +47,28 @@ class TestAcrossARestart:
         path.write_text(content)
         assert ChatState("local", path).cursor() is None
 
+    @pytest.mark.parametrize("vouched", ['["iMessage;+;chat-family"]', '{"iMessage;+;chat-family": "+46701740605"}'],
+                             ids=["a list of groups", "a handle where the list of them belongs"])
+    def test_a_say_about_a_group_that_is_not_written_as_one_vouches_for_nothing(self, path, vouched):
+        """What makes a group a place to post to is never read out of a damaged entry."""
+        path.parent.mkdir(parents=True)
+        path.write_text('{"account": "local", "vouched": %s}' % vouched)
+        assert ChatState("local", path).vouched() == {}
+
+    @pytest.mark.xfail(strict=True, reason="ChatState checks the type of the cursor, the vouched groups and the names, but "
+                                           "not of 'sent' and 'following': a damaged one raises — from 'following' when the "
+                                           "transport is built, from 'sent' at every send")
+    @pytest.mark.parametrize("content", ['{"account": "local", "sent": "many"}',
+                                         '{"account": "local", "sent": {"day": "%(today)s", "counts": {"+46701740606": "many"}}}',
+                                         '{"account": "local", "following": 5}'],
+                             ids=["the day's counts as text", "a count that is no number", "the groups as a number"])
+    def test_a_damaged_count_or_group_list_is_no_state_not_an_exception(self, path, content):
+        path.parent.mkdir(parents=True)
+        path.write_text(content % {"today": time.strftime("%Y-%m-%d")})
+        state = ChatState("local", path)
+        assert state.following() == [] and state.sent_today("+46701740606") == 0
+        assert state.count_sent("+46701740606") == 1
+
     def test_a_folder_that_cannot_be_written_costs_the_state_not_the_chat(self, tmp_path):
         blocked = tmp_path / "a-file"
         blocked.write_text("in the way")

@@ -107,6 +107,18 @@ class TestStart:
         rebuilt = interface.transport
         assert rebuilt is not first and rebuilt in ChatHub.get_instance().transports and rebuilt._thread is not None
 
+    def test_a_restart_of_a_running_chat_leaves_one_transport_one_poll_and_its_destinations_with_the_new_one(self, started):
+        """Two polls on one account would answer every message twice."""
+        interface, _, _ = started
+        interface.start(MagicMock(), app=None)
+        first = interface.transport
+        IntegrationMonitor.get_instance().restart("iMessage Chat")
+        rebuilt = interface.transport
+        assert rebuilt is not first
+        assert [t for t in ChatHub.get_instance().transports if isinstance(t, IMessageTransport)] == [rebuilt]
+        assert not first._thread.is_alive() and rebuilt._thread.is_alive()
+        assert any(Destinations.find("Charlotte") is claimed for claimed in rebuilt._registered)
+
     def test_stop_takes_it_off_the_hub_and_drops_its_destinations(self, started):
         interface, _, _ = started
         interface.start(MagicMock(), app=None)

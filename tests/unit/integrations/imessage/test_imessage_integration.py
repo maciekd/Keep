@@ -6,6 +6,7 @@ from unittest.mock import patch, Mock
 
 import pytest
 
+from assistant.integration.Feed import FeedSourceAway
 from common.imessage.MessagesHost import (GroupChat, HostHealth, MessageBatch, NO_ACCESS, NO_DATABASE, Recipient,
                                           SendResult)
 from integrations.imessage.IMessageIntegration import (
@@ -672,6 +673,21 @@ class TestFeed:
             integration.remaining("5")
         with pytest.raises(RuntimeError):
             integration.initial_cursor(0)
+
+    @pytest.mark.parametrize("away, raised", [(True, FeedSourceAway), (False, RuntimeError)],
+                             ids=["a host out of reach", "a host that fails"])
+    def test_a_host_that_cannot_say_where_its_table_ends_is_no_verdict_on_the_stored_cursor(self, integration, away,
+                                                                                              raised):
+        """At a restart the runner asks whether the stored ROWID is still a place in chat.db. An
+        answer of "lost" or "fine" from a host that said nothing would read five years again, or
+        resume past the end of another database."""
+        integration.host.rows = [received(9, "Hi")]
+        integration.host.error, integration.host.is_away = "no answer to last_rowid within 10 s", away
+        with pytest.raises(raised, match="no answer") as failed:
+            integration.cursor_lost("5", integration.cursor_source)
+        assert type(failed.value) is raised
+        integration.host.error = ""
+        assert integration.cursor_lost("5", integration.cursor_source) is None
 
     def test_remaining_counts_from_the_cursor(self, integration):
         integration.host.rows = [received(i, f"m{i}") for i in range(1, 6)]

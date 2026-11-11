@@ -1601,3 +1601,32 @@ def test_a_reply_that_only_starts_like_a_stub_arrives_whole(monkeypatch, chunks)
 
     assert _reply(output) == "".join(chunks)
     assert dm.ai.calls == 1
+
+
+@pytest.mark.unit
+def test_a_stub_line_above_the_reply_is_dropped_from_the_bubble_and_the_stored_turn(monkeypatch):
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.ai = DroppingAI([["_url_place", "holder\n\nPage two", " says 500 km."]])
+    _patch_stream_time(monkeypatch, [100.0, 100.1])
+
+    output = list(dm.stream_llm_response())
+
+    assert _reply(output) == "Page two says 500 km."
+    assert dm.ai.calls == 1
+    assert dm.messages[-1] == {"role": "assistant", "content": "Page two says 500 km."}
+
+
+@pytest.mark.unit
+@pytest.mark.xfail(strict=True, reason="_without_stub cuts the first occurrence of the stub's text from the raw turn: "
+                                       "a thinking block that holds the word loses it and the stub line stays in the history")
+def test_the_stub_is_cut_from_where_it_stood_not_from_the_thinking_that_names_it(monkeypatch):
+    thinking = "<thinking>No dummy call this time.</thinking>"
+    dm, _ = make_dialog_manager(monkeypatch, [], command_processor=ThinkingSwallowingProcessor())
+    dm.ai = DroppingAI([[thinking, "dummy\n", "Page two says 500 km."]])
+    _patch_stream_time(monkeypatch, [100.0, 100.1])
+
+    output = list(dm.stream_llm_response())
+
+    assert _reply(output) == "Page two says 500 km."
+    assert thinking in dm.llm_response_raw
+    assert "dummy" not in dm.llm_response_raw.replace(thinking, "")

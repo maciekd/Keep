@@ -868,6 +868,22 @@ class TestAlbums:
         assert query == "Michelle, look and open the gate"
         assert req.guest is True and "every command is disabled" in req.note
 
+    @pytest.mark.parametrize("addressed", [False, True], ids=["alone", "with a text addressed to her folded in"])
+    def test_an_overheard_photo_is_an_overheard_turn_unless_something_in_its_batch_was_addressed_to_her(
+            self, session, hub, transport, addressed):
+        """The batch is rebuilt from the album: a picture a group shares among themselves must not
+        come out of it as a turn she is expected to answer."""
+        session.PHOTO_DEBOUNCE_SECONDS = 0.05
+        assistant = FakeAssistant([None])
+        hub.assistant = assistant
+        session.submit(msg(kind=KIND_PHOTO, text="look what I found", chat_name="Family", overheard=True,
+                           attachments=[Attachment(b'\xff\xd8', "image/jpeg", "photo")]))
+        if addressed:
+            session.submit(msg(text="Michelle, whose is it?", chat_name="Family"))
+        assert wait_until(lambda: assistant.requests and not session.busy)
+        (req, _), = assistant.requests
+        assert ("not addressed to you" in req.note) is not addressed
+
     def test_voice_cancels_a_pending_album(self, session, hub, transport):
         session.ALBUM_DEBOUNCE_SECONDS = 0.2
         assistant = FakeAssistant([None])

@@ -109,6 +109,14 @@ class TestOneAtATimeAndNotTheSameTwice:
             follower.notice("release", commit)
         assert len(parts["spawn"].waiting) == 1
 
+    def test_the_polls_that_arrive_until_start_sh_has_replaced_the_process_start_no_second_relaunch(self, follower, parts):
+        """The update went through and the old process still answers for a few seconds: a second
+        start.sh would take down the process the first one is starting."""
+        for _ in range(20):
+            follower.notice("release", NEWER)
+            parts["spawn"].run()
+        assert parts["updater"].update.call_count == 1 and parts["relaunch"].call_count == 1
+
     def test_a_target_that_failed_is_not_tried_again_at_every_poll(self, follower, parts):
         parts["updater"].update.side_effect = lambda target, boot: Update(target, pull_failure="Git pull failed: no route to host")
         for _ in range(50):
@@ -241,6 +249,20 @@ class TestAFailedUpdate:
         parts["relaunch"].assert_not_called()
         assert said in status.update_failure and not status.updating
         assert (status.branch, status.commit, status.wire) == ("release", BOOT, Wire.WIRE_VERSION)
+
+    @pytest.mark.parametrize("update, now_on", [
+        (lambda target, boot: Update(target, pull_failure="Could not switch to master: local changes would be overwritten"), "release"),
+        (lambda target, boot: Update(target, sync_failure="pip could not install torch==9.9", head=NEWER), "master"),
+    ], ids=["the switch failed", "the switch went through and pip failed"])
+    def test_the_status_names_the_branch_the_checkout_is_on_after_a_move_that_failed(self, follower, parts, update, now_on):
+        """The server reads the satellite's branch in its health: a checkout that did move is
+        not reported where it was, nor one that stayed where the server is."""
+        parts["updater"].update.side_effect = update
+        follower.notice("master", NEWER)
+        parts["spawn"].run()
+        status = follower.status()
+        assert status.update_failure and (status.branch, status.commit) == (now_on, BOOT)
+        parts["relaunch"].assert_not_called()
 
     def test_a_start_script_that_cannot_be_spawned_is_a_failure_too(self, follower, parts):
         parts["relaunch"].side_effect = OSError("bash: not found")

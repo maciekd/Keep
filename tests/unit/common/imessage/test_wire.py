@@ -45,6 +45,7 @@ class TestArguments:
         ("poll", {"after_rowid": True, "horizon_ts": None, "limit": 10}),
         ("poll", {"after_rowid": 4.5, "horizon_ts": None, "limit": 10}),
         ("poll", {"after_rowid": 4, "horizon_ts": "yesterday", "limit": 10}),
+        ("cursor_at", {"horizon_ts": True}),
         ("messages", {"rowids": [1, "2"]}),
         ("messages", {"rowids": 3}),
         ("messages", {"rowids": list(range(Wire.MAX_LIST_ITEMS + 1))}),
@@ -52,6 +53,7 @@ class TestArguments:
         ("send", {"recipient": "Alice", "body": None}),
         ("health", {"refresh": 1}),
     ], ids=["a string for a ROWID", "a bool for a ROWID", "a fraction for a ROWID", "a word for a time",
+            "a flag for a time",
             "a string among the rows", "a number for a list", "more rows than a list may hold",
             "a list for a name", "nothing for a text", "a number for a flag"])
     def test_a_value_of_another_type_is_refused(self, call, data):

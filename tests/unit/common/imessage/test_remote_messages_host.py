@@ -176,6 +176,17 @@ class TestAttachmentsCrossAsBytes:
             raw, reason = remote.read_attachment(40)
         assert raw is None and "40" in reason
 
+    def test_a_file_is_held_to_the_cap_for_files_and_not_to_the_one_for_json(self, remote, fake):
+        """A video is larger than any JSON answer may be and still crosses; what a peer sends
+        beyond the cap for a file is not read to its end."""
+        fake.files[40] = JPEG
+        with patch.object(Wire, "MAX_ANSWER_BYTES", len(JPEG) - 1):
+            assert remote.read_attachment(40) == (JPEG, "")
+        with canned_peer(http_response("200 OK", JPEG, X_Keep_Wire="1")) as (address, _), server_identity(), \
+                patch.object(Wire, "MAX_ATTACHMENT_BYTES", len(JPEG) - 1):
+            raw, reason = RemoteMessagesHost(address, TOKEN).read_attachment(40)
+        assert raw is None and reason
+
     def test_this_side_stops_reading_an_answer_over_its_cap(self, remote, fake):
         """A peer that sends more than it should is not read to the end, whatever it declares."""
         fake.rows = [received(n, "x" * 200) for n in range(1, 40)]
@@ -317,6 +328,33 @@ class TestEveryFailureIsAValue:
             health, result = host.health(), host.send("Alice", "hi")
         assert (health.ok, health.reason) == (False, UNREACHABLE)
         assert "may have been sent" in result.error
+
+    def test_a_peer_that_took_the_request_and_hung_up_may_have_sent_the_text(self):
+        """The connection was there and the text went over it: only the answer is missing."""
+        with canned_peer(b"") as (address, seen), server_identity():
+            answer = RemoteMessagesHost(address, TOKEN).send("Alice", "On my way")
+        assert b"On my way" in seen[0]
+        assert "may have been sent" in answer.error
+
+    def test_what_goes_wrong_on_this_side_is_a_value_too_and_nothing_to_wait_out(self, remote):
+        with patch.object(remote._session, "request", side_effect=RuntimeError("not a thing requests raises")):
+            batch, health, sent_ = remote.poll(9, None, 10), remote.health(), remote.send("Alice", "hi")
+        assert (batch.messages, batch.cursor) == ([], 9) and batch.error and sent_.error
+        assert (health.ok, health.reason) == (False, BAD_ANSWER)
+        assert not remote.away(), "a consumer that waited for this to pass would wait for ever"
+
+    def test_a_satellite_that_went_quiet_is_reported_once_and_once_more_when_it_is_back(self, remote):
+        """A consumer polls every few seconds: a night without the satellite is two lines of the log, not thousands."""
+        there = remote.address
+        with patch.object(remote_module, "info") as reported:
+            remote.poll(0, None, 10)
+            remote.address = closed_port()
+            for _ in range(5):
+                assert remote.poll(0, None, 10).error
+            remote.address = there
+            for _ in range(3):
+                assert not remote.poll(0, None, 10).error
+        assert reported.call_count == 3, "answering, gone, back"
 
     HEAD = b"HTTP/1.1 200 OK\r\nX-Keep-Wire: 1\r\nContent-Length: 4000\r\n\r\n"
 

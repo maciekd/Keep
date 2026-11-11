@@ -1,6 +1,7 @@
 """common/imessage/Satellite: the satellite process as config.yaml describes it — what it refuses
 to start on, where it listens, what it builds. Nothing here serves or reads a Messages database."""
 import asyncio
+import signal
 import threading
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -213,6 +214,26 @@ class TestStayingUp:
         satellite = Satellite(host, SatelliteService(host, TOKEN), "127.0.0.1", 8901)
         with patch("hypercorn.asyncio.serve", AsyncMock(side_effect=lambda *a, **k: host.close.assert_not_called())), \
                 patch.object(satellite, "_install_signal_handlers"), patch.object(satellite_module, "stay_up"):
+            asyncio.run(satellite.serve())
+        host.close.assert_called_once_with()
+
+    @pytest.mark.parametrize("sent", [signal.SIGTERM, signal.SIGINT])
+    def test_the_signal_start_sh_and_stop_sh_send_ends_the_serving(self, sent):
+        """A contract with start.sh and stop.sh: SIGTERM (and Ctrl-C) is a clean end — the serving
+        returns and the host is closed — not a process they have to force-kill."""
+        host = FakeHost()
+        host.close = Mock()
+        satellite = Satellite(host, SatelliteService(host, TOKEN), "127.0.0.1", 8901)
+        loop = Mock()
+
+        async def served(app, config, shutdown_trigger):
+            handlers = {call.args[0]: call.args[1:] for call in loop.add_signal_handler.call_args_list}
+            handler, *arguments = handlers[sent]
+            handler(*arguments)
+            await asyncio.wait_for(shutdown_trigger(), 1)
+
+        with patch("hypercorn.asyncio.serve", served), patch.object(satellite_module, "stay_up"), \
+                patch.object(satellite_module.asyncio, "get_running_loop", return_value=loop):
             asyncio.run(satellite.serve())
         host.close.assert_called_once_with()
 

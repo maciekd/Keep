@@ -200,6 +200,14 @@ class TestTheTypingDots:
         assert typing_host.typing("any;+;chat2", False) == TypingResult()
         assert mac.closed == ["Family"] and mac.windows == [mac.main]
 
+    def test_taking_them_away_does_not_depend_on_the_chat_still_having_a_name_of_its_own(self, typing_host, mac, chat):
+        """A second group called the same appeared while the reply was worked on: no name finds
+        the chat any more, and its window is still the host's to clear and close."""
+        typing_host.typing("any;+;chat2", True)
+        chat.chat(3, "any;+;chat3", [1, 2], name="Family", style=GROUP)
+        assert typing_host.typing("any;+;chat2", False) == TypingResult()
+        assert mac.closed == ["Family"] and mac.windows == [mac.main]
+
     def test_a_chat_the_host_cannot_name_gets_no_dots_and_messages_is_not_touched(self, typing_host, mac, chat):
         chat.chat(3, "any;+;chat3", [1, 2], style=GROUP)     # a group nobody named
         answer = typing_host.typing("any;+;chat3", True)

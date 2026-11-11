@@ -25,8 +25,9 @@ def post(satellite, call, body=None, headers=AUTHORIZED, **kwargs):
 class TestNothingWithoutTheToken:
     STRANGERS = [{}, {"Authorization": f"Bearer {TOKEN[:-1]}"}, {"Authorization": f"Bearer {TOKEN}x"},
                  {"Authorization": TOKEN}, {"Authorization": f"Basic {TOKEN}"}, {"X-Keep-Token": TOKEN},
-                 {"Authorization": "Bearer "}]
-    IDS = ["no header", "one character short", "one too many", "no scheme", "another scheme", "another header", "empty"]
+                 {"Authorization": "Bearer "}, {"Authorization": "Bearer lösenord-som-inte-är-en-token"}]
+    IDS = ["no header", "one character short", "one too many", "no scheme", "another scheme", "another header", "empty",
+           "not ASCII"]
 
     @pytest.mark.parametrize("headers", STRANGERS, ids=IDS)
     def test_every_route_answers_401_and_the_host_is_never_asked(self, satellite, fake, follower, headers):
@@ -91,7 +92,7 @@ class TestTheWireVersionOfTheCaller:
         answer = post(satellite, "scheduled", {}, {"Authorization": f"Bearer {TOKEN}"})
         assert answer.status_code == 400 and fake.calls == []
 
-    @pytest.mark.parametrize("wire", ["one", "-1", "1.0", "9" * 5000, ""])
+    @pytest.mark.parametrize("wire", ["one", "-1", "1.0", "9" * 5000, "", "²"])
     def test_a_wire_version_that_is_no_number_is_refused_not_a_crash(self, satellite, fake, wire):
         answer = post(satellite, "scheduled", {}, {**AUTHORIZED, "X-Keep-Wire": wire})
         assert answer.status_code == 400 and fake.calls == []

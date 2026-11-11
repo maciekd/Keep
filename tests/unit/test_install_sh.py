@@ -648,7 +648,7 @@ class TestSatelliteInstall:
         result = harness.run(MAIN, KEEP_NO_TELEMETRY='1')
         assert result.returncode == 1
         assert ran(result) == [], "the install went on with a role it could not read"
-        assert (harness.keep_dir / 'config.yaml').read_text() == config
+        assert (harness.keep_dir / 'config.yaml').read_bytes() == config.encode()
 
     def test_the_installer_reads_config_yaml_with_the_program_the_start_scripts_use(self):
         """install.sh runs before a checkout exists and cannot source scripts/role.sh: it carries
