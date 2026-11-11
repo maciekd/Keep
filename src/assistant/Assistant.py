@@ -13,7 +13,7 @@ from typing import Callable, Iterator, List, Optional
 
 from assistant.RequestProcessor import RequestData, RequestProcessor
 from assistant.AssistantEvents import AssistantEvent, ObserverHub, UserIdentified, observers
-from assistant.AssistantRequest import RequestContext
+from assistant.AssistantRequest import SYSTEM_USER, RequestContext
 from assistant.prompt.TimeOfDay import TimeOfDay
 from assistant.tools.MessageFormatter import MessageFormatter
 from common.logging import error, fine, info, note, trace
@@ -70,6 +70,9 @@ class Assistant:
         self._dispatch_lock = threading.Lock()
         self._replenish_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        # Whether an owner has made a request since the boot: a turn the server starts to pick
+        # up where a restart left off (the launcher's resume turn) is overtaken once one has.
+        self.spoken_to = False
 
     # --- observers ------------------------------------------------------------------------
 
@@ -226,6 +229,8 @@ class Assistant:
                 info(f"Guest request from {req.user} refused: a request is in flight, a guest turn does not supersede it")
                 raise AssistantBusy("a request is in flight; a guest turn does not supersede it")
             self.kill_all(f"superseded by new request {req.user_input!r}")
+            if not req.guest and req.user != SYSTEM_USER:
+                self.spoken_to = True
             try:
                 handler = self._pool.get(timeout=self.POOL_GET_TIMEOUT)
             except Empty:

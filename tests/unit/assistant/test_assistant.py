@@ -214,6 +214,16 @@ class TestDispatch:
         assert not first.is_killed and a.running_handlers() == [first]
         assert a.pooled_handlers() == 1  # nothing was taken from the pool for the refused turn
 
+    @pytest.mark.parametrize("who, spoken", [(dict(user="Marcus"), True), (dict(user="Bob", guest=True), False),
+                                             (dict(user="system"), False)],
+                             ids=["an owner", "a guest", "a turn the server started"])
+    def test_only_an_owners_request_counts_as_having_been_spoken_to(self, who, spoken):
+        # the launcher's resume turn is dropped once the owner has continued the conversation
+        a = make_assistant()
+        assert a.spoken_to is False
+        a.stream(ctx(**who))
+        assert a.spoken_to is spoken
+
     def test_a_guest_request_runs_when_the_previous_one_is_over(self):
         # A handler stays in the running set after its turn until the next dispatch: that
         # must not count as in flight, or guests would be refused nearly always.

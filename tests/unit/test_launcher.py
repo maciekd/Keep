@@ -1,8 +1,10 @@
 """floxy_ai_server.build() with the voice interface disabled must import nothing voice-
 related — the Telegram-only install boots on the base requirements alone (Phase 6)."""
 import logging
+from contextlib import contextmanager
 import pathlib
 import sys
+import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -93,11 +95,25 @@ class TestTelegramOnlyBoot:
         import floxy_ai_server
         old = logging_mod._masker
         logging_mod.set_log_masker(None)
+        with patch("common.vault.Redactor.Redactor.mask", side_effect=lambda text: text.replace("hunter2", "<held>")):
+            server = floxy_ai_server.build(8999, running_as_testsuite=False)
+            try:
+                assert logging_mod.masked_for_log("the password is hunter2") == "the password is <held>"
+            finally:
+                server.stop()
+                logging_mod._masker = old
+
+    def test_the_log_masker_hides_what_a_browse_act_types_even_when_no_vault_holds_it(self, telegram_only_config,
+                                                                                    quiet_heavy_startup):
+        import common.logging as logging_mod
+        import floxy_ai_server
+        old = logging_mod._masker
+        logging_mod.set_log_masker(None)
         server = floxy_ai_server.build(8999, running_as_testsuite=False)
         try:
-            from common.vault.Redactor import Redactor
-            assert isinstance(logging_mod._masker.__self__, Redactor)
-            assert logging_mod._masker.__func__ is Redactor.mask
+            line = logging_mod.masked_for_log("Running command: browse_act(56=12/29; 57=737)")
+            assert "12/29" not in line and "737" not in line, "a card's expiry and code are too short for the vault"
+            assert "56=" in line and "57=" in line
         finally:
             server.stop()
             logging_mod._masker = old
@@ -478,6 +494,74 @@ class TestResumeConversation:
             assert len(FakeConsole.waiting) == 1
             FakeConsole.waiting[0]()
         hub.return_value.open_conversation.assert_called_once_with("the turn")
+
+
+    class FakeConsole:
+        name = "console"
+
+        def __init__(self):
+            self.waiting = []
+
+        def after_intro(self, fn):
+            self.waiting.append(fn)
+
+    class FakeAssistant:
+        def __init__(self, busy=False, spoken_to=False):
+            self.busy, self.spoken_to = busy, spoken_to
+
+        def is_busy(self):
+            return self.busy
+
+    @contextmanager
+    def resume(self, server, wait=None):
+        """Run the resume path over *server*; the hub mock it would have opened the turn on."""
+        import floxy_ai_server
+        with patch("common.StartupTracker.StartupTracker.take_resume_marker", return_value={"at": 1.0}), \
+                patch("common.StartupTracker.StartupTracker.build_resume_turn", return_value="the turn"), \
+                patch("assistant.FirstRun.brief_due", return_value=False), \
+                patch.object(floxy_ai_server, "RESUME_INTRO_WAIT_SECONDS", wait or 600.0), \
+                patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
+            floxy_ai_server._resume_conversation(server)
+            yield hub.return_value.open_conversation
+
+    @pytest.mark.parametrize("assistant", [FakeAssistant(busy=True), FakeAssistant(spoken_to=True)],
+                             ids=["a request in flight", "the owner wrote since the boot"])
+    def test_a_turn_the_owner_has_overtaken_is_not_opened(self, assistant):
+        # the turn would end the owner's request (Assistant.stream) and leave them without a reply
+        console = self.FakeConsole()
+        server = type("Server", (), {"interfaces": [console], "assistant": assistant})()
+        with self.resume(server) as opened:
+            console.waiting[0]()
+            opened.assert_not_called()
+
+    def test_a_quiet_boot_resumes_the_conversation(self):
+        console = self.FakeConsole()
+        server = type("Server", (), {"interfaces": [console], "assistant": self.FakeAssistant()})()
+        with self.resume(server) as opened:
+            console.waiting[0]()
+            opened.assert_called_once_with("the turn")
+
+    def test_with_no_tui_client_the_turn_stops_waiting_and_a_late_intro_opens_no_second_one(self):
+        console = self.FakeConsole()
+        server = type("Server", (), {"interfaces": [console], "assistant": self.FakeAssistant()})()
+        with self.resume(server, wait=0.01) as opened:
+            deadline = time.monotonic() + 2
+            while not opened.called and time.monotonic() < deadline:
+                time.sleep(0.005)
+            opened.assert_called_once_with("the turn")
+            console.waiting[0]()        # a TUI client connects hours later
+            opened.assert_called_once()
+
+    def test_the_first_run_brief_waits_for_the_intro_however_long(self):
+        import floxy_ai_server
+        console = self.FakeConsole()
+        server = type("Server", (), {"interfaces": [console]})()
+        with patch("assistant.FirstRun.brief_due", return_value=True), \
+                patch("assistant.FirstRun.brief", return_value="the brief"), \
+                patch("threading.Timer") as timer, \
+                patch("interfaces.chat.ChatHub.ChatHub.get_instance"):
+            floxy_ai_server._open_first_conversation(server)
+        timer.assert_not_called()
 
 
 @pytest.mark.unit

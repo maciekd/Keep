@@ -24,6 +24,7 @@ import atexit
 import faulthandler
 import logging
 import os
+import threading
 import time
 
 from colorama import init
@@ -176,24 +177,72 @@ def _resume_conversation(server: "Server | None" = None):
         info("The restart's conversation is not resumed: the first-run brief opens the conversation instead.")
         return
     _open_conversation(server, lambda: StartupTracker.build_resume_turn(marker, Version.label()),
-                       "the conversation the restart interrupted")
+                       "the conversation the restart interrupted",
+                       overtaken=lambda: _resume_overtaken(server), max_wait=RESUME_INTRO_WAIT_SECONDS)
 
 
-def _open_conversation(server: "Server | None", query, what: str):
+# A restart asked for from Telegram finds no TUI client and no intro to wait for: after this
+# long the resume turn goes to whichever chat is attended instead.
+RESUME_INTRO_WAIT_SECONDS = 30.0
+
+
+def _resume_overtaken(server: "Server | None") -> str | None:
+    """Why the resume turn has nothing left to resume, None while it has: a turn the server
+    starts ends whatever request is running (`Assistant.stream`), and an owner who wrote since
+    the boot has continued the conversation themselves — their reply must not be the price of
+    a report on the restart."""
+    assistant = getattr(server, "assistant", None)
+    if assistant is None:
+        return None
+    if assistant.is_busy():
+        return "a request is in flight, and the turn would end it"
+    if assistant.spoken_to:
+        return "the owner has written since the boot"
+    return None
+
+
+def _open_conversation(server: "Server | None", query, what: str, overtaken=None, max_wait: float | None = None):
     """Open the owner's conversation with the system turn *query()* builds. When the console
     runs, the turn waits until its startup intro has played for the first TUI client, so the
-    assistant starts thinking as the chat appears, not while the intro is on."""
+    assistant starts thinking as the chat appears, not while the intro is on — for *max_wait*
+    seconds at most when given: with no TUI client there is no intro, and the turn would
+    otherwise fire stale whenever one next connects. It goes out once, and not at all when
+    *overtaken()* names a reason at that moment."""
     from interfaces.chat.ChatHub import ChatHub
+    once = threading.Lock()
+    timer = None
 
     def send():
+        if not once.acquire(blocking=False):
+            trace(f"{what[0].upper()}{what[1:]} was dealt with already, nothing to open.")
+            return
+        if timer is not None:
+            timer.cancel()
+        reason = overtaken() if overtaken else None
+        if reason:
+            info(f"{what[0].upper()}{what[1:]} is not opened: {reason}.")
+            return
         info(f"The assistant opens the conversation with {what}.")
         ChatHub.get_instance().open_conversation(query())
+
+    def give_up_waiting():
+        info(f"No console intro ended within {max_wait:.0f}s — {what} no longer waits for it.")
+        try:
+            send()
+        except Exception as e:
+            error(f"Opening {what} failed: {type(e).__name__}: {e}")
 
     console = next((i for i in server.interfaces if i.name == "console"), None) if server else None
     if console is None:
         send()
         return
-    info(f"{what[0].upper()}{what[1:]} waits for the console's startup intro.")
+    info(f"{what[0].upper()}{what[1:]} waits for the console's startup intro"
+         + (f", {max_wait:.0f}s at most." if max_wait else "."))
+    if max_wait:
+        timer = threading.Timer(max_wait, give_up_waiting)
+        timer.daemon = True
+        timer.name = "OpenConversationWait"
+        timer.start()
     console.after_intro(send)
 
 
@@ -280,6 +329,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
     from assistant import SystemNote
     from common.FloxyDatabase import FloxyDatabase
     from common.TempMonitor import TempMonitor
+    from common import BrowseFillMask
     from common.logging import set_log_masker
     from common.vault.Redactor import Redactor
     from common.vault.Vault import Vault
@@ -292,7 +342,10 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
     FloxyDatabase.get_instance()
     # A vault value the LLM writes back through a placeholder (a config_set of an api_hash)
     # is restored before the command runs and would otherwise land in floxy.out in clear.
-    set_log_masker(Redactor(Vault.get_instance()).mask)
+    # What a browse_act types is in no vault when it is short (a card's expiry, its security
+    # code): the call is logged with the length of each typed value, wherever a line holds it.
+    vault_mask = Redactor(Vault.get_instance()).mask
+    set_log_masker(lambda text: BrowseFillMask.mask_fills(vault_mask(text)))
     if not running_as_testsuite:
         from assistant import FirstRun, MemoryFile
         seeded = MemoryFile.seed()  # before the prompt manager's memory section first reads the file
