@@ -234,8 +234,9 @@ class TestBrowseActBatch:
         with p[0], p[1], p[2], p[3], p[4]:
             result = run(wa._async_browse_act('1=a; 2=b; 3=c'))
         assert 'ERROR: action on [2] failed: element no longer in DOM' in result
-        assert "executed '1=a' before the failure" in result
-        assert "skipped '3=c'" in result
+        executed, skipped = result.split("before the failure")
+        assert "'1=" in executed and "'3=" in skipped
+        assert "=a" not in result and "=c" not in result, "a typed value is in no note: the log holds the note too"
         assert execute.await_count == 2
 
     def test_navigation_mid_batch_skips_rest_with_warning(self):
@@ -250,8 +251,9 @@ class TestBrowseActBatch:
                              side_effect=lambda self: next(urls), autospec=True):
             result = run(wa._async_browse_act('1=a; 2; 3=c'))
         assert "WARNING: action '2' navigated" in result
-        assert "Executed '1=a', '2'" in result
-        assert "skipped '3=c'" in result
+        executed, skipped = result.split("; skipped ")
+        assert "'1=" in executed and "'2'" in executed and "'3=" in skipped
+        assert "=a" not in result and "=c" not in result
         assert result.endswith('SNAP')
         assert execute.await_count == 2
         snap.assert_awaited_once()

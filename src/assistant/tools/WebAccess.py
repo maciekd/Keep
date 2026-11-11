@@ -29,6 +29,7 @@ from nodriver.core.connection import ProtocolException, Transaction
 from bs4 import BeautifulSoup, Comment, NavigableString
 
 from ..integration.Integration import Integration
+from common import BrowseFillMask
 from common.logging import info, trace, note, fine, error
 from common.ConfigManager import ConfigManager
 from common.Paths import CACHE_DIR, LOG_DIR
@@ -4547,15 +4548,15 @@ class WebAccess(Integration):
 
     # Split on ';' only where the next segment starts a new op (an index followed
     # by '=', ';' or end) — a ';' inside a fill value stays part of the value.
-    _ACT_BATCH_SPLIT_RE = re.compile(r';\s*(?=\d+\s*(?:=|;|$))')
+    @staticmethod
+    def _split_act_batch(spec: str) -> list[str]:
+        return BrowseFillMask.split_batch(spec)
 
-    @classmethod
-    def _split_act_batch(cls, spec: str) -> list[str]:
-        return [p.strip() for p in cls._ACT_BATCH_SPLIT_RE.split(spec) if p.strip()]
-
+    # An action is named by its index alone and the length of what it typed, in the log and in
+    # the notes to the LLM (which the log holds too): a card's code must be in neither.
     @staticmethod
     def _fmt_op_list(ops: list) -> str:
-        return ', '.join(f"'{op_spec}'" for op_spec, _, _, _ in ops) or '(none)'
+        return ', '.join(f"'{BrowseFillMask.spec_label(op_spec)}'" for op_spec, _, _, _ in ops) or '(none)'
 
     def _current_tab_url(self) -> str:
         try:
@@ -4780,6 +4781,7 @@ class WebAccess(Integration):
         warning = ''
         mark = None
         for n, (op_spec, idx, value, press_enter) in enumerate(ops):
+            label = BrowseFillMask.spec_label(op_spec)
             if value is None:
                 info(f"browse_act: click [{idx}]")
 
@@ -4796,7 +4798,7 @@ class WebAccess(Integration):
                             f"failure; skipped {self._fmt_op_list(ops[n + 1:])}.")
                 if err == self.CONSENT_RELOAD_ERROR:
                     # the page is reloading after the consent: snapshot it once it is back
-                    snapshot = await self._async_snapshot_after_action(mark, f"browse_act('{op_spec}')",
+                    snapshot = await self._async_snapshot_after_action(mark, f"browse_act('{label}')",
                                                                        verdict=False)
                 else:
                     snapshot = await self._async_take_snapshot()
@@ -4809,19 +4811,19 @@ class WebAccess(Integration):
                 if url_now and start_url and self._urls_differ(start_url, url_now):
                     note(f"browse_act: [{idx}] navigated to {url_now} — "
                          f"stopping batch, {len(ops) - n - 1} action(s) skipped")
-                    warning = (f"WARNING: action '{op_spec}' navigated to a new page, so the rest of "
+                    warning = (f"WARNING: action '{label}' navigated to a new page, so the rest of "
                                f"the batch was skipped — those indices no longer apply. Executed "
                                f"{self._fmt_op_list(ops[:n + 1])}; skipped {self._fmt_op_list(ops[n + 1:])}. "
                                f"Re-aim using the fresh snapshot below.")
                     break
 
-        snapshot = await self._async_snapshot_after_action(mark, f"browse_act('{ops[-1][0]}')")
+        snapshot = await self._async_snapshot_after_action(mark, f"browse_act('{BrowseFillMask.spec_label(ops[-1][0])}')")
         return self._take_dialog_notes() + (warning + "\n\n" + snapshot if warning else snapshot)
 
     def browse_act(self, spec: str) -> str:
         """Click or fill elements by snapshot index. spec: "<index>", "<index>=<value>",
         or a ';'-separated batch of those executed in order against the current snapshot."""
-        return self._run_browse_op(f"browse_act({spec})", self._async_browse_act(spec),
+        return self._run_browse_op(f"browse_act({BrowseFillMask.spec_label(spec)})", self._async_browse_act(spec),
                                    "ERROR: action failed.")
 
     async def _async_browse_key(self, spec: str) -> str:
