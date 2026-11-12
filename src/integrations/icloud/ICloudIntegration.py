@@ -306,6 +306,10 @@ class ICloudIntegration(Integration):
     # its sign-in opened: the code arrived and was accepted 21 s after the challenge on
     # 2026-10-24; before this the command failed at once and the phone never rang.
     CHALLENGE_WAIT_SECONDS = 60
+    # After the challenge closed: how long a waiting command gives the sign-in to finish trusting
+    # the session, and the pause before its one retry when Find My still refuses the session.
+    TRUST_WAIT_SECONDS = 10
+    SESSION_SETTLE_SECONDS = 2.0
     # Hard cap on from-scratch password (SRP) signins per recovery, independent
     # of the SMS limiter: on 2026-08-24 a 409 on every submitted code drove four
     # password logins + four SMS in 63s before the limiter kicked in.
@@ -1135,11 +1139,14 @@ class ICloudIntegration(Integration):
             self._sms_requested_at = None
             self._fresh_signins_this_recovery = 0
             self._find_my_probe = None       # "2FA pending" predates the code; the next listing decides
-            self._challenge_answered.set()
             info("iCloud: 2FA verification successful")
-            if not api.is_trusted_session:
-                info("iCloud: Trusting session...")
-                api.trust_session()
+            try:
+                if not api.is_trusted_session:
+                    info("iCloud: Trusting session...")
+                    api.trust_session()
+            finally:
+                # Only now: a command waiting for the code must not use the session before it is trusted.
+                self._challenge_answered.set()
         else:
             error("iCloud: 2FA verification failed "
                   f"(requires_2fa={api.requires_2fa}, requires_2sa={api.requires_2sa}, "
@@ -1429,6 +1436,13 @@ class ICloudIntegration(Integration):
         while True:
             try:
                 self._ensure_authenticated_and_ready()
+                if deadline is not None and not self._challenge_answered.is_set():
+                    # pyicloud drops its 2FA flag as soon as the code is accepted, before the session
+                    # is trusted: Find My asked now answers "re-authentication required" (2026-11-11).
+                    grace = min(max(0.0, deadline - time.time()), self.TRUST_WAIT_SECONDS)
+                    settled = self._challenge_answered.wait(grace)
+                    info(f"iCloud: {purpose} — the 2FA challenge closed, the sign-in "
+                         f"{'is complete' if settled else f'did not say it is complete within {grace:.0f}s, going on'}")
                 return
             except iCloudAuthenticationError:
                 if not self._challenge_open_now():
@@ -1458,7 +1472,19 @@ class ICloudIntegration(Integration):
             if not self._challenge_open_now():
                 raise
             self._wait_for_find_my(context)
-            return operation()
+            try:
+                return operation()
+            except iCloudAPIError:
+                raise
+            except Exception as e:
+                if not self._is_reauthentication_error(e):
+                    raise
+                # The sign-in just completed and Find My may not have caught up: one more try,
+                # never another sign-in — that would open the next challenge.
+                info(f"iCloud: Find My still wants a sign-in right after the 2FA code ({_brief(e)}), "
+                     f"trying {context} once more in {self.SESSION_SETTLE_SECONDS:.0f}s")
+                time.sleep(self.SESSION_SETTLE_SECONDS)
+                return operation()
 
     def _devices_now(self):
         """pyicloud's device manager, rebuilt: the one from the last command holds that
