@@ -2,6 +2,7 @@
 trial's restart hands start.sh the branch to fall back to, and the nightly update keeps a
 trial — with the night's release merged in — until the PR is released."""
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch, call
 
@@ -13,7 +14,7 @@ from assistant.agents.PullRequestTrial import Trial
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from common.Updater import Updater
 
-from ...git_sandbox import empty_repo, git as sandbox_git, spawn
+from ...git_sandbox import History, empty_repo, git as sandbox_git, spawn
 
 
 TODAY = module.datetime.now().strftime("%Y-%m-%d")
@@ -302,13 +303,17 @@ class TestOvernight:
     trial branch part at one commit, the PR changed b.txt, and each test says what the
     release did since. GitHub answers with `self.pr` (an exception is raised), read fresh."""
 
+    WHEN = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
+
+    BASE = {"a.txt": "one\n", "b.txt": "one\n"}
+
     @pytest.fixture(autouse=True)
     def install(self, tmp_path):
         self.repo = repo = empty_repo(tmp_path / "install")
         self.pr = _pr()
-        self._commit("release", {"a.txt": "one\n", "b.txt": "one\n"}, new=False)
-        sandbox_git(repo, "branch", "-m", "master", "release")
-        self.pr_head = self._commit("trial/pr-204", {"b.txt": "the PR's\n"})
+        released, self.pr_head = self._write(("the PR", {"b.txt": "the PR's\n"}), release=1, trial=2)
+        (repo / ".git" / "HEAD").write_text("ref: refs/heads/trial/pr-204\n")
+        sandbox_git(repo, "reset", "-q", "--hard")
         self.trial = Trial(number=204, title="Tesla: close the trunk once", head_ref="feat/trunk",
                            since="14:02", return_branch="release")
         run = lambda cmd, label, timeout: spawn([cmd[0], "-C", str(repo), *cmd[1:]], timeout=timeout)
@@ -316,7 +321,7 @@ class TestOvernight:
                 patch.object(PullRequestTrial, "_pr", SimpleNamespace(__wrapped__=self._read_pr)), \
                 patch.object(Updater, "tip", side_effect=lambda target: self.tip) as tip:
             self.tip_asked = tip
-            self.tip = ("", self._head("release"))
+            self.tip = ("", released)
             yield
 
     def _read_pr(self, number: int) -> dict:
@@ -324,20 +329,23 @@ class TestOvernight:
             raise self.pr
         return self.pr
 
-    def _commit(self, branch: str, files: dict, new: bool = True) -> str:
-        if new:
-            sandbox_git(self.repo, "checkout", "-q", "-b", branch)
-        for name, text in files.items():
-            (self.repo / name).write_text(text)
-        sandbox_git(self.repo, "add", "-A")
-        sandbox_git(self.repo, "commit", "-q", "-m", f"change on {branch}")
-        return self._head("HEAD")
+    def _write(self, change: tuple, release: int, trial: int = 0) -> list[str]:
+        """The commit both branches start from and one `change` (message, files) on top of it,
+        as objects and refs alone — a git process is a tenth of what a test here may take.
+        The first commit is the same object every time, so a second call forks the history."""
+        history = History()
+        history.commit(self.WHEN, "the release the trial began on", self.BASE)
+        history.commit(self.WHEN, change[0], {**self.BASE, **change[1]})
+        history.branch("release", release)
+        if trial:
+            history.branch("trial/pr-204", trial)
+        hashes = history.write(self.repo)
+        (self.repo / ".git" / "refs" / "heads" / "master").unlink()
+        return hashes
 
     def _release(self, files: dict) -> str:
         """A release made since the trial began, fetched and verified: what `Updater.tip` hands over."""
-        sandbox_git(self.repo, "checkout", "-q", "release")
-        commit = self._commit("release", files, new=False)
-        sandbox_git(self.repo, "checkout", "-q", "trial/pr-204")
+        commit = self._write(("the next release", files), release=2)[-1]
         self.tip = ("", commit)
         return commit
 
