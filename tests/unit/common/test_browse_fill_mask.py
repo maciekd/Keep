@@ -46,10 +46,6 @@ class TestMaskFills:
     def test_a_click_is_shown_as_written(self):
         assert BrowseFillMask.mask_fills("Running command: browse_act(12)") == "Running command: browse_act(12)"
 
-    @pytest.mark.xfail(strict=True, reason="BrowseFillMask.mask_fills only knows the call written as browse_act(…): "
-                                           "under the qwen, dsml and invoke command formats the reply as the model "
-                                           "wrote it is markup, and a card's expiry and security code typed there "
-                                           "reach the log in clear")
     @pytest.mark.parametrize("name", ["qwen", "dsml", "invoke"])
     def test_a_call_written_as_markup_leaves_no_typed_value_either(self, name):
         from assistant.commands.formats.CommandFormats import CommandFormats
@@ -57,3 +53,20 @@ class TestMaskFills:
         assert "737" in written, "the format writes the value into the reply"
         masked = BrowseFillMask.mask_fills(f"Reply: {written}")
         assert "737" not in masked and "12/29" not in masked
+
+    @pytest.mark.parametrize("name", ["qwen", "dsml", "invoke"])
+    def test_markup_of_another_command_and_the_text_around_the_call_stay_as_written(self, name):
+        from assistant.commands.formats.CommandFormats import CommandFormats
+        fmt = CommandFormats.BY_NAME[name]
+        other = fmt.render_tool_call("web_search", {"query": "ferry 7=9 timetable"})
+        text = f"before 1=2\n{other}\n{fmt.render_tool_call('browse_act', {'spec': '57=737'})}\nafter 3=4"
+        masked = BrowseFillMask.mask_fills(text)
+        assert other in masked and masked.startswith("before 1=2\n") and masked.endswith("\nafter 3=4")
+        assert "737" not in masked
+
+    def test_a_markup_value_over_several_lines_is_masked_to_its_last_line(self):
+        text = '<invoke name="browse_act">\n<parameter name="spec">4=first line\nsecret second</parameter>\n</invoke>'
+        assert "secret" not in BrowseFillMask.mask_fills(text)
+
+    def test_a_markup_call_cut_off_inside_its_value_is_masked_to_the_end(self):
+        assert "737" not in BrowseFillMask.mask_fills('<function=browse_act>\n<parameter=spec>\n57=737')
