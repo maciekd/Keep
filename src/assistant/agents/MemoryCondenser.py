@@ -50,6 +50,9 @@ still to go. {LEFT} more sections to go after this one. This section's fair shar
 {SECTION}
 </section>"""
 
+# The most a section is asked to give, as a multiple of its proportional part of the whole cut.
+SHARE_CEILING = 1.5
+
 # A section starts at a heading of level 1 or 2 — level 3 and below stay inside their section.
 HEADING = re.compile(r'^#{1,2} ')
 
@@ -99,7 +102,12 @@ class MemoryCondenser:
                 # The section's share of what is left, in proportion to its size among the
                 # sections still to come: a shortfall moves on to the next ones, but each hears
                 # a number sized to itself rather than the whole remainder.
-                share = round(remaining * size / max(1, unprocessed))
+                # Capped: a long section kept as it was must not hand its whole cut to the short
+                # ones after it (prod 2026-11-12: after 2,599 words came back cut off, a
+                # 126-word section was told to lose 112 and did). The pass may end over the limit.
+                ceiling = cut * SHARE_CEILING / max(1, words)
+                share = min(round(remaining * size / max(1, unprocessed)), round(size * ceiling))
+                remaining = min(remaining, round(unprocessed * ceiling))
                 message = SECTION_MESSAGE.replace("{N}", str(index)).replace("{TOTAL}", str(len(sections))) \
                     .replace("{WORDS}", str(size)).replace("{REMOVED}", str(removed)) \
                     .replace("{REMAINING}", str(remaining)).replace("{SHARE}", str(share)) \
@@ -131,6 +139,9 @@ class MemoryCondenser:
                    'llm_duration_seconds': time.time() - start_time}
         info(f"Condenser: {words} → {outcome['to']} words ({removed} removed of {cut} asked) in "
              f"{outcome['llm_duration_seconds']:.0f}s")
+        if removed < cut:
+            info(f"Condenser: {cut - removed} words short of the ask — no section is asked for more than "
+                 f"{SHARE_CEILING} times its part of it, the next pass takes the rest")
         return new_bank, outcome
 
     @staticmethod

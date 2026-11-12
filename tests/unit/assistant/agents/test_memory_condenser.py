@@ -1,8 +1,9 @@
+import re
 from unittest.mock import Mock, call
 
 import pytest
 
-from assistant.agents.MemoryCondenser import MemoryCondenser, split_sections, word_count
+from assistant.agents.MemoryCondenser import SHARE_CEILING, MemoryCondenser, split_sections, word_count
 
 BANK = """Intro line before any heading.
 # People
@@ -36,6 +37,22 @@ class TestSplitSections:
         assert split_sections("just text\nmore text") == ["just text\nmore text"]
 
 
+class TestALongSectionKeptAsItWas:
+    def test_its_cut_is_not_handed_to_the_short_sections_after_it(self):
+        """prod 2026-11-12: 2,599 words came back cut off and a 126-word section after it was
+        told to lose 112. No section is asked for much more than its own part of the cut."""
+        long, short = "## Marcus\n" + "word " * 2600, "# Facts\n" + "fact " * 124
+        bank = f"{long}\n{short}\n"
+        llm = _llm([f"<section>{long}</section>", f"<section>{short}</section>"])
+        cut = 700
+        MemoryCondenser(llm, word_limit=2000).condense(bank, cut=cut)
+        message = llm.think.call_args_list[1].kwargs['user_message']
+        size, words = word_count(short), word_count(bank)
+        asked = [int(n) for n in re.findall(r"(\d+) (?:are still to go|words\.\s*$)", message, re.MULTILINE)]
+        assert len(asked) == 2, message
+        assert all(n <= 2 * cut * size / words for n in asked), message
+
+
 class TestCondense:
     def test_every_section_is_sent_with_the_running_tally_and_the_whole_bank_in_the_system_prompt(self):
         sections = split_sections(BANK)
@@ -49,13 +66,15 @@ class TestCondense:
         messages = [c.kwargs['user_message'] for c in llm.think.call_args_list]
         assert "Section 1 of 5" in messages[0] and "0 words are removed and about 10 are still to go" in messages[0]
         assert "4 more sections to go" in messages[0]
-        assert "3 words are removed and about 7 are still to go" in messages[3] and sections[3] in messages[3]
+        assert "3 words are removed and about " in messages[3] and sections[3] in messages[3]
         assert "0 more sections to go" in messages[4]
         # the share: the remaining cut in proportion to the section's size among those still to come
         sizes = [word_count(s) for s in sections]
         assert f"roughly {round(10 * sizes[0] / sum(sizes))} words" in messages[0]
-        assert f"roughly {round(7 * sizes[3] / (sizes[3] + sizes[4]))} words" in messages[3]
-        assert "roughly 7 words" in messages[4]       # the last section hears the whole remainder
+        # ... and after a shortfall never the whole remainder: at most the ceiling over its own part of the cut
+        for index in (3, 4):
+            ceiling = round(sizes[index] * 10 * SHARE_CEILING / sum(sizes))
+            assert f"roughly {ceiling} words" in messages[index] and ceiling < 7
         assert "* coffee\n" in new_bank and "hates tea" not in new_bank and new_bank.endswith("* two floors\n")
         assert outcome["to"] == word_count(BANK) - 3 and outcome['from'] == word_count(BANK)
         assert outcome['sections'] == 5
