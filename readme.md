@@ -1,7 +1,7 @@
 <p align="center"><img src="docs/images/banner.svg" width="100%" alt="Keep — personal AI done right"></p>
 <br>
 <p align="center">
-A self-hosted personal AI assistant for you and your family
+Self-hosted digital assistant
 </p>
 <br>
 
@@ -15,18 +15,35 @@ A self-hosted personal AI assistant for you and your family
 <td>
 
 ### Keep
-Keep knows you and your family. It has analyzed your messages and every photo you’ve taken, so it remembers all the names, all the places, all the plans and everything you need to do, without you explaining anything.
+Keep knows you and your family. It has analyzed your messages and every photo you’ve taken and has excellent long-term memory: it remembers all the names, all the places, all the plans and
+everything you need to do, without you explaining anything.
 
-Runs on a Mac you own, talks to you by Telegram, iMessage, terminal and voice, and does things — not just chat: shopping, calendars, cameras, the car.
+This leads to an exceptionally intelligent AI.
 
-Keep stores everything on your Mac and thinks on Anthropic’s servers. That’s a deliberate trade-off until local models are good enough. Passwords and card numbers go in the Keep Vault, encrypted on your Mac: the model never sees them. Read the privacy section before you install.
+Runs on a Mac you own, talks to you by chat, terminal and voice, and integrates with your life: shopping, appointments, cameras, the lot.
 
-Refined over two years of daily use in a real home.
+### Cloud
+By default, Keep runs in the cloud. Keep stores everything on your Mac and thinks on Anthropic’s servers. Passwords and card numbers go in the Keep Vault, encrypted on your Mac: the model never sees them. Read the privacy section before you install.
+
+The cloud version is very robust. It uses a combination of Opus and Fable (estimated Anthropic API cost is $200 / month). On a Claude Max, Ultra or Team plan you get $100–500 of free API credits.
+
+### Local
+Keep can run 100% locally on your LLM of choice. We actively support:
+* Qwen 3.8 27B with vision (use oMLX with Splash)
+* DeepSeek V4.1 Flash 1017 with vision (use DwarfStar)
+
+If that is your goal, we recommend starting with the default cloud version and having it help you configure the local setup.
+
+Refined over two years of daily use in real homes.
 
 ### Requirements
-An Apple Silicon Mac, signed in to your personal iCloud, to run the Keep server.
+An Apple Silicon Mac with 16 GB RAM, signed in to your personal iCloud, to run the Keep server.
 
 Everything else — email, smart home, cameras, cars — is optional, and Keep walks you through setting it up.
+
+For local AI we recommend:
+* M4 Max with 48 GB RAM for Qwen
+* M5 Max with 128 GB RAM for DeepSeek
 
 <img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">
 </td>
@@ -241,19 +258,16 @@ Curious how it fits together? The **[Keep Atlas](https://keep-ai.dev/atlas/)** i
 
 Let's be honest: an assistant that reads your mail, sees your photos and messages is a privacy minefield. Here is where Keep stands today.
 
+When running 100% local AI you are safe (see the note about telemetry below, though). 
+
+The default cloud setup:
+
 - 💾 **Your data lives on your Mac.** The database, photo index, logs and voice profiles never leave it, and there is no Keep cloud.
 - ☁️ **The thinking happens on Anthropic's servers.** Anthropic does not train on API data by default; but you need to be ok with this.
 - 🔐 **Secrets stay out of it.** The Keep Vault keeps passwords, card numbers and the like encrypted on your Mac, and the AI only ever sees placeholders. It is a system for hiding secrets from the cloud, not for anonymizing everything you say.
 
-The end game is 100% local. Keep already runs on local models and once the local SOTA models are good enough, we'll move to <i>local only</i>. Right now Fable from Anthropic is needed for a **<i>no-compromise solution</i>**.
-
 > [!IMPORTANT]
-> **Telemetry.** Keep sends usage events to the cloud: a random install id, whether the install succeeded (or the
-> step it failed in), the Keep version, which interface and integrations are in use, the names of the commands a turn ran — never their arguments —, prompt size, etc. For the
-> first 7 days after install the events also carry your queries and Keep's replies, so we can see where the first
-> steps trip people up; after that they never do. Vault secrets are placeholders in the transcript. Turn it all off
-> with `telemetry.enabled: false` in `config.yaml`. To have your data deleted, send us the
-> `telemetry.id` from your `config.yaml`.
+> **Telemetry.** Keep sends usage events to the cloud: a random install id, whether the install succeeded (or the step it failed in), the Keep version, which interface and integrations are in use, the names of the commands a turn ran — never their arguments —, prompt size, etc. For the first 7 days after install the events also carry your queries and Keep's replies, so we can see where the first steps trip people up; after that they never do. Vault secrets are placeholders in the transcript. Turn it all off with `telemetry.enabled: false` in `config.yaml`. To have your data deleted, send us the `telemetry.id` from your `config.yaml`.
 <br>
 
 ## License
