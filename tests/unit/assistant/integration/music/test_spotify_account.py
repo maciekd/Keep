@@ -186,6 +186,23 @@ class TestLibrary:
         assert note.call_count == 1 and "spotify_login" in note.call_args.args[1]
 
     @patch(f"{MODULE}.system_note")
+    def test_a_sign_in_from_before_the_scopes_grew_keeps_the_library_and_is_noted_once(self, note):
+        """Turning on a system that starts Spotify over Connect: the playlists stay for every
+        system, and the user hears that a new sign-in is needed — once."""
+        account = make_account()
+        account._auth.lacks_scopes.return_value = True
+        client = Mock()
+        client.current_user_playlists.return_value = {
+            'items': [{'name': 'Road Trip', 'uri': 'spotify:playlist:rt2', 'owner': {}}], 'total': 1}
+        account.user_client = Mock(return_value=client)
+
+        assert account.refresh_library() is True
+        account.refresh_library(force=True)
+
+        assert [p.name for p in account.playlists()] == ["Road Trip"]
+        assert note.call_count == 1 and "spotify_login" in note.call_args.args[1]
+
+    @patch(f"{MODULE}.system_note")
     def test_a_token_that_was_never_there_is_not_a_revoked_one_and_gets_no_note(self, note):
         account = make_account()
         account.user_client = Mock(side_effect=NotSignedIn("not signed in"))

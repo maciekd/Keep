@@ -61,6 +61,11 @@ class _PasteOnlyOAuth(SpotifyOAuth):
         raise NotSignedIn(NOT_SIGNED_IN_HINT)
 
 
+def _covers(token_info: Optional[dict], scopes: tuple[str, ...]) -> bool:
+    """Whether the token on file carries every one of *scopes*."""
+    return set(scopes) <= set(((token_info or {}).get("scope") or "").split())
+
+
 class SpotifyAuth:
     """The user token of the one Spotify account. `client` returns the current (client_id,
     client_secret), `scopes` the scopes the token must carry now."""
@@ -74,14 +79,14 @@ class SpotifyAuth:
         self.refresh_error = ""
         self._lock = threading.RLock()
 
-    def _oauth(self) -> SpotifyOAuth:
-        """A flow on the current client; raises RuntimeError without one."""
+    def _oauth(self, scopes: Optional[tuple[str, ...]] = None) -> SpotifyOAuth:
+        """A flow on the current client, for *scopes* or the ones asked for now; raises RuntimeError without a client."""
         client_id, client_secret = self._client()
         if not client_id or not client_secret:
             raise RuntimeError("api_keys.spotify.client_id and api_keys.spotify.client_secret are not set")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         return _PasteOnlyOAuth(client_id=client_id, client_secret=client_secret, redirect_uri=REDIRECT_URI,
-                               scope=" ".join(self._scopes()), cache_handler=CacheFileHandler(cache_path=str(self.path)),
+                               scope=" ".join(scopes or self._scopes()), cache_handler=CacheFileHandler(cache_path=str(self.path)),
                                open_browser=False, requests_timeout=TIMEOUT)
 
     def _on_file(self) -> Optional[dict]:
@@ -100,16 +105,31 @@ class SpotifyAuth:
         """True when the last refresh was refused: the file is kept, the user must sign in anew."""
         return bool(self.refresh_error)
 
-    def token(self) -> str:
-        """A current access token, refreshed by spotipy when it has run out; raises NotSignedIn."""
+    def lacks_scopes(self) -> bool:
+        """True when a user is signed in on a token that does not carry every scope asked for now
+        (they grew since the sign-in): what needs the new ones waits for a new sign-in."""
+        with self._lock:
+            on_file = self._on_file() or {}
+            return bool(on_file.get("refresh_token")) and not _covers(on_file, self._scopes())
+
+    def token(self, needs: Optional[tuple[str, ...]] = None) -> str:
+        """A current access token, refreshed by spotipy when it has run out; raises NotSignedIn.
+        *needs* names the scopes the caller uses when those are fewer than the ones asked for
+        now: a token from before the scopes grew still serves it (the playlist library does not
+        go away because a speaker system wants playback), and is refreshed for the scopes it has."""
         with self._lock:
             if not self.signed_in():
                 raise NotSignedIn(NOT_SIGNED_IN_HINT)
             if self.refresh_error:
                 raise NotSignedIn(f"{self.refresh_error}, {SIGN_IN_AGAIN_HINT}")
-            oauth = self._oauth()
+            on_file = self._on_file()
+            if needs and not _covers(on_file, self._scopes()) and _covers(on_file, needs):
+                trace("Spotify: the token on file lacks the scopes grown since the sign-in, used for the ones it has")
+                oauth = self._oauth(tuple(on_file["scope"].split()))
+            else:
+                oauth = self._oauth()
             try:
-                token_info = oauth.validate_token(self._on_file())
+                token_info = oauth.validate_token(on_file)
             except SpotifyOauthError as e:
                 reason, description = _oauth_error(e)
                 if reason != "invalid_grant":

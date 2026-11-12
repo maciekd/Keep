@@ -14,6 +14,7 @@ def make_account() -> SpotifyAccount:
     account._auth = Mock()
     account._auth.signed_in.return_value = True
     account._auth.needs_sign_in_again.return_value = False
+    account._auth.lacks_scopes.return_value = False
     account._app_client = None
     account._user_client = None
     account._user_client_token = ""

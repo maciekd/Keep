@@ -124,9 +124,11 @@ class SpotifyAccount(SingletonMixin):
             info("Spotify client initialized")
         return self._app_client
 
-    def user_client(self) -> Spotify:
-        """A client on the signed-in user's token; rebuilt when the token was refreshed. Raises NotSignedIn."""
-        token = self._auth.token()
+    def user_client(self, needs: Optional[tuple[str, ...]] = None) -> Spotify:
+        """A client on the signed-in user's token; rebuilt when the token was refreshed. Raises
+        NotSignedIn. *needs* is `SpotifyAuth.token`'s: the scopes the caller uses, when a token
+        from before the scopes grew is enough for it."""
+        token = self._auth.token(needs)
         if self._user_client is None or self._user_client_token != token:
             self._user_client = Spotify(auth=token)
             self._user_client_token = token
@@ -237,7 +239,10 @@ class SpotifyAccount(SingletonMixin):
             total = max(int(page.get('total') or 0), len(playlists))
             info(f"Spotify: {len(playlists)} of the {total} playlists in the signed-in user's library listed")
             self._library_error = ""
-            self._sign_in_again_noted = False
+            if self._auth.lacks_scopes():
+                self._note_scopes_grown()
+            else:
+                self._sign_in_again_noted = False
             return playlists, total
         except NotSignedIn as e:
             info(f"Spotify: playlist library not listed — {e}")
@@ -263,12 +268,12 @@ class SpotifyAccount(SingletonMixin):
         """The first page of `/me/playlists`, tried once more on a fresh client when the connection
         dropped. A SpotifyException (a 4xx, a 429, a 5xx spotipy gave up on) is never retried here."""
         try:
-            return self.user_client().current_user_playlists(limit=self.PLAYLISTS_IN_PROMPT) or {}
+            return self.user_client(PLAYLIST_SCOPES).current_user_playlists(limit=self.PLAYLISTS_IN_PROMPT) or {}
         except DROPPED_CONNECTION as e:
             info(f"Spotify: connection dropped fetching the playlist library ({type(e).__name__}: {e}), "
                  f"retrying once on a fresh session")
             self._user_client = None
-            return self.user_client().current_user_playlists(limit=self.PLAYLISTS_IN_PROMPT) or {}
+            return self.user_client(PLAYLIST_SCOPES).current_user_playlists(limit=self.PLAYLISTS_IN_PROMPT) or {}
 
     def _hold_back_after_429(self, e: SpotifyException):
         """No library fetch before the Retry-After of Spotify's 429 has passed."""
@@ -288,6 +293,17 @@ class SpotifyAccount(SingletonMixin):
         self._sign_in_again_noted = True
         system_note("Spotify", "Spotify: the household's Spotify sign-in is no longer valid (its consent was revoked), "
                                "so the user's Spotify playlists (S- ids) are gone until spotify_login() is run again.")
+
+    def _note_scopes_grown(self):
+        """Says once that the sign-in predates the scopes asked for now: the library is still
+        listed, what needs the new scopes is not there until the user signs in again."""
+        if self._sign_in_again_noted:
+            return
+        self._sign_in_again_noted = True
+        info("Spotify: the token on file lacks the scopes now asked for — the library is still listed, the user is told")
+        system_note("Spotify", "Spotify: the household's Spotify sign-in is from before a speaker system that starts "
+                               "Spotify itself (over Spotify Connect) was turned on. The playlists (S- ids) are still "
+                               "listed, but that system cannot start them until spotify_login() is run again.")
 
     @classmethod
     def add_library_listener(cls, callback: Callable[[], None]):

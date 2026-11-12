@@ -207,6 +207,25 @@ class TestToken:
         params = query(auth(token_path, scopes=grown).begin().url)
         assert "user-modify-playback-state" in params["scope"].split()
 
+    def test_a_caller_that_needs_only_the_scopes_on_file_is_served_after_they_grew(self, token_path, spotify):
+        """A speaker system asking for playback must not take the playlist library away."""
+        grown = SCOPES + ("user-modify-playback-state",)
+        token_file(token_path, expires_in=-10)
+        a = auth(token_path, scopes=grown)
+        assert a.lacks_scopes()
+        assert a.token(needs=SCOPES) == "access-2"
+        assert set(json.loads(token_path.read_text())["scope"].split()) == set(SCOPES), \
+            "the refresh does not claim scopes the sign-in never granted"
+        with pytest.raises(NotSignedIn, match="scopes"):
+            a.token()
+        with pytest.raises(NotSignedIn, match="scopes"):
+            a.token(needs=("user-modify-playback-state",))
+
+    def test_a_token_carrying_every_scope_lacks_none(self, token_path, spotify):
+        assert not auth(token_path).lacks_scopes(), "nobody signed in"
+        token_file(token_path)
+        assert not auth(token_path).lacks_scopes()
+
     def test_without_a_file_there_is_no_token(self, token_path, spotify):
         with pytest.raises(NotSignedIn, match="spotify_login"):
             auth(token_path).token()
