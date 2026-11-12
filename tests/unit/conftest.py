@@ -210,6 +210,14 @@ def isolated_vault_file(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def isolated_job_home_record(tmp_path_factory):
+    """No unit test writes or removes the install's cache/job_home_branch — the record a running
+    server keeps while one of its Claude Code jobs has the checkout on a work branch."""
+    from assistant.agents import CodeQualityMaintainer
+    CodeQualityMaintainer.JOB_HOME_FILE = tmp_path_factory.mktemp("job_home") / "job_home_branch"
+
+
+@pytest.fixture(autouse=True, scope="session")
 def isolated_imessage_chat_state(tmp_path_factory):
     """No unit test reads or writes the install's cache/imessage_chat.json — the iMessage chat's
     cursor into the assistant's own Messages account and its send counts: a transport built

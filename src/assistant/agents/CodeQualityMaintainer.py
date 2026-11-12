@@ -18,7 +18,7 @@ from common.logging import info, error, trace, note
 from ..llm import parse_llm_config
 from ..llm.ClaudeLLM import WORKSPACE_HEADER, claude_workspace_id
 from common.ConfigManager import ConfigManager
-from common.Paths import REPO_DIR, LOG_DIR, AISERVER_DIR as _AISERVER_PATH
+from common.Paths import REPO_DIR, LOG_DIR, CACHE_DIR, AISERVER_DIR as _AISERVER_PATH
 from common.SignedRelease import RELEASE_BRANCH
 from common.Updater import Updater, GIT_TIMEOUT
 
@@ -88,6 +88,8 @@ NIGHTLY_RUNS_KEY = "self_improvement.nightly_runs"
 DEVELOPER_RELEASE_KEY = "developer_release"
 NIGHTLY_UPDATE_KEY = "nightly_update"
 DEVELOPER_BRANCH = "master"
+# The branch a job that may move the checkout started on, for as long as the job runs (`_job_home`).
+JOB_HOME_FILE = CACHE_DIR / "job_home_branch"
 START_SCRIPT = "start.sh"   # what relaunches the server: it takes the old process down by the pid it is handed
 NIGHTLY_OFF_MESSAGE = f"{NIGHTLY_RUNS_KEY} is off"
 NIGHTLY_STEPS = ("tests", "bugs", "logs", "fix", "health", "merge", "pins")   # what //nightly takes to run one step alone
@@ -683,6 +685,7 @@ class CodeQualityMaintainer:
     def start(self):
         self._boot_commit = self._head_commit()
         info(f"CodeQualityMaintainer: this process runs commit {self._boot_commit[:8] or 'unknown'}")
+        self._forget_finished_interruption()
         self._running = True
         self._thread = threading.Thread(target=self._run, name="CodeQualityMaintainer", daemon=True)
         self._thread.start()
@@ -761,10 +764,23 @@ class CodeQualityMaintainer:
             return None
         return f"the server is trying PR #{trial.number}, the nightly run waits until the trial is over"
 
+    @staticmethod
+    def own_branch_skip_reason() -> Optional[str]:
+        """Why the nightly run stays away from a branch of the install's own (`own_branch`), None
+        on any other: the nightly update left the checkout there, so the run would analyse
+        somebody's work in progress and branch its PRs off it — pushing commits nobody chose to
+        publish."""
+        own = CodeQualityMaintainer.own_branch()
+        if not own:
+            return None
+        return (f"the server runs {own}, a branch of this install's own, the nightly run waits until it is back on "
+                f"{CodeQualityMaintainer.target_branch()}")
+
     def _execute_nightly_run(self, force=False, only=None):
         """The whole night, or with `only` (one of NIGHTLY_STEPS) that step alone. `force` is
         //nightly: it runs with `self_improvement.nightly_runs` off, never with the integration off."""
-        reason = (self.unavailable_reason() if force else self.nightly_skip_reason()) or self.trial_skip_reason()
+        reason = (self.unavailable_reason() if force else self.nightly_skip_reason()) or self.trial_skip_reason() \
+            or self.own_branch_skip_reason()
         if reason:
             info(f"CodeQualityMaintainer: skipping nightly run — {reason}")
             return
@@ -1082,7 +1098,7 @@ class CodeQualityMaintainer:
         tests_path = self._tests_path()
         merge_strategy = ConfigManager().get('self_improvement.merge_strategy', 'rebase')
         info(f"CodeQualityMaintainer: auto-merge covers {tests_path} with --{merge_strategy}")
-        branch = self._current_branch()
+        branch = self._job_home()
         merged, skipped = [], []
         try:
             for number in candidates:
@@ -1112,7 +1128,7 @@ class CodeQualityMaintainer:
                     merged.append(f"- #{number} {title}")
                     self._merged_tonight.append(merged[-1])
         finally:
-            self._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+            self._back_home(branch)
         info(f"CodeQualityMaintainer: auto-merge complete, {len(merged)} merged, {len(skipped)} skipped.")
         return merged, skipped
 
@@ -1278,7 +1294,7 @@ class CodeQualityMaintainer:
         that is merged on the spot, so the fix step after it starts from a master that holds
         them. A bug the new tests expose is pinned with a strict xfail and listed in the
         report's fix list, which the fix step reads; the step itself never touches the code."""
-        branch = CodeQualityMaintainer._current_branch()
+        branch = CodeQualityMaintainer._job_home()
         try:
             info("CodeQualityMaintainer: generating missing tests for recent commits...")
             trace("Starting Claude Code in the background...")
@@ -1290,7 +1306,7 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: test generation failed: {e}")
             return ""
         finally:
-            CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+            CodeQualityMaintainer._back_home(branch)
         info("CodeQualityMaintainer: merging the test PR before the fix step...")
         try:
             merged, _ = self._merge_test_prs()
@@ -1306,7 +1322,7 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _step_test_health() -> str:
-        branch = CodeQualityMaintainer._current_branch()
+        branch = CodeQualityMaintainer._job_home()
         try:
             info(f"CodeQualityMaintainer: test health — flaky tests and tests over {SLOW_TEST_MS} ms "
                  f"across {TEST_HEALTH_RUNS} runs of the unit suite...")
@@ -1320,7 +1336,7 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: test health failed: {e}")
             return ""
         finally:
-            CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+            CodeQualityMaintainer._back_home(branch)
 
     @staticmethod
     def _step_bug_analysis() -> str:
@@ -1656,7 +1672,7 @@ class CodeQualityMaintainer:
                 return (f"{access.login} cannot push to {access.repo}, and the fork the pull request would come "
                         f"from could not be made: {e}"), None
         prompt += delivery
-        branch = CodeQualityMaintainer._current_branch()
+        branch = CodeQualityMaintainer._job_home()
         open_before = CodeQualityMaintainer._open_pull_requests()
         try:
             info(f"CodeQualityMaintainer: starting {label}...")
@@ -1673,7 +1689,7 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: {label} failed: {e}")
             return f"{label.capitalize()} failed: {e}", None
         finally:
-            CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+            CodeQualityMaintainer._back_home(branch)
 
     @staticmethod
     def _open_pull_requests() -> Optional[dict[int, JobPullRequest]]:
@@ -1955,12 +1971,64 @@ class CodeQualityMaintainer:
         booted = Version.branch()
         if not booted or booted in (RELEASE_BRANCH, DEVELOPER_BRANCH) or booted.startswith("trial/"):
             return None
+        home = CodeQualityMaintainer._interrupted_job_home()
+        if home and home != booted:
+            info(f"CodeQualityMaintainer: booted on {booted}, where a job that started on {home} was cut short — "
+                 f"its work branch, not a branch of the install's own")
+            return None
         checked_out = CodeQualityMaintainer._current_branch()
         if checked_out != booted:
             info(f"CodeQualityMaintainer: booted on {booted} but the checkout is on {checked_out}, "
                  f"not treated as a branch of the install's own")
             return None
         return booted
+
+    @staticmethod
+    def _job_home() -> str:
+        """The current branch, written down as the one a run that may move the checkout comes
+        back to (`_back_home`). A process relaunched in the middle of such a run boots on the
+        run's work branch; the record is how `own_branch` tells that from a branch somebody
+        checked out to work on."""
+        branch = CodeQualityMaintainer._current_branch()
+        try:
+            JOB_HOME_FILE.parent.mkdir(parents=True, exist_ok=True)
+            JOB_HOME_FILE.write_text(f"{branch}\n")
+        except OSError as e:
+            error(f"CodeQualityMaintainer: could not record {branch} as the branch the job started on: {e}")
+        return branch
+
+    @staticmethod
+    def _back_home(branch: str) -> None:
+        """The end of a run that started with `_job_home`: the checkout back on *branch*."""
+        CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
+        JOB_HOME_FILE.unlink(missing_ok=True)
+
+    @staticmethod
+    def _interrupted_job_home() -> Optional[str]:
+        """The branch a job started on and never came back to (its process was relaunched under
+        it), None when no job was cut short."""
+        try:
+            return JOB_HOME_FILE.read_text().strip() or None
+        except OSError:
+            return None
+
+    @staticmethod
+    def _forget_finished_interruption() -> None:
+        """At start: a record left by a job that was cut short is dropped once the process boots
+        on a line an install follows or on the branch the job started on — the checkout is back
+        where it belongs, and a branch checked out later is nobody's work branch."""
+        from common import Version
+        home = CodeQualityMaintainer._interrupted_job_home()
+        if not home:
+            return
+        booted = Version.branch()
+        if booted == home or booted in (RELEASE_BRANCH, DEVELOPER_BRANCH):
+            info(f"CodeQualityMaintainer: a job that started on {home} was cut short, the server is on {booted} "
+                 f"again — the record is dropped")
+            JOB_HOME_FILE.unlink(missing_ok=True)
+        else:
+            info(f"CodeQualityMaintainer: a job that started on {home} was cut short and the server booted on "
+                 f"{booted or 'no branch'} — the next update brings it back")
 
     @staticmethod
     def _pull_current() -> None:
