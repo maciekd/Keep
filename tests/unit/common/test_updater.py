@@ -156,6 +156,42 @@ class TestPullCurrent:
 
 
 @pytest.mark.unit
+class TestTip:
+    """What a PR trial takes in overnight: the newest code of a branch, fetched without the checkout moving."""
+
+    def test_a_branchs_newest_commit_is_fetched_and_named_without_moving_the_checkout(self, signed_release):
+        checkout = FakeCheckout(branch="trial/pr-204", head=NEWER)
+        with patch("common.SignedRelease.SignedRelease.fetch") as verified:
+            assert Updater(run=checkout).tip("master") == ("", NEWER)
+        assert checkout.moves == [["git", "fetch", "origin", "master"]] and checkout.branch == "trial/pr-204"
+        assert any("origin/master" in part for part in checkout.events[-1]), "the fetched tip, not the local branch"
+        verified.assert_not_called()
+        signed_release.assert_not_called()
+
+    def test_the_release_comes_only_through_its_verified_tag(self):
+        checkout = FakeCheckout(branch="trial/pr-204")
+        with patch("common.SignedRelease.SignedRelease.fetch", return_value=("", NEWER, "v2026.11.3")):
+            assert Updater(run=checkout).tip("release") == ("", NEWER)
+        assert checkout.events == [], "no fetch of its own beside the verifying one"
+
+    def test_a_release_that_does_not_verify_is_no_commit_to_take_in(self):
+        refusal = "The newest release (cccccccc) carries no tag signed by a key in release_signers"
+        with patch("common.SignedRelease.SignedRelease.fetch", return_value=(refusal, "", "")):
+            failure, commit = Updater(run=FakeCheckout()).tip("release")
+        assert failure == refusal and commit == ""
+
+    def test_a_fetch_that_fails_says_why_and_names_no_commit(self):
+        checkout = FakeCheckout(failing={"fetch": "fatal: unable to access the remote\n"})
+        failure, commit = Updater(run=checkout).tip("master")
+        assert "unable to access the remote" in failure and commit == ""
+        assert checkout.moves == [["git", "fetch", "origin", "master"]]
+
+    def test_a_tip_git_cannot_name_after_the_fetch_is_a_failure_not_an_empty_commit(self):
+        failure, commit = Updater(run=FakeCheckout(failing={"rev-parse": "fatal: bad revision"})).tip("master")
+        assert failure and commit == ""
+
+
+@pytest.mark.unit
 class TestUpdate:
     """The unattended update: restart only when the code left the commit the process booted on."""
 

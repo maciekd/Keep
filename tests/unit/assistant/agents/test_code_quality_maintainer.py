@@ -314,6 +314,27 @@ class TestNightlyUpdate:
         self.restart.assert_not_called()
         assert "no route to host" in self.note.call_args[0][1]
 
+    def test_a_trial_whose_merged_pins_do_not_install_keeps_the_old_process(self, maintainer):
+        self.sync.return_value = ("pip exited 1 (no matching distribution)", "")
+        with self._trial():
+            assert maintainer._nightly_update() is False
+        self.restart.assert_not_called()
+        self.pull.assert_not_called()
+        (_, text), kwargs = self.note.call_args
+        assert "no matching distribution" in text and "PR #204" in text and kwargs == {"push": False}
+
+    def test_a_trial_night_names_the_packages_it_installed(self, maintainer):
+        self.sync.return_value = ("", "installed 1 package: pkg-a 1.0.0 → 2.0.0")
+        with self._trial():
+            assert maintainer._nightly_update() is True
+        assert "pkg-a" in self.note.call_args[0][1]
+
+    def test_a_trial_whose_head_cannot_be_read_does_not_restart(self, maintainer):
+        self.head.return_value = ""
+        with self._trial():
+            assert maintainer._nightly_update() is False
+        self.restart.assert_not_called()
+
     def test_a_trial_that_is_over_returns_to_the_normal_branch_and_the_user_is_told_why(self, maintainer):
         with self._trial(ended="PR #204 is merged and part of master now"):
             assert maintainer._nightly_update() is True

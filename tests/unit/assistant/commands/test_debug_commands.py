@@ -193,6 +193,7 @@ def test_restart_replies_first_then_pulls_and_restarts(monkeypatch):
     import assistant.SystemNote as sn_mod
     calls, notes = [], []
     monkeypatch.setattr(CodeQualityMaintainer, "target_branch", staticmethod(lambda: "release"))
+    monkeypatch.setattr(CodeQualityMaintainer, "own_branch", staticmethod(lambda: None))   # whatever branch the suite runs on
     monkeypatch.setattr(CodeQualityMaintainer, "pull_and_restart",
                         staticmethod(lambda: calls.append(True) or "Update initiated (no new changes). Server is restarting..."))
     monkeypatch.setattr(sn_mod, "system_note", lambda source, text: notes.append((source, text)))
@@ -206,6 +207,21 @@ def test_restart_replies_first_then_pulls_and_restarts(monkeypatch):
         time.sleep(0.01)
     assert calls == [True]
     assert notes == [("server", "Server restart (//restart): Update initiated (no new changes). Server is restarting...")]
+
+
+def test_restart_on_a_branch_of_the_installs_own_does_not_claim_a_pull(monkeypatch):
+    """The answer is all the user sees before the process dies: on an own branch nothing is pulled,
+    and saying "pulling release" would have them expect the fix they are waiting for."""
+    from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
+    monkeypatch.setattr(CodeQualityMaintainer, "target_branch", staticmethod(lambda: "release"))
+    monkeypatch.setattr(CodeQualityMaintainer, "own_branch", staticmethod(lambda: "feat/garden-lights"))
+    monkeypatch.setattr(dc_mod, "_pull_and_restart", lambda: None)
+    monkeypatch.setattr(dc_mod, "STOP_DELAY_SECONDS", 0.0)
+
+    text = DebugCommands().handle("//restart")
+
+    assert "feat/garden-lights" in text and "without a pull" in text
+    assert "release" not in text
 
 
 def test_wipe_without_confirm_only_shows_the_plan(wipe_env):

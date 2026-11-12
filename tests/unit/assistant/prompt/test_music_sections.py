@@ -107,6 +107,25 @@ class TestLibraryContent:
             assert not MusicLibrarySectionGenerator(None)._has_data()
 
 
+@pytest.mark.unit
+class TestLibraryDataWithABrokenSystem:
+    @pytest.mark.xfail(strict=True, reason="MusicLibrarySectionGenerator._has_data asks every system's has_library() "
+                                           "unguarded: a system whose library_text raises (HEOS with no player "
+                                           "answering) raises out of the monitoring loop, which then restarts every "
+                                           "5 s and never loads the lists of the systems after it")
+    def test_a_system_that_cannot_list_its_lists_does_not_hide_the_data_of_the_next(self, spotify):
+        broken = FakeSpeakers()
+        broken.library_text = Mock(side_effect=ConnectionError("unreachable"))
+        with _systems(broken, OtherSpeakers(library="Jazz Radio (ID: H-0)")):
+            assert MusicLibrarySectionGenerator(None)._has_data()
+
+    def test_the_lists_of_a_system_before_the_broken_one_count_as_data(self, spotify):
+        broken = OtherSpeakers()
+        broken.library_text = Mock(side_effect=ConnectionError("unreachable"))
+        with _systems(FakeSpeakers(library="Morning Mix (ID: F-0)"), broken):
+            assert MusicLibrarySectionGenerator(None)._has_data()
+
+
 def _drive(section, on_wait):
     """Runs the monitoring loop with `on_wait(duration, count)` as its wait; the loop's own
     clock is frozen, so only the waits move it."""

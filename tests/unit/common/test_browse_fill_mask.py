@@ -45,3 +45,15 @@ class TestMaskFills:
 
     def test_a_click_is_shown_as_written(self):
         assert BrowseFillMask.mask_fills("Running command: browse_act(12)") == "Running command: browse_act(12)"
+
+    @pytest.mark.xfail(strict=True, reason="BrowseFillMask.mask_fills only knows the call written as browse_act(…): "
+                                           "under the qwen, dsml and invoke command formats the reply as the model "
+                                           "wrote it is markup, and a card's expiry and security code typed there "
+                                           "reach the log in clear")
+    @pytest.mark.parametrize("name", ["qwen", "dsml", "invoke"])
+    def test_a_call_written_as_markup_leaves_no_typed_value_either(self, name):
+        from assistant.commands.formats.CommandFormats import CommandFormats
+        written = CommandFormats.BY_NAME[name].render_tool_call("browse_act", {"spec": "56=12/29; 57=737"})
+        assert "737" in written, "the format writes the value into the reply"
+        masked = BrowseFillMask.mask_fills(f"Reply: {written}")
+        assert "737" not in masked and "12/29" not in masked

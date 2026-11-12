@@ -146,3 +146,22 @@ class TestRefusedRelease:
         assert failure
         assert repo.head() == repo.running
         assert git(repo.clone, 'rev-parse', '--verify', '-q', 'origin/release', check=False) == ''
+
+
+class TestFetchAlone:
+    """`fetch` is what a PR trial takes the night's release in through: verified, and nothing moved."""
+
+    def test_a_verified_release_is_named_with_its_tag_and_the_checkout_stays_where_it_is(self, install):
+        repo = install(on='master')
+        repo.tag('maintainer')
+        failure, commit, tag = SignedRelease.fetch()
+        assert (failure, commit, tag) == ('', repo.pushed, 'v2026.10.2')
+        assert repo.head() == repo.running and repo.branch() == 'master'
+
+    @pytest.mark.parametrize('signer', [None, 'stranger'], ids=['unsigned', 'signed by a stranger'])
+    def test_a_release_that_does_not_verify_names_no_commit_to_merge(self, install, signer):
+        repo = install()
+        repo.tag(signer)
+        failure, commit, tag = SignedRelease.fetch()
+        assert failure and (commit, tag) == ('', '')
+        assert repo.head() == repo.running

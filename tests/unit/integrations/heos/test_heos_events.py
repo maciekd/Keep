@@ -182,3 +182,29 @@ def test_the_backoff_starts_over_after_a_stream_that_listened():
         events._run()
     first = module.RETRY_MIN
     assert events._stop.waited == [first, first * 2, first, first * 2]
+
+
+def test_an_event_cut_in_two_by_the_network_arrives_once_and_whole():
+    on_event = Mock()
+    whole = event("player_state_changed", "pid=7&state=play")
+    listen([whole[:20], whole[20:] + event("groups_changed")], on_event=on_event)
+    assert [c.args for c in on_event.call_args_list] == [("player_state_changed", {"pid": "7", "state": "play"}),
+                                                         ("groups_changed", {})]
+
+
+def test_a_device_that_keeps_refusing_is_asked_ever_more_rarely_up_to_the_cap():
+    events = HeosEvents(lambda: HOST, Mock())
+    events._stop = CountedStop(6)
+    with patch.object(module.socket, "create_connection", side_effect=OSError("refused")):
+        events._run()
+    waited = events._stop.waited
+    assert waited == sorted(waited) and waited[0] == module.RETRY_MIN and waited[-1] == module.RETRY_MAX
+    assert all(later <= 2 * earlier for earlier, later in zip(waited, waited[1:]))
+
+
+def test_an_event_that_arrives_before_the_heart_beat_is_due_resets_the_silence():
+    """One quiet spell, an event, another quiet spell: two heart beats, and the stream is not given up."""
+    answered = line({"heos": {"command": "system/heart_beat", "result": "success", "message": ""}})
+    _, sock, ended = listen([socket.timeout, event("groups_changed"), socket.timeout, answered])
+    assert sock.sent.count(b"heos://system/heart_beat\r\n") == 2
+    assert "closed" in str(ended), "the script ran out — the stream itself never gave up on a heart beat"

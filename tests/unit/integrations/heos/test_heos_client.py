@@ -159,3 +159,66 @@ def test_a_search_nobody_answered_is_not_repeated_at_once(monkeypatch, sockets):
     made.append(FakeSocket([line("player/get_players", payload=[])]))
     client.command("player/get_players")
     assert len(searches) == 2 and addresses == ["192.0.2.20"]
+
+
+class TricklingSocket(FakeSocket):
+    """A connection that hands its bytes over a few at a time, as TCP may."""
+
+    def recv(self, n):
+        return super().recv(7)
+
+
+def test_an_answer_that_arrives_in_pieces_is_put_together(sockets):
+    made, _ = sockets
+    made.append(TricklingSocket([line("player/get_players", payload=[{"name": "Kitchen", "pid": 1}])]))
+    assert HeosClient("192.0.2.10").command("player/get_players")["payload"] == [{"name": "Kitchen", "pid": 1}]
+
+
+def test_the_connection_is_kept_from_one_command_to_the_next(sockets):
+    """One connection for the whole system — and a line left over from the first exchange is not the second's answer."""
+    made, addresses = sockets
+    sock = FakeSocket([line("player/get_players", payload=[]) + line("event/players_changed"),
+                       line("player/get_volume", message="pid=1&level=20")])
+    made.append(sock)
+    client = HeosClient("192.0.2.10")
+    client.command("player/get_players")
+    assert message_fields(client.command("player/get_volume", pid=1))["level"] == "20"
+    assert addresses == ["192.0.2.10"] and not sock.closed
+
+
+def test_a_line_that_is_no_json_counts_as_a_broken_connection(sockets):
+    made, addresses = sockets
+    garbled = FakeSocket([b"<html>not the CLI</html>\r\n"])
+    made.extend([garbled, FakeSocket([line("player/get_players", payload=[{"name": "Den", "pid": 2}])])])
+    assert HeosClient("192.0.2.10").command("player/get_players")["payload"] == [{"name": "Den", "pid": 2}]
+    assert garbled.closed and len(addresses) == 2
+
+
+def test_without_a_configured_host_the_first_device_that_answered_is_the_one_asked(monkeypatch, sockets):
+    made, addresses = sockets
+    monkeypatch.setattr(module, "discover", lambda timeout=3.0: ["192.0.2.31", "192.0.2.30"])
+    made.append(FakeSocket([line("player/get_players", payload=[])]))
+    client = HeosClient("")
+    client.command("player/get_players")
+    assert addresses == ["192.0.2.31"] and client.host == "192.0.2.31"
+
+
+def test_discover_lists_each_device_once_in_the_order_they_answered(monkeypatch):
+    """A device answers an SSDP search more than once (one answer per interface and repeat)."""
+    answers = ["192.0.2.31", "192.0.2.30", "192.0.2.31", "192.0.2.32"]
+    clock = iter(range(100))
+
+    class AnsweringSocket:
+        def __init__(self, *a): pass
+        def setsockopt(self, *a): pass
+        def settimeout(self, *a): pass
+        def sendto(self, *a): pass
+        def close(self): pass
+
+        def recvfrom(self, size):
+            if not answers:
+                raise module.socket.timeout()
+            return b"HTTP/1.1 200 OK\r\n\r\n", (answers.pop(0), 1900)
+    monkeypatch.setattr(module.socket, "socket", AnsweringSocket)
+    monkeypatch.setattr(module.time, "time", lambda: next(clock))
+    assert module.discover(timeout=10) == ["192.0.2.31", "192.0.2.30", "192.0.2.32"]

@@ -417,3 +417,87 @@ def test_an_unreachable_player_is_not_remembered_as_such_past_the_age():
     client.unreachable.clear()
     heos._status_at = {pid: at - heos.STATUS_MAX_AGE - 1 for pid, at in heos._status_at.items()}
     assert heos.zone_status()[0] == "Kitchen (Paused)"
+
+
+class PlayingClient(FakeClient):
+    """Every player answers the given state and media."""
+
+    def __init__(self, state, media):
+        super().__init__()
+        self.state, self.media = state, media
+
+    def command(self, cmd, **params):
+        if cmd == "player/get_play_state":
+            self.sent.append((cmd, params))
+            return {"heos": {"message": f"pid={params['pid']}&state={self.state}"}}
+        if cmd == "player/get_now_playing_media":
+            self.sent.append((cmd, params))
+            return {"payload": self.media}
+        return super().command(cmd, **params)
+
+
+@pytest.mark.parametrize("state, media, shown, hidden", [
+    ("play", {"song": "Blue Sky", "artist": "Alice"}, ["Blue Sky", "Alice", "Playing"], ["Paused"]),
+    ("pause", {"song": "Blue Sky", "artist": "Alice"}, ["Blue Sky", "Alice", "Paused"], ["Playing"]),
+    ("play", {"song": "", "artist": "Radio One"}, ["Radio One", "Playing"], [" by "]),
+    ("play", {"song": "Morning Show"}, ["Morning Show", "Playing"], [" by "]),
+    ("stop", {}, ["Paused"], [" by ", " - "]),
+], ids=["playing", "paused", "a station without a title", "a title without an artist", "nothing loaded"])
+def test_a_zone_line_says_what_plays_with_only_the_parts_there_are(state, media, shown, hidden):
+    line = make(PlayingClient(state, media)).zone_status()[0]
+    assert line.startswith("Kitchen (") and line.endswith(")")
+    assert all(part in line for part in shown) and not any(part in line for part in hidden)
+
+
+@pytest.mark.parametrize("music_id, command", [("H-first", "browse/play_preset"), ("Q-one", "player/play_quickselect"),
+                                               ("H-", "browse/play_preset")])
+def test_a_list_id_without_a_number_is_refused_without_a_command(music_id, command):
+    client = FakeClient(quickselects=PORCH_BUTTONS)
+    heos = make(client, spotify=Mock())
+    heos.refresh_library()
+    assert music_id in heos.play_id("Porch", music_id)
+    assert not client.sent_commands(command)
+
+
+def test_a_grouped_player_whose_leader_is_not_among_the_players_acts_on_itself():
+    """The leader was unplugged and the group list has not caught up: the room still answers."""
+    client = FakeClient(players=[{"name": "Kitchen", "pid": 1}, {"name": "Porch", "pid": 3, "gid": 2}])
+    assert make(client).pause("Porch") == ""
+    assert client.sent_commands("player/set_play_state") == [{"pid": 3, "state": "pause"}]
+
+
+@pytest.mark.parametrize("step, command", [(4, "group/volume_up"), (-4, "group/volume_down")])
+def test_the_sign_of_the_step_is_the_direction_and_the_cli_gets_its_size(step, command):
+    client = FakeClient()
+    make(client).adjust_volume("Den", step)
+    assert client.sent_commands(command) == [{"gid": 2, "step": 4}]
+
+
+def test_a_refresh_that_fails_is_still_followed_by_the_next_one():
+    heos = make(spotify=Mock())
+    with patch.object(heos, "refresh_library", side_effect=RuntimeError("boom")), \
+            patch.object(heos, "_schedule_refresh") as schedule:
+        with pytest.raises(RuntimeError):
+            heos._refresh_tick()
+    schedule.assert_called_once_with(HeosIntegration.REFRESH_INTERVAL_SECONDS)
+
+
+def test_a_dropped_integration_refreshes_nothing_and_schedules_nothing():
+    heos = make(spotify=Mock())
+    heos._on_reset()
+    with patch.object(heos, "refresh_library") as refresh, patch.object(heos_module.threading, "Timer") as timer:
+        heos._refresh_tick()
+        heos._schedule_refresh(1)
+    refresh.assert_not_called()
+    timer.assert_not_called()
+
+
+def test_the_spotify_library_is_reloaded_even_when_no_player_answers():
+    """The favorites and the quick selects fail with the speakers; the shared Spotify library is not theirs."""
+    client = FakeClient(favorites=HeosError("no answer"))
+    client.players = []
+    spotify = Mock()
+    heos = make(client, spotify=spotify)
+    with patch.object(client, "command", side_effect=HeosError("no HEOS device answered")):
+        heos.refresh_library()
+    spotify.refresh_library.assert_called_once_with()
