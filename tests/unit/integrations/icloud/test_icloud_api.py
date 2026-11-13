@@ -1856,6 +1856,34 @@ class TestAcceptedCodeWith409:
         assert api._stale_session_rejection is False
         assert api.state == IntegrationState.OK
 
+    def test_a_waiting_command_is_released_only_after_the_trust_step(self):
+        """2026-11-11: released when the code was accepted, a waiting lookup used the session a
+        second before it was trusted."""
+        api, service = self._api()
+        service.two_factor_delivery_method = "trusted_device"
+        service.validate_2fa_code.return_value = True
+        api._challenge_answered.clear()
+        released_during_trust = []
+
+        def trust():
+            released_during_trust.append(api._challenge_answered.is_set())
+            service.is_trusted_session = True
+            return True
+        service.trust_session.side_effect = trust
+        assert api.send_2fa_code("123456") is True
+        assert released_during_trust == [False] and api._challenge_answered.is_set()
+
+    def test_a_trust_step_that_raises_still_releases_the_waiting_command(self):
+        """Otherwise a ring waiting for the code sits out its whole budget on a code that was accepted."""
+        api, service = self._api()
+        service.two_factor_delivery_method = "trusted_device"
+        service.validate_2fa_code.return_value = True
+        service.trust_session.side_effect = ConnectionError("trust endpoint unreachable")
+        api._challenge_answered.clear()
+        with pytest.raises(ConnectionError):
+            api.send_2fa_code("123456")
+        assert api._challenge_answered.is_set()
+
     def test_400_incorrect_code_is_a_rejection(self):
         api, service = self._api()
         service._validate_sms_code.side_effect = self._exc(
@@ -2578,6 +2606,52 @@ class TestFindMyWaitsOutTheChallenge:
             assert "Playing sound on iPhone" in api.play_sound("iPhone")
         device_ok.play_sound.assert_called_once()
         assert service.authenticate.call_count == 1
+
+    def _reauth_then_challenge(self, devices):
+        """A session whose first Find My call wants a sign-in, and whose sign-in opens a challenge
+        the feed answers; *devices* is what each later listing returns."""
+        refused = self._device()
+        refused.play_sound.side_effect = Exception("Re-authentication required")
+        service = Mock()
+        service.requires_2fa = False
+        service._auth_data = {}
+        type(service).devices = PropertyMock(side_effect=[[refused], *[[d] for d in devices]])
+
+        def reauth_opens_a_challenge(force_refresh=False):
+            service.requires_2fa = True
+            service._auth_data = {"phoneNumberVerification": {}}
+        service.authenticate.side_effect = reauth_opens_a_challenge
+        api = iCloudAPI(config=VALID_CONFIG)
+        api._api = service
+        api._sms_requested_at = time.time()
+
+        def code_accepted(timeout=None):
+            service.requires_2fa = False
+            api._challenge_answered.set()
+            return True
+        return api, service, patch.object(api._challenge_answered, "wait", side_effect=code_accepted)
+
+    def test_find_my_refusing_twice_after_the_code_is_not_asked_a_third_time(self):
+        """One more try, never a loop: each one is a request to Apple on a session it just refused."""
+        late, later, spare = self._device(), self._device(), self._device()
+        late.play_sound.side_effect = Exception("Re-authentication required")
+        later.play_sound.side_effect = Exception("Re-authentication required")
+        api, service, waiting = self._reauth_then_challenge([late, later, spare])
+        with waiting, patch.object(iCloudAPI, "SESSION_SETTLE_SECONDS", 0), pytest.raises(Exception):
+            api.play_sound("iPhone")
+        later.play_sound.assert_called_once()
+        spare.play_sound.assert_not_called()
+        assert service.authenticate.call_count == 1
+
+    def test_a_failure_after_the_code_that_is_no_sign_in_matter_is_not_tried_again(self):
+        broken, spare = self._device(), self._device()
+        broken.play_sound.side_effect = Exception("device is offline")
+        api, service, waiting = self._reauth_then_challenge([broken, spare])
+        with waiting, patch.object(iCloudAPI, "SESSION_SETTLE_SECONDS", 0), \
+                pytest.raises(Exception, match="device is offline"):
+            api.play_sound("iPhone")
+        broken.play_sound.assert_called_once()
+        spare.play_sound.assert_not_called()
 
     def test_a_challenge_nothing_reads_the_code_for_fails_at_once(self):
         device = self._device()

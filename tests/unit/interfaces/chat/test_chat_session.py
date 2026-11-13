@@ -306,6 +306,26 @@ class TestSuppressNo:
         assert ChatSession._is_no_prefix("No.") and ChatSession._is_no_prefix("NO!")
         assert not ChatSession._is_no_prefix("Nope") and not ChatSession._is_no_prefix("No way")
 
+    @pytest.mark.parametrize("dressed", ["**NO**", "_No._", "`NO`", '"**NO**"'])
+    def test_a_no_in_markdown_marks_is_held_at_every_chunk_boundary(self, dressed):
+        """The hold sees the reply grow token by token: no prefix of a dressed NO may reach a draft."""
+        assert ChatSession.is_no_reply(dressed)
+        shown = [dressed[:n] for n in range(len(dressed) + 1) if not ChatSession._is_no_prefix(dressed[:n])]
+        assert shown == []
+
+    @pytest.mark.xfail(strict=True, reason="ChatSession._undressed removes only complete tags, so _is_no_prefix lets "
+                                           "a NO in tags through while its closing tag is still arriving: a chunk "
+                                           "boundary inside </b> puts 'NO<' into the draft before it is discarded")
+    @pytest.mark.parametrize("dressed", ["<b>NO</b>", "<i>No.</i>"])
+    def test_a_no_in_tags_is_held_at_every_chunk_boundary(self, dressed):
+        assert ChatSession.is_no_reply(dressed)
+        shown = [dressed[:n] for n in range(len(dressed) + 1) if not ChatSession._is_no_prefix(dressed[:n])]
+        assert shown == []
+
+    def test_a_reply_that_only_starts_like_a_dressed_no_is_let_through(self):
+        assert not ChatSession._is_no_prefix("**Note**") and not ChatSession._is_no_prefix("<b>Nothing new</b>")
+        assert not ChatSession.is_no_reply("**No** lights are on") and not ChatSession.is_no_reply("<b>Now</b>")
+
 
 @pytest.mark.unit
 class TestStatusLine:

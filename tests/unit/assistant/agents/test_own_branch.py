@@ -80,6 +80,25 @@ class TestAJobCutShortLeavesNoOwnBranch:
         assert seen == [None]
         assert git.call_args.args[0] == ["git", "checkout", "release"]
 
+    @pytest.mark.xfail(strict=True, reason="_job_home overwrites the record of a job that was cut short with the "
+                                           "leftover branch itself and _back_home then drops it: after the second "
+                                           "job own_branch() takes the first job's work branch for the install's own, "
+                                           "so the nightly update and restart_server stop pulling")
+    def test_a_job_run_from_a_leftover_work_branch_does_not_make_it_the_installs_own(self, job_record):
+        """Relaunched mid-job on fix/nightly, and before the next update brings the install back
+        somebody asks for another job: it starts and ends on fix/nightly, which is still the
+        first job's leftover."""
+        job_record.write_text("release\n")
+        with patch("common.Version.branch", return_value="fix/nightly"):
+            self._job("fix/nightly", "fix/second-job", lambda: None)
+        with _server("fix/nightly"):
+            assert CodeQualityMaintainer.own_branch() is None
+
+    def test_a_record_that_cannot_be_written_does_not_stop_the_job_or_lose_its_way_back(self, job_record):
+        with patch("pathlib.Path.write_text", side_effect=OSError("read-only file system")):
+            git = self._job("release", "fix/nightly", lambda: None)
+        assert git.call_args.args[0] == ["git", "checkout", "release"]
+
     def test_a_job_that_came_back_leaves_no_record(self, job_record):
         self._job("release", "fix/nightly", lambda: None)
         with _server("feat/garage-door"):

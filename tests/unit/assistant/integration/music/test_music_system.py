@@ -110,6 +110,30 @@ class TestActive:
     def test_nothing_registered_is_an_empty_house(self, monitor):
         assert active() == [] and speakers().zones() == []
 
+    def test_the_readiness_is_logged_when_it_changes_not_at_every_look(self, monitor, monkeypatch):
+        """The zones section resolves the systems every few seconds: the same answer is one line."""
+        from assistant.integration.music import MusicSystem as module
+        lines = []
+        monkeypatch.setattr(module, "_last_active_report", [])
+        monkeypatch.setattr(module, "trace", lines.append)
+        _register(monitor, FakeSpeakers())
+        for _ in range(3):
+            active()
+        first_look = list(lines)
+        assert len(first_look) == 1 and "Fake Speakers" in first_look[0]
+
+        _register(monitor, OtherSpeakers(missing=["fake.speakers"]))
+        active()
+        active()
+        changed = lines[len(first_look):]
+        assert len(changed) == 2, "the skipped system and the ready count, once each"
+        assert any("Other Speakers" in line and "fake.speakers" in line for line in changed)
+
+        with monitor._lock:
+            del monitor._integrations["Other Speakers"]
+        active()
+        assert len(lines) == len(first_look) + 3, "back to the first state is a change again"
+
 
 @pytest.mark.unit
 class TestNoSystemHint:

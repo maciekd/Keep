@@ -731,6 +731,27 @@ class TestPreHeat:
         create.assert_not_called()
         assert Ds4LLM._pre_heat_in_flight is False
 
+    def test_a_reply_fetched_whole_leaves_its_checkpoint_too(self):
+        llm, create = _llm_with_stream([])
+        asked = [{'role': 'system', 'content': 'sys'}, {'role': 'user', 'content': 'hello'}]
+        message = SimpleNamespace(content="hi there", reasoning_content="greet", tool_calls=None)
+        create.return_value = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=message)], usage=None)
+        p1, p2 = _config({})
+        with p1, p2:
+            row = llm.create_completion(asked)
+        create.reset_mock()
+        create.return_value = iter([_chunk(content="")])
+        self._pre_heat(llm, asked + [{'role': 'assistant', 'content': row}])
+        create.assert_not_called()
+
+    def test_the_same_reply_to_another_question_is_no_checkpoint_of_this_dialog(self):
+        llm, create = _llm_with_stream([])
+        asked = [{'role': 'system', 'content': 'sys'}, {'role': 'user', 'content': 'hello'}]
+        row = self._turn(llm, create, asked, [_chunk(content="hi there", finish_reason='stop'), _chunk(choices=False)])
+        other = [asked[0], {'role': 'user', 'content': 'good morning'}, {'role': 'assistant', 'content': row}]
+        self._pre_heat(llm, other)
+        create.assert_called_once()
+
     def test_a_history_rewritten_after_the_reply_is_prefilled(self):
         llm, create = _llm_with_stream([])
         asked = [{'role': 'system', 'content': 'sys'}, {'role': 'user', 'content': 'result: a long list of mail'}]

@@ -126,6 +126,18 @@ class TestLocalDs4StartSh:
         assert harness.run(COLD_ANCHOR='').returncode == 0
         assert '--kv-cache-cold-anchor' not in harness.flags()
 
+    def test_the_gpu_keepalive_beats_the_one_second_unwiring_unless_the_caller_sets_it(self, harness):
+        """macOS unwires an idle process's GPU memory after about a second; the server's keepalive
+        has to run well inside it, and a caller's own interval is not overridden."""
+        out = harness.dir / 'keepalive'
+        assert harness.run(KEEPALIVE_OUT=str(out)).returncode == 0
+        assert 0 < int(out.read_text()) <= 500
+        harness.stop()
+        harness.args_out.unlink()
+
+        assert harness.run(KEEPALIVE_OUT=str(out), DS4_METAL_QUEUE_KEEPALIVE_MS='40').returncode == 0
+        assert out.read_text().strip() == '40'
+
     def test_a_taken_port_refuses_to_start_a_second_server(self, harness):
         harness.port_taken_by(4242)
         result = harness.run()
