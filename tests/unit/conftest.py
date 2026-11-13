@@ -300,6 +300,19 @@ def reset_system_note():
     SystemNote.set_history(None)
 
 
+@pytest.fixture(autouse=True)
+def no_destination_outlives_its_test():
+    """The destination registry is process-wide and its list is counted by the tests of the
+    prompt's `{DESTINATIONS}` line: an `owner` a hub left registered (a console transport test
+    that never stopped its hub) made the iMessage chat's list one entry longer in whichever
+    worker ran both. What a test registered is gone when it ends, stopped or not."""
+    from assistant import Destinations
+    before = list(Destinations._destinations)
+    yield
+    with Destinations._lock:
+        Destinations._destinations[:] = [d for d in Destinations._destinations if d in before]
+
+
 @pytest.fixture
 def temp_config_file(tmp_path):
     """Create a temporary config file for testing"""
