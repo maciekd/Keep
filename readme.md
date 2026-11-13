@@ -18,8 +18,6 @@ Self-hosted digital assistant
 Keep knows you and your family. It has analyzed your messages and every photo you’ve taken and has excellent long-term memory: it remembers all the names, all the places, all the plans and
 everything you need to do, without you explaining anything.
 
-This leads to an exceptionally intelligent AI.
-
 Runs on a Mac you own, talks to you by chat, terminal and voice, and integrates with your life: shopping, appointments, cameras, the lot.
 
 ### Cloud
@@ -32,7 +30,7 @@ Keep can run 100% locally on your LLM of choice. We actively support:
 * Qwen 3.8 27B with vision (use oMLX with Splash)
 * DeepSeek V4.1 Flash 1017 with vision (use DwarfStar)
 
-If that is your goal, we recommend starting with the default cloud version and having it help you configure the local setup.
+If local is your goal, we recommend starting with the default cloud version and having it help you configure the local setup.
 
 Refined over two years of daily use in real homes.
 
@@ -42,8 +40,8 @@ An Apple Silicon Mac with 16 GB RAM, signed in to your personal iCloud, to run t
 Everything else — email, smart home, cameras, cars — is optional, and Keep walks you through setting it up.
 
 For local AI we recommend:
-* M4 Max with 48 GB RAM for Qwen
-* M5 Max with 128 GB RAM for DeepSeek
+* 48 GB RAM for Qwen
+* 128 GB RAM for DeepSeek
 
 <img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">
 </td>
