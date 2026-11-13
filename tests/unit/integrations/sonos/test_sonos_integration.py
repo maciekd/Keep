@@ -5,7 +5,7 @@ from unittest.mock import PropertyMock, Mock, patch
 import threading
 
 from assistant.integration.music.SpotifyAccount import SIGN_IN_REVOKED, SpotifyAccount
-from integrations.music.MusicIntegration import MusicManager, MusicIntegration
+from integrations.sonos.SonosIntegration import SonosIntegration
 from tests.unit.assistant.integration.music.spotify_fakes import install, make_account
 
 
@@ -20,9 +20,9 @@ def spotify():
     SpotifyAccount.reset_instance()
 
 
-def make_music_manager(room_mapping=ROOM_MAPPING):
-    """Create a MusicManager bypassing __init__ to avoid network calls."""
-    mm = MusicManager.__new__(MusicManager)
+def make_sonos(room_mapping=ROOM_MAPPING):
+    """Create a SonosIntegration bypassing __init__ to avoid network calls."""
+    mm = SonosIntegration.__new__(SonosIntegration)
     mm.config = Mock()
     mm.config.get.side_effect = lambda key, default=None: room_mapping if key == 'sonos.room_mapping' else default
     mm._sonos_zones_cache = {}
@@ -35,64 +35,64 @@ def make_music_manager(room_mapping=ROOM_MAPPING):
     return mm
 
 
-class TestMusicManager:
+class TestSonosIntegration:
     def test_playlist_uri_resolution(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         assert mm._uri_to_playlist_name("P-0") == "Chill Vibes"
         assert mm._uri_to_playlist_name("P-2") == "Jazz Evening"
 
     def test_favorite_uri_resolution(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         assert mm._uri_to_favorite_name("F-0") == "Liked Songs"
         assert mm._uri_to_favorite_name("F-1") == "Daily Mix 1"
 
     def test_playlist_uri_out_of_range(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         assert mm._uri_to_playlist_name("P-99") is None
 
     def test_favorite_uri_out_of_range(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         assert mm._uri_to_favorite_name("F-99") is None
 
     def test_playlist_uri_invalid_prefix(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         assert mm._uri_to_playlist_name("X-0") is None
 
     def test_favorite_uri_invalid_prefix(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         assert mm._uri_to_favorite_name("X-0") is None
 
     def test_normalize_name_with_room_mapping(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         assert mm.normalize_name("Kitchen") == "Kitchen Front"
 
     def test_normalize_name_without_mapping(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         assert mm.normalize_name("Living Room") == "Living Room"
 
     def test_get_playlists_returns_copy(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         playlists = mm.get_playlists()
         assert playlists == ["Chill Vibes", "Workout Mix", "Jazz Evening"]
         playlists.append("should not affect original")
         assert len(mm._playlists_cache) == 3
 
     def test_get_favorites_returns_copy(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         favorites = mm.get_favorites()
         assert favorites == ["Liked Songs", "Daily Mix 1", "Discover Weekly"]
         favorites.append("should not affect original")
         assert len(mm._favorites_cache) == 3
 
     def test_room_mapping_unset_maps_nothing(self):
-        mm = make_music_manager(room_mapping=None)
+        mm = make_sonos(room_mapping=None)
         assert mm.room_mapping == {}
         assert mm.normalize_name("Kitchen") == "Kitchen"
 
 
 class TestCheckHealth:
     def test_healthy_when_zones_and_spotify_ok(self, spotify):
-        mm = make_music_manager()
+        mm = make_sonos()
         mock_zone = Mock()
         mm._sonos_zones_cache = {"Living Room": mock_zone}
         mm._sonos_zones_cache_time = time.time()
@@ -100,19 +100,19 @@ class TestCheckHealth:
         assert mm.check_health() is True
 
     def test_unhealthy_when_no_zones(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mm._discover_sonos_zones = Mock(return_value={})
         assert mm.check_health() is False
 
     def test_unhealthy_without_a_spotify_client(self, spotify):
-        mm = make_music_manager()
+        mm = make_sonos()
         mock_zone = Mock()
         mm._sonos_zones_cache = {"Living Room": mock_zone}
         mm._sonos_zones_cache_time = time.time()
         assert mm.check_health() is False
 
     def test_a_revoked_spotify_sign_in_fails_the_check_naming_the_cure(self, spotify):
-        mm = make_music_manager()
+        mm = make_sonos()
         mm._sonos_zones_cache = {"Living Room": Mock()}
         mm._sonos_zones_cache_time = time.time()
         spotify._app_client = Mock()
@@ -123,9 +123,9 @@ class TestCheckHealth:
 
 
 class TestSonosZonesCacheExpiry:
-    @patch('integrations.music.MusicIntegration.soco.discover')
+    @patch('integrations.sonos.SonosIntegration.soco.discover')
     def test_cache_hit_within_expiry(self, mock_discover):
-        mm = make_music_manager()
+        mm = make_sonos()
         mock_zone = Mock()
         mm._sonos_zones_cache = {"Living Room": mock_zone}
         mm._sonos_zones_cache_time = time.time()
@@ -134,12 +134,12 @@ class TestSonosZonesCacheExpiry:
         assert result == {"Living Room": mock_zone}
         mock_discover.assert_not_called()
 
-    @patch('integrations.music.MusicIntegration.soco.discover')
+    @patch('integrations.sonos.SonosIntegration.soco.discover')
     def test_cache_expired_triggers_rediscovery(self, mock_discover):
-        mm = make_music_manager()
+        mm = make_sonos()
         old_zone = Mock()
         mm._sonos_zones_cache = {"Old Room": old_zone}
-        mm._sonos_zones_cache_time = time.time() - MusicIntegration.CACHE_EXPIRY_SECONDS - 1
+        mm._sonos_zones_cache_time = time.time() - SonosIntegration.CACHE_EXPIRY_SECONDS - 1
 
         new_zone = Mock()
         new_zone.player_name = "New Room"
@@ -150,9 +150,9 @@ class TestSonosZonesCacheExpiry:
         assert "Old Room" not in result
         mock_discover.assert_called_once()
 
-    @patch('integrations.music.MusicIntegration.soco.discover')
+    @patch('integrations.sonos.SonosIntegration.soco.discover')
     def test_empty_cache_triggers_discovery(self, mock_discover):
-        mm = make_music_manager()
+        mm = make_sonos()
         zone = Mock()
         zone.player_name = "Bedroom"
         mock_discover.return_value = [zone]
@@ -162,12 +162,12 @@ class TestSonosZonesCacheExpiry:
         mock_discover.assert_called_once()
 
 
-    @patch('integrations.music.MusicIntegration.soco.discover')
+    @patch('integrations.sonos.SonosIntegration.soco.discover')
     def test_an_offline_zone_is_skipped_and_the_reachable_ones_are_cached(self, mock_discover):
         """Reading a zone's name is an HTTP GET to the speaker: one offline speaker must not
         leave the cache empty and every poll rediscovering."""
         import requests
-        mm = make_music_manager()
+        mm = make_sonos()
         kitchen, offline = Mock(), Mock()
         kitchen.player_name = "Kitchen"
         type(offline).player_name = PropertyMock(side_effect=requests.ConnectionError("HTTPConnectionPool(host='192.0.2.7', port=1400)"))
@@ -179,12 +179,12 @@ class TestSonosZonesCacheExpiry:
         assert mm._discover_sonos_zones() == {"Kitchen": kitchen}
         mock_discover.assert_called_once()
 
-    @patch('integrations.music.MusicIntegration.soco.discover')
+    @patch('integrations.sonos.SonosIntegration.soco.discover')
     def test_a_discovery_that_reaches_no_zone_keeps_the_old_cache(self, mock_discover):
-        mm = make_music_manager()
+        mm = make_sonos()
         old_zone = Mock()
         mm._sonos_zones_cache = {"Bedroom": old_zone}
-        mm._sonos_zones_cache_time = time.time() - MusicIntegration.CACHE_EXPIRY_SECONDS - 1
+        mm._sonos_zones_cache_time = time.time() - SonosIntegration.CACHE_EXPIRY_SECONDS - 1
         mock_discover.return_value = None
         assert mm._discover_sonos_zones() == {"Bedroom": old_zone}
 
@@ -192,7 +192,7 @@ class TestSonosZonesCacheExpiry:
 
 class TestZoneProblem:
     def _with_zones(self, zones):
-        mm = make_music_manager(room_mapping={})
+        mm = make_sonos(room_mapping={})
         mm._sonos_zones_cache = zones
         mm._sonos_zones_cache_time = time.time()
         return mm
@@ -204,15 +204,15 @@ class TestZoneProblem:
         problem = self._with_zones({"Living Room": Mock(), "Bedroom": Mock()}).zone_problem("Garage")
         assert "Garage" in problem and "Bedroom" in problem and "Living Room" in problem
 
-    @patch("integrations.music.MusicIntegration.soco.discover", return_value=None)
+    @patch("integrations.sonos.SonosIntegration.soco.discover", return_value=None)
     def test_with_no_speaker_on_the_network_the_problem_says_so(self, _discover):
-        problem = make_music_manager(room_mapping={}).zone_problem("Garage")
+        problem = make_sonos(room_mapping={}).zone_problem("Garage")
         assert "Garage" in problem and "no Sonos speaker" in problem
 
 
 class TestPlayInZoneRouting:
     def test_short_id_resolves_from_cache(self, spotify):
-        mm = make_music_manager()
+        mm = make_sonos()
         spotify._search_ids = {"AA": "spotify:artist:abc123"}
         mock_zone = Mock()
         mock_coordinator = Mock()
@@ -224,7 +224,7 @@ class TestPlayInZoneRouting:
         mock_coordinator.play_uri.assert_called_once()
 
     def test_unknown_short_id_returns_false(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mock_zone = Mock()
         mm._get_zone = Mock(return_value=mock_zone)
         mm._get_coordinator = Mock(return_value=Mock())
@@ -233,7 +233,7 @@ class TestPlayInZoneRouting:
         assert result is False
 
     def test_artist_uri_plays_radio(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mock_zone = Mock()
         mock_coordinator = Mock()
         mm._get_zone = Mock(return_value=mock_zone)
@@ -247,7 +247,7 @@ class TestPlayInZoneRouting:
 
     def _track_radio_manager(self, top_tracks):
         from spotipy.exceptions import SpotifyException
-        mm = make_music_manager()
+        mm = make_sonos()
         account = SpotifyAccount.get_instance()
         account._search_ids = {"AA": "spotify:track:seed01"}
         coordinator = Mock()
@@ -289,7 +289,7 @@ class TestPlayInZoneRouting:
         assert "seed01" in coordinator.play_uri.call_args[0][0]
 
     def test_playlist_uri_delegates_to_play_playlist(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mock_zone = Mock()
         mm._get_zone = Mock(return_value=mock_zone)
         mm._get_coordinator = Mock(return_value=Mock())
@@ -300,7 +300,7 @@ class TestPlayInZoneRouting:
         mm.play_playlist.assert_called_once_with("Living Room", "Chill Vibes")
 
     def test_favorite_uri_delegates_to_play_favorite(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mock_zone = Mock()
         mm._get_zone = Mock(return_value=mock_zone)
         mm._get_coordinator = Mock(return_value=Mock())
@@ -311,7 +311,7 @@ class TestPlayInZoneRouting:
         mm.play_favorite.assert_called_once_with("Living Room", "Daily Mix 1")
 
     def test_unknown_spotify_uri_type_returns_false(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mock_zone = Mock()
         mm._get_zone = Mock(return_value=mock_zone)
         mm._get_coordinator = Mock(return_value=Mock())
@@ -320,7 +320,7 @@ class TestPlayInZoneRouting:
         assert result is False
 
     def test_zone_not_found_returns_false(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mm._get_zone = Mock(return_value=None)
 
         result = mm.play_in_zone("spotify:track:abc", "Nonexistent")
@@ -330,7 +330,7 @@ class TestPlayInZoneRouting:
 class TestGetAllZonesStatus:
     def test_status_queries_coordinator_transport_info(self):
         """Grouped speakers should report the coordinator's transport state, not their own."""
-        mm = make_music_manager()
+        mm = make_sonos()
 
         zone = Mock()
         coordinator = Mock()
@@ -350,7 +350,7 @@ class TestGetAllZonesStatus:
         assert "Test Song" in result
 
     def test_status_shows_playing_from_coordinator(self):
-        mm = make_music_manager()
+        mm = make_sonos()
 
         zone = Mock()
         coordinator = Mock()
@@ -366,7 +366,7 @@ class TestGetAllZonesStatus:
         assert "Kitchen" in result
 
     def test_status_skips_empty_mapped_rooms(self):
-        mm = make_music_manager()
+        mm = make_sonos()
 
         zone = Mock()
         mm._discover_sonos_zones = Mock(return_value={"Kitchen Back": zone})
@@ -380,7 +380,7 @@ class TestGetAllZonesStatus:
         the section. It is one unreachable line now. The exception once reached error() as an
         object and crashed the logger ('ConnectionError' object has no attribute 'split'), so
         this test uses the real error()."""
-        mm = make_music_manager()
+        mm = make_sonos()
 
         zone = Mock()
         mm._discover_sonos_zones = Mock(return_value={"Kitchen Front": zone})
@@ -391,7 +391,7 @@ class TestGetAllZonesStatus:
 
 class TestRefreshCycle:
     def test_a_tick_refreshes_and_schedules_the_next_one(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mm._refresh_playlists_and_favorites = Mock()
         try:
             mm._refresh_tick()
@@ -401,7 +401,7 @@ class TestRefreshCycle:
             mm._on_reset()
 
     def test_a_dropped_integration_stops_refreshing(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mm._refresh_playlists_and_favorites = Mock()
         mm._schedule_refresh(3600)
         pending = mm._refresh_timer
@@ -421,7 +421,7 @@ class TestZoneStateParsingIsSerialised:
 
     def test_soco_parses_one_zone_group_payload_at_a_time(self):
         from soco.zonegroupstate import ZoneGroupState
-        from integrations.music import MusicIntegration as module
+        from integrations.sonos import SonosIntegration as module
 
         done = threading.Event()
 
@@ -443,9 +443,9 @@ class TestZoneStateParsingIsSerialised:
 class TestSpotifyUserPlaylists:
     """The signed-in user's playlist library: S- ids, the fetch, and playback by URI through the Sonos Spotify service."""
 
-    @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
+    @patch('integrations.sonos.SonosIntegration.ShareLinkPlugin')
     def test_an_s_id_is_started_by_its_spotify_uri_through_the_sonos_spotify_service(self, share_cls):
-        mm = make_music_manager()
+        mm = make_sonos()
         coordinator = Mock()
         mm._get_zone = Mock(return_value=Mock())
         mm._get_coordinator = Mock(return_value=coordinator)
@@ -458,9 +458,9 @@ class TestSpotifyUserPlaylists:
         coordinator.play_from_queue.assert_called_once_with(0)
         assert coordinator.play_mode == 'SHUFFLE'
 
-    @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
+    @patch('integrations.sonos.SonosIntegration.ShareLinkPlugin')
     def test_a_playlist_found_by_search_plays_the_same_way(self, share_cls, spotify):
-        mm = make_music_manager()
+        mm = make_sonos()
         coordinator = Mock()
         mm._get_zone = Mock(return_value=Mock())
         mm._get_coordinator = Mock(return_value=coordinator)
@@ -471,9 +471,9 @@ class TestSpotifyUserPlaylists:
         share_cls.return_value.add_share_link_to_queue.assert_called_once_with("spotify:playlist:pub9")
         coordinator.play_from_queue.assert_called_once_with(0)
 
-    @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
+    @patch('integrations.sonos.SonosIntegration.ShareLinkPlugin')
     def test_a_sonos_refusal_is_reported_as_failure(self, share_cls):
-        mm = make_music_manager()
+        mm = make_sonos()
         mm._get_zone = Mock(return_value=Mock())
         mm._get_coordinator = Mock(return_value=Mock())
         share_cls.return_value.add_share_link_to_queue.side_effect = Exception("Unsupported URI")
@@ -481,7 +481,7 @@ class TestSpotifyUserPlaylists:
         assert mm.play_in_zone("S-1", "Kitchen") is False
 
     def test_an_s_id_out_of_range_does_not_play(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mm._get_zone = Mock(return_value=Mock())
         mm._get_coordinator = Mock(return_value=Mock())
         mm.play_spotify_playlist = Mock()
@@ -489,9 +489,9 @@ class TestSpotifyUserPlaylists:
         assert mm.play_in_zone("S-7", "Kitchen") is False
         mm.play_spotify_playlist.assert_not_called()
 
-    @patch('integrations.music.MusicIntegration.ShareLinkPlugin')
+    @patch('integrations.sonos.SonosIntegration.ShareLinkPlugin')
     def test_a_spotify_favorite_still_goes_through_the_share_link(self, share_cls):
-        mm = make_music_manager()
+        mm = make_sonos()
         coordinator = Mock()
         mm._get_zone = Mock(return_value=Mock())
         mm._get_coordinator = Mock(return_value=coordinator)
@@ -506,7 +506,7 @@ class TestSpotifyUserPlaylists:
         coordinator.play_from_queue.assert_called_once_with(0)
 
     def test_a_refresh_that_raises_still_schedules_the_next_tick_and_the_sonos_lists(self, spotify):
-        mm = make_music_manager()
+        mm = make_sonos()
         spotify._auth.signed_in.side_effect = AttributeError("'str' object has no attribute 'get'")
         mm._discover_sonos_zones = Mock(return_value={"Kitchen": Mock()})
         mm._fetch_playlists_from_sonos = Mock(return_value=["Fresh"])
@@ -517,10 +517,10 @@ class TestSpotifyUserPlaylists:
         assert mm.get_playlists() == ["Fresh"]
 
     def test_the_sonos_lists_are_cut_to_the_prompt_cap_in_the_apps_order_so_the_ids_match(self, spotify):
-        mm = make_music_manager()
+        mm = make_sonos()
         spotify._auth.signed_in.return_value = False
         mm._discover_sonos_zones = Mock(return_value={"Kitchen": Mock()})
-        cap = MusicManager.PLAYLISTS_IN_PROMPT
+        cap = SonosIntegration.PLAYLISTS_IN_PROMPT
         mm._fetch_playlists_from_sonos = Mock(return_value=[f"Playlist {n}" for n in range(cap + 5)])
         mm._fetch_favorites_from_sonos = Mock(return_value=[f"Favorite {n}" for n in range(cap - 1)])
 
@@ -532,7 +532,7 @@ class TestSpotifyUserPlaylists:
         assert mm._uri_to_playlist_name(f"P-{cap}") is None
 
     def test_the_refresh_reloads_the_shared_spotify_library_too(self, spotify):
-        mm = make_music_manager()
+        mm = make_sonos()
         spotify.refresh_library = Mock(return_value=True)
         mm._discover_sonos_zones = Mock(return_value={})
         mm._refresh_playlists_and_favorites()
@@ -554,14 +554,14 @@ class TestZonesStatusWithAnUnreachableZone:
         return zone
 
     def _manager(self, zones):
-        mm = make_music_manager(room_mapping={})
+        mm = make_sonos(room_mapping={})
         mm._sonos_zones_cache = dict(zones)
         mm._sonos_zones_cache_time = time.time()
         return mm
 
     def test_a_zone_without_a_group_is_listed_unreachable_and_the_rest_keep_their_status(self):
         mm = self._manager({"Kitchen": self._zone(group=False), "Office": self._zone(state="PAUSED_PLAYBACK")})
-        with patch("integrations.music.MusicIntegration.error"):
+        with patch("integrations.sonos.SonosIntegration.error"):
             status = mm.get_all_zones_status()
         assert status.splitlines() == ["Kitchen (unreachable)", "Office (Song by Band - Paused)"]
 
@@ -569,13 +569,13 @@ class TestZonesStatusWithAnUnreachableZone:
         broken = self._zone()
         broken.group.coordinator.get_current_transport_info.side_effect = ConnectionError("Host is down")
         mm = self._manager({"Kitchen": broken, "Office": self._zone()})
-        with patch("integrations.music.MusicIntegration.error"):
+        with patch("integrations.sonos.SonosIntegration.error"):
             status = mm.get_all_zones_status()
         assert status.splitlines() == ["Kitchen (unreachable)", "Office (Song by Band - Playing)"]
 
     def test_an_unreachable_zone_leaves_the_cache_for_the_next_discovery_to_re_find(self):
         mm = self._manager({"Kitchen": self._zone(group=False), "Office": self._zone()})
-        with patch("integrations.music.MusicIntegration.error") as err:
+        with patch("integrations.sonos.SonosIntegration.error") as err:
             mm.get_all_zones_status()
             mm.get_all_zones_status()
         assert list(mm._sonos_zones_cache) == ["Office"]
@@ -583,7 +583,7 @@ class TestZonesStatusWithAnUnreachableZone:
         assert mm._sonos_zones_cache_time is not None   # no full rediscovery per poll
 
     def test_a_command_on_a_zone_without_a_group_fails_with_a_connection_error(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         with pytest.raises(ConnectionError):
             mm._get_coordinator(self._zone(group=False))
 
@@ -594,7 +594,7 @@ class TestAsAMusicSystem:
 
     @staticmethod
     def _with_zones(zones, room_mapping=ROOM_MAPPING):
-        mm = make_music_manager(room_mapping=room_mapping)
+        mm = make_sonos(room_mapping=room_mapping)
         mm._sonos_zones_cache = dict(zones)
         mm._sonos_zones_cache_time = time.time()
         return mm
@@ -610,14 +610,14 @@ class TestAsAMusicSystem:
         assert sorted(mm.zones()) == ["Bedroom", "Kitchen"]
 
     def test_the_library_numbers_the_favorites_and_the_playlists_each_from_zero(self):
-        lines = make_music_manager().library_text().splitlines()
+        lines = make_sonos().library_text().splitlines()
         assert lines[0].endswith("(ID: F-0)") and "Liked Songs" in lines[0]
         assert lines[2].endswith("(ID: F-2)") and "Discover Weekly" in lines[2]
         assert lines[3].endswith("(ID: P-0)") and "Chill Vibes" in lines[3]
         assert len(lines) == 6
 
     def test_its_own_lists_are_its_ids_and_spotifys_are_not(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         assert mm.owns_id("F-1") and mm.owns_id("P-0")
         assert not mm.owns_id("S-0") and not mm.owns_id("AA")
 
@@ -655,7 +655,7 @@ class TestAsAMusicSystem:
         assert "speaker offline" in mm.adjust_volume("Bedroom", 4)
 
     def test_play_id_answers_nothing_when_it_started_and_names_the_id_when_not(self):
-        mm = make_music_manager()
+        mm = make_sonos()
         mm.play_in_zone = Mock(return_value=True)
         assert mm.play_id("Kitchen", "F-1") == ""
         mm.play_in_zone.assert_called_once_with("F-1", "Kitchen")

@@ -1,5 +1,5 @@
 # HEOS (Denon, Marantz): the speakers on the local network, enable with `enabled_integrations: [HEOS]`. Spotify plays
-# on them over Spotify Connect: it needs api_keys.spotify (the same app as Sonos & Spotify), Spotify Premium and a
+# on them over Spotify Connect: it needs api_keys.spotify (the same app as Sonos uses), Spotify Premium and a
 # spotify_login() — with HEOS on, the sign-in asks for the playback permissions too, so an earlier sign-in is asked
 # for once more. A speaker plays Spotify only while the account lists it among its Connect devices: one another
 # account used last is out of reach until it is picked once in the Spotify app with this account. The HEOS favorites

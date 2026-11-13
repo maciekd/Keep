@@ -68,13 +68,13 @@ def test_a_log_out_that_raises_is_a_note_not_a_crash(tmp_path):
     assert "no network" in notes[session]
 
 
-def test_the_spotify_sign_in_is_the_music_folders_wipe_target():
+def test_the_spotify_sign_in_is_a_core_wipe_target_whatever_speaker_system_is_installed():
     """Contract with `//wipe`: the refresh token spotipy keeps under cache/oauth is a signed-in
-    state, so it must be among the targets discovery gathers, under the token path the sign-in
-    writes — not the `.cache` file of spotipy's default handler, which the folder no longer uses."""
-    from integrations.music.MusicIntegration import MusicIntegration
+    state every speaker system shares, so it is the core's own target under the token path the
+    sign-in writes — not a folder's (a HEOS-only house has it too), and not the `.cache` file of
+    spotipy's default handler."""
     from assistant.integration.music.SpotifyAuth import TOKEN_PATH
-    with patch("assistant.integration.bootstrap.integration_classes", return_value=[MusicIntegration]):
-        paths = [path for path, _ in dc_mod.integration_targets()]
-    assert paths == [TOKEN_PATH]
-    assert not any(p.name == ".cache" for p, _ in dc_mod.WIPE_TARGETS)
+    from integrations.sonos.SonosIntegration import SonosIntegration
+    core = [path for path, _ in dc_mod.WIPE_TARGETS]
+    assert TOKEN_PATH in core and not any(p.name == ".cache" for p in core)
+    assert SonosIntegration.wipe_targets() == []

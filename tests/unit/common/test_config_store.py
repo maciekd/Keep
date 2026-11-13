@@ -577,6 +577,18 @@ class TestRenameKeys:
         assert ConfigManager.get_instance().enabled_integrations() == ["iMessage Feed", "Photos"]
         assert ConfigStore.rename_keys({}, {"iMessage": "iMessage Feed"}) == []
 
+    def test_sonos_and_spotify_however_spelled_becomes_sonos_a_contract_with_every_installs_config(self, files):
+        """2026-11-13: the release that made the integration "Sonos" must find the old name in an
+        install's list, or the speakers are silently off after the update."""
+        from common import Migrations
+        files.write_text("enabled_integrations: [Tesla, sonos-and-spotify, HEOS]\nsonos:\n  room_mapping: {Den: Office}\n")
+        ConfigManager.get_instance().reload()
+        assert len(ConfigStore.rename_keys({}, Migrations.INTEGRATION_RENAMES)) == 1
+        ConfigManager.get_instance().reload()
+        assert ConfigManager.get_instance().enabled_integrations() == ["Tesla", "Sonos", "HEOS"]
+        assert ConfigManager.get_instance().get("sonos.room_mapping") == {"Den": "Office"}
+        assert ConfigStore.rename_keys({}, Migrations.INTEGRATION_RENAMES) == []
+
     def test_nothing_to_rename_leaves_the_file_untouched(self, files, tmp_path):
         before = files.read_text()
         assert ConfigStore.rename_keys(self.RENAMES, {"Telegram Monitor": "Telegram Feed"}) == []

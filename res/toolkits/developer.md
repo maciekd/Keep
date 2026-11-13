@@ -44,7 +44,7 @@ To have one integration fixed or improved, or a new one built, delivered as a pu
 
 `integration` is the integration's name as `list_integrations` shows it ("Tesla", "Hue", "Weather") or its folder;
 a name no integration has or resembles means a new one is to be built, so name a new one after its service. A name
-that only resembles an integration's ("Spotify" for "Sonos & Spotify") is answered with the integration meant, and
+that only resembles an integration's ("Microsoft" for "Microsoft 365") is answered with the integration meant, and
 nothing runs until it is named. `request` is the request:
 be specific about what should change and why; if a self-analysis ran first, feed its report into the request.
 The PR may touch only that integration's own folder and tests (a new one also adds its registry lines). When the

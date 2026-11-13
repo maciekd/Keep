@@ -1136,7 +1136,7 @@ class Commands:
         if folder is None:
             near = self._integrations_resembling(name)
             if near:
-                # A near miss is the integration misnamed ("Spotify" for "Sonos & Spotify"),
+                # A near miss is the integration misnamed ("Microsoft" for "Microsoft 365"),
                 # not a new one: on 2026-10-26 two such jobs ran in new-integration mode and
                 # had the fix closed as straying. Ask back instead.
                 info(f"improve_integration: no integration named '{name}', but it resembles "

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Callable
 
 from assistant import FirstRun
+from assistant.integration.music.SpotifyAuth import TOKEN_PATH as SPOTIFY_TOKEN_PATH
 from assistant.prompt.PromptManager import CURRENT_PROMPT_FILE
 from common.logging import info, error
 from common.Paths import (AISERVER_DIR, CACHE_DIR, CONFIG_PATH, DUMMY_CONFIG_PATH, ICLOUD_SESSION_DIR, LOG_DIR,
@@ -68,6 +69,7 @@ WIPE_TARGETS = [
     (AISERVER_DIR / "memory.md", "long-term memory bank of an install from before memory/"),
     (FirstRun.STATE_FILE, "first-run pipeline state"),
     (ICLOUD_SESSION_DIR, "iCloud session, trust token and cookies"),
+    (SPOTIFY_TOKEN_PATH, "Spotify sign-in (refresh token) — the account every speaker system shares"),
     (CACHE_DIR / "config-backups", "config backups (hold the old credentials)"),
     (CACHE_DIR / "last_startup.json", "startup tracker"),
     (CACHE_DIR / "tui_state.json", "TUI state"),

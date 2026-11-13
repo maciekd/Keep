@@ -44,8 +44,8 @@ spotipy==2.25.1   # the Spotify account every speaker system shares (assistant/i
 -r src/integrations/caldav/requirements.txt
 -r src/integrations/microsoft/requirements.txt
 -r src/integrations/plejd/requirements.txt
--r src/integrations/music/requirements.txt
 -r src/integrations/ring/requirements.txt
+-r src/integrations/sonos/requirements.txt
 -r src/integrations/telegram_feed/requirements.txt
 -r src/integrations/whatsapp/requirements.txt
 -r src/integrations/volvo/requirements.txt

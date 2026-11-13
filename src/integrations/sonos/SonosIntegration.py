@@ -3,7 +3,6 @@ import re
 import threading
 import time
 import urllib.parse
-from pathlib import Path
 from typing import List, Dict, Optional
 
 import soco
@@ -15,7 +14,6 @@ from common.ConfigManager import ConfigManager
 from assistant.integration.Integration import Integration
 from assistant.integration.music.MusicSystem import LIBRARY_REFRESH_SECONDS, MusicSystem
 from assistant.integration.music.SpotifyAccount import SIGN_IN_REVOKED, SpotifyAccount, SpotifyPlaylist
-from assistant.integration.music.SpotifyAuth import TOKEN_PATH
 
 _zone_state_lock = threading.RLock()
 
@@ -45,12 +43,12 @@ def _serialise_zone_state_parsing():
 _serialise_zone_state_parsing()
 
 
-class MusicIntegration(Integration, MusicSystem):
-    """Spotify music on the Sonos speakers: search, play, skip and volume.
+class SonosIntegration(Integration, MusicSystem):
+    """Sonos speakers: playback, volume, favorites and Spotify in every zone.
 
-    Plays Spotify music, playlists and favorites in the Sonos zones, with pause, skip and
-    volume. Keep can search Spotify and start what it finds in any room, and once the user's
-    Spotify account is signed in, the playlists of their own library by name.
+    Plays the Sonos favorites and playlists and Spotify music in the Sonos zones, with pause,
+    skip and volume. Keep can search Spotify and start what it finds in any room, and once the
+    user's Spotify account is signed in, the playlists of their own library by name.
 
     Sonos playlists (`P-n`) and Sonos favorites (`F-n`) are cached and refreshed every 30
     minutes, cut to their first `PLAYLISTS_IN_PROMPT` entries in the Sonos app's order — every one
@@ -60,7 +58,10 @@ class MusicIntegration(Integration, MusicSystem):
     the Sonos Spotify service (ShareLinkPlugin), so Sonos resolves the tracks with the household's
     Spotify account linked in the Sonos app. Spotify-owned playlists (Discover Weekly, Release
     Radar) are hidden from a development-mode app's library; a Sonos favorite is the way to reach
-    them."""
+    them. The Spotify app keys are required (`config_keys`): search is what the play commands
+    start from. Until 2026-11-13 this was "Sonos & Spotify" in the folder `music`."""
+
+    former_names = ("Sonos & Spotify",)
 
     PLAYLISTS_IN_PROMPT = 10
     ID_PREFIXES = ("F-", "P-")
@@ -87,7 +88,7 @@ class MusicIntegration(Integration, MusicSystem):
 
     @property
     def name(self) -> str:
-        return "Sonos & Spotify"
+        return "Sonos"
 
     @property
     def spotify(self) -> SpotifyAccount:
@@ -109,7 +110,7 @@ class MusicIntegration(Integration, MusicSystem):
         try:
             self.spotify.app_client()
         except Exception as e:
-            info(f"Sonos & Spotify unhealthy: {e}")
+            info(f"Sonos unhealthy, the Spotify app keys do not work: {e}")
             return False
         if self.spotify.needs_sign_in_again():
             # Raised, not returned: the monitor's last_error then names the cure in list_integrations and the console.
@@ -147,10 +148,6 @@ class MusicIntegration(Integration, MusicSystem):
             info(f"{what}: {len(names)} found, the first {self.PLAYLISTS_IN_PROMPT} get prompt ids")
         return names[:self.PLAYLISTS_IN_PROMPT]
 
-    @classmethod
-    def wipe_targets(cls) -> list[tuple[Path, str]]:
-        return [(TOKEN_PATH, "Spotify sign-in (refresh token)")]
-
     def _start_periodic_refresh(self):
         """Load playlists and favorites in the background now, then every 30 minutes."""
         self._schedule_refresh(0.1)
@@ -178,7 +175,7 @@ class MusicIntegration(Integration, MusicSystem):
         self._stopped.set()
         if self._refresh_timer is not None:
             self._refresh_timer.cancel()
-        info("Sonos & Spotify dropped: playlist and favorites refresh stopped")
+        info("Sonos dropped: playlist and favorites refresh stopped")
 
     def _uri_to_playlist_name(self, uri: str) -> Optional[str]:
         """Convert playlist URI (P-0, P-1, etc.) to playlist name."""
@@ -215,7 +212,7 @@ class MusicIntegration(Integration, MusicSystem):
 
         cache_expired = (
             self._sonos_zones_cache_time is None or
-            (current_time - self._sonos_zones_cache_time) > MusicIntegration.CACHE_EXPIRY_SECONDS
+            (current_time - self._sonos_zones_cache_time) > SonosIntegration.CACHE_EXPIRY_SECONDS
         )
 
         if not self._sonos_zones_cache or cache_expired:
@@ -696,6 +693,3 @@ class MusicIntegration(Integration, MusicSystem):
 
         return room_name
 
-
-# Backward-compatible alias
-MusicManager = MusicIntegration

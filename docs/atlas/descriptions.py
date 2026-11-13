@@ -36,7 +36,7 @@ GROUPS = {
     'src/integrations/imessage': ('imessage', 'The owner’s iMessage and SMS — on the server’s Mac or, through a satellite, on another — as a feed of incoming messages and the way to send one.'),
     'src/integrations/indigo': ('indigo', 'Indigo as the home automation backend: REST for commands, a state file for the snapshot and an event feed.'),
     'src/integrations/heos': ('heos', 'Denon and Marantz HEOS speakers as a music system: playback, volume and favorites over the HEOS CLI, Spotify started on them over Spotify Connect.'),
-    'src/integrations/music': ('music', 'The Sonos speakers as a music system: the zones, their playback and volume, the Sonos favorites and playlists, Spotify started through the Sonos Spotify service.'),
+    'src/integrations/sonos': ('sonos', 'The Sonos speakers as a music system: the zones, their playback and volume, the Sonos favorites and playlists, Spotify started through the Sonos Spotify service.'),
     'src/integrations/plejd': ('plejd', 'Plejd lights, covers and scenes over Bluetooth from the server’s own Mac: the site from the Plejd cloud, the state and the commands through any mesh unit in range.'),
     'src/integrations/photos': ('photos', 'The family photo library: iCloud downloads, vision-LLM indexing and a feed into the history.'),
     'src/integrations/reminders': ('reminders', 'Reads, adds to and ticks off the Apple Reminders lists, the shared shopping list among them.'),

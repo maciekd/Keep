@@ -8,7 +8,7 @@
 
 # Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
 # Use the names list_integrations shows: Arlo, Aseko Pool, CalDAV, Google, Google Docs, iCloud, IMAP Mail, iMessage, Indigo,
-# HEOS, Microsoft 365, Philips Hue, Photos, Plejd, Reminders, Ring, Self Improvement, Sonos & Spotify, Telegram Feed, Tesla, X, YR Weather.
+# HEOS, Microsoft 365, Philips Hue, Photos, Plejd, Reminders, Ring, Self Improvement, Sonos, Telegram Feed, Tesla, X, YR Weather.
 # The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default), Gemini TTS,
 # Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS: a request speaks through the
 # first enabled and configured one, Swedish preferring Gemini TTS, so a Swedish install enables Gemini TTS
@@ -40,7 +40,7 @@ api_keys:
   google_maps: YOUR_GOOGLE_MAPS_API_KEY_HERE
   cartesia: YOUR_CARTESIA_API_KEY_HERE
   fish_audio: YOUR_FISH_AUDIO_API_KEY_HERE  # https://fish.audio -> API keys
-  # Spotify, for the speaker systems (Sonos & Spotify, HEOS): an app of your own at https://developer.spotify.com/dashboard
+  # Spotify, for the speaker systems (Sonos, HEOS): an app of your own at https://developer.spotify.com/dashboard
   # (Web API). Its client id and secret are all search and Sonos playback need; HEOS starts Spotify through the account
   # itself, so it needs the sign-in below and Spotify Premium. To start the playlists of your own Spotify library (own and followed)
   # by name, add the redirect URI http://127.0.0.1:8888/callback to the app and sign the account in once from any
@@ -483,11 +483,7 @@ telemetry:
 #       on_scene: LightTheKitchenUp
 #       off_scene: TurnOffKitchenLights
 
-# Sonos zone name -> the room name the LLM sees; a blank value hides the zone. Optional.
-# sonos:
-#   room_mapping:
-#     "Kitchen Front": Kitchen
-#     "Kitchen Back": ""
+# >> sonos: src/integrations/sonos/config.example.yaml
 
 # >> heos: src/integrations/heos/config.example.yaml
 

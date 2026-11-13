@@ -212,7 +212,7 @@ class IntegrationMonitor:
 
     def find(self, name: str) -> Optional[Integration]:
         """The registered integration called *name*, or — none of that name — the one of the
-        folder called so (`music` for "Sonos & Spotify"; the folder is what a report names), or
+        folder called so (`home_assistant` for "Home Assistant"; the folder is what a report names), or
         the one that used to be called so (`Integration.former_names`); None otherwise. Case
         does not matter."""
         wanted = name.strip().lower()
@@ -232,8 +232,7 @@ class IntegrationMonitor:
 
     def resembling(self, name: str) -> List[Tuple[str, Optional[str]]]:
         """(name, folder) of the registered integrations *name* is a near miss of: their name
-        or folder contains it, or it contains theirs ("Spotify" and "Sonos & Spotify", "Microsoft"
-        and "Microsoft 365"); a short name is a near miss of nothing, and so is nothing of a
+        or folder contains it, or it contains theirs ("Microsoft" and "Microsoft 365"); a short name is a near miss of nothing, and so is nothing of a
         short one, since "x" is in every other word. `find` first: an exact match is not a
         near miss."""
         wanted = name.strip().lower()
