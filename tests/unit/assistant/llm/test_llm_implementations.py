@@ -1178,6 +1178,7 @@ class TestGeminiLLM:
         from google.genai.types import ThinkingLevel
         assert GeminiLLM("gemini-3.7-flash")._min_thinking_level() == ThinkingLevel.LOW
         assert GeminiLLM("gemini-3.8-flash")._min_thinking_level() == ThinkingLevel.LOW
+        assert GeminiLLM("gemini-4-hydrogen")._min_thinking_level() == ThinkingLevel.LOW
         assert GeminiLLM("gemini-3.5-flash")._min_thinking_level() == ThinkingLevel.MINIMAL
 
     @patch('assistant.llm.GeminiLLM.config')

@@ -125,7 +125,7 @@ _outage = _Outage()
 class GeminiLLM(AbstractLLM):
     """Talks to Google Gemini through the google-genai client, with native thinking levels."""
 
-    _LOW_FLOOR_GENERATIONS = ('gemini-3.7', 'gemini-3.8')
+    _LOW_FLOOR_GENERATIONS = ('gemini-3.7', 'gemini-3.8', 'gemini-4')
 
     def __init__(self, model: str = "gemini-3.5-flash"):
         self.model = model
@@ -216,7 +216,7 @@ class GeminiLLM(AbstractLLM):
     def _min_thinking_level(self) -> ThinkingLevel:
         """Lowest thinking level the model accepts.
 
-        Gemini 3.7 and 3.8 Flash reject MINIMAL (400 INVALID_ARGUMENT) — their
+        Gemini 3.7 and 3.8 Flash and Gemini 4 (Hydrogen …) reject MINIMAL (400 INVALID_ARGUMENT) — their
         floor is LOW. Older Flash models (3, 3.5, 3.6) still accept MINIMAL.
         """
         if any(gen in self.model for gen in self._LOW_FLOOR_GENERATIONS):
