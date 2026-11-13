@@ -1356,8 +1356,12 @@ class WebAccess(Integration):
     # Cookie banner removal & navigation helpers
     # ------------------------------------------------------------------
 
-    _COOKIE_REMOVAL_JS = r"""
-(function() {
+    # The consent pass as a function of `clickOnly`: true presses the accept buttons and
+    # takes nothing out of the page — the pass a covered click runs, where the cover is
+    # as likely the site's own open dialog as a banner (a shop's delivery picker, 2026-11:
+    # the removal took a node of the framework's and the page crashed at its next render).
+    _CONSENT_PASS_JS = r"""
+(function(clickOnly) {
     let clicked = 0;
     let removed = 0;
     let kept = 0;
@@ -1505,6 +1509,18 @@ class WebAccess(Integration):
         } catch (e) {}
     });
 
+    if (clickOnly) return { clicked: clicked, removed: 0, kept: 0 };
+
+    // An open dialog of the site's own is rendered by its framework, which crashes on
+    // its next render when the node is gone: without consent wording it stays.
+    const CONSENT_WORDING_RE = /cookie|kakor|consent|samtycke|gdpr|privacy/i;
+    const isSiteDialog = (el) => {
+        const attr = (name) => (el.getAttribute && el.getAttribute(name)) || '';
+        const dialog = ['dialog', 'alertdialog'].includes(attr('role')) ||
+            attr('aria-modal') === 'true' || attr('data-state') === 'open';
+        return dialog && !CONSENT_WORDING_RE.test(el.innerText || '');
+    };
+
     // Pass 2 — remove cookie banner containers by ID/class
     const cookieSelectors = [
         '[id*="cookie"]', '[id*="Cookie"]', '[id*="consent"]', '[id*="Consent"]',
@@ -1524,7 +1540,8 @@ class WebAccess(Integration):
         });
     });
 
-    // Pass 3 — kill fixed/sticky overlays parked above content
+    // Pass 3 — kill fixed/sticky overlays parked above content that speak of consent
+    // (height alone proved nothing: any tall modal of the site's own qualified)
     const overlaySelectors = [
         '[style*="position: fixed"]', '[style*="position:fixed"]',
         '[style*="position: sticky"]', '[style*="position:sticky"]',
@@ -1536,8 +1553,9 @@ class WebAccess(Integration):
         const zIndex = parseInt(style.zIndex) || 0;
         if (zIndex > 1000) {
             const text = (el.innerText || '').toLowerCase();
+            if (isSiteDialog(el)) { kept++; return; }
             if (text.includes('cookie') || text.includes('consent') || text.includes('accept') ||
-                text.includes('privacy') || text.includes('gdpr') || el.offsetHeight > 100) {
+                text.includes('privacy') || text.includes('gdpr')) {
                 safeRemove(el);
             }
         }
@@ -1556,18 +1574,23 @@ class WebAccess(Integration):
     // a backdrop), and only when the element really is an overlay.
     document.querySelectorAll('.backdrop, .overlay, .modal-backdrop').forEach(el => {
         try {
-            if (looksLikeOverlay(el)) safeRemove(el);
+            if (!looksLikeOverlay(el)) return;
+            if (isSiteDialog(el)) { kept++; return; }
+            safeRemove(el);
         } catch (e) {}
     });
 
     return { clicked: clicked, removed: removed, kept: kept };
-})();
-"""
+})"""
+    _COOKIE_REMOVAL_JS = _CONSENT_PASS_JS + "(false);\n"
+    _CONSENT_CLICK_JS = _CONSENT_PASS_JS + "(true);\n"
 
-    async def _async_remove_cookies_banner(self, tab: 'nodriver.Tab', url: str) -> dict:
-        """One consent pass; returns the JS result ({clicked, removed}) or {} on failure."""
+    async def _async_remove_cookies_banner(self, tab: 'nodriver.Tab', url: str, click_only: bool = False) -> dict:
+        """One consent pass; returns the JS result ({clicked, removed}) or {} on failure.
+        click_only presses accept buttons and removes nothing."""
         try:
-            result = await self._evaluate(tab, self._COOKIE_REMOVAL_JS, timeout=5)
+            script = self._CONSENT_CLICK_JS if click_only else self._COOKIE_REMOVAL_JS
+            result = await self._evaluate(tab, script, timeout=5)
         except asyncio.TimeoutError:
             trace(f"Cookie removal script timed out for {url}, continuing anyway")
             return {}
@@ -1617,7 +1640,8 @@ class WebAccess(Integration):
     def _trace_kept_consent_matches(result: dict, url: str):
         if result.get('kept', 0):
             trace(f"cookie consent: kept {result['kept']} matched element(s) on {url} — "
-                  f"<html>/<body> or a wrapper of the page content, not a banner")
+                  f"<html>/<body>, a wrapper of the page content or an open dialog of the "
+                  f"site's own, not a banner")
 
     # Query parameters that only track the click: dropped from every link the extractor
     # renders. A page's links are most of its text on a commerce site — booking.com gives
@@ -5302,8 +5326,9 @@ class WebAccess(Integration):
                 return point
 
     async def _async_consent_pass_for_click(self, point: dict) -> bool:
-        """One consent pass because `point` says something covers the click target;
-        True when it answered a banner, so the point is worth looking up again."""
+        """One click-only consent pass because `point` says something covers the click
+        target; True when it answered a banner, so the point is worth looking up again.
+        Nothing is removed: the cover may be the site's own dialog."""
         try:
             url = await self._evaluate(self._tab, "location.href")
         except Exception:
@@ -5312,14 +5337,15 @@ class WebAccess(Integration):
         if self._is_auth_url(url):
             trace(f"trusted click: covered by {point.get('hit')} on an auth URL — no consent pass")
             return False
-        result = await self._async_remove_cookies_banner(self._tab, url)
-        clicked, removed = result.get('clicked', 0), result.get('removed', 0)
-        if clicked or removed:
+        result = await self._async_remove_cookies_banner(self._tab, url, click_only=True)
+        clicked = result.get('clicked', 0)
+        if clicked:
             info(f"trusted click: covered by {point.get('hit')} — consent pass clicked={clicked} "
-                 f"removed={removed}, looking up the click point again")
+                 f"(nothing removed), looking up the click point again")
             self._click_answered_consent = True
             return True
-        trace(f"trusted click: covered by {point.get('hit')} — the consent pass matched nothing")
+        trace(f"trusted click: covered by {point.get('hit')} — no accept button to press, "
+              f"the cover is left in place")
         return False
 
     async def _async_dispatch_click_at(self, x: float, y: float) -> None:
