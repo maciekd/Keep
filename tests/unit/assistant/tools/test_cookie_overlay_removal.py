@@ -96,8 +96,8 @@ console.log(JSON.stringify({
 """
 
 
-def run_consent_script(spec: dict) -> dict:
-    script = WebAccess._COOKIE_REMOVAL_JS.strip().rstrip(';')
+def run_consent_script(spec: dict, script: str = WebAccess._COOKIE_REMOVAL_JS) -> dict:
+    script = script.strip().rstrip(';')
     program = _DOM_STUB_JS.replace('SPEC', json.dumps(spec)).replace('SCRIPT', script)
     done = subprocess.run([NODE, '-'], input=program, capture_output=True, text=True, timeout=20)
     assert done.returncode == 0, done.stderr
@@ -154,9 +154,10 @@ class TestConsentScriptKeepsTheDocument:
         out = run_consent_script(page('', ORDER, badge))
         assert 'badge' in out['ids']
 
-    def test_positioned_dialog_backdrop_is_removed(self):
+    def test_positioned_consent_dialog_backdrop_is_removed(self):
         dialog = {'tag': 'div', 'id': 'dlg', 'cls': 'overlay', 'attrs': {'role': 'dialog'},
-                  'style': {'position': 'absolute'}, 'rect': {'width': 400, 'height': 300}}
+                  'style': {'position': 'absolute'}, 'rect': {'width': 400, 'height': 300},
+                  'text': 'Your privacy choices'}
         out = run_consent_script(page('', ORDER, dialog))
         assert 'dlg' not in out['ids']
 
@@ -171,7 +172,8 @@ class TestConsentScriptKeepsTheDocument:
                    'style': {'position': 'fixed', 'zIndex': '5000'}, 'rect': FULLSCREEN, 'children': [ORDER]}
         out = run_consent_script(page('', wrapper))
         assert out['ids'] == ['root', 'head', 'body', 'shell', 'order']
-        assert out['result'] == {'clicked': 0, 'removed': 0, 'kept': 2}
+        # only the backdrop cleanup reaches for it: pass 3 wants consent wording
+        assert out['result'] == {'clicked': 0, 'removed': 0, 'kept': 1}
 
     def test_script_source_does_not_dilute_a_content_wrapper(self):
         # No <main>: the share of the page's text is all that protects the wrapper, and
@@ -190,6 +192,65 @@ class TestConsentScriptKeepsTheDocument:
         content = {'tag': 'div', 'id': 'content', 'text': 'The lamp ships on Thursday. ' * 10}
         out = run_consent_script(page('', content, wall))
         assert out['ids'] == ['root', 'head', 'body', 'content']
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(NODE is None, reason="node is needed to run the consent script")
+class TestConsentScriptKeepsTheSitesOwnDialog:
+    """A shop's delivery picker (2026-11): the pass took a node of the open modal, the
+    framework crashed on its next render and the purchase failed three times out of three."""
+
+    RAISED = {'position': 'fixed', 'zIndex': '5000'}
+    PICKER_TEXT = 'Choose a delivery slot — Thursday 14–16'
+
+    def test_a_tall_raised_modal_without_consent_wording_is_kept(self):
+        picker = {'tag': 'div', 'id': 'picker', 'cls': 'modal', 'style': self.RAISED,
+                  'rect': {'width': 600, 'height': 500}, 'text': self.PICKER_TEXT}
+        out = run_consent_script(page('', ORDER, picker))
+        assert 'picker' in out['ids']
+        assert out['result']['removed'] == 0
+
+    @pytest.mark.parametrize('attrs', [{'role': 'dialog'}, {'role': 'alertdialog'},
+                                       {'aria-modal': 'true'}, {'data-state': 'open'}])
+    def test_an_open_dialog_classed_as_an_overlay_is_kept(self, attrs):
+        # 'We accept cards' is no consent wording, though pass 3 takes "accept" from a plain overlay
+        picker = {'tag': 'div', 'id': 'picker', 'cls': 'overlay', 'attrs': attrs, 'style': self.RAISED,
+                  'rect': FULLSCREEN, 'text': 'We accept cards. ' + self.PICKER_TEXT}
+        out = run_consent_script(page('', ORDER, picker))
+        assert 'picker' in out['ids']
+        assert out['result']['removed'] == 0
+
+    def test_an_open_dialog_about_cookies_is_still_removed(self):
+        wall = {'tag': 'div', 'id': 'wall', 'cls': 'overlay', 'attrs': {'role': 'dialog', 'data-state': 'open'},
+                'style': self.RAISED, 'rect': FULLSCREEN, 'text': 'We use cookies'}
+        out = run_consent_script(page('', ORDER, wall))
+        assert 'wall' not in out['ids']
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(NODE is None, reason="node is needed to run the consent script")
+class TestClickOnlyConsentPass:
+    """The pass a covered click runs presses accept buttons and takes nothing out."""
+
+    BANNER = {'tag': 'div', 'id': 'cookie-bar', 'cls': 'overlay',
+              'style': {'position': 'fixed', 'zIndex': '9999'}, 'rect': {'width': 1280, 'height': 160},
+              'text': 'We use cookies', 'children': [
+                  {'tag': 'button', 'id': 'ok', 'cls': 'cookie-accept', 'text': 'Accept all'}]}
+
+    def test_the_accept_button_is_pressed_and_the_banner_left_to_the_page(self):
+        out = run_consent_script(page('', ORDER, self.BANNER), WebAccess._CONSENT_CLICK_JS)
+        assert out['clicks'] == ['ok']
+        assert out['result'] == {'clicked': 1, 'removed': 0, 'kept': 0}
+        assert 'cookie-bar' in out['ids']
+
+    def test_what_the_full_pass_removes_stays(self):
+        backdrop = {'tag': 'div', 'id': 'veil', 'cls': 'modal-backdrop',
+                    'style': {'position': 'fixed', 'zIndex': '50'}, 'rect': FULLSCREEN}
+        spec = page('', ORDER, backdrop)
+        assert 'veil' not in run_consent_script(spec)['ids']
+        out = run_consent_script(spec, WebAccess._CONSENT_CLICK_JS)
+        assert 'veil' in out['ids']
+        assert out['result'] == {'clicked': 0, 'removed': 0, 'kept': 0}
 
 
 @pytest.mark.unit
