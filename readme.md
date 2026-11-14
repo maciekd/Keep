@@ -34,6 +34,9 @@ If local is your goal, we recommend starting with the default cloud version and 
 
 Refined over two years of daily use in real homes.
 
+### Shopping
+We recommend using a prepaid card for your AI - Revolut works very well and needs no 3DS normally.
+
 ### Requirements
 An Apple Silicon Mac with 16 GB RAM, signed in to your personal iCloud, to run the Keep server.
 
