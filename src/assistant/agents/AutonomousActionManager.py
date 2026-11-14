@@ -351,7 +351,8 @@ class AutonomousActionManager:
                 if self._nightly_curation_due(now):
                     # On a thread of its own: the batch it waits for can be over an hour away,
                     # and this loop has other things to check meanwhile.
-                    threading.Thread(target=self._run_memory_curation, kwargs={'batch': True},
+                    threading.Thread(target=self._run_memory_curation,
+                                     kwargs={'batch': True, 'period_start': LongTermMemoryCurator.catch_up_start(now)},
                                      daemon=True, name="MemoryCuration").start()
 
             if self.prompt_manager.is_night_mode_active():

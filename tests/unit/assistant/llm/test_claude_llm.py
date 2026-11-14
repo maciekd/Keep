@@ -787,6 +787,12 @@ class TestBatchedCompletion:
         llm = _batch_llm(["ended"], message=_batch_message(text=""))
         assert llm.create_batched_completion(MESSAGES) is None
 
+    def test_a_reply_cut_off_before_any_text_is_not_none(self, _sleep):
+        # None invites the ordinary call: the same request, cut off again at full price
+        llm = _batch_llm(["ended"], message=_batch_message(text="", stop_reason="max_tokens"))
+        assert llm.create_batched_completion(MESSAGES) == ""
+        assert llm.last_stop_reason == "max_tokens"
+
     def test_refusal_raises_instead_of_inviting_a_second_refused_call(self, _sleep):
         llm = _batch_llm(["ended"], message=_batch_message(text="", stop_reason="refusal"))
         with pytest.raises(LLMRefusalError):

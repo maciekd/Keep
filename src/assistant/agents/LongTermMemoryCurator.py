@@ -41,6 +41,13 @@ MEMORY_WORD_LIMIT = 4000
 # condensed every night.
 CONDENSE_TRIGGER = 0.10
 CONDENSE_CUT = 0.20
+# How far before its default start a nightly run reaches for the hours a failed night left
+# uncurated (`catch_up_start`).
+CATCH_UP_DAYS = 2
+# The journal line of a run whose reply was cut off (`save_debug_log`), which `catch_up_start`
+# reads back: such a run curated nothing. The header it stands in ends well within this.
+JOURNAL_CUT_OFF = "reply cut off at the output cap"
+JOURNAL_HEADER_CHARS = 1000
 # How long a nightly run waits for its batch before it makes the ordinary full-price call
 # (`ai.memory_curator.batch_wait_minutes`): from the 04:00 run, done before the house wakes.
 BATCH_WAIT_MINUTES = 90
@@ -366,6 +373,41 @@ class LongTermMemoryCurator:
         return max(stamps) if stamps else None
 
     @classmethod
+    def catch_up_start(cls, now: datetime = None, lookback_days: int = 1) -> datetime | None:
+        """Where a default run must start so that nothing is left uncurated, or None when the
+        default start (midnight `lookback_days` back) already covers it. A run whose reply was
+        cut off keeps the old bank but writes its journal and counts as the night's run, and
+        the next night starts at its own midnight: the hours between the end of the last
+        accepted curation and that midnight were never curated (2026-11-12 04:38 .. 24:00).
+        Read from the journals' `Period` lines; reaches back at most CATCH_UP_DAYS before the
+        default start, so a long outage does not become one prompt of a week."""
+        now = now or datetime.now()
+        default_start = datetime.combine(now.date() - timedelta(days=lookback_days), datetime.min.time())
+        floor = default_start - timedelta(days=CATCH_UP_DAYS)
+        accepted_ends = []
+        for path in MEMORY_LOG_DIR.glob("*_memory.md"):
+            try:
+                if datetime.strptime(path.name[:15], "%Y%m%d_%H%M%S") < floor:
+                    continue
+                with open(path, encoding="utf-8") as f:
+                    header = f.read(JOURNAL_HEADER_CHARS).split("\n---", 1)[0]
+                period = re.search(r"^- Period: \S+ \.\. (\S+)$", header, re.MULTILINE)
+                if period and JOURNAL_CUT_OFF not in header:
+                    accepted_ends.append(datetime.fromisoformat(period.group(1)))
+            except (ValueError, OSError) as e:
+                trace(f"Rem: journal {path.name} not readable for the catch-up ({e}) — left out")
+        if not accepted_ends:
+            trace(f"Rem: no accepted curation since {floor:%Y-%m-%d %H:%M} on record — the default period")
+            return None
+        last_end = max(accepted_ends)
+        if last_end >= default_start:
+            trace(f"Rem: the last accepted curation ended {last_end:%Y-%m-%d %H:%M} — the default period covers it")
+            return None
+        info(f"Rem: the last accepted curation ended {last_end:%Y-%m-%d %H:%M}, before the default start "
+             f"{default_start:%Y-%m-%d %H:%M} — this run starts there")
+        return last_end
+
+    @classmethod
     def run_span(cls, start: date, end: date, history=None, curator: 'LongTermMemoryCurator' = None,
                  on_chunk=None, first_chunk: int = 0) -> dict | None:
         """Curate the days start..end (end inclusive) in `CURATION_CHUNK_DAYS` chunks, in
@@ -590,13 +632,17 @@ class LongTermMemoryCurator:
     def memory_size_note(word_count: int) -> str:
         """The measured size of the bank, stated so the LLM does not have to estimate it."""
         note = f"The current memory bank is {word_count} words (the limit is {MEMORY_WORD_LIMIT} words)."
-        if word_count > MEMORY_WORD_LIMIT:
+        if LongTermMemoryCurator.needs_condensing(word_count):
+            # The cut is the condensing pass's (see CONDENSE_TRIGGER). Told to make it here, the
+            # model spent its whole output budget counting words — 64000 tokens twice in one
+            # night (2026-11-13), no bank written and the period lost.
+            note += (f" It is over the limit by {word_count - MEMORY_WORD_LIMIT} words. Do NOT try to bring it under "
+                     "the limit in this run and do not count words: a separate condensing pass does that right "
+                     "after you. Curate as usual — just do not make the bank longer than the period's new facts need.")
+        elif word_count > MEMORY_WORD_LIMIT:
             excess = word_count - MEMORY_WORD_LIMIT
             note += (f" It is OVER the limit by {excess} words: the updated bank you output must be at least "
                      f"{excess} words shorter than the current one, on top of any additions you make.")
-            if excess > MEMORY_WORD_LIMIT * 0.1:
-                note += (" Condensing the bank is a REQUIRED part of this run, not optional: you MUST condense "
-                         "to meet the limit. Removing the least important information is acceptable.")
         else:
             note += f" You have {MEMORY_WORD_LIMIT - word_count} words of headroom for additions."
         return note
@@ -761,7 +807,9 @@ class LongTermMemoryCurator:
         """The curation call: through the batch API at half price when this run can wait
         (`batch`) and `ai.memory_curator.batch` has not turned it off, the ordinary call
         otherwise — and whenever the batch gave no answer (a backend without a batch API, the
-        wait ran out, an error). A refusal is not retried: the same request is refused again."""
+        wait ran out, an error). A refusal is not retried: the same request is refused again;
+        nor is a reply cut off at the output cap, which comes back as it is (`_accept` keeps
+        the old bank) — the same request at full price was cut off again."""
         config = ConfigManager.get_instance()
         if not self.batch:
             trace("Rem: an interactive curation — the ordinary call")
@@ -865,7 +913,7 @@ class LongTermMemoryCurator:
                 f.write(f"- New size: {metadata.get('new_memory_size', 0)} chars\n")
                 f.write(f"- LLM duration: {metadata.get('llm_duration_seconds', 0):.1f}s\n")
                 if metadata.get('truncated'):
-                    f.write("- Result: reply cut off at the output cap — previous bank kept\n")
+                    f.write(f"- Result: {JOURNAL_CUT_OFF} — previous bank kept\n")
                 if metadata.get('condense'):
                     c = metadata['condense']
                     f.write(f"- Condensing pass: {c['from']} → {c.get('to', '?')} words (asked to remove {c['cut']}), "

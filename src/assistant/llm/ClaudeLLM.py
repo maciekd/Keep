@@ -748,7 +748,9 @@ class ClaudeLLM(AbstractLLM):
         whenever Anthropic gets to it (usually well within the hour, 24 hours at most). A batch
         that has not ended after `max_wait_seconds` is cancelled; a reply it produced while the
         cancel was on its way is still used, so the caller never pays for the same answer
-        twice. None when the batch gave no reply. Fast mode is not available on batches."""
+        twice. None when the batch gave no reply — but a reply cut off at max_tokens is returned
+        even when it holds no text (the thinking used the whole cap): None would have the caller
+        send the same request again, to be cut off again. Fast mode is not available on batches."""
         self._ensure_initialized()
         if self.speed == "fast":
             info("Claude batch: fast mode is not available on the Batches API - no batch")
@@ -787,7 +789,9 @@ class ClaudeLLM(AbstractLLM):
         text = ''.join(block.text for block in response.content if block.type == 'text')
         if not text.strip():
             info(f"Claude batch {batch.id} returned no text (stop_reason={self._last_stop_reason})")
-            return None
+            if self._last_stop_reason != 'max_tokens':
+                return None
+            info("Claude batch: the cap went on thinking - returning the empty reply, the same request would be cut again")
         return text
 
     def _wait_for_batch(self, batch_id: str, deadline: float) -> bool:
