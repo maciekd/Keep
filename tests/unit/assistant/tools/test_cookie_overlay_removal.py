@@ -423,3 +423,61 @@ class TestEmbeddedJsonSummary:
         assert WebAccess._summarise_embedded_json([payload]) == ""
         text = WebAccess.extract_text_with_links(self.SHELL.format(payload=payload), 'https://shop.example/o')
         assert text == 'Order status'
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(NODE is None, reason="node is needed to run the consent script")
+class TestTheSitesDialogInsideAWrapper:
+    """Modal libraries put the dialog one level down: a fixed overlay element with the
+    role=dialog content as its child. Taking the wrapper takes the open dialog with it."""
+
+    PICKER_TEXT = 'Choose a delivery slot — Thursday 14–16'
+    # enough page that the dialog is not most of its text (which alone would protect it)
+    SHOP = {'tag': 'main', 'id': 'order', 'text': 'Order KEP-47 — arrives Thursday. ' + 'Oat milk, 1 l. ' * 40}
+
+    def wrapped(self, cls: str, style: dict, text: str) -> dict:
+        return {'tag': 'div', 'id': 'wrapper', 'cls': cls, 'style': style, 'rect': FULLSCREEN, 'children': [
+            {'tag': 'div', 'id': 'picker', 'attrs': {'role': 'dialog', 'aria-modal': 'true'},
+             'rect': {'width': 600, 'height': 500}, 'text': text}]}
+
+    @pytest.mark.xfail(strict=True, reason="isSiteDialog looks at the element's own attributes only: an overlay "
+                                           "wrapper around an open role=dialog is removed with the dialog in it")
+    @pytest.mark.parametrize('cls, style, text', [
+        # the backdrop cleanup: a full-screen .overlay, no wording needed at all
+        ('overlay', {'position': 'fixed', 'zIndex': '50'}, PICKER_TEXT),
+        # pass 3: a raised wrapper whose dialog happens to say "accept"
+        ('checkout-modal', {'position': 'fixed', 'zIndex': '5000'}, 'We accept cards. ' + PICKER_TEXT),
+    ], ids=['backdrop-cleanup', 'pass-3'])
+    def test_a_wrapper_holding_an_open_dialog_of_the_sites_own_is_kept(self, cls, style, text):
+        out = run_consent_script(page('', self.SHOP, self.wrapped(cls, style, text)))
+        assert 'picker' in out['ids']
+        assert out['result']['removed'] == 0
+
+    def test_a_wrapper_holding_a_consent_dialog_still_goes(self):
+        out = run_consent_script(page('', self.SHOP, self.wrapped(
+            'overlay', {'position': 'fixed', 'zIndex': '5000'}, 'We use cookies to remember your basket')))
+        assert 'wrapper' not in out['ids'] and 'picker' not in out['ids']
+        assert 'arrives Thursday' in out['text']
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(NODE is None, reason="node is needed to run the consent script")
+class TestTheScriptAPassIsRunWith:
+    """`click_only` is the whole difference between the pass at page load and the one under
+    a covered click: what the method hands the page is run here, not compared by name."""
+
+    VEIL = {'tag': 'div', 'id': 'veil', 'cls': 'modal-backdrop',
+            'style': {'position': 'fixed', 'zIndex': '50'}, 'rect': FULLSCREEN}
+
+    def ids_left_by(self, **kwargs) -> list:
+        evaluate = AsyncMock(return_value={})
+        with patch.object(WebAccess, '_evaluate', new=evaluate):
+            asyncio.run(WebAccess._async_remove_cookies_banner(
+                WebAccess.__new__(WebAccess), Mock(), 'https://shop.example/checkout', **kwargs))
+        return run_consent_script(page('', ORDER, self.VEIL), evaluate.await_args.args[1])['ids']
+
+    def test_the_click_only_pass_hands_the_page_a_script_that_removes_nothing(self):
+        assert 'veil' in self.ids_left_by(click_only=True)
+
+    def test_the_default_pass_still_removes(self):
+        assert 'veil' not in self.ids_left_by()
