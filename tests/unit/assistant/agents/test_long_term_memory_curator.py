@@ -229,9 +229,9 @@ class TestMemoryWordCount:
         assert "OVER" not in note
 
     def test_over_limit_demands_a_cut_of_the_excess(self):
-        note = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + 2162)
-        assert "OVER the limit by 2162 words" in note
-        assert "at least 2162 words shorter" in note
+        note = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + 162)
+        assert "OVER the limit by 162 words" in note
+        assert "at least 162 words shorter" in note
 
 
 def _bank(words: int) -> str:
@@ -279,7 +279,7 @@ class TestCondensingPass:
         _, metadata = curator.curate_memory_with_data("history", "", oversize)
         assert curator.llm.think.call_count == 1
         prompt = curator.llm.think.call_args.kwargs['system_message']
-        assert oversize in prompt and "REQUIRED" in prompt
+        assert oversize in prompt and "words shorter" not in prompt
         assert metadata['condense'] is None
 
     def test_a_curated_bank_under_the_trigger_is_not_condensed(self):
@@ -714,6 +714,12 @@ class TestBatch:
         memory, llm = self._curate(batch=True, batched_reply=None)
         assert memory.endswith("ordinary")
 
+    def test_a_batch_reply_cut_off_before_any_text_is_not_asked_for_again(self):
+        # 2026-11-13: the same 226k-token request went out a second time and was cut off again
+        memory, llm = self._curate(batch=True, batched_reply="")
+        llm.think.assert_not_called()
+        assert memory == self.BANK
+
     def test_failed_batch_falls_back_to_the_ordinary_call(self):
         memory, _ = self._curate(batch=True, batched_error=RuntimeError("batches are down"))
         assert memory.endswith("ordinary")
@@ -763,11 +769,64 @@ class TestReferenceResultsLeaveTheTranscript:
 
 
 
-def test_size_note_demands_condensing_only_when_over_the_limit_by_a_tenth():
+def test_size_note_leaves_the_cut_to_the_condensing_pass_exactly_when_one_will_run():
+    # Asked for a cut the pass makes anyway, the model thought through its whole output cap
+    # counting words (2026-11-13): the demand is made only below the pass's trigger.
     mild = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + MEMORY_WORD_LIMIT // 10)
     severe = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + MEMORY_WORD_LIMIT // 10 + 1)
-    assert "words shorter" in mild and "REQUIRED" not in mild
-    assert "REQUIRED" in severe
+    assert "words shorter" in mild
+    assert "words shorter" not in severe and "condensing pass" in severe
+    assert f"{MEMORY_WORD_LIMIT // 10 + 1} words" in severe
+
+
+@pytest.mark.unit
+class TestCatchUpStart:
+    """A night whose reply was cut off keeps the old bank and still counts as the night's run;
+    the next run must begin where the last accepted curation ended, not at its own midnight."""
+
+    NOW = datetime.now().replace(hour=4, minute=10, second=0, microsecond=0)
+    MIDNIGHT = NOW.replace(hour=0, minute=0)
+
+    @pytest.fixture(autouse=True)
+    def journal_dir(self, tmp_path, monkeypatch):
+        import assistant.agents.LongTermMemoryCurator as curator_mod
+        monkeypatch.setattr(curator_mod, "MEMORY_LOG_DIR", tmp_path / "memory")
+
+    @staticmethod
+    def journal(start: datetime, end: datetime, truncated: bool = False):
+        # written by the real writer: the reader must agree with it
+        LongTermMemoryCurator.save_debug_log("# Memory\n", {
+            'period_start': start.isoformat(timespec='minutes'), 'period_end': end.isoformat(timespec='minutes'),
+            'interaction_count': 3, 'truncated': truncated, 'old_memory': '# Memory\n',
+            'full_prompt': '- Period: 2020-01-01T00:00 .. 2020-01-02T00:00\n'})
+
+    def days(self, back: float, hour: int = 0) -> datetime:
+        return self.MIDNIGHT - timedelta(days=back) + timedelta(hours=hour)
+
+    def test_after_a_cut_off_night_the_run_starts_where_the_last_accepted_one_ended(self):
+        self.journal(self.days(3), self.days(2, hour=4))
+        self.journal(self.days(2), self.days(1, hour=4), truncated=True)
+        assert LongTermMemoryCurator.catch_up_start(self.NOW) == self.days(2, hour=4)
+
+    def test_an_accepted_last_night_leaves_the_default_period(self):
+        self.journal(self.days(3), self.days(2, hour=4), truncated=True)
+        self.journal(self.days(2), self.days(1, hour=4))
+        assert LongTermMemoryCurator.catch_up_start(self.NOW) is None
+
+    def test_no_journal_at_all_leaves_the_default_period(self):
+        assert LongTermMemoryCurator.catch_up_start(self.NOW) is None
+
+    def test_a_journal_without_a_period_is_no_curation(self):
+        # the condensing pass run on its own writes one
+        LongTermMemoryCurator.save_debug_log("# Memory\n", {'old_memory': '# Memory\n'})
+        assert LongTermMemoryCurator.catch_up_start(self.NOW) is None
+
+    def test_the_reach_back_is_bounded(self):
+        # an accepted run a week before this one (as the clock stood then) is out of reach
+        import assistant.agents.LongTermMemoryCurator as curator_mod
+        self.journal(self.days(8), self.days(7, hour=4))
+        later = self.NOW + timedelta(days=curator_mod.CATCH_UP_DAYS + 2)
+        assert LongTermMemoryCurator.catch_up_start(later) is None
 
 
 @pytest.mark.unit

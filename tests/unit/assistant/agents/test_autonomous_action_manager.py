@@ -2099,7 +2099,23 @@ class TestCurationSlotAcrossTheHour:
                 if thread.name == "MemoryCuration":
                     thread.join()
         mgr.running = True
+        mgr.curation_calls = curation.call_args_list
         return curation.call_count, pending.call_count
+
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_the_night_after_a_cut_off_run_starts_where_the_last_accepted_one_ended(self, mock_claude):
+        from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator
+        mock_claude.return_value = Mock()
+        now = datetime.now().replace(hour=4, minute=5, second=0, microsecond=0)
+        accepted_end = now - timedelta(days=2, minutes=30)
+        for start, end, truncated in ((accepted_end - timedelta(days=1), accepted_end, False),
+                                      (accepted_end, now - timedelta(days=1), True)):
+            LongTermMemoryCurator.save_debug_log("# Memory\n", {
+                'period_start': start.isoformat(timespec='minutes'), 'period_end': end.isoformat(timespec='minutes'),
+                'truncated': truncated})
+        mgr = AutonomousActionManager.get_instance(make_mock_prompt_manager(night=True), test_mode=True)
+        self._run_ticks(mgr, [now], last_run=now - timedelta(days=1))
+        assert mgr.curation_calls[0].kwargs['period_start'] == accepted_end
 
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_a_tick_before_the_hour_does_not_use_the_day_up(self, mock_claude):
