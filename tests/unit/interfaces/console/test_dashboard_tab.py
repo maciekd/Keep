@@ -512,9 +512,9 @@ class TestFeedsTotalEdges:
 
 class TestCostSummary:
     """The Anthropic cost card's title strip (acc3490, ea11b79): the month total, then yesterday's
-    cost per workspace, each workspace figure in its bar colour so the reader needs no legend.
-    The total is no workspace's and must not wear a workspace colour: drawn in the first
-    workspace's cyan it read as that workspace's figure. The colour is the middle of the bars'
+    cost per key, each key figure in its bar colour so the reader needs no legend.
+    The total is no key's and must not wear a key colour: drawn in the first
+    key's cyan it read as that key's figure. The colour is the middle of the bars'
     shading, not the accent: the accent shows only at the top of the scale, so the figures
     looked a different colour from the bars."""
 
@@ -527,7 +527,7 @@ class TestCostSummary:
         tab.daily_costs = {"2026-10-17": {"ws-alpha": 9.0, "ws-beta": 9.0},
                            "2026-10-18": {"ws-alpha": 12.4, "ws-beta": 3.2},
                            "2026-10-19": {"ws-alpha": 50.0, "ws-beta": 60.0}}
-        tab.cost_workspaces = ["ws-alpha", "ws-beta"]
+        tab.cost_keys = ["ws-alpha", "ws-beta"]
         tab.total_cost_30d = 321.7
         return tab
 
@@ -537,17 +537,17 @@ class TestCostSummary:
         row = screen.next_frame[0]
         return "".join(cell.char for cell in row), row
 
-    def test_the_figures_are_the_month_total_and_yesterdays_cost_per_workspace(self):
+    def test_the_figures_are_the_month_total_and_yesterdays_cost_per_key(self):
         text, _ = self.strip()
         figures = [piece for piece in text.split() if piece.startswith("$")]
         assert figures == ["$322", "$12", "$3"], "rounded; yesterday's figures, not today's"
 
-    def test_each_workspace_figure_wears_the_middle_shade_of_its_bars_and_the_total_wears_none(self):
+    def test_each_key_figure_wears_the_middle_shade_of_its_bars_and_the_total_wears_none(self):
         tab = self.tab()
         text, row = self.strip()
         total, alpha, beta = [row[m.start()].style.fg for m in re.finditer(r"\$\d+", text)]
-        assert (alpha, beta) == (tab._workspace_shade(0, 0.5), tab._workspace_shade(1, 0.5))
-        assert alpha not in (tab._workspace_shade(0, 0.0), tab._workspace_shade(0, 1.0))
+        assert (alpha, beta) == (tab._key_shade(0, 0.5), tab._key_shade(1, 0.5))
+        assert alpha not in (tab._key_shade(0, 0.0), tab._key_shade(0, 1.0))
         assert total not in (alpha, beta)
 
     def zero_day_strip(self, yesterday):
@@ -558,13 +558,13 @@ class TestCostSummary:
         row = screen.next_frame[0]
         return tab, "".join(cell.char for cell in row), row
 
-    def test_a_workspace_that_spent_nothing_yesterday_is_left_out_and_the_rest_keep_their_colours(self):
+    def test_a_key_that_spent_nothing_yesterday_is_left_out_and_the_rest_keep_their_colours(self):
         tab, text, row = self.zero_day_strip({"ws-alpha": 0.2, "ws-beta": 3.2})
         figures = [m for m in re.finditer(r"\$\d+", text)]
         assert [m.group() for m in figures] == ["$322", "$3"], "$0.20 rounds to $0 and is dropped"
-        assert row[figures[1].start()].style.fg == tab._workspace_shade(1, 0.5), "beta's colour, not alpha's"
+        assert row[figures[1].start()].style.fg == tab._key_shade(1, 0.5), "beta's colour, not alpha's"
 
-    def test_a_day_nobody_spent_anything_shows_one_zero_in_no_workspaces_colour(self):
+    def test_a_day_nobody_spent_anything_shows_one_zero_in_no_keys_colour(self):
         tab, text, row = self.zero_day_strip({})
         figures = [m for m in re.finditer(r"\$\d+", text)]
         assert [m.group() for m in figures] == ["$322", "$0"]
@@ -580,26 +580,26 @@ class TestCostSummary:
 
 
 class TestCostLegendNames:
-    """The cost card's legend cuts the longest workspace names to fit every entry, rather than
-    dropping the entries past the card's edge (the fifth workspace went missing on a 70-cell card)."""
+    """The cost card's legend cuts the longest key names to fit every entry, rather than
+    dropping the entries past the card's edge (the fifth key went missing on a 70-cell card)."""
 
-    WORKSPACES = ["Default", "Alice Carlsson", "Bob", "Marcus-dev", "Marcus-prod"]
+    KEYS = ["Default", "Alice Carlsson", "Bob", "Marcus-dev", "Marcus-prod"]
 
     @staticmethod
     def legend_width(names):
         return sum(len(n) for n in names) + DashboardTab.LEGEND_GAP * (len(names) - 1)
 
     def test_names_that_fit_are_left_whole(self):
-        assert DashboardTab._legend_names(self.WORKSPACES, 200) == self.WORKSPACES
+        assert DashboardTab._legend_names(self.KEYS, 200) == self.KEYS
 
     def test_every_entry_fits_and_the_longest_names_are_cut_first(self):
-        names = DashboardTab._legend_names(self.WORKSPACES, 50)
+        names = DashboardTab._legend_names(self.KEYS, 50)
         assert self.legend_width(names) <= 50
         assert names[0] == "Default" and names[2] == "Bob", "short names keep their length"
         assert names[1].endswith("…") and names[1].startswith("Alice")
 
     def test_no_name_is_cut_below_the_minimum(self):
-        names = DashboardTab._legend_names(self.WORKSPACES, 10)
+        names = DashboardTab._legend_names(self.KEYS, 10)
         assert min(len(n) for n in names) == len("Bob")
         assert all(len(n) >= DashboardTab.LEGEND_MIN_NAME for n in names if n != "Bob")
 
@@ -636,13 +636,13 @@ class TestChartPictures:
 
 @pytest.mark.unit
 class TestCostBars:
-    def test_a_day_stacks_its_workspaces_in_order_and_skips_the_idle_ones(self):
+    def test_a_day_stacks_its_keys_in_order_and_skips_the_idle_ones(self):
         tab = make_tab()
         costs = {"d1": {"a": 2.0, "b": 0.0, "c": 3.0}}
         [bar] = tab._cost_bars(["d1"], ["a", "b", "c"], costs, 10.0, bar_w=2, gap=1, chart_w=40)
         assert (bar.x0, bar.x1) == (0, 2)
         assert [(s.start, s.end) for s in bar.segments] == [(0.0, 0.2), (0.2, 0.5)]
-        assert [s.color for s in bar.segments] == [DashboardTab.WORKSPACE_COLORS[0], DashboardTab.WORKSPACE_COLORS[2]]
+        assert [s.color for s in bar.segments] == [DashboardTab.KEY_COLORS[0], DashboardTab.KEY_COLORS[2]]
 
     def test_days_without_cost_are_gaps_and_days_past_the_width_are_left_out(self):
         tab = make_tab()

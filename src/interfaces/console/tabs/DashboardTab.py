@@ -104,7 +104,7 @@ class DashboardTab(TabView):
 
         # Anthropic cost data (written by AnthropicCostMonitor)
         self.daily_costs: dict = {}
-        self.cost_workspaces: list = []
+        self.cost_keys: list = []
         self.total_cost_30d: float = 0.0
         self.total_cost_1d: float = 0.0
         self.total_cost_yesterday: float = 0.0
@@ -976,14 +976,14 @@ class DashboardTab(TabView):
 
     # --- Anthropic Cost Chart ---
 
-    WORKSPACE_COLORS = [Theme.COLOR_CYAN, Theme.COLOR_PURPLE, Theme.COLOR_YELLOW, Theme.COLOR_GREEN, Theme.COLOR_PINK,
+    KEY_COLORS = [Theme.COLOR_CYAN, Theme.COLOR_PURPLE, Theme.COLOR_YELLOW, Theme.COLOR_GREEN, Theme.COLOR_PINK,
                         Theme.COLOR_ORANGE]
 
     def _draw_cost_chart(self, screen: TUIScreen, x: int, y: int, width: int, box_h: int):
         if box_h < 6 or width < 30:
             return
 
-        workspaces = self.cost_workspaces
+        keys = self.cost_keys
         daily_costs = self.daily_costs
         dates = self.cost_dates
         date_strs = self.cost_date_strs
@@ -1026,13 +1026,13 @@ class DashboardTab(TabView):
         max_cost = 0.0
         for ds in display_date_strs:
             day_data = daily_costs.get(ds, {})
-            max_cost = max(max_cost, sum(day_data.get(w, 0) for w in workspaces))
+            max_cost = max(max_cost, sum(day_data.get(w, 0) for w in keys))
         if max_cost <= 0:
             max_cost = 1.0
         # Round up to a nice number
         nice_max = self._nice_ceil(max_cost)
 
-        bars = self._cost_bars(display_date_strs, workspaces, daily_costs, nice_max, bar_w, gap,
+        bars = self._cost_bars(display_date_strs, keys, daily_costs, nice_max, bar_w, gap,
                                chart_w=x + box_w - 1 - chart_x)
         pictured = screen.graphics and bool(bars)
 
@@ -1065,7 +1065,7 @@ class DashboardTab(TabView):
 
                 # Build segments for this day (bottom to top)
                 segments = []
-                for mi, w in enumerate(workspaces):
+                for mi, w in enumerate(keys):
                     cost = day_data.get(w, 0)
                     if cost > 0:
                         segments.append((mi, cost))
@@ -1098,7 +1098,7 @@ class DashboardTab(TabView):
                         continue    # the rule drawn under the bars stays
                     elif len(overlapping) == 1:
                         mi, cs, ce = overlapping[0]
-                        color = self._workspace_shade(mi, grad_t)
+                        color = self._key_shade(mi, grad_t)
                         fill = ce - cs
                         if fill >= 0.99:
                             char = '\u2588'
@@ -1113,8 +1113,8 @@ class DashboardTab(TabView):
                         overlapping.sort(key=lambda s: s[1])
                         mi_low = overlapping[0][0]
                         mi_high = overlapping[-1][0]
-                        color_low = self._workspace_shade(mi_low, grad_t)
-                        color_high = self._workspace_shade(mi_high, grad_t)
+                        color_low = self._key_shade(mi_low, grad_t)
+                        color_high = self._key_shade(mi_high, grad_t)
                         fill_low = overlapping[0][2] - row_bottom
                         fill_total = overlapping[-1][2] - row_bottom
                         if fill_total >= 0.99:
@@ -1159,7 +1159,7 @@ class DashboardTab(TabView):
         # Legend row — each name in its bars' colour, centered under the chart area, or
         # across the whole card when wider
         legend_y = chart_y + chart_h + 1
-        names = self._legend_names(workspaces, box_w - 4)
+        names = self._legend_names(keys, box_w - 4)
         total_legend_w = sum(display_width(n) for n in names) + self.LEGEND_GAP * (len(names) - 1)
         if total_legend_w <= chart_w:
             lx = chart_x + (chart_w - total_legend_w) // 2
@@ -1169,15 +1169,15 @@ class DashboardTab(TabView):
             entry_w = display_width(name)
             if lx + entry_w > x + box_w - 2:
                 break
-            screen.set_color(self._workspace_color(mi))
+            screen.set_color(self._key_color(mi))
             screen.write_at(lx, legend_y, name)
             lx += entry_w + self.LEGEND_GAP
         screen.reset_color()
 
-    def _cost_bars(self, date_strs: Sequence[str], workspaces: Sequence[str], daily_costs: dict, nice_max: float,
+    def _cost_bars(self, date_strs: Sequence[str], keys: Sequence[str], daily_costs: dict, nice_max: float,
                    bar_w: int, gap: int, chart_w: int) -> List[Bar]:
-        """The cost chart's days as stacked bars for its picture: a segment per workspace that
-        spent anything, bottom to top in workspace order, the days that fit in `chart_w` cells."""
+        """The cost chart's days as stacked bars for its picture: a segment per key that
+        spent anything, bottom to top in key order, the days that fit in `chart_w` cells."""
         bars = []
         for day_idx, date_str in enumerate(date_strs):
             x0 = day_idx * (bar_w + gap)
@@ -1185,11 +1185,11 @@ class DashboardTab(TabView):
                 break
             day_data = daily_costs.get(date_str, {})
             segments, cursor = [], 0.0
-            for mi, w in enumerate(workspaces):
+            for mi, w in enumerate(keys):
                 cost = day_data.get(w, 0)
                 if cost > 0:
                     segments.append(Segment(cursor, cursor + cost / nice_max,
-                                            self.WORKSPACE_COLORS[mi % len(self.WORKSPACE_COLORS)]))
+                                            self.KEY_COLORS[mi % len(self.KEY_COLORS)]))
                     cursor += cost / nice_max
             if segments:
                 bars.append(Bar(x0, x0 + bar_w, segments))
@@ -1199,28 +1199,28 @@ class DashboardTab(TabView):
     LEGEND_MIN_NAME = 4
 
     @classmethod
-    def _legend_names(cls, workspaces: Sequence[str], width: int) -> List[str]:
-        """The workspace names for a legend `width` cells wide: the longest one cut by a cell
+    def _legend_names(cls, keys: Sequence[str], width: int) -> List[str]:
+        """The key names for a legend `width` cells wide: the longest one cut by a cell
         at a time, ending in an ellipsis, until every entry fits (or none is longer than
         `LEGEND_MIN_NAME`)."""
-        widths = [display_width(w) for w in workspaces]
+        widths = [display_width(w) for w in keys]
         over = sum(widths) + cls.LEGEND_GAP * (len(widths) - 1) - width
         while over > 0 and widths and max(widths) > cls.LEGEND_MIN_NAME:
             widths[widths.index(max(widths))] -= 1
             over -= 1
         return [w if display_width(w) <= cut else clip(w, cut - 1) + "\u2026"
-                for w, cut in zip(workspaces, widths)]
+                for w, cut in zip(keys, widths)]
 
     def _draw_cost_summary(self, screen: TUIScreen, x: int, y: int, width: int):
-        """The title strip's right end: the month's total, then yesterday's cost per workspace,
-        each workspace figure in the colour its bars have so the reader can tell which is
-        which. The totals are in the label grey: a coloured total reads as one workspace's.
-        A workspace whose figure rounds to $0 is left out; a day with none left is one grey $0."""
+        """The title strip's right end: the month's total, then yesterday's cost per key,
+        each key figure in the colour its bars have so the reader can tell which is
+        which. The totals are in the label grey: a coloured total reads as one key's.
+        A key whose figure rounds to $0 is left out; a day with none left is one grey $0."""
         yesterday = self.daily_costs.get(self.cost_date_strs[-2], {}) if len(self.cost_date_strs) >= 2 else {}
         pieces = [(f"Month ${self.total_cost_30d:.0f}", Theme.COLOR_LABEL), (" \u00b7 ", Theme.COLOR_FAINT),
                   ("Day", Theme.COLOR_LABEL)]
-        figures = [(f"${yesterday.get(w, 0):.0f}", self._workspace_color(mi))
-                   for mi, w in enumerate(self.cost_workspaces)]
+        figures = [(f"${yesterday.get(w, 0):.0f}", self._key_color(mi))
+                   for mi, w in enumerate(self.cost_keys)]
         spent = [figure for figure in figures if figure[0] != "$0"]
         for figure in spent or [("$0", Theme.COLOR_LABEL)]:
             pieces += [(" ", Theme.COLOR_FAINT), figure]
@@ -1235,16 +1235,16 @@ class DashboardTab(TabView):
             px += display_width(text)
         screen.reset_color()
 
-    def _workspace_color(self, workspace_index: int) -> Color:
-        """A workspace's colour as text names it (the legend, the title strip's figures): the
+    def _key_color(self, key_index: int) -> Color:
+        """A key's colour as text names it (the legend, the title strip's figures): the
         middle of its bars' shading, since the accent itself shows only at the top of the scale
         and reads as a different colour from the bars."""
-        return self._workspace_shade(workspace_index, 0.5)
+        return self._key_shade(key_index, 0.5)
 
-    def _workspace_shade(self, workspace_index: int, t: float) -> Color:
-        """A workspace's colour at height `t` (0..1) of the cost chart: the same deep-to-bright
+    def _key_shade(self, key_index: int, t: float) -> Color:
+        """A key's colour at height `t` (0..1) of the cost chart: the same deep-to-bright
         shading the other charts' columns have."""
-        fg = self.WORKSPACE_COLORS[workspace_index % len(self.WORKSPACE_COLORS)]
+        fg = self.KEY_COLORS[key_index % len(self.KEY_COLORS)]
         return Theme.mix(Theme.mix(Theme.COLOR_PANEL_BG, Theme.deep(fg), 0.8), fg, t)
 
     @staticmethod
