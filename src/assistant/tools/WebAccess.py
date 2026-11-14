@@ -1512,12 +1512,14 @@ class WebAccess(Integration):
     if (clickOnly) return { clicked: clicked, removed: 0, kept: 0 };
 
     // An open dialog of the site's own is rendered by its framework, which crashes on
-    // its next render when the node is gone: without consent wording it stays.
+    // its next render when the node is gone: without consent wording it stays — and so
+    // does the overlay wrapper a modal library puts around it.
     const CONSENT_WORDING_RE = /cookie|kakor|consent|samtycke|gdpr|privacy/i;
     const isSiteDialog = (el) => {
         const attr = (name) => (el.getAttribute && el.getAttribute(name)) || '';
         const dialog = ['dialog', 'alertdialog'].includes(attr('role')) ||
-            attr('aria-modal') === 'true' || attr('data-state') === 'open';
+            attr('aria-modal') === 'true' || attr('data-state') === 'open' ||
+            !!(el.querySelector && el.querySelector('[role="dialog"], [role="alertdialog"], [aria-modal="true"]'));
         return dialog && !CONSENT_WORDING_RE.test(el.innerText || '');
     };
 

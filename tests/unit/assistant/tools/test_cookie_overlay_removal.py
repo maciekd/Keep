@@ -202,11 +202,14 @@ class TestConsentScriptKeepsTheSitesOwnDialog:
 
     RAISED = {'position': 'fixed', 'zIndex': '5000'}
     PICKER_TEXT = 'Choose a delivery slot — Thursday 14–16'
+    # enough page that the picker is not most of its text — that alone protects an element,
+    # and with the one-line ORDER these tests passed with the fix undone
+    SHOP = {'tag': 'main', 'id': 'order', 'text': 'Order KEP-47 — arrives Thursday. ' + 'Oat milk, 1 l. ' * 40}
 
     def test_a_tall_raised_modal_without_consent_wording_is_kept(self):
         picker = {'tag': 'div', 'id': 'picker', 'cls': 'modal', 'style': self.RAISED,
                   'rect': {'width': 600, 'height': 500}, 'text': self.PICKER_TEXT}
-        out = run_consent_script(page('', ORDER, picker))
+        out = run_consent_script(page('', self.SHOP, picker))
         assert 'picker' in out['ids']
         assert out['result']['removed'] == 0
 
@@ -216,7 +219,7 @@ class TestConsentScriptKeepsTheSitesOwnDialog:
         # 'We accept cards' is no consent wording, though pass 3 takes "accept" from a plain overlay
         picker = {'tag': 'div', 'id': 'picker', 'cls': 'overlay', 'attrs': attrs, 'style': self.RAISED,
                   'rect': FULLSCREEN, 'text': 'We accept cards. ' + self.PICKER_TEXT}
-        out = run_consent_script(page('', ORDER, picker))
+        out = run_consent_script(page('', self.SHOP, picker))
         assert 'picker' in out['ids']
         assert out['result']['removed'] == 0
 
@@ -440,8 +443,6 @@ class TestTheSitesDialogInsideAWrapper:
             {'tag': 'div', 'id': 'picker', 'attrs': {'role': 'dialog', 'aria-modal': 'true'},
              'rect': {'width': 600, 'height': 500}, 'text': text}]}
 
-    @pytest.mark.xfail(strict=True, reason="isSiteDialog looks at the element's own attributes only: an overlay "
-                                           "wrapper around an open role=dialog is removed with the dialog in it")
     @pytest.mark.parametrize('cls, style, text', [
         # the backdrop cleanup: a full-screen .overlay, no wording needed at all
         ('overlay', {'position': 'fixed', 'zIndex': '50'}, PICKER_TEXT),
