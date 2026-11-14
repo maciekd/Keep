@@ -550,6 +550,26 @@ class TestCostSummary:
         assert alpha not in (tab._workspace_shade(0, 0.0), tab._workspace_shade(0, 1.0))
         assert total not in (alpha, beta)
 
+    def zero_day_strip(self, yesterday):
+        tab = self.tab()
+        tab.daily_costs["2026-10-18"] = yesterday
+        screen = TUIScreen(self.WIDTH, 3)
+        tab._draw_cost_summary(screen, 1, 1, self.WIDTH)
+        row = screen.next_frame[0]
+        return tab, "".join(cell.char for cell in row), row
+
+    def test_a_workspace_that_spent_nothing_yesterday_is_left_out_and_the_rest_keep_their_colours(self):
+        tab, text, row = self.zero_day_strip({"ws-alpha": 0.2, "ws-beta": 3.2})
+        figures = [m for m in re.finditer(r"\$\d+", text)]
+        assert [m.group() for m in figures] == ["$322", "$3"], "$0.20 rounds to $0 and is dropped"
+        assert row[figures[1].start()].style.fg == tab._workspace_shade(1, 0.5), "beta's colour, not alpha's"
+
+    def test_a_day_nobody_spent_anything_shows_one_zero_in_no_workspaces_colour(self):
+        tab, text, row = self.zero_day_strip({})
+        figures = [m for m in re.finditer(r"\$\d+", text)]
+        assert [m.group() for m in figures] == ["$322", "$0"]
+        assert row[figures[1].start()].style.fg == row[figures[0].start()].style.fg
+
     def test_the_strip_ends_two_cells_before_the_cards_right_edge(self):
         text, _ = self.strip()
         assert len(text.rstrip()) == self.WIDTH - 2

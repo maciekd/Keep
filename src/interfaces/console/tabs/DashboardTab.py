@@ -1214,14 +1214,16 @@ class DashboardTab(TabView):
     def _draw_cost_summary(self, screen: TUIScreen, x: int, y: int, width: int):
         """The title strip's right end: the month's total, then yesterday's cost per workspace,
         each workspace figure in the colour its bars have so the reader can tell which is
-        which. The totals are in the label grey: a coloured total reads as one workspace's."""
+        which. The totals are in the label grey: a coloured total reads as one workspace's.
+        A workspace whose figure rounds to $0 is left out; a day with none left is one grey $0."""
         yesterday = self.daily_costs.get(self.cost_date_strs[-2], {}) if len(self.cost_date_strs) >= 2 else {}
         pieces = [(f"Month ${self.total_cost_30d:.0f}", Theme.COLOR_LABEL), (" \u00b7 ", Theme.COLOR_FAINT),
-                  ("Day ", Theme.COLOR_LABEL)]
-        for mi, w in enumerate(self.cost_workspaces):
-            if mi:
-                pieces.append((" ", Theme.COLOR_FAINT))
-            pieces.append((f"${yesterday.get(w, 0):.0f}", self._workspace_color(mi)))
+                  ("Day", Theme.COLOR_LABEL)]
+        figures = [(f"${yesterday.get(w, 0):.0f}", self._workspace_color(mi))
+                   for mi, w in enumerate(self.cost_workspaces)]
+        spent = [figure for figure in figures if figure[0] != "$0"]
+        for figure in spent or [("$0", Theme.COLOR_LABEL)]:
+            pieces += [(" ", Theme.COLOR_FAINT), figure]
         total_w = sum(display_width(text) for text, _ in pieces)
         if display_width("Anthropic API Cost") + total_w + 6 > width:
             return
