@@ -662,3 +662,34 @@ class TestAsAMusicSystem:
         mm.play_in_zone = Mock(return_value=False)
         problem = mm.play_id("Kitchen", "F-1")
         assert "F-1" in problem and "Kitchen" in problem
+
+
+class TestTheNameBeforeTheRename:
+    """Until 2026-11-13 the integration was "Sonos & Spotify": procedures and memory notes an
+    install wrote before that still say so, and what they name must still be the speakers."""
+
+    @pytest.fixture
+    def commands(self):
+        from assistant.commands.Commands import Commands
+        from assistant.integration.IntegrationMonitor import IntegrationMonitor
+        monitor = IntegrationMonitor()
+        monitor._integrations["sonos"] = make_sonos()
+        commands = Commands.__new__(Commands)
+        with patch.object(Commands, "_integration_monitor", return_value=monitor), \
+                patch.object(Commands, "_known_integration_names", return_value=["Sonos", "HEOS"]):
+            yield commands
+
+    @pytest.mark.parametrize("written", ["Sonos & Spotify", "sonos & spotify", "SONOS"])
+    def test_a_command_naming_the_old_name_reaches_sonos(self, commands, written):
+        assert commands._canonical_integration_name(written) == "Sonos"
+
+    @pytest.mark.xfail(strict=True, reason="IntegrationMonitor.find compares a former name letter for letter, "
+                                           "not by integration_key as the current name and the migration do")
+    def test_the_old_name_in_another_spelling_the_config_accepted_reaches_sonos_too(self, commands):
+        """`enabled_integrations: [sonos-and-spotify]` was a valid way to write it, and the
+        migration renames that spelling; a note that kept it should resolve like the config did."""
+        assert commands._canonical_integration_name("sonos-and-spotify") == "Sonos"
+
+    def test_spotify_alone_names_no_integration(self, commands):
+        """The account is core's: half of the old name must not pass for the speakers."""
+        assert commands._canonical_integration_name("Spotify") is None
