@@ -111,6 +111,8 @@ class ChatSession:
     # How long the reply loop waits for the next assistant event before reporting progress;
     # the visible "still working" signal through slow thinking and commands.
     SPINNER_TICK_SECONDS = 0.5
+    INTERRUPTED_NOTICE = ("⚠️ A request from elsewhere interrupted me before I finished this one. "
+                          "Ask again if you still need it.")
     # Photos sharing a group id (an album) trickle in one message each; a lone photo only
     # waits a moment for a caption sent as a separate text.
     ALBUM_DEBOUNCE_SECONDS = 0.5
@@ -667,6 +669,19 @@ class ChatSession:
                 return
             all_responses.append(text)
 
+        def tell_interrupted():
+            """A request elsewhere (a voice request, a false wake among them) killed this turn
+            and the round in flight leaves nothing in the chat: say so instead of going silent.
+            Not on a turn that may end without a word anyway (a group message she was free to
+            ignore) — a notice there would answer what needed no answer."""
+            nonlocal draft
+            if suppress_no:
+                info(f"{prefix}: interrupted by a request elsewhere on a turn that needed no answer — nothing said")
+                return
+            info(f"{prefix}: interrupted by a request elsewhere with the round unanswered — telling the chat")
+            draft = transport.begin_draft(conversation)
+            close(self.INTERRUPTED_NOTICE)
+
         def new_round():
             nonlocal buffer, draft, spinner_mode, tick, round_start, in_thinking, thinking_text, token_count
             nonlocal thinking_rate
@@ -760,11 +775,15 @@ class ChatSession:
                 draft.discard()
                 return
 
-            if request.superseded and not transport.keeps_partial_reply:
-                info(f"{prefix}: superseded by a request elsewhere — what was written so far is not sent "
-                     f"({len(buffer)} chars)")
-                draft.discard()
-                return
+            if request.superseded:
+                if not transport.keeps_partial_reply:
+                    info(f"{prefix}: superseded by a request elsewhere — what was written so far is not sent "
+                         f"({len(buffer)} chars)")
+                    buffer = ""
+                if not buffer.strip():
+                    draft.discard()
+                    spinner_mode = False
+                    tell_interrupted()
 
             if spinner_mode:
                 draft.discard()

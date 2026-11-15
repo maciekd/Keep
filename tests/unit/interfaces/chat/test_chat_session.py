@@ -366,26 +366,61 @@ class TestAssistantBridge:
         said = [text for _, _, _, direction, text in hub.transcript if direction == "assistant"]
         assert not any("Let me look" in text or "21 degrees" in text for text in said)
 
-    @pytest.mark.parametrize("keeps, sent", [(True, ["The key is under the"]), (False, [])])
+    class KilledElsewhere(FakeAssistant):
+        """An assistant whose stream a request on another channel kills once it has yielded
+        `after` events."""
+
+        def __init__(self, events, after=1):
+            super().__init__(events)
+            self.after = after
+
+        def stream(self, req, query=None, images=None, request_data=None):
+            left = [self.after]
+
+            class Stream(FakeStream):
+                def __next__(self):
+                    event = super().__next__()
+                    left[0] -= 1
+                    self.killed = left[0] == 0
+                    return event
+
+            self.stream_obj = Stream(self.events)
+            return self.stream_obj
+
+    @pytest.mark.parametrize("keeps", [True, False])
     def test_a_reply_cut_short_by_a_request_elsewhere_is_sent_only_where_a_bubble_shows_it_already(
-            self, session, hub, transport, keeps, sent):
+            self, session, hub, transport, keeps):
         """A request on another channel kills the one in flight. A platform that edits its bubble
         has the half sentence on screen and keeps it; one that cannot take a bubble back would
-        send it only because of the kill."""
-        class KilledElsewhere(FakeStream):
-            def __next__(self):
-                event = super().__next__()
-                self.killed = True      # the other request arrives after the first words
-                return event
-
-        class Assistant(FakeAssistant):
-            def stream(self, req, query=None, images=None, request_data=None):
-                self.stream_obj = KilledElsewhere(self.events)
-                return self.stream_obj
-
+        send it only because of the kill, and is told the turn was interrupted instead."""
         transport.keeps_partial_reply = keeps
-        run_reply(session, hub, [], assistant=Assistant([Token("The key is under the"), Token(" mat.")]))
-        assert transport.finalized == sent
+        run_reply(session, hub, [], assistant=self.KilledElsewhere([Token("The key is under the"), Token(" mat.")]))
+        assert len(transport.finalized) == 1
+        assert ("key" in transport.finalized[0]) is keeps
+
+    @pytest.mark.parametrize("keeps", [True, False])
+    def test_a_turn_killed_from_elsewhere_before_a_word_tells_the_chat(self, session, hub, transport, keeps):
+        """Prod 2026-11-14: a false wake at a microphone killed a Telegram turn that was still
+        running its commands; the status line went away and the chat heard nothing."""
+        transport.keeps_partial_reply = keeps
+        run_reply(session, hub, [], assistant=self.KilledElsewhere([Thinking("hm", 3)]))
+        assert len(transport.finalized) == 1 and "interrupted" in transport.finalized[0]
+        assert any(direction == "assistant" and "interrupted" in text for *_, direction, text in hub.transcript)
+
+    def test_a_round_killed_from_elsewhere_after_an_answered_one_tells_the_chat(self, session, hub, transport):
+        events = [Token("Let me look."), RoundEnd(), Thinking("hm", 3)]
+        run_reply(session, hub, [], assistant=self.KilledElsewhere(events, after=3))
+        assert transport.finalized[0] == "Let me look."
+        assert len(transport.finalized) == 2 and "interrupted" in transport.finalized[1]
+
+    def test_a_turn_free_to_stay_silent_says_nothing_when_killed_from_elsewhere(self, session, hub, transport):
+        """A group message she may answer with a bare NO: a notice would answer what needed none."""
+        run_reply(session, hub, [], suppress_no=True, assistant=self.KilledElsewhere([Thinking("hm", 3)]))
+        assert transport.finalized == []
+
+    def test_a_turn_that_ends_on_its_own_without_a_word_gets_no_notice(self, session, hub, transport):
+        run_reply(session, hub, [Thinking("hm", 3), None])
+        assert transport.finalized == []
 
     def test_busy_assistant_apologises(self, session, hub, transport):
         run_reply(session, hub, [], busy="Server busy processing another request")

@@ -6,6 +6,7 @@ thread iterates the stream. The pool, the global dispatch mutex and the set of i
 requests used to be module globals in floxy_ai_server.py.
 """
 import threading
+import time
 import traceback
 from itertools import chain
 from queue import Empty, Queue
@@ -56,6 +57,7 @@ class Assistant:
     POOL_GET_TIMEOUT = 5.0
     REPLENISH_INTERVAL = 1.0
     REPLENISH_RETRY_DELAY = 5.0
+    INTERRUPTED_QUERY_MAX_CHARS = 300
 
     def __init__(self, prompt_manager, handler_factory: Callable[[], RequestProcessor], pool_size: int):
         """handler_factory builds one fresh, fully wired RequestProcessor (the launcher
@@ -182,6 +184,37 @@ class Assistant:
         else:
             trace(f"No running request to kill ({reason}).")
 
+    def _note_interrupted_turns(self, req: RequestContext):
+        """A history note for every chat turn in flight that *req* is about to kill from
+        another conversation (a voice request, a false wake among them, ending a Telegram
+        turn): a killed turn records nothing, so without the note the next turn in that chat
+        knows nothing of what was asked and cut. The owner's own words are quoted; a guest's
+        or a group's turn is named without them — nothing an outsider chose is stated as the
+        system's words. A turn its own chat replaces was cancelled there and is not in flight."""
+        for handler in self.running_handlers():
+            cut = handler.request_context
+            if (not handler.is_performing_request or handler.is_killed or cut is None or cut.conversation is None
+                    or cut.test):
+                continue
+            if (cut.source, cut.conversation) == (req.source, req.conversation):
+                trace(f"The turn of {cut.user} is replaced from its own conversation — no interruption note.")
+                continue
+            asked = ""
+            if not cut.guest and not cut.note and cut.user_input:
+                query = cut.user_input.strip()
+                if len(query) > self.INTERRUPTED_QUERY_MAX_CHARS:
+                    query = query[:self.INTERRUPTED_QUERY_MAX_CHARS] + "…"
+                asked = f' It asked: "{query}".'
+            where = f" ({cut.location})" if cut.location else ""
+            info(f"The {cut.source} turn of {cut.user} is cut by a {req.source} request from elsewhere — "
+                 f"leaving a note in the history.")
+            self.prompt_manager.message_history.add_transient_entry(
+                role="system", timestamp=time.time(), source="interrupted_turn",
+                content=f"The turn of {cut.display_name} on {cut.source}{where} was interrupted by a request "
+                        f"from elsewhere ({req.source}) before it was finished.{asked} Whatever of it is not in "
+                        f"the history was not done and not said; a command of it without a result here may "
+                        f"or may not have run.")
+
     def kill(self, request_id: str) -> bool:
         """Kill the in-flight request with this request_id (the iOS correlation id).
         Returns False when none matched."""
@@ -228,6 +261,10 @@ class Assistant:
                 # queued — a deferred turn would mean a thread or a timer held per guest.
                 info(f"Guest request from {req.user} refused: a request is in flight, a guest turn does not supersede it")
                 raise AssistantBusy("a request is in flight; a guest turn does not supersede it")
+            try:
+                self._note_interrupted_turns(req)
+            except Exception as e:
+                error(f"Could not note the interrupted turn(s) in the history: {type(e).__name__}: {e}")
             self.kill_all(f"superseded by new request {req.user_input!r}")
             if not req.guest and req.user != SYSTEM_USER:
                 self.spoken_to = True
