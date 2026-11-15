@@ -371,7 +371,7 @@ class WatchListTab(TabView):
             return item.due, Theme.COLOR_LABEL
         offset = entry.due_days
         distance = {0: "today", 1: "tomorrow"}.get(offset) or (f"in {offset}d" if offset > 0 else f"{-offset}d ago")
-        if (moment := WatchList.due_moment(item)) is not None:
+        if ":" in item.due and (moment := WatchList.due_moment(item)) is not None:
             if offset == 0:
                 distance = f"in {span(moment - now)}" if moment > now else f"{span(now - moment)} ago"
             return f"{moment:%b %-d %H:%M} · {distance}", cls._due_color(entry)
