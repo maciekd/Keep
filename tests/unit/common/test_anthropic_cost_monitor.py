@@ -1,9 +1,13 @@
+import re
+import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch, MagicMock
 
 import pytest
 
 from common.AnthropicCostMonitor import AnthropicCostMonitor
+from interfaces.console.framework.TUIScreen import TUIScreen
+from interfaces.console.tabs.DashboardTab import DashboardTab
 
 
 def _make_monitor():
@@ -189,3 +193,119 @@ class TestKeySeries:
 
         assert tab.daily_costs[_day(0)] == {"dev": pytest.approx(1.2)}
         assert tab.cost_keys == ["dev"]
+
+
+def _fetch_into(tab, get):
+    monitor = AnthropicCostMonitor(tab, fetch_interval=0)
+    with patch('common.AnthropicCostMonitor.config') as config, \
+            patch('common.AnthropicCostMonitor.requests.get', side_effect=get):
+        config.get.return_value = "test-key"
+        monitor._fetch_cost_data()
+
+
+@pytest.mark.unit
+class TestAFetchThatFailsPartWay:
+    """The 60 days come in two requests: a failure of the second must not leave the chart
+    with the first one's half."""
+
+    @staticmethod
+    def second_span_answers(status):
+        api = _Api([_row(_day(50), "apikey_a", "5000"), _row(_day(0), "apikey_a", "3000")])
+
+        def get(url, headers=None, params=None, **kwargs):
+            if url == AnthropicCostMonitor.API_URL and len(api.cost_calls()) == 1:
+                api.calls.append((url, dict(headers), dict(params)))
+                resp = MagicMock(status_code=status, text="refused")
+                resp.raise_for_status.side_effect = RuntimeError(f"HTTP {status}")
+                return resp
+            return api(url, headers=headers, params=params, **kwargs)
+
+        return get
+
+    def test_a_key_refused_at_the_second_span_publishes_no_half_chart(self):
+        _, tab = _make_monitor()
+        _fetch_into(tab, self.second_span_answers(403))
+
+        assert tab.daily_costs == {} and tab.cost_last_updated == 0.0
+        assert tab.cost_error, "the tab is told why there is no chart"
+
+    def test_a_server_error_at_the_second_span_raises_and_keeps_the_chart_of_the_last_fetch(self):
+        _, tab = _make_monitor()
+        tab.daily_costs = before = {_day(3): {"marcus-dev": 12.0}}
+
+        with pytest.raises(RuntimeError):
+            _fetch_into(tab, self.second_span_answers(500))
+
+        assert tab.daily_costs is before
+
+    def test_an_api_that_always_has_one_more_page_is_left_after_a_bounded_number_of_requests(self):
+        calls = []
+
+        def get(url, headers=None, params=None, **kwargs):
+            calls.append(url)
+            return MagicMock(status_code=200, json=lambda: {"data": [], "has_more": True, "next_page": "again"})
+
+        _, tab = _make_monitor()
+        _fetch_into(tab, get)
+
+        assert len(calls) <= 2 * AnthropicCostMonitor.MAX_PAGES
+        assert tab.cost_error == "", "what was read is published"
+
+    def test_the_loop_tells_the_tab_of_a_failed_fetch_and_fetches_again(self):
+        monitor, tab = _make_monitor()
+        stop, fetches = threading.Event(), []
+
+        def fetch():
+            fetches.append(1)
+            if len(fetches) == 1:
+                raise RuntimeError("HTTP 500 from the analytics API")
+            stop.set()
+
+        monitor._fetch_cost_data = fetch
+        monitor._monitor_loop(stop)
+
+        assert len(fetches) == 2, "one failure must not end the loop"
+        assert "500" in tab.cost_error
+
+
+@pytest.mark.unit
+class TestTheMonitorFeedsTheRealCostCard:
+    """The monitor writes attributes and the card reads them; every other test here hands the
+    monitor a Mock, which takes any attribute name. Here the two are held together."""
+
+    WIDTH = 90
+
+    @staticmethod
+    def card():
+        tab = DashboardTab.__new__(DashboardTab)   # no monitors started; the cost fields are the fetch's to set
+        tab._cards = []
+        tab._chart_pictures = {}
+        _fetch_into(tab, _Api([_row(_day(1), "apikey_dev", "1240"), _row(_day(1), "apikey_prod", "320"),
+                               _row(_day(0), "apikey_dev", "5000"), _row(_day(1), "apikey_idle", "20"),
+                               _row(_day(9), "apikey_idle", "900"), _row(_day(40), "apikey_prod", "7000")],
+                              keys=[{"id": "apikey_dev", "name": "marcus-dev"},
+                                    {"id": "apikey_prod", "name": "marcus-prod"},
+                                    {"id": "apikey_idle", "name": "charlotte"}]))
+        return tab
+
+    def test_the_header_reads_the_month_and_yesterday_per_key_off_a_fetch(self):
+        tab = self.card()
+        screen = TUIScreen(self.WIDTH, 3)
+        tab._draw_cost_summary(screen, 1, 1, self.WIDTH)
+        row = screen.next_frame[0]
+        text = "".join(cell.char for cell in row)
+
+        figures = list(re.finditer(r"\$\d+", text))
+        # month: 12.40 + 3.20 + 50 + 0.20 + 9 — the 40-day-old $70 is outside it;
+        # yesterday: charlotte's $0.20 is dropped, dev and prod keep the colours of series 1 and 2
+        assert [m.group() for m in figures] == ["$75", "$12", "$3"]
+        assert [row[m.start()].style.fg for m in figures[1:]] == [tab._key_color(1), tab._key_color(2)]
+
+    def test_the_chart_names_every_key_of_a_fetch_in_its_legend(self):
+        tab = self.card()
+        screen = TUIScreen(self.WIDTH, 16)
+        tab._draw_cost_chart(screen, 1, 1, self.WIDTH, 14)
+        drawn = "\n".join("".join(cell.char for cell in row) for row in screen.next_frame)
+
+        assert all(name in drawn for name in ("charlotte", "marcus-dev", "marcus-prod"))
+        assert "apikey_" not in drawn
