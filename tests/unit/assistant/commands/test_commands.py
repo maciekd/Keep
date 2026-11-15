@@ -2,7 +2,7 @@ import re
 import threading
 import time
 from collections import deque
-from unittest.mock import Mock, call, patch, MagicMock
+from unittest.mock import ANY, Mock, call, patch, MagicMock
 
 import pytest
 from pathlib import Path
@@ -240,7 +240,7 @@ class TestBackgroundCommand:
         commands_instance.background_command(fn, "params")
         commands_instance.wait_for_background(timeout=5)
         fn.assert_called_once_with("params")
-        commands_instance.command_processor.set_command_reply.assert_called_once_with("result_data", contains_error=False)
+        commands_instance.command_processor.set_command_reply.assert_called_once_with("result_data", contains_error=False, parts=ANY)
         commands_instance.command_processor.background_command_done.assert_called_once()
 
     def test_worker_exception_publishes_with_error_flag(self, commands_instance):
@@ -248,7 +248,7 @@ class TestBackgroundCommand:
         commands_instance.background_command(fn, "params")
         commands_instance.wait_for_background(timeout=5)
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "Command failed: boom", contains_error=True)
+            "Command failed: boom", contains_error=True, parts=ANY)
 
     def test_publish_leaves_the_pending_sync_reply_to_the_processor(self, commands_instance):
         """A sync command error appended earlier this round is the processor's own part of
@@ -262,7 +262,7 @@ class TestBackgroundCommand:
         commands_instance.background_command(fn, "params")
         commands_instance.wait_for_background(timeout=5)
 
-        cp.set_command_reply.assert_called_once_with("weather data", contains_error=False)
+        cp.set_command_reply.assert_called_once_with("weather data", contains_error=False, parts=ANY)
 
     def test_forget_batch_results_starts_the_next_publish_from_nothing(self, commands_instance):
         cp = commands_instance.command_processor
@@ -272,7 +272,7 @@ class TestBackgroundCommand:
 
         commands_instance.background_command(Mock(return_value="two"), None)
         assert commands_instance.wait_for_background(timeout=5)
-        cp.set_command_reply.assert_called_with("two", contains_error=False)
+        cp.set_command_reply.assert_called_with("two", contains_error=False, parts=ANY)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +296,7 @@ class TestBackgroundWorkerReplies:
         commands_instance.background_command(fn_data, None)
         assert commands_instance.wait_for_background(timeout=5)
 
-        commands_instance.command_processor.set_command_reply.assert_called_once_with("weather data", contains_error=False)
+        commands_instance.command_processor.set_command_reply.assert_called_once_with("weather data", contains_error=False, parts=ANY)
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +366,7 @@ class TestBackgroundLanes:
         assert commands_instance.wait_for_background(timeout=5)
 
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "slow result\n\nfast result", contains_error=False)
+            "slow result\n\nfast result", contains_error=False, parts=ANY)
 
     def test_lifecycle_fires_once_around_the_whole_batch(self, commands_instance, journal):
         log, lock = journal
@@ -412,7 +412,7 @@ class TestBackgroundLanes:
         assert commands_instance.wait_for_background(timeout=5)
 
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "fine\n\nCommand failed: boom\n\nfine", contains_error=True)
+            "fine\n\nCommand failed: boom\n\nfine", contains_error=True, parts=ANY)
 
     def test_browser_lane_runs_strictly_in_order(self, commands_instance, journal):
         log, lock = journal
@@ -441,7 +441,7 @@ class TestBackgroundLanes:
         page.release.set()
         assert commands_instance.wait_for_background(timeout=5)
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "page result\n\nsearch result", contains_error=False)
+            "page result\n\nsearch result", contains_error=False, parts=ANY)
 
     def test_config_lane_runs_one_at_a_time_in_order(self, commands_instance, journal):
         log, lock = journal
@@ -510,7 +510,7 @@ class TestBackgroundLanes:
         cp = commands_instance.command_processor
         commands_instance.background_command(Mock(return_value="one"), None)
         assert commands_instance.wait_for_background(timeout=5)
-        cp.set_command_reply.assert_called_once_with("one", contains_error=False)
+        cp.set_command_reply.assert_called_once_with("one", contains_error=False, parts=ANY)
         # The reply is still unconsumed: a real CommandProcessor would hold it.
         cp.command_reply = "one"
 
@@ -518,7 +518,7 @@ class TestBackgroundLanes:
         assert commands_instance.wait_for_background(timeout=5)
         assert cp.background_command_start.call_count == 2
         assert cp.background_command_done.call_count == 2
-        cp.set_command_reply.assert_called_with("one\n\ntwo", contains_error=False)
+        cp.set_command_reply.assert_called_with("one\n\ntwo", contains_error=False, parts=["one", "two"])
 
 
 

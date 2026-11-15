@@ -209,6 +209,7 @@ class RequestProcessor:
         self._silent_end_followed_up = False
         self._cap_hit_followed_up = False
         self._cut_round_result: str | None = None  # the second cut round's command result, for the history
+        self._cut_round_parts: list[str] = []
         self.first_sound_chunk = True
         self.is_killed = False
         self.kill_reason = ""  # why kill() fired, so the turn gate can log a truthful abort
@@ -723,7 +724,7 @@ class RequestProcessor:
             else:
                 prompt_manager.update_history(None, None, response_text)
             if self._cut_round_result:
-                prompt_manager.add_command_result(self._cut_round_result)
+                prompt_manager.add_command_result(self._cut_round_result, parts=self._cut_round_parts)
         trace("")
         return response_text
 
@@ -904,6 +905,7 @@ class RequestProcessor:
             yield from self._drain_events()
 
             command_reply = old_dialog_manager.command_processor.command_reply
+            result_parts = list(old_dialog_manager.command_processor.result_parts)
             fine("command reply:\n" + _format_command_reply(command_reply))
             self._invalidate_cached_response_if_device_missing(old_dialog_manager, command_reply)
             executed = old_dialog_manager.command_processor.executed_commands
@@ -929,7 +931,7 @@ class RequestProcessor:
             if loaded_toolkit and len(executed) > 1:
                 trace(f"Command result stored uncapped: load_toolkit ran alongside {len(executed) - 1} other command(s)")
             result_text = _command_result_for_history(self.dialog_manager.reply_to_llm)
-            prompt_manager.add_command_result(result_text, cap=not loaded_toolkit)
+            prompt_manager.add_command_result(result_text, cap=not loaded_toolkit, parts=result_parts)
             if repeats >= self.MAX_REPEATED_ROUNDS:
                 error(f"Round {round_num} repeated the same command(s) to the same result for the {repeats}. time "
                       f"({', '.join(executed)}) — ending the request instead of circling back again.")
@@ -982,6 +984,7 @@ class RequestProcessor:
         info(f"The cut round's command(s) finished ({', '.join(executed) or 'none succeeded'}) — keeping the "
              f"result in the history without another round")
         self._cut_round_result = _command_result_for_history(reply if isinstance(reply, list) else f"result: \n{reply}")
+        self._cut_round_parts = list(dm.command_processor.result_parts)
 
     def generate_events(self, prompt_manager) -> Generator[AssistantEvent, None, None]:
         """The whole request as an event stream: the user's round, one round per command

@@ -156,6 +156,7 @@ class TestHandleBackgroundCommands:
         dm.command_processor = Mock()
         dm.command_processor.command_running_in_background = command_running
         dm.command_processor.command_reply = command_reply
+        dm.command_processor.result_parts = []
         dm.command_processor.command_queue = Mock()
         dm.command_processor.command_queue.empty.return_value = queue_empty
         # Explicit falsy values: Mock auto-attributes are truthy and would route every
@@ -492,6 +493,7 @@ class TestHandleBackgroundCommands:
         dm2 = Mock()
         dm2.command_processor = Mock()
         dm2.command_processor.command_reply = None
+        dm2.command_processor.result_parts = []
         dm2.command_processor.command_queue = Mock()
         dm2.command_processor.command_reply_contains_error = False
         dm2.command_processor.executed_commands = []
@@ -2175,7 +2177,24 @@ class TestCommandResultPersistence:
     def test_plain_reply_persisted_as_sent(self, handler):
         prompt_manager, dm = self._run(handler, "iMessage — disabled")
         assert dm.reply_to_llm == "result: \niMessage — disabled"
-        prompt_manager.add_command_result.assert_called_once_with("result: \niMessage — disabled", cap=True)
+        prompt_manager.add_command_result.assert_called_once_with("result: \niMessage — disabled", cap=True, parts=ANY)
+
+    def test_the_rounds_results_reach_the_history_one_by_one(self, handler):
+        """The history caps each command's result by itself, so it needs them apart."""
+        dm1 = TestHandleBackgroundCommands._make_mock_dm(command_running=True, command_reply="page\n\nboard")
+        dm1.command_processor.result_parts = ["page", "board"]
+        dm1.command_processor.command_reply_contains_error = False
+        dm1.command_processor.executed_commands = ["open_url(a)", "open_url(b)"]
+        handler.dialog_manager = dm1
+        dm2 = TestHandleBackgroundCommands._make_mock_dm()
+        prompt_manager = Mock()
+        with patch.object(handler, 'stream_response', return_value=iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch('assistant.RequestProcessor.DialogManager', return_value=dm2):
+            TestHandleBackgroundCommands._exhaust_generator(handler._handle_background_commands(prompt_manager))
+        assert prompt_manager.add_command_result.call_args.kwargs["parts"] == ["page", "board"]
 
     def test_every_command_round_is_a_follow_up_to_the_llm(self, handler):
         """A round after a command ends in the result, which the next round of the request
@@ -2194,12 +2213,12 @@ class TestCommandResultPersistence:
         or not: capped, the reference would be cut yet still count as loaded. A round without
         one keeps the cap (its result may be a web page)."""
         prompt_manager, _ = self._run(handler, "# Toolkit: email\n…", executed=["load_toolkit(email)"])
-        prompt_manager.add_command_result.assert_called_once_with("result: \n# Toolkit: email\n…", cap=False)
+        prompt_manager.add_command_result.assert_called_once_with("result: \n# Toolkit: email\n…", cap=False, parts=ANY)
         prompt_manager, _ = self._run(handler, "# Toolkit: email\n…\n\npage",
                                       executed=["load_toolkit(email)", "open_url(x)"])
-        prompt_manager.add_command_result.assert_called_once_with("result: \n# Toolkit: email\n…\n\npage", cap=False)
+        prompt_manager.add_command_result.assert_called_once_with("result: \n# Toolkit: email\n…\n\npage", cap=False, parts=ANY)
         prompt_manager, _ = self._run(handler, "page", executed=["open_url(x)"])
-        prompt_manager.add_command_result.assert_called_once_with("result: \npage", cap=True)
+        prompt_manager.add_command_result.assert_called_once_with("result: \npage", cap=True, parts=ANY)
 
     def test_a_load_watch_round_is_a_toolkit_load_for_the_cap_too(self, handler):
         """load_watch brings the watch toolkit's reference along with the item, so its result is
@@ -2207,14 +2226,14 @@ class TestCommandResultPersistence:
         header would still count the toolkit as loaded."""
         reply = "# Watch: solar\n…\n\n# Toolkit: watch\n…"
         prompt_manager, _ = self._run(handler, reply, executed=['load_watch("solar")'])
-        prompt_manager.add_command_result.assert_called_once_with(f"result: \n{reply}", cap=False)
+        prompt_manager.add_command_result.assert_called_once_with(f"result: \n{reply}", cap=False, parts=ANY)
 
     def test_block_reply_persists_text_and_notes_images(self, handler):
         blocks = [{"type": "text", "text": "Front door camera:"},
                   {"type": "image", "source": {"type": "base64", "data": "xx"}}]
         prompt_manager, _ = self._run(handler, blocks)
         prompt_manager.add_command_result.assert_called_once_with(
-            "Front door camera:\n[image not kept in history]", cap=True)
+            "Front door camera:\n[image not kept in history]", cap=True, parts=ANY)
 
     def test_error_report_persisted_too(self, handler):
         prompt_manager, dm = self._run(handler, "boom", contains_error=True)

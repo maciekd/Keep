@@ -1,6 +1,6 @@
 """The car commands: resolved through the fleet to whichever brand owns the car, silent on
 success for the switches, the provider's line for navigation, the hint without a provider."""
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
@@ -66,7 +66,7 @@ class TestSwitches:
         tesla.climate_off.side_effect = VehicleError("vehicle offline")
         _run(commands_instance, "car_climate_off", ["family"])
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "Car command failed: vehicle offline", contains_error=False)
+            "Car command failed: vehicle offline", contains_error=False, parts=ANY)
 
     def test_an_action_the_brand_lacks_is_reported_not_raised(self, commands_instance, fleet):
         fleet.providers[1].max_defrost.side_effect = Unsupported("Volvo cannot start max defrost on The Volvo.")
@@ -85,7 +85,7 @@ class TestSwitches:
                 patch(f"{MODULE}.no_provider_hint", return_value='Tesla is disabled: enable_integration("Tesla").'):
             _run(commands_instance, "car_max_defrost", ["family"])
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            'Tesla is disabled: enable_integration("Tesla").', contains_error=False)
+            'Tesla is disabled: enable_integration("Tesla").', contains_error=False, parts=ANY)
 
 
 @pytest.mark.unit
@@ -96,7 +96,7 @@ class TestNavigate:
         spec, destination = tesla.navigate_to.call_args[0]
         assert (spec.id, destination) == ("family", "Storgatan 1, Stockholm")
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "Navigation to Storgatan 1, Stockholm sent to Family Model Y.", contains_error=False)
+            "Navigation to Storgatan 1, Stockholm sent to Family Model Y.", contains_error=False, parts=ANY)
 
     def test_a_lone_argument_is_a_destination_for_the_default_car(self, commands_instance, fleet, tesla):
         _run(commands_instance, "car_navigate", ["IKEA Kungens Kurva"])
@@ -112,7 +112,7 @@ class TestNavigate:
         tesla.navigate_to.side_effect = VehicleError("vehicle asleep")
         _run(commands_instance, "car_navigate", ["family", "Storgatan 1"])
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "Car command failed: vehicle asleep", contains_error=False)
+            "Car command failed: vehicle asleep", contains_error=False, parts=ANY)
 
     def test_describe_names_the_destination(self, commands_instance):
         assert "Storgatan 1, Stockholm" in commands_instance.describe("car_navigate", ["family", "Storgatan 1", "Stockholm"])

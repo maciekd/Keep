@@ -2302,11 +2302,12 @@ class Commands:
             combined = []
             for lr in list_results:
                 combined.extend(lr)
+            parts = [b["text"] for b in combined if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
             if str_results:
                 combined.append({"type": "text", "text": "\n\n".join(str_results)})
-            cp.set_command_reply(combined, contains_error=contains_error)
+            cp.set_command_reply(combined, contains_error=contains_error, parts=parts + str_results)
         elif str_results:
-            cp.set_command_reply("\n\n".join(str_results), contains_error=contains_error)
+            cp.set_command_reply("\n\n".join(str_results), contains_error=contains_error, parts=str_results)
         else:
             trace(f"{len(results)} background result(s), all empty — nothing to publish.")
 
