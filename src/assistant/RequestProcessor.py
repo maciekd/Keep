@@ -150,6 +150,8 @@ class RequestProcessor:
     LLM_OUTAGE_NOTICE = "The AI servers are unavailable right now. Please try again in a moment."
     LLM_FAILURE_DETAIL_MAX_CHARS = 300
     MAX_UNTERMINATED_COMMAND_REPORTS = 2
+    # Round 1 came from the response cache and its command failed (set per request).
+    _cached_reply_failed = False
     # A follow-up round that runs exactly the previous round's commands and gets the same
     # text back learns nothing: the first repeat is told so under its result, the second
     # ends the request (ds4 at effort low called load_toolkit("setup") four rounds running
@@ -799,6 +801,10 @@ class RequestProcessor:
             self.playback.finish_reply(self.dialog_manager.llm_response)
 
     def _save_to_database(self, query_key: str, response_text: str):
+        if self._cached_reply_failed:
+            info("Not storing the reply in DB: it corrects a cached response whose command failed, "
+                 "and is no answer to the query on its own.")
+            return
         if self.LLM_OUTAGE_HISTORY_MARKER.strip() in response_text:
             # A zero-command outage row would block CachedLLM's majority vote for this
             # query forever (any command-less row vetoes caching), so never store one.
@@ -813,25 +819,27 @@ class RequestProcessor:
         else:
             trace("Not storing false positive in DB.")
 
-    @staticmethod
-    def _invalidate_cached_response_if_device_missing(old_dialog_manager, command_reply):
-        """A cached response that commands a nonexistent device would replay the failure on
-        every future cache hit — evict its backing rows the first time it errors. Only round 1
-        can be cache-served (follow-up rounds have cache_query=None), so this fires at most
-        once per request.
-        TODO: _save_to_database still stores the final follow-up round's text under the
-        original query as a future cache candidate; correction-only rows could later form a
-        thinner majority than the intended scene. CacheAuditor is the safety net for now."""
+    def _invalidate_cached_response_if_command_failed(self, old_dialog_manager, command_reply):
+        """A cached response whose command fails would replay the failure, and the success it
+        claims, on every future cache hit (2026-11-14: a playlist id of a format long gone,
+        spoken as started) — evict its backing rows the first time it errors, whatever the
+        error: a row lost to a passing fault costs a few live replies until a new majority
+        forms. The request's last round is then a correction and is not stored under the query
+        (`_save_to_database`). Only round 1 can be cache-served (follow-up rounds have
+        cache_query=None), so this fires at most once per request."""
         if not old_dialog_manager.last_response_was_cached:
             return
-        if "could not find device" not in _format_command_reply(command_reply).lower():
+        failed = old_dialog_manager.command_processor.command_reply_contains_error is True
+        if not failed and "could not find device" not in _format_command_reply(command_reply).lower():
+            trace("Cache-served round ran without a command error — its rows stay cachable.")
             return
+        self._cached_reply_failed = True
         from assistant.llm.CachedLLM import CachedLLM
         ai = old_dialog_manager.ai
         if isinstance(ai, CachedLLM):
-            ai.invalidate_served_response("cached response referenced a nonexistent device")
+            ai.invalidate_served_response("a command of the cached response failed")
         else:
-            info("Cached response errored on a missing device but the LLM is not a CachedLLM "
+            info("Cached response errored on a command but the LLM is not a CachedLLM "
                  "wrapper — nothing to invalidate.")
 
     def _handle_background_commands(self, prompt_manager) -> Generator[AssistantEvent, None, str | None]:
@@ -905,7 +913,7 @@ class RequestProcessor:
 
             command_reply = old_dialog_manager.command_processor.command_reply
             fine("command reply:\n" + _format_command_reply(command_reply))
-            self._invalidate_cached_response_if_device_missing(old_dialog_manager, command_reply)
+            self._invalidate_cached_response_if_command_failed(old_dialog_manager, command_reply)
             executed = old_dialog_manager.command_processor.executed_commands
             this_round = (tuple(executed), command_reply) if isinstance(command_reply, str) else None
             repeats = repeats + 1 if this_round is not None and this_round == previous_round else 0
