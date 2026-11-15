@@ -927,7 +927,37 @@ class CommandProcessor:
         self._report_not_run("Nothing was run: the reply ended in tag-shaped text that is not a call in the "
                              "syntax this prompt teaches, so no call could be read from it.", leftover, dialog_manager)
 
-    def _report_not_run(self, what: str, leftover: str, dialog_manager):
+    # A reply line that is nothing but a call in the canonical form — a name, then quoted
+    # strings, numbers or booleans in parentheses — as a model writes a command it invented.
+    _CALL_VALUE = r'(?:"(?:[^"\\\n]|\\.)*"|-?\d+(?:\.\d+)?|true|false|True|False)'
+    _CALL_LINE_RE = re.compile(
+        rf"^[ \t]*([a-z_][a-z0-9_]*)\([ \t]*(?:{_CALL_VALUE}(?:[ \t]*,[ \t]*{_CALL_VALUE})*)?[ \t]*\)[ \t]*$", re.M)
+    # A reply that shows code is not read for invented calls: its lines are the answer.
+    _CODE_MARKS = ("```", "<pre", "<code")
+
+    def report_unknown_call(self, shown: str, raw: str, dialog_manager):
+        """A call to a command that does not exist is prose to every syntax, so it reached the
+        user as text, ran nothing and reported nothing — and the reply's claim that it was done
+        stood (prod 2026-11-14: an invented `action` call, "Turning on the kitchen lights",
+        the lights off). `shown` is the round's reply as the user got it, `raw` as the model
+        wrote it: the first line of `shown` that is one whole call of an unknown name is
+        queued for the circle-back round."""
+        if self.reply_cut or self.unterminated_command_report is not None:
+            return
+        if any(mark in raw for mark in self._CODE_MARKS):
+            trace("The reply shows code — its lines are not read for calls of unknown commands")
+            return
+        for match in self._CALL_LINE_RE.finditer(shown):
+            name = match.group(1)
+            if name in self.possible_commands:
+                continue
+            error(f"The reply wrote a call of {name}, which is no command — nothing ran: {match.group(0).strip()!r}")
+            self._report_not_run(f"{name} was not run: there is no command by that name, so the line reached the "
+                                 f"user as plain text and nothing happened. Whatever the reply said was done by it "
+                                 f"has not been done.", match.group(0), dialog_manager, reached_user=True)
+            return
+
+    def _report_not_run(self, what: str, leftover: str, dialog_manager, reached_user: bool = False):
         """Queue `what` for the circle-back round, with the dropped text quoted."""
         if dialog_manager is None:
             info("No dialog to circle back through (autonomous run) — the dropped call is only logged.")
@@ -938,8 +968,8 @@ class CommandProcessor:
         shown = leftover.strip()
         if len(shown) > self.UNTERMINATED_COMMAND_SHOWN_CHARS:
             shown = shown[:self.UNTERMINATED_COMMAND_SHOWN_CHARS] + "…"
-        self.unterminated_command_report = (
-            f"{what} Nothing after that point in the reply reached the user either. Received: {shown}")
+        lost = "" if reached_user else " Nothing after that point in the reply reached the user either."
+        self.unterminated_command_report = f"{what}{lost} Received: {shown}"
 
     def _killed(self, dialog_manager) -> bool:
         return self.is_killed or (dialog_manager is not None and dialog_manager.is_killed)

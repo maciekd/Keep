@@ -50,6 +50,9 @@ class FakeCommandProcessor:
     def flush_buffer(self, dialog_manager):
         return None
 
+    def report_unknown_call(self, shown, raw, dialog_manager):
+        self.checked_for_unknown_calls = (shown, raw)
+
     def without_dropped_thinking(self, raw):
         return raw
 
@@ -1253,6 +1256,22 @@ def test_flush_buffer_content_yielded_and_accumulated(monkeypatch):
     assert "flushed text" in output
     assert dm.llm_response.endswith("flushed text")
     assert "flushed text" in console.tokens
+
+
+@pytest.mark.unit
+def test_the_whole_reply_is_checked_for_a_call_of_an_unknown_command_once_the_stream_has_ended(monkeypatch):
+    """The check reads lines, so it gets the reply as shown — what the flush released
+    included — and as written, where a code block still has its fence."""
+    fcp = FakeCommandProcessor()
+    fcp.flush_buffer = lambda dm: 'action("Kitchen lamp", "on")'
+    dm, _ = make_dialog_manager(monkeypatch, ["On it.\n", "`"], command_processor=fcp)
+    monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([100.0, 100.1]))
+
+    list(dm.stream_llm_response())
+
+    shown, raw = fcp.checked_for_unknown_calls
+    assert shown == 'On it.\naction("Kitchen lamp", "on")'
+    assert raw == "On it.\n`"
 
 
 @pytest.mark.unit

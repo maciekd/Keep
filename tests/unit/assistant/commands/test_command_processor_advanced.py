@@ -2170,6 +2170,49 @@ class TestUnterminatedCommandAtStreamEnd:
         self._reply(processor, None, self.PROD_REPLY)
         assert processor.unterminated_command_report is None
 
+    # Prod 2026-11-14 15:29: asked for the kitchen lights, the fast tier wrote a call of a
+    # command that does not exist and "Turning on the kitchen lights." — nothing ran, nothing
+    # was reported, and the claim was spoken.
+    INVENTED = 'action("Kitchen lamp", "on")\nTurning on the kitchen lights.'
+
+    def _reply_checked(self, processor, dm, text):
+        shown = self._reply(processor, dm, text)
+        processor.report_unknown_call(shown, text, dm)
+        return shown
+
+    def test_a_call_of_a_command_that_does_not_exist_is_reported(self, processor, dm):
+        self._reply_checked(processor, dm, self.INVENTED)
+        report = processor.take_unterminated_command_report()
+        assert report.startswith("action was not run") and "Kitchen lamp" in report.split("Received:")[1]
+        assert "Turning on" not in report.split("Received:")[1], "only the line of the call is quoted"
+        assert "action(" not in report.split("Received:")[0], "the report describes no syntax"
+
+    @pytest.mark.parametrize("text", [
+        "Turning on the kitchen lights.",
+        'turn_on("Kitchen lamp")\nDone.',
+        "The function f(x) grows fast.",
+        "f(x)",
+        'I would call it action("Kitchen lamp", "on") if it existed.',
+        'Here you go:\n```python\nprint("hello")\n```',
+        '<pre>print("hello")</pre>',
+        "Milk (2 litres)\nBread (1)",
+    ])
+    def test_a_reply_without_an_invented_call_on_a_line_of_its_own_reports_nothing(self, processor, dm, text):
+        self._reply_checked(processor, dm, text)
+        assert processor.unterminated_command_report is None
+
+    def test_an_invented_call_never_replaces_an_earlier_report(self, processor, dm):
+        self._reply(processor, dm, self.PROD_REPLY)
+        earlier = processor.unterminated_command_report
+        processor.report_unknown_call(self.INVENTED, self.INVENTED, dm)
+        assert earlier and processor.unterminated_command_report == earlier
+
+    def test_an_invented_call_of_a_killed_or_autonomous_run_reports_nothing(self, processor, dm):
+        dm.is_killed = True
+        self._reply_checked(processor, dm, self.INVENTED)
+        assert processor.unterminated_command_report is None
+        self._reply_checked(CommandProcessor(test_suite_mode=True), None, self.INVENTED)
+
 
 @pytest.mark.unit
 class TestCommandCap:

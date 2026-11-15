@@ -696,4 +696,6 @@ class DialogManager:
             publish_stream_text(flushed)
             yield flushed
 
+        self.command_processor.report_unknown_call(self.llm_response, self.llm_response_raw, self)
+
         publish_stream_text("", flush=True)
