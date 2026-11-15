@@ -2,7 +2,8 @@
 chat platform: voice notes are transcribed, videos are described by the video tier, and a
 document (a file sent as an attachment) is read the way a mail attachment is — a PDF through
 `PdfExtractor`, a text file decoded — or, when it cannot be, named with the reason, so the
-assistant can say so instead of leaving the message unanswered."""
+assistant can say so instead of leaving the message unanswered. A picture sent as a file is
+the exception: `picture_as_jpeg` makes it a photo for the vision tier."""
 import codecs
 from datetime import datetime
 
@@ -15,6 +16,10 @@ from interfaces.chat.ChatTypes import Attachment
 DOCUMENT_TEXT_CHARS = 100_000
 TEXT_EXTENSIONS = {"txt", "md", "markdown", "csv", "tsv", "json", "yaml", "yml", "xml", "html", "htm", "log", "ini",
                    "toml", "cfg", "conf", "tex", "srt", "vtt", "ics", "eml"}
+PICTURE_EXTENSIONS = {"jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "tif", "tiff", "bmp"}
+# A picture is sent as a file for its detail (a drawing, a scanned page), so it keeps more of
+# it than a platform's own compressed photo does.
+PICTURE_MAX_DIMENSION = 2048
 # MIME types a sender's client puts on a file it did not recognise; the content decides then.
 GENERIC_MIME_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 # A subfolder: the clips directly in log/audio are the mics', and the voice discovery reads those.
@@ -62,6 +67,34 @@ def describe_video(data: bytes, mime_type: str, context: str) -> str:
     return description
 
 
+def is_picture(name: str, mime_type: str) -> bool:
+    """Whether a file sent as a document is a picture the vision tier can be shown (an SVG is not)."""
+    mime_type = (mime_type or "").lower()
+    if mime_type.startswith("image/"):
+        return "svg" not in mime_type
+    return mime_type in GENERIC_MIME_TYPES and _extension(name) in PICTURE_EXTENSIONS
+
+
+def picture_as_jpeg(data: bytes):
+    """A picture file re-encoded as a JPEG the vision tier reads (HEIC included), its long side
+    at most PICTURE_MAX_DIMENSION; None when it cannot be decoded."""
+    from assistant.tools.ImageAnalyzer import resize_to_jpeg
+    try:
+        jpeg = resize_to_jpeg(data, PICTURE_MAX_DIMENSION)
+    except Exception as e:
+        error(f"Picture file ({len(data)} bytes) could not be converted: {type(e).__name__}: {e}")
+        return None
+    if jpeg is None:
+        info(f"Picture file ({len(data)} bytes) could not be decoded.")
+    else:
+        trace(f"Picture file converted for vision ({len(data)} → {len(jpeg)} bytes)")
+    return jpeg
+
+
+def _extension(name: str) -> str:
+    return name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+
 def document_text(att: Attachment, caption: str = "") -> tuple[str, str]:
     """(body, headline) for a document: the body is what the assistant reads — a header naming
     the file, its type and size, the caption, then the file's text, or instead the reason there
@@ -91,7 +124,10 @@ def extract_document_text(name: str, mime_type: str, data: bytes) -> str:
     rest, and for a PDF without a text layer."""
     from assistant.tools import PdfExtractor
     mime_type = (mime_type or "").lower()
-    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    ext = _extension(name)
+    if is_picture(name, mime_type):
+        # A transport shows a picture to the vision tier; one that ends up here could not be decoded.
+        raise UnreadableDocument("the picture could not be decoded")
     if mime_type == "application/pdf" or ext == "pdf":
         text = PdfExtractor.extract_text(data)
         if text.startswith("ERROR:"):
