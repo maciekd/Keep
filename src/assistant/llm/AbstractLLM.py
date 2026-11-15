@@ -13,7 +13,7 @@ class Thinking(IntEnum):
     """How much a request may reason, in the caller's terms — each backend maps it to what it
     has. NORMAL is a conversation turn: whatever the backend does by default. FULL is the
     memory curator: the deepest reasoning and the headroom for a long, complete answer (on
-    Claude the adaptive-thinking parameter and the 64k output cap, on ds4 effort high, on
+    Claude the adaptive-thinking parameter and the 128k output cap, on ds4 effort high, on
     Gemini thinking level high; ChatGPT has nothing for it and refuses). MORE is between —
     the autonomous check: more reasoning where a backend has levels to give (ds4 one step up,
     medium at least) and exactly NORMAL everywhere else, never the long-answer headroom. A

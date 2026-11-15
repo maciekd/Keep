@@ -117,8 +117,13 @@ class ClaudeLLM(AbstractLLM):
     # Output caps. With adaptive thinking the thinking tokens count against max_tokens too,
     # so a thinking call that must emit a long answer (the memory curator rewrites a ~8k-token
     # bank) needs real headroom: at 16000 the curator's replies were cut mid-sentence for weeks,
-    # and at 32000 a run whose thinking ran long was still cut in the bank's last section.
-    THINKING_MAX_TOKENS = 64000
+    # at 32000 a run whose thinking ran long was still cut in the bank's last section, and at
+    # 64000 Fable 5.2 — which thinks about twice as long as 5.1 on the same prompt — was cut
+    # three nights running, twice a few thousand tokens short of the bank's end (prod
+    # 2026-11-13..15). 128000 is the most the 5-generation models take; an older model
+    # refuses more than LEGACY_THINKING_MAX_TOKENS.
+    THINKING_MAX_TOKENS = 128000
+    LEGACY_THINKING_MAX_TOKENS = 64000
     # The chat cap. The 5-generation models think without the parameter and the thinking
     # counts here too: at 4096, Opus 5.5 at high effort thought through the whole cap three
     # times running on a home-automation plan and the user got silence (issue #108). The
@@ -126,9 +131,10 @@ class ClaudeLLM(AbstractLLM):
     # unless used, and a round that hits it is told so and gets one more (RequestProcessor).
     MAX_TOKENS = 16000
     # The SDK refuses a non-streaming request whose max_tokens implies more than 10 minutes
-    # (about 21k tokens) unless a timeout is given explicitly. 32000 tokens took ~7 minutes
-    # at the rate the nightly curation has shown, so 30 minutes covers the cap with headroom.
-    NON_STREAMING_TIMEOUT = httpx.Timeout(30 * 60, connect=5.0)
+    # (about 21k tokens) unless a timeout is given explicitly. It reckons an hour for 128000
+    # tokens; the nightly curation has shown about 9 minutes for 64000. Only the curation's
+    # ordinary call (the batch gave no answer, or an interactive run) waits on this.
+    NON_STREAMING_TIMEOUT = httpx.Timeout(60 * 60, connect=5.0)
 
     def __init__(self, model: str = "claude-sonnet-4-5", speed: str | None = None, prompt_cache: bool = True,
                  static_cache_ttl: str | None = None, history_cache_ttl: str | None = None):
@@ -439,7 +445,7 @@ class ClaudeLLM(AbstractLLM):
         api_params = {
             'model': self.model,
             'messages': anthropic_messages,
-            'max_tokens': self.THINKING_MAX_TOKENS if full else self.MAX_TOKENS,
+            'max_tokens': self.thinking_cap() if full else self.MAX_TOKENS,
             'stream': stream
         }
         if not stream:
@@ -634,6 +640,12 @@ class ClaudeLLM(AbstractLLM):
 
     def output_cap(self) -> int | None:
         return self.MAX_TOKENS
+
+    def thinking_cap(self) -> int:
+        """The output cap of a Thinking.FULL request: thinking and answer together."""
+        if self.model.startswith(self.EFFORT_MODEL_PREFIXES):
+            return self.THINKING_MAX_TOKENS
+        return self.LEGACY_THINKING_MAX_TOKENS
 
     def cancel(self):
         self._cancelled = True
