@@ -10,7 +10,7 @@ import threading
 from assistant.commands.formats.CommandFormats import CommandFormats
 from common import Platform, Version
 from common.ConfigManager import config
-from common.logging import info, note, trace
+from common.logging import error, info, note, trace
 from interfaces.http import CrossSiteGuard
 from interfaces.http.routes import HttpDeps, register as register_stream_route
 from interfaces.Interface import Interface, bind_host
@@ -61,6 +61,14 @@ class HttpInterface(Interface):
             # command_format: the syntax this server reads replies in — the prompt test suite
             # judges a reply's calls by it.
             return {"status": "ok", "version": Version.detail(), "command_format": CommandFormats.active().name}, 200
+
+        @self.app.errorhandler(Exception)
+        async def unhandled(e):
+            from werkzeug.exceptions import HTTPException
+            if isinstance(e, HTTPException):
+                return e
+            error(f"HTTP: a route failed with {type(e).__name__}: {e}", e)
+            return {"error": "internal server error"}, 500
 
         info(f"HTTP interface created on port {self.port} (/stream, /health).")
 

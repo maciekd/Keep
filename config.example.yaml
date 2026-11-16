@@ -476,7 +476,9 @@ approve_guarded_commands: false
 # assistant turn (with the names of the commands it ran, never their arguments), one per
 # integration switched on or off, one per TUI tab opened, the size of the memory (word and item
 # counts) after a curation, the number of indexed photos and messages and the size of the prompt
-# in KB, section by section (when any of it changes, at most hourly) and a daily heartbeat. For the install's first seven days (dated by first_run.json)
+# in KB, section by section (when any of it changes, at most hourly), a daily heartbeat and every
+# error the server logs (its message with mail addresses, long numbers, tokens and the home folder
+# blanked, and the stack as file, function and line). For the install's first seven days (dated by first_run.json)
 # the turns carry the query and the reply in full; after that they go out without their text.
 # Vault values go out as their placeholders. `enabled: false` turns all of it off, from the next
 # event on (no restart).

@@ -373,3 +373,129 @@ class TestConfigContract:
         """Contract with config.example.yaml: the server writes `telemetry.id` through
         ConfigStore, which refuses keys the example lacks."""
         ConfigStore.check_key("telemetry.id")
+
+
+def _fail_at_the_garage():
+    raise ValueError("no answer from the garage door")
+
+
+class TestErrorReports:
+    """Every `error()` the server logs goes out as PostHog's `$exception` event."""
+
+    def _report(self, telemetry, message="Garage: the door did not answer", raiser=_fail_at_the_garage):
+        try:
+            raiser()
+        except Exception as e:
+            telemetry.error_report(message, e)
+
+    def test_a_logged_error_reaches_posthog_through_the_logger(self, telemetry, sent):
+        from common.logging import error
+        try:
+            _fail_at_the_garage()
+        except ValueError:
+            error("Garage: the door did not answer")
+        telemetry.stop()
+        [event] = _by_name(sent, "$exception")
+        [entry] = event["properties"]["$exception_list"]
+        assert entry["type"] == "ValueError" and "door did not answer" in entry["value"]
+        assert entry["mechanism"] == {"handled": True, "synthetic": False}
+
+    def test_the_stack_names_the_raising_function_inside_the_checkout(self, telemetry, sent):
+        self._report(telemetry)
+        telemetry.stop()
+        frames = _by_name(sent, "$exception")[0]["properties"]["$exception_list"][0]["stacktrace"]["frames"]
+        assert frames[-1]["function"] == "_fail_at_the_garage" and frames[-1]["in_app"]
+        assert frames[-1]["filename"] == "tests/unit/assistant/test_telemetry.py"
+
+    def test_no_frame_says_where_the_install_lives(self, telemetry, sent):
+        def in_a_library():
+            import json
+            json.loads("{")
+        self._report(telemetry, raiser=in_a_library)
+        telemetry.stop()
+        frames = _by_name(sent, "$exception")[0]["properties"]["$exception_list"][0]["stacktrace"]["frames"]
+        assert not any(f["filename"].startswith("/") for f in frames)
+        assert not frames[-1]["in_app"]
+
+    def test_an_error_without_an_exception_is_placed_by_its_caller(self, telemetry, sent):
+        def notices_a_problem():
+            telemetry.error_report("Feed: the cursor went backwards")
+        notices_a_problem()
+        telemetry.stop()
+        [entry] = _by_name(sent, "$exception")[0]["properties"]["$exception_list"]
+        assert entry["mechanism"]["synthetic"] and entry["type"] == "Error"
+        assert entry["stacktrace"]["frames"][-1]["function"] == "notices_a_problem"
+
+    def test_an_uncaught_exception_is_marked_unhandled(self, telemetry, sent):
+        from common.logging import error
+        error("Uncaught exception ended thread feed", ValueError("gone"))
+        telemetry.stop()
+        [entry] = _by_name(sent, "$exception")[0]["properties"]["$exception_list"]
+        assert entry["mechanism"]["handled"] is False
+
+    def test_the_exception_it_came_from_is_reported_behind_it(self, telemetry, sent):
+        def wrapped():
+            try:
+                _fail_at_the_garage()
+            except ValueError as e:
+                raise RuntimeError("the evening scene failed") from e
+        self._report(telemetry, message="Scene: could not run", raiser=wrapped)
+        telemetry.stop()
+        entries = _by_name(sent, "$exception")[0]["properties"]["$exception_list"]
+        assert [e["type"] for e in entries] == ["RuntimeError", "ValueError"]
+        assert "garage door" in entries[1]["value"]
+
+    def test_the_message_goes_out_scrubbed(self, telemetry, sent):
+        self._report(telemetry, message="Mail: could not send to alice@example.com from +46701740605")
+        telemetry.stop()
+        value = _by_name(sent, "$exception")[0]["properties"]["$exception_list"][0]["value"]
+        assert "alice@example.com" not in value and "46701740605" not in value
+        assert value.startswith("Mail: could not send to")
+
+    def test_errors_go_out_past_the_transcript_window(self, settings, sent):
+        t = Telemetry(post=sent.append, install_age_days=lambda: 400.0)
+        t.start()
+        self._report(t)
+        t.stop()
+        assert len(_by_name(sent, "$exception")) == 1
+
+    def test_a_repeating_error_is_one_event_and_the_next_says_how_many_were_held_back(
+            self, telemetry, sent, monkeypatch):
+        for _ in range(5):
+            self._report(telemetry)
+        clock = time.time()
+        monkeypatch.setattr(telemetry_module.time, "time", lambda: clock + telemetry_module.ERROR_INTERVAL + 1)
+        self._report(telemetry)
+        telemetry.stop()
+        assert [e["properties"]["repeats"] for e in _by_name(sent, "$exception")] == [0, 4]
+
+    def test_errors_from_different_places_are_not_held_back_by_each_other(self, telemetry, sent):
+        def elsewhere():
+            raise ValueError("no answer from the boiler")
+        self._report(telemetry)
+        self._report(telemetry, raiser=elsewhere)
+        telemetry.stop()
+        assert len(_by_name(sent, "$exception")) == 2
+
+    def test_an_opt_out_stops_the_error_reports(self, telemetry, settings, sent):
+        settings["telemetry.enabled"] = False
+        self._report(telemetry)
+        telemetry.stop()
+        assert _by_name(sent, "$exception") == []
+
+    def test_a_stopped_telemetry_no_longer_listens_to_the_logger(self, telemetry, sent):
+        import common.logging as logging_module
+        telemetry.stop()
+        assert logging_module._error_sink is None
+
+    def test_a_failed_post_is_not_reported_as_an_error_of_its_own(self, settings):
+        posts = []
+
+        def failing_post(payload):
+            posts.append(payload)
+            raise ConnectionError("PostHog is away")
+        t = Telemetry(post=failing_post, install_age_days=lambda: 2.0)
+        t.start()
+        t.stop()
+        assert posts and not any(e["event"] == "$exception" for p in posts for e in p["batch"])
+        assert t._queue.empty()

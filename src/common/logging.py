@@ -23,6 +23,37 @@ _masker = None
 _masking = threading.local()
 
 
+# Installed by the telemetry while it runs: every `error()` is handed on with the exception it
+# was logged for, so a failure that was caught and survived is still reported.
+_error_sink = None
+_reporting = threading.local()
+
+
+def set_error_sink(sink):
+    """`sink(message, exception_or_None, handled)` called for every `error()`; None removes it.
+    *handled* is false for an exception nothing caught, which a hook handed to `error()`."""
+    global _error_sink
+    _error_sink = sink
+
+
+def _report_error(message, exception):
+    """Hands an error to the sink. An `error()` the sink itself logs is not handed on again,
+    and a sink that fails costs one stdout line, never the caller."""
+    sink = _error_sink
+    if sink is None or getattr(_reporting, "active", False):
+        return
+    _reporting.active = True
+    try:
+        if exception is not None:
+            sink(message, exception, False)
+        else:
+            sink(message, sys.exc_info()[1], True)
+    except Exception as e:
+        print(f"Error sink failed: {type(e).__name__}: {e}")
+    finally:
+        _reporting.active = False
+
+
 def set_log_masker(masker):
     """`masker(text) -> text` applied to everything logged; None removes it."""
     global _masker
@@ -177,8 +208,11 @@ def note(message):
     log(message, Style.BRIGHT + Fore.LIGHTBLUE_EX, "NOTE")
 
 
-def error(message):
+def error(message, exception=None):
+    """*exception* is for the hooks that log an exception nothing caught. An error logged in
+    an `except` block needs no argument: the exception being handled is found by itself."""
     log(message, Style.BRIGHT + Fore.RED, "ERROR")
+    _report_error(message, exception)
 
 
 def trace(message):
