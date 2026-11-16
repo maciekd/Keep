@@ -5,7 +5,7 @@ name: Linux
 
 on:
   push:
-    branches: [master, linux]   # linux: the branch Linux support is built on, until it merges
+    branches: [master]
   pull_request:
     branches: [master]
   workflow_dispatch:
