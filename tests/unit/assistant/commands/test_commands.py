@@ -2420,6 +2420,7 @@ class TestCmdConfigSet:
         assert "restart_integration" not in reply and "restart_server" not in reply
         assert ConfigStore.coerce("ai_message_footer", "false") is False
 
+    @pytest.mark.usefixtures("on_a_mac")
     @pytest.mark.parametrize("value, wanted", [("true", True), ("false", False)])
     def test_the_watchdog_key_is_applied_at_once_from_the_value_just_saved(self, commands_instance, value, wanted):
         """The launchd agent follows the key the moment it is written: the config the sync reads

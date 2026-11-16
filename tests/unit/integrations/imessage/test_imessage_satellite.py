@@ -188,6 +188,7 @@ class TestASatelliteThatCannotBeUsed:
 
 
 @pytest.mark.unit
+@pytest.mark.usefixtures("on_a_mac")
 class TestASatelliteOnTheServersOwnMac:
     """A satellite under another macOS user answers the loopback alone, so the Mac's name reaches nothing."""
 
