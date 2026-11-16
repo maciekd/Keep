@@ -1998,8 +1998,14 @@ class CodeQualityMaintainer:
         """The current branch, written down as the one a run that may move the checkout comes
         back to (`_back_home`). A process relaunched in the middle of such a run boots on the
         run's work branch; the record is how `own_branch` tells that from a branch somebody
-        checked out to work on."""
+        checked out to work on. The record of a job that was cut short stands: a job started
+        from its leftover work branch must not make that branch pass for where a job began."""
         branch = CodeQualityMaintainer._current_branch()
+        interrupted = CodeQualityMaintainer._interrupted_job_home()
+        if interrupted and interrupted != branch:
+            info(f"CodeQualityMaintainer: job starts on {branch}, left by a job that started on {interrupted} "
+                 f"and was cut short — that record is kept")
+            return branch
         try:
             JOB_HOME_FILE.parent.mkdir(parents=True, exist_ok=True)
             JOB_HOME_FILE.write_text(f"{branch}\n")
@@ -2009,9 +2015,13 @@ class CodeQualityMaintainer:
 
     @staticmethod
     def _back_home(branch: str) -> None:
-        """The end of a run that started with `_job_home`: the checkout back on *branch*."""
+        """The end of a run that started with `_job_home`: the checkout back on *branch*, and
+        the run's own record dropped — never the one an earlier, cut-short job left."""
         CodeQualityMaintainer._run_subprocess(["git", "checkout", branch], "git checkout", GIT_TIMEOUT)
-        JOB_HOME_FILE.unlink(missing_ok=True)
+        if CodeQualityMaintainer._interrupted_job_home() in (branch, None):
+            JOB_HOME_FILE.unlink(missing_ok=True)
+        else:
+            trace(f"CodeQualityMaintainer: back on {branch}, the record of the cut-short job is left in place")
 
     @staticmethod
     def _interrupted_job_home() -> Optional[str]:

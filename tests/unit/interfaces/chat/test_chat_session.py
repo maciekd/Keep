@@ -313,9 +313,6 @@ class TestSuppressNo:
         shown = [dressed[:n] for n in range(len(dressed) + 1) if not ChatSession._is_no_prefix(dressed[:n])]
         assert shown == []
 
-    @pytest.mark.xfail(strict=True, reason="ChatSession._undressed removes only complete tags, so _is_no_prefix lets "
-                                           "a NO in tags through while its closing tag is still arriving: a chunk "
-                                           "boundary inside </b> puts 'NO<' into the draft before it is discarded")
     @pytest.mark.parametrize("dressed", ["<b>NO</b>", "<i>No.</i>"])
     def test_a_no_in_tags_is_held_at_every_chunk_boundary(self, dressed):
         assert ChatSession.is_no_reply(dressed)

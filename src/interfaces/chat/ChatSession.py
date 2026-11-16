@@ -532,7 +532,9 @@ class ChatSession:
         # A punctuated NO ("No.", "NO!") is also a possible prefix: the reply may still
         # continue ("No. The lights..."), so hold off displaying until more chunks arrive;
         # if the stream ends here it is suppressed without flashing.
-        return text.strip().lower() in cls._NO_REPLY_PREFIXES or cls._undressed(text) in ("", "n", "no")
+        # A tag still arriving ("NO</", "<b") is cut off first, or a chunk boundary inside it shows the NO.
+        whole_tags = re.sub(r"<(/?[a-zA-Z][^<>]*|/)?$", "", text)
+        return text.strip().lower() in cls._NO_REPLY_PREFIXES or cls._undressed(whole_tags) in ("", "n", "no")
 
     # --- the assistant stream -------------------------------------------------------------
 

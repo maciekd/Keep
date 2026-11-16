@@ -202,9 +202,6 @@ class TestLibrary:
         assert [p.name for p in account.playlists()] == ["Road Trip"]
         assert note.call_count == 1 and "spotify_login" in note.call_args.args[1]
 
-    @pytest.mark.xfail(strict=True, reason="SpotifyAccount keeps one flag (_sign_in_again_noted) for two notes: "
-                                           "once the scopes-grown note went out, the note that the consent was "
-                                           "revoked and the playlists are gone is never sent")
     @patch(f"{MODULE}.system_note")
     def test_a_consent_revoked_after_the_scopes_grown_note_is_still_told(self, note):
         """The first note says the playlists are still listed; when they then go away for good

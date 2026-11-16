@@ -683,8 +683,6 @@ class TestTheNameBeforeTheRename:
     def test_a_command_naming_the_old_name_reaches_sonos(self, commands, written):
         assert commands._canonical_integration_name(written) == "Sonos"
 
-    @pytest.mark.xfail(strict=True, reason="IntegrationMonitor.find compares a former name letter for letter, "
-                                           "not by integration_key as the current name and the migration do")
     def test_the_old_name_in_another_spelling_the_config_accepted_reaches_sonos_too(self, commands):
         """`enabled_integrations: [sonos-and-spotify]` was a valid way to write it, and the
         migration renames that spelling; a note that kept it should resolve like the config did."""

@@ -80,10 +80,6 @@ class TestAJobCutShortLeavesNoOwnBranch:
         assert seen == [None]
         assert git.call_args.args[0] == ["git", "checkout", "release"]
 
-    @pytest.mark.xfail(strict=True, reason="_job_home overwrites the record of a job that was cut short with the "
-                                           "leftover branch itself and _back_home then drops it: after the second "
-                                           "job own_branch() takes the first job's work branch for the install's own, "
-                                           "so the nightly update and restart_server stop pulling")
     def test_a_job_run_from_a_leftover_work_branch_does_not_make_it_the_installs_own(self, job_record):
         """Relaunched mid-job on fix/nightly, and before the next update brings the install back
         somebody asks for another job: it starts and ends on fix/nightly, which is still the
