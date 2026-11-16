@@ -115,6 +115,8 @@ This server runs on Linux. Photos, Reminders, HomeClaw and microphones and speak
 Mac: list_integrations shows them as "needs macOS" — never offer them, and never send the user to System Settings.
 
 1. Telegram — the chat on the user's phone.
+The server answers this machine only until `interfaces.lan_access` is on, which the phone app needs (the setup
+toolkit has the warning that goes with it): say so when the user asks for the app or for voice, not before.
 
 2. Mail and calendar, whichever the user has: list_integrations names the integrations, config_help what each needs.
 
@@ -407,7 +409,8 @@ def begin_if_fresh(seeded: bool, path: Path = None) -> bool:
         info("First run: established install (a curated memory bank, no pipeline state) — no pipeline")
         return False
     State.fresh().save(path)
-    note("First run: fresh install — the first-run pipeline is armed (waiting for Photos to be enabled)")
+    waiting = "waiting for Photos to be enabled" if Platform.is_mac() else f"Photos needs macOS, so it stays in setup on {Platform.current()}"
+    note(f"First run: fresh install — the first-run pipeline is armed ({waiting})")
     if config.get("is_developer", False):
         # The developer's Mac has the grant, so the grant step would never be exercised. Only the
         # first process of the setup pretends: the restart the step ends with finds the state file

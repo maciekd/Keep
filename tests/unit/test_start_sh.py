@@ -647,6 +647,13 @@ class TestTheSystemdUnit:
         assert unit['Restart'] == 'on-failure', "an explicit stop must stay stopped"
         assert unit['WantedBy'] == 'default.target'
 
+    def test_the_unit_waits_for_no_target_of_the_system_manager(self, linux):
+        """network-online.target is the system manager's: a user unit ordered after it is ordered
+        after nothing (not-found on Ubuntu 24.04 and Debian 12), so the unit names none."""
+        linux.run()
+        ordering = [line for line in linux.unit.read_text().splitlines() if line.startswith(('After=', 'Wants=', 'Requires='))]
+        assert ordering == []
+
     def test_the_unit_finds_what_the_user_installed_under_their_home_before_the_systems(self, linux):
         """A unit gets the user manager's PATH, which has no ~/.local/bin: the nightly run's
         `claude` lives there. The line replaces that PATH, so the system's folders — and Ubuntu's
@@ -754,6 +761,27 @@ class TestAListenerTheUnitDoesNotRun:
         assert alive(by_hand)
         assert linux.table.systemctl_calls == [] and not linux.unit.exists()
         assert str(by_hand) in linux.restart_log
+
+    def test_one_that_asked_for_the_restart_itself_is_stopped_and_the_unit_takes_over(self, linux, bystander):
+        """restart_server from a server started by hand: it hands its own pid over, and a refusal
+        would leave the command answered with nothing."""
+        by_hand = bystander()
+        linux.table.process(by_hand)
+        linux.table.listener(8888, by_hand)
+        with linux.env_file.open('a') as env:     # the port is free once its holder is signalled
+            env.write(f'kill() {{ builtin kill "$@"; [ "$1" = -0 ] || : > "{linux.dir}/listeners"; }}\n')
+        result = linux.run(by_hand)
+        assert result.returncode == 0, linux.restart_log
+        assert wait_dead(by_hand), "the server that asked for the restart still runs"
+        assert linux.launches == 1
+
+    def test_a_handed_over_pid_that_holds_no_port_is_not_stopped(self, linux, bystander):
+        """Only the listener the pid names is the server that asked; anything else is not this script's."""
+        other = bystander()
+        linux.table.process(other)
+        result = linux.run(other)
+        assert result.returncode == 0, linux.restart_log
+        assert alive(other) and linux.launched
 
     def test_the_units_own_server_on_the_port_is_what_a_restart_is_for(self, linux, bystander):
         server = bystander()

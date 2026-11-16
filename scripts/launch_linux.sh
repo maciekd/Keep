@@ -35,8 +35,28 @@ if in_unit; then
     fi
 fi
 
+# The pid handed over is the server that asked for this restart (common/Updater.relaunch). The
+# unit's own is stopped by the restart below. One started by hand has no unit to stop it, and a
+# start that refused it would leave its restart_server answered with nothing at all — it asked,
+# so it is stopped here, and the unit runs the new one.
 if [ -n "${1:-}" ]; then
-    rlog "old pid $1 is not killed here: it is the unit's process, and the restart stops it"
+    if in_unit "$1"; then
+        rlog "old pid $1 is not killed here: it is the unit's process, and the restart stops it"
+    elif printf '%s\n' $(own_listeners $listen_ports) | grep -qx -- "$1"; then
+        rlog "old pid $1 is a $what started by hand that asked for this restart — stopping it, $UNIT runs the new one"
+        kill "$1" 2>/dev/null
+        for i in $(seq 1 20); do
+            kill -0 "$1" 2>/dev/null || break
+            sleep 0.5
+        done
+        if kill -0 "$1" 2>/dev/null; then
+            rlog "pid $1 is still there after 10s, force-killing it"
+            kill -9 "$1" 2>/dev/null
+            sleep 1
+        fi
+    else
+        rlog "old pid $1 holds none of the $what's ports — nothing of it to stop"
+    fi
 fi
 
 # A listener the unit does not run is a server started by hand (`python floxy_ai_server.py` in a

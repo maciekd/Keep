@@ -12,7 +12,7 @@
 #
 # On Linux (Ubuntu, Debian; docs/plans/LINUX_PLAN.md) the same steps run with that system's
 # means: the missing system packages come from apt — the one command run with sudo, printed
-# before sudo asks — and start.sh runs the server as a systemd user unit. Each such branch stands
+# before sudo asks (with an `apt-get update` before it where apt's lists are empty) — and start.sh runs the server as a systemd user unit. Each such branch stands
 # beside the Mac's (`linux`); a Mac runs what it always ran.
 #
 # Environment overrides (all optional):
@@ -159,6 +159,9 @@ linux() { [ "$OS" = Linux ]; }
 # What a Linux install cannot be, said before a folder or a log is made for it.
 refuse_before_anything() {
   linux || return 0
+  [ "$(id -u)" -ne 0 ] || fail "Please run the installer as your normal user, not as root." \
+    "Keep runs as a systemd service of your own account, under your home directory. The installer asks" \
+    "for sudo once, for the system packages, and shows the command first."
   if [ "${KEEP_ROLE:-}" = imessage_satellite ]; then
     fail "An iMessage satellite is a Mac: it serves the Messages app of a macOS user." \
       "Run this command on the Mac that holds the Messages account. On this machine, leave KEEP_ROLE out" \
@@ -502,10 +505,6 @@ linux_chip() {
 }
 
 check_linux() {
-  [ "$(id -u)" -ne 0 ] || fail "Please run the installer as your normal user, not as root." \
-    "Keep runs as a systemd service of your own account, under your home directory. The installer asks" \
-    "for sudo once, for the system packages, and shows the command first."
-
   local id like name version major
   id=$(os_release ID)
   like=$(os_release ID_LIKE)
@@ -563,8 +562,9 @@ check_linux() {
 
 # What the server needs of the system (LINUX_PLAN.md §1, §3): git and curl for the install itself
 # and the updates, ffmpeg for voice messages and clips, iproute2 (ss) and procps (pgrep) for
-# start.sh and stop.sh, libsndfile and libmagic for the Python packages that load them.
-APT_PACKAGES="git curl ca-certificates ffmpeg iproute2 procps libsndfile1 libmagic1"
+# start.sh and stop.sh, libsndfile and libmagic for the Python packages that load them, and
+# openssh-client for ssh-keygen, which git verifies a release's signed tag with (SignedRelease).
+APT_PACKAGES="git curl ca-certificates ffmpeg iproute2 procps libsndfile1 libmagic1 openssh-client"
 
 # package_installed <name>: dpkg has it — under its own name, or under the one the 64-bit time_t
 # transition gave some libraries (Ubuntu 24.04's libmagic1 is libmagic1t64, which apt installs
@@ -607,7 +607,7 @@ ensure_packages() {
   else
     apt_line="sudo apt-get install -y --no-install-recommends $missing"
     note "Keep needs these system packages, which are not installed: ${C_BOLD}$missing${C_RESET}"
-    note "This is the one command the installer runs as root:"
+    note "This is what the installer runs as root (after an apt-get update, only where apt has no lists to find them in):"
     note "  ${C_BOLD}$apt_line${C_RESET}"
     command -v sudo >/dev/null 2>&1 || fail "sudo is not installed, so the installer cannot install the system packages." \
       "As root, run:  apt-get install -y --no-install-recommends $missing" \
@@ -619,15 +619,28 @@ ensure_packages() {
     printf '  … %s\n' "apt-get install (sudo may ask for your password; apt's output goes to the log)"
     log ""
     log "--- $apt_line"
-    # stdin is taken away: with `curl ... | bash` it is the script itself, and nothing run as
-    # root is to read from it or wait on it.
-    # shellcheck disable=SC2086
-    if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing </dev/null >>"$LOG" 2>&1; then
-      printf '\n  %s✖ apt-get install failed. Last lines of the log:%s\n\n' "$C_RED" "$C_RESET"
-      tail -n 15 "$LOG" | sed 's/^/    │ /'
-      fail "The system packages could not be installed." \
-        "If apt could not find a package, its lists may be old: sudo apt-get update, then run the installer again." \
-        "Without sudo rights, ask an administrator to run:  $apt_line"
+    local offset
+    offset=$(($(wc -c <"$LOG") + 1))
+    if ! apt_install "$missing"; then
+      # A new cloud image comes with no package lists at all, and apt then knows no package by name.
+      if apt_lists_stale "$offset"; then
+        note "apt does not know them: its package lists are empty or old, as on a new machine. Refreshing them first:"
+        note "  ${C_BOLD}sudo apt-get update${C_RESET}"
+        log ""
+        log "--- sudo apt-get update"
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get update </dev/null >>"$LOG" 2>&1 || log "apt-get update failed"
+        # With its lists apt may have a python3.12 to offer, which it could not say before.
+        missing=$(missing_packages)
+        apt_line="sudo apt-get install -y --no-install-recommends $missing"
+        note "  ${C_BOLD}$apt_line${C_RESET}"
+        log ""
+        log "--- $apt_line"
+        apt_install "$missing" || apt_failed "$apt_line" \
+          "apt-get update ran and apt still does not have them: see what it said above and in the log."
+      else
+        apt_failed "$apt_line" \
+          "If apt could not find a package, its lists may be old: sudo apt-get update, then run the installer again."
+      fi
     fi
     ok "Installed: $missing"
     missing=$(missing_packages)
@@ -635,6 +648,26 @@ ensure_packages() {
       "Install them by hand and run the installer again."
   fi
   if [ -n "$NETWORK_UNCHECKED" ]; then check_network; fi
+}
+
+# apt_install <packages>: the install, with apt's output in the log. stdin is taken away: with
+# `curl ... | bash` it is the script itself, and nothing run as root is to read from it or wait on it.
+apt_install() {
+  # shellcheck disable=SC2086
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $1 </dev/null >>"$LOG" 2>&1
+}
+
+# apt_lists_stale <log offset>: the apt-get whose output starts there knew a package by no name.
+apt_lists_stale() {
+  tail -c +"$1" "$LOG" 2>/dev/null | grep -q 'Unable to locate package'
+}
+
+# apt_failed <apt line> <hint>
+apt_failed() {
+  printf '\n  %s✖ apt-get install failed. Last lines of the log:%s\n\n' "$C_RED" "$C_RESET"
+  tail -n 15 "$LOG" | sed 's/^/    │ /'
+  fail "The system packages could not be installed." "$2" \
+    "Without sudo rights, ask an administrator to run:  $1"
 }
 
 # Chrome, for the browse commands and the web search (WebAccess drives it headless). Nothing is
@@ -655,15 +688,14 @@ find_browser() {
 
 # What to install for the browse commands, by distribution and architecture. Google publishes
 # Chrome for x86_64 only; Debian has Chromium as a package; Ubuntu's Chromium is a snap, which the
-# server has not been tried with (LINUX_PLAN.md).
+# server drives from its systemd unit like any other (seen on 24.04, arm64 — LINUX_PLAN.md).
 browser_advice() {
   local deb=https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
   if [ "$(uname -m)" = x86_64 ]; then
     note "  Google Chrome:  curl -fsSLo /tmp/chrome.deb $deb && sudo apt-get install -y /tmp/chrome.deb"
     if [ "$(os_release ID)" = debian ]; then note "  or Chromium:    sudo apt-get install -y chromium"; fi
   elif [ "$(os_release ID)" = ubuntu ]; then
-    note "  Google has no Chrome for ARM, and Ubuntu's Chromium is a snap (sudo snap install chromium),"
-    note "  which Keep has not been tried with yet."
+    note "  Chromium:  sudo snap install chromium   (Google has no Chrome for ARM)"
   else
     note "  Chromium:  sudo apt-get install -y chromium"
   fi
@@ -879,6 +911,7 @@ install_requirements() {
   offset=$(($(wc -c <"$LOG") + 1))
   SPINNER_STATUS="pip_status $offset $PIP_EXPECTED_PACKAGES"
   if linux; then
+    SPINNER_STATUS="pip_status $offset $PIP_EXPECTED_PACKAGES_LINUX"
     # torch's default build for Linux x86_64 is the CUDA one, gigabytes that speaker identification
     # has no use for; PyTorch's own index has the CPU build (common/RequirementsChecker.py passes
     # the same index, so an update does not swap the build).
@@ -890,6 +923,7 @@ install_requirements() {
 }
 
 TORCH_CPU_INDEX="https://download.pytorch.org/whl/cpu"
+PIP_EXPECTED_PACKAGES_LINUX=230   # PIP_EXPECTED_PACKAGES without what only a Mac installs (the pyobjc frameworks, MLX)
 
 # pip_status <log offset> <expected package count>: progress read off pip's own output.
 # Pip works in passes: it resolves first, printing "Collecting <pkg>" per package while it
@@ -1012,20 +1046,27 @@ obtain_api_key() {
     explain_credit
     printf '\n'
   fi
-  local attempt=0 workspace_attempt=0
+  # An attempt is a key Anthropic was asked about: an empty Enter or a slip of the paste uses none
+  # up (ten of those in a row is nobody typing, and ends the loop all the same).
+  local attempt=0 workspace_attempt=0 slips=0 asked=""
   while :; do
+    asked=""
     if [ -z "$API_KEY" ]; then
-      attempt=$((attempt + 1))
-      [ "$attempt" -le 3 ] || fail "No valid API key after 3 attempts." \
+      [ "$attempt" -lt 3 ] || fail "No valid API key after 3 attempts." \
+        "Re-run the installer when you have one, or pass it as ANTHROPIC_API_KEY=... in the environment."
+      [ "$slips" -lt 10 ] || fail "No API key entered." \
         "Re-run the installer when you have one, or pass it as ANTHROPIC_API_KEY=... in the environment."
       ask "Anthropic API key:" API_KEY secret
       API_KEY=$(printf '%s' "$API_KEY" | tr -d '[:space:]')
+      asked=1
     fi
     case "$API_KEY" in
       sk-ant-*) ;;
-      "")  warn "Nothing entered."; continue ;;
-      *)   warn "That does not look like an Anthropic key (they start with sk-ant-)."; API_KEY=""; continue ;;
+      "")  warn "Nothing entered."; slips=$((slips + 1)); continue ;;
+      *)   warn "That does not look like an Anthropic key (they start with sk-ant-)."; API_KEY=""; slips=$((slips + 1)); continue ;;
     esac
+    slips=0
+    [ -z "$asked" ] || attempt=$((attempt + 1))
     verify_api_key
     case "$VERIFY_CODE" in
       200) ok "Key verified with the Anthropic API${WORKSPACE_ID:+ (workspace $WORKSPACE_ID)}"; return ;;
@@ -1069,8 +1110,8 @@ write_config() {
 # Keep configuration, written by install.sh on $(date '+%Y-%m-%d'). config.example.yaml documents
 # every setting; the assistant sets up the optional integrations itself once it runs.
 api_keys:
-  anthropic: $API_KEY
-${WORKSPACE_ID:+  anthropic_workspace: $WORKSPACE_ID   # the key is not tied to one workspace, so every request names this one}
+  anthropic: $API_KEY${WORKSPACE_ID:+
+  anthropic_workspace: $WORKSPACE_ID   # the key is not tied to one workspace, so every request names this one}
 $(if [ "$BRANCH" = master ]; then echo "developer_release: true   # installed from master, the development line; restart_server keeps following it"
    else echo "developer_release: false  # restart_server follows the release branch; true: master, the development line"; fi)
 vault:
@@ -1379,6 +1420,15 @@ linux_summary() {
   note "through the rest, Telegram first — after that the chat is on your phone. From another computer:"
   note "  ssh -t $me@$host $KEEP_DIR/keep.sh"
   note "(-t gives the console the terminal it needs; closing it leaves the server running.)"
+  printf '\n'
+  if [ "$(config_value interfaces lan_access | tr '[:upper:]' '[:lower:]')" = true ]; then
+    note "${C_BOLD}The server answers the whole network${C_RESET} (interfaces.lan_access: true in config.yaml):"
+    note "the phone app reaches it, and so does anyone on the network — there is no password."
+  else
+    note "${C_BOLD}The server answers this machine only${C_RESET} until interfaces.lan_access is on: the phone app needs"
+    note "it (the console over ssh, as above, does not). Ask Keep to turn it on — there is no password,"
+    note "whoever reaches the address is then the owner, so only on a network you trust."
+  fi
   printf '\n'
   if [ -n "$BROWSER" ]; then
     note "Browser    $BROWSER  (for the web search and the browse commands)"

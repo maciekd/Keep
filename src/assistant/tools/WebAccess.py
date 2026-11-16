@@ -813,13 +813,15 @@ class WebAccess(Integration):
             install_hint = (
                 "install it with 'brew install --cask google-chrome'"
                 if Platform.is_mac()
-                else "install Google Chrome or Chromium (e.g. 'apt install chromium')"
+                else "install Google Chrome or Chromium (Debian: 'sudo apt install chromium', "
+                     "Ubuntu: 'sudo snap install chromium')"
             )
             error(
                 "Web Access disabled: no Chrome/Chromium binary found. "
                 "nodriver needs a Chrome/Chromium install to scrape web pages — "
                 f"{install_hint}; the next web command picks it up. "
                 f"Searched: {', '.join(self._chrome_search_paths())}"
+                + ("" if Platform.is_mac() else f", and the PATH for {', '.join(self._CHROME_PATH_NAMES)}")
             )
             self._browser = None
             self._tab = None

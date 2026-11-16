@@ -25,7 +25,6 @@ unit_text() {
 # Written by $1/scripts/service.sh at every start — edits are overwritten.
 [Unit]
 Description=Keep
-After=network-online.target
 StartLimitIntervalSec=300
 StartLimitBurst=5
 

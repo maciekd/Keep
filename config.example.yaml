@@ -312,7 +312,7 @@ interfaces:
   # Wi-Fi: there is no password, whoever reaches the address is the owner. Only on a network you trust.
   lan_access: false
   http:     { enabled: true }               # always on (the others register routes on it); port from argv
-  voice:    { enabled: false }              # VoiceToVoice, off unless set to true; needs mics and speakers on the server, an ElevenLabs API key and api_keys.gemini (the ai.fast tier).
+  voice:    { enabled: false }              # VoiceToVoice, off unless set to true; on a Mac it needs mics and speakers on the server, an ElevenLabs API key and api_keys.gemini (the ai.fast tier).
                                             # On a Linux server voice is the phone app's alone: the Keep app sends what it
                                             # heard and plays the spoken reply itself. The server opens no microphone and
                                             # no speaker there (those need a Mac), so it needs none.

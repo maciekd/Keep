@@ -49,7 +49,8 @@ Voice on this server is the phone app's: a Linux server has no microphones or sp
 first enabled and configured TTS engine: "ElevenLabs TTS" is on by default and needs only `api_keys.elevenlabs`;
 Swedish prefers "Gemini TTS" (`enable_integration("Gemini TTS")`, needs `google_service_account`). Cartesia Sonic, Fish
 Audio, Grok, Supertonic and Chirp 3 HD are opt-in: enable one and disable ElevenLabs TTS. Without an engine that can
-speak, voice requests are answered as text.
+speak, voice requests are answered as text. An engine exists only while voice runs: turn
+`interfaces.voice.enabled` on and restart before enabling one.
 
 `restart_integration(name: str)` — rebuilds an integration with the current config and reports its state.
 
@@ -72,6 +73,9 @@ close; the server and Telegram keep running). The grant reaches a new process on
 <!-- linux -->
 This server runs on Linux. An integration `list_integrations` shows as "needs macOS" cannot be enabled here, and
 there is no Full Disk Access to grant. iMessage works through a satellite on a Mac: `config_help("imessage")`.
+The server is the systemd user unit keep.service: it starts at boot with nobody logged in and is started again
+when it dies (`systemctl --user status keep` shows it). The console opens from another computer over ssh, in a
+terminal: `ssh -t <user>@<host> ~/Keep/keep.sh` — that needs no `interfaces.lan_access` and no open port but ssh's.
 
 <!-- /linux -->
 `enable_integration(name: str)` / `disable_integration(name: str)` — switches an integration on or off by the name

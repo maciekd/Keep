@@ -62,6 +62,9 @@ sudo() {{
     echo "$*" >> "{d}/sudo_calls"
     case " $* " in *" -v "*) [ ! -f "{d}/sudo_needs_password" ]; return ;; esac
     if [ -f "{d}/apt_fails" ]; then echo "E: Unable to locate package"; return 100; fi
+    if [ -f "{d}/apt_broken" ]; then echo "E: dpkg was interrupted"; return 100; fi
+    case " $* " in *" update "*) rm -f "{d}/apt_lists_empty"; return ;; esac
+    if [ -f "{d}/apt_lists_empty" ]; then echo "E: Unable to locate package"; return 100; fi
     local a installing=""
     for a in "$@"; do
         if [ -n "$installing" ]; then case "$a" in -*) ;; *) echo "$a" >> "{d}/installed" ;; esac; fi
@@ -74,7 +77,7 @@ dpkg-query() {{
     grep -qx -- "$name" "{d}/installed" 2>/dev/null && printf installed
 }}
 apt-cache() {{
-    if [ -f "{d}/apt_offers_python" ]; then echo "  Candidate: 3.12.3-1ubuntu0.5"; else echo "  Candidate: (none)"; fi
+    if [ -f "{d}/apt_offers_python" ] && [ ! -f "{d}/apt_lists_empty" ]; then echo "  Candidate: 3.12.3-1ubuntu0.5"; else echo "  Candidate: (none)"; fi
 }}
 systemctl() {{
     echo "$*" >> "{d}/systemctl_calls"
@@ -252,6 +255,21 @@ class TestObtainApiKey:
         assert len(harness.prompts) == 2
         assert harness.curl_calls.read_text().count('x-api-key:') == 1
         assert 'bogus-key' not in harness.curl_calls.read_text()
+
+    def test_an_empty_enter_and_a_slip_of_the_paste_use_up_no_attempt(self, harness):
+        """Three attempts are three keys Anthropic was asked about."""
+        harness.set_curl(('403', ''), ('403', ''), ('200', ''))
+        harness.set_answers('', 'sk-ant-one', 'oops', '', 'sk-ant-two', '', 'bogus', 'sk-ant-three')
+        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith('sk-ant-three')
+        assert harness.curl_calls.read_text().count('x-api-key:') == 3
+
+    def test_enter_pressed_for_ever_ends_the_install(self, harness):
+        harness.set_answers('')
+        result = harness.run('obtain_api_key')
+        assert result.returncode == 1
+        assert not harness.curl_calls.exists() or 'x-api-key:' not in harness.curl_calls.read_text()
 
     def test_three_rejected_keys_stop_the_install(self, harness):
         harness.set_curl_code('403')
@@ -431,6 +449,13 @@ class TestWriteConfig:
         assert config['api_keys']['anthropic'] == 'sk-ant-typed-47L'
         assert 'anthropic_workspace' not in config['api_keys']   # a key tied to one workspace needs none
         assert re.fullmatch(r'[A-Za-z0-9]{32}', str(config['vault']['key']))
+
+    def test_the_config_has_no_empty_line_where_the_workspace_id_would_stand(self, harness):
+        harness.keep_dir.mkdir(parents=True, exist_ok=True)
+        result = harness.run('API_KEY=sk-ant-typed-47L; write_config')
+        assert result.returncode == 0, result.stdout
+        lines = (harness.keep_dir / 'config.yaml').read_text().splitlines()
+        assert lines[lines.index('  anthropic: sk-ant-typed-47L') + 1].startswith('developer_release:')
 
     def test_workspace_id_is_written_for_a_key_not_tied_to_one(self, harness):
         """Contract with config.yaml: ClaudeLLM reads the id as api_keys.anthropic_workspace."""
@@ -938,7 +963,8 @@ ARCH = os.uname().machine
 CHECK = 'uname() { echo x86_64; }; MIN_FREE_GB=0; check_linux'
 NO_PYTHON = 'find_python() { return 1; }\n'
 A_PYTHON = 'find_python() { return 0; }\n'
-EVERY_PACKAGE = ['git', 'curl', 'ca-certificates', 'ffmpeg', 'iproute2', 'procps', 'libsndfile1', 'libmagic1']
+EVERY_PACKAGE = ['git', 'curl', 'ca-certificates', 'ffmpeg', 'iproute2', 'procps', 'libsndfile1', 'libmagic1',
+                 'openssh-client']
 
 
 def on_linux(harness, script: str, **env):
@@ -1029,7 +1055,7 @@ class TestTheAptStep:
     all when nothing is."""
 
     def test_only_what_is_missing_is_installed_in_one_command_that_was_shown(self, harness):
-        harness.installed('git', 'curl', 'ca-certificates', 'procps', 'libmagic1')
+        harness.installed('git', 'curl', 'ca-certificates', 'procps', 'libmagic1', 'openssh-client')
         result = on_linux(harness, A_PYTHON + 'ensure_packages')
         assert result.returncode == 0, result.stdout
         assert harness.apt_installs == [['ffmpeg', 'iproute2', 'libsndfile1']]
@@ -1076,7 +1102,7 @@ class TestTheAptStep:
         result = on_linux(harness, A_PYTHON + 'ensure_packages')
         assert result.returncode == 1
         assert harness.calls('sudo') == []
-        assert 'ca-certificates ffmpeg iproute2 procps libsndfile1 libmagic1' in result.stdout
+        assert 'ca-certificates ffmpeg iproute2 procps libsndfile1 libmagic1 openssh-client' in result.stdout
 
     def test_a_sudo_that_needs_a_password_with_no_terminal_installs_nothing(self, harness):
         harness.flag('sudo_needs_password')
@@ -1092,6 +1118,32 @@ class TestTheAptStep:
         result = on_linux(harness, A_PYTHON + 'ensure_packages; echo went-on')
         assert result.returncode == 1 and 'went-on' not in result.stdout
         assert 'Unable to locate package' in result.stdout, "apt's own words are not shown"
+
+    def test_empty_package_lists_are_refreshed_once_and_the_install_goes_on(self, harness):
+        """A new cloud image (Ubuntu's and Debian's alike) has no lists: apt knows no package."""
+        harness.flag('apt_lists_empty')
+        harness.installed(*(set(EVERY_PACKAGE) - {'ffmpeg'}))
+        result = on_linux(harness, A_PYTHON + 'ensure_packages; echo went-on')
+        assert result.returncode == 0 and 'went-on' in result.stdout, result.stdout
+        assert [call for call in harness.calls('sudo') if ' update' in call] == ['env DEBIAN_FRONTEND=noninteractive apt-get update']
+        assert harness.apt_installs == [['ffmpeg'], ['ffmpeg']]
+        assert 'sudo apt-get update' in result.stdout, "the second command run as root was not shown"
+
+    def test_the_refreshed_lists_may_offer_the_python_they_could_not_before(self, harness):
+        harness.flag('apt_lists_empty')
+        harness.flag('apt_offers_python')
+        harness.installed(*(set(EVERY_PACKAGE) - {'ffmpeg'}))
+        result = on_linux(harness, NO_PYTHON + 'ensure_packages')
+        assert result.returncode == 0, result.stdout
+        assert harness.apt_installs == [['ffmpeg'], ['ffmpeg', 'python3.12', 'python3.12-venv']]
+
+    def test_an_apt_that_fails_for_another_reason_is_not_answered_with_an_update(self, harness):
+        harness.flag('apt_broken')
+        harness.installed('git')
+        result = on_linux(harness, A_PYTHON + 'ensure_packages')
+        assert result.returncode == 1
+        assert not any(' update' in call for call in harness.calls('sudo'))
+        assert 'dpkg was interrupted' in result.stdout, "apt's own words are not shown"
 
     def test_the_packages_are_the_ones_ci_and_the_plan_name(self):
         """Contract with the system: what start.sh needs (ss, pgrep), what the Python packages
@@ -1158,6 +1210,13 @@ class TestWhereALinuxInstallIsRefused:
         assert ran(result) == [] and 'Mac' in result.stdout
         assert not harness.keep_dir.exists(), "a folder was made for an install that is refused"
 
+    def test_root_is_refused_before_a_folder_is_made_in_its_home(self, harness):
+        """Seen on Ubuntu: the refusal came after the log was opened, and left /root/Keep/log behind."""
+        as_root = 'id() { if [ "$1" = -u ]; then echo 0; else command id "$@"; fi; }; '
+        result = on_linux(harness, as_root + LINUX_MAIN, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 1
+        assert ran(result) == [] and not harness.keep_dir.exists()
+
     def test_an_existing_satellite_config_is_refused_and_left_as_it_is(self, harness):
         """A folder copied over from a Mac."""
         existing_install(harness, EXISTING_SATELLITE)
@@ -1220,6 +1279,20 @@ class TestTheLinuxInstallEndToEnd:
     def test_the_macs_summary_names_no_systemd(self, harness):
         said = harness.run(self.SUMMARY).stdout
         assert 'systemctl' not in said and 'ssh' not in said and f'{harness.keep_dir}/start.sh' in said
+        assert 'lan_access' not in said, "the Mac's summary changed"
+
+    @pytest.mark.parametrize('config, answers', [
+        ('api_keys:\n  anthropic: x\n', 'this machine only'),
+        ('interfaces:\n  lan_access: false\n', 'this machine only'),
+        ('interfaces:\n  lan_access: true\n', 'the whole network'),
+    ], ids=['a fresh config', 'off', 'on'])
+    def test_the_summary_says_who_reaches_the_server_as_config_yaml_has_it(self, harness, config, answers):
+        """A Linux server has no screen: the phone app is how most people would reach it, and it
+        cannot until interfaces.lan_access is on."""
+        harness.keep_dir.mkdir(parents=True, exist_ok=True)
+        (harness.keep_dir / 'config.yaml').write_text(config)
+        said = on_linux(harness, self.SUMMARY).stdout
+        assert 'interfaces.lan_access' in said and answers in said and 'phone app' in said
 
     def test_a_refused_linger_is_said_with_the_command_that_turns_it_on(self, harness):
         """Without it the server stops when the ssh session that installed it ends."""

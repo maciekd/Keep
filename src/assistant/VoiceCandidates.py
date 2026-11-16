@@ -13,6 +13,7 @@ import re
 import secrets
 import shutil
 import string
+import zlib
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -146,10 +147,12 @@ def get(candidate_id: str, directory: Path = None) -> Optional[Candidate]:
 
 
 def version(directory: Path = None) -> tuple:
-    """Changes whenever the rendered list would: a candidate filed, refreshed or named."""
+    """Changes whenever the rendered list would: a candidate filed, refreshed or named. It is
+    told by what the facts files say, not by their time: Linux stamps a file with the clock of
+    the last timer tick, so two writes a few milliseconds apart carry the same mtime."""
     directory = directory or CANDIDATES_DIR
     try:
-        return tuple(sorted((f.parent.name, f.stat().st_mtime_ns) for f in directory.glob(f"*/{FACTS_FILE}")))
+        return tuple(sorted((f.parent.name, zlib.crc32(f.read_bytes())) for f in directory.glob(f"*/{FACTS_FILE}")))
     except OSError:
         return ()
 
