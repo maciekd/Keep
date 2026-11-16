@@ -552,6 +552,33 @@ class TestResumeConversation:
             console.waiting[0]()        # a TUI client connects hours later
             opened.assert_called_once()
 
+    def test_the_autonomous_checks_are_held_from_the_boot_until_the_turn_is_handed_over(self):
+        """2026-11-16: the checks of the startup grace ran 5 s ahead of the resume turn."""
+        console, checks = self.FakeConsole(), self.FakeChecks()
+        server = type("Server", (), {"interfaces": [console], "assistant": self.FakeAssistant()})()
+        with patch("assistant.agents.AutonomousActionManager.AutonomousActionManager.current",
+                   return_value=checks), self.resume(server) as opened:
+            assert checks.held and not opened.called
+            console.waiting[0]()
+            assert opened.called and not checks.held
+
+    def test_a_turn_that_is_never_opened_releases_the_checks_all_the_same(self):
+        console, checks = self.FakeConsole(), self.FakeChecks()
+        server = type("Server", (), {"interfaces": [console], "assistant": self.FakeAssistant(busy=True)})()
+        with patch("assistant.agents.AutonomousActionManager.AutonomousActionManager.current",
+                   return_value=checks), self.resume(server):
+            console.waiting[0]()
+            assert not checks.held
+
+    class FakeChecks:
+        held = False
+
+        def hold_for_resume(self):
+            self.held = True
+
+        def release_resume_hold(self):
+            self.held = False
+
     def test_the_first_run_brief_waits_for_the_intro_however_long(self):
         import floxy_ai_server
         console = self.FakeConsole()

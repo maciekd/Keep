@@ -167,8 +167,12 @@ def _resume_conversation(server: "Server | None" = None):
     a marker; the conversation it interrupted is resumed with a system turn, so the assistant
     reports the outcome and keeps what it promised instead of waiting for the next periodic
     check (issue #113). The announcement went out first, so the turn need not repeat it. A
-    nightly update, a recovery or a manual start leaves no marker and resumes nothing."""
+    nightly update, a recovery or a manual start leaves no marker and resumes nothing. The
+    autonomous checks wait from here until the turn has started or was given up: it is a
+    request in flight that has not begun yet, and the checks of the startup grace would
+    otherwise run ahead of it."""
     from assistant import FirstRun
+    from assistant.agents.AutonomousActionManager import AutonomousActionManager
     from common.StartupTracker import StartupTracker
     marker = StartupTracker.take_resume_marker()
     if marker is None:
@@ -176,9 +180,15 @@ def _resume_conversation(server: "Server | None" = None):
     if FirstRun.brief_due():
         info("The restart's conversation is not resumed: the first-run brief opens the conversation instead.")
         return
+    autonomous = AutonomousActionManager.current()
+    if autonomous is None:
+        trace("No autonomous action manager, no checks to hold for the resume turn.")
+    else:
+        autonomous.hold_for_resume()
     _open_conversation(server, lambda: StartupTracker.build_resume_turn(marker, Version.label()),
                        "the conversation the restart interrupted",
-                       overtaken=lambda: _resume_overtaken(server), max_wait=RESUME_INTRO_WAIT_SECONDS)
+                       overtaken=lambda: _resume_overtaken(server), max_wait=RESUME_INTRO_WAIT_SECONDS,
+                       done=autonomous.release_resume_hold if autonomous else None)
 
 
 # A restart asked for from Telegram finds no TUI client and no intro to wait for: after this
@@ -201,13 +211,15 @@ def _resume_overtaken(server: "Server | None") -> str | None:
     return None
 
 
-def _open_conversation(server: "Server | None", query, what: str, overtaken=None, max_wait: float | None = None):
+def _open_conversation(server: "Server | None", query, what: str, overtaken=None, max_wait: float | None = None,
+                       done=None):
     """Open the owner's conversation with the system turn *query()* builds. When the console
     runs, the turn waits until its startup intro has played for the first TUI client, so the
     assistant starts thinking as the chat appears, not while the intro is on — for *max_wait*
     seconds at most when given: with no TUI client there is no intro, and the turn would
     otherwise fire stale whenever one next connects. It goes out once, and not at all when
-    *overtaken()* names a reason at that moment."""
+    *overtaken()* names a reason at that moment. *done()* is called once the turn has been
+    handed over or given up — whichever way the wait ended."""
     from interfaces.chat.ChatHub import ChatHub
     once = threading.Lock()
     timer = None
@@ -218,12 +230,16 @@ def _open_conversation(server: "Server | None", query, what: str, overtaken=None
             return
         if timer is not None:
             timer.cancel()
-        reason = overtaken() if overtaken else None
-        if reason:
-            info(f"{what[0].upper()}{what[1:]} is not opened: {reason}.")
-            return
-        info(f"The assistant opens the conversation with {what}.")
-        ChatHub.get_instance().open_conversation(query())
+        try:
+            reason = overtaken() if overtaken else None
+            if reason:
+                info(f"{what[0].upper()}{what[1:]} is not opened: {reason}.")
+                return
+            info(f"The assistant opens the conversation with {what}.")
+            ChatHub.get_instance().open_conversation(query())
+        finally:
+            if done is not None:
+                done()
 
     def give_up_waiting():
         info(f"No console intro ended within {max_wait:.0f}s — {what} no longer waits for it.")
