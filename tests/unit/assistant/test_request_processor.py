@@ -426,10 +426,11 @@ class TestHandleBackgroundCommands:
 
         assert reply == "result: \nsearch result here"
 
-    def test_cached_response_with_missing_device_invalidates_cache(self, handler):
+    def test_cached_response_whose_command_fails_is_evicted_whatever_the_error(self, handler):
+        """Not only a missing device: a dead playlist id replayed from the cache fails with
+        an error of the music system's own."""
         from assistant.llm.CachedLLM import CachedLLM
-        error_text = "Command 'turn_on(Mysbelysning (Kök))' returned an error: \"could not find device &quot;Mysbelysning (Kök)&quot;\"."
-        dm = self._make_mock_dm(command_reply=error_text)
+        dm = self._make_mock_dm(command_reply="play_music failed: could not start 2 in Gym")
         dm.command_processor.command_reply_contains_error = True
         dm.last_response_was_cached = True
         dm.ai = Mock(spec=CachedLLM)
@@ -437,6 +438,7 @@ class TestHandleBackgroundCommands:
         self._run_one_round(handler, dm)
 
         dm.ai.invalidate_served_response.assert_called_once()
+        assert handler._cached_round_failed
 
     def test_no_cache_invalidation_when_not_cached(self, handler):
         from assistant.llm.CachedLLM import CachedLLM
@@ -447,17 +449,18 @@ class TestHandleBackgroundCommands:
         self._run_one_round(handler, dm)
 
         dm.ai.invalidate_served_response.assert_not_called()
+        assert not handler._cached_round_failed
 
-    def test_no_cache_invalidation_for_other_errors(self, handler):
+    def test_cached_response_that_succeeds_keeps_its_rows(self, handler):
         from assistant.llm.CachedLLM import CachedLLM
-        dm = self._make_mock_dm(command_reply="Command 'x()' returned an error: \"timeout talking to Indigo\".")
-        dm.command_processor.command_reply_contains_error = True
+        dm = self._make_mock_dm(command_reply="Playing 'Workout' in Gym")
         dm.last_response_was_cached = True
         dm.ai = Mock(spec=CachedLLM)
 
         self._run_one_round(handler, dm)
 
         dm.ai.invalidate_served_response.assert_not_called()
+        assert not handler._cached_round_failed
 
     def test_cache_invalidation_survives_non_cachedllm_ai(self, handler):
         """test_suite_mode skips the CachedLLM wrapper — the isinstance guard must keep
@@ -1808,6 +1811,18 @@ class TestSaveToDatabase:
                 "query", "", "response", False,
                 source="VoiceToVoice", location="Kitchen"
             )
+
+    def test_correction_of_a_failed_cached_response_is_not_stored(self, full_handler):
+        """Stored, the correction would be a cache candidate under the query it never answered."""
+        with patch("assistant.RequestProcessor.FloxyDatabase") as mock_db_cls:
+            mock_db = Mock()
+            mock_db_cls.get_instance.return_value = mock_db
+            full_handler.dialog_manager.last_response_was_cached = False
+            full_handler._cached_round_failed = True
+
+            full_handler._save_to_database("query", "My bad, play_music(Gym, S-6)")
+
+            mock_db.submit.assert_not_called()
 
     def test_false_positive_skips_save(self, full_handler):
         with patch("assistant.RequestProcessor.FloxyDatabase") as mock_db_cls:

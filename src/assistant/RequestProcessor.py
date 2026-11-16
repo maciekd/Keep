@@ -799,11 +799,17 @@ class RequestProcessor:
         if not self.ctx.text_only and self.ctx.server_sound and self.playback:
             self.playback.finish_reply(self.dialog_manager.llm_response)
 
+    # Set when the cache-served first round of this request failed
+    _cached_round_failed = False
+
     def _save_to_database(self, query_key: str, response_text: str):
         if self.LLM_OUTAGE_HISTORY_MARKER.strip() in response_text:
             # A zero-command outage row would block CachedLLM's majority vote for this
             # query forever (any command-less row vetoes caching), so never store one.
             trace("Not storing outage reply in DB.")
+            return
+        if self._cached_round_failed:
+            info("Not storing the reply in DB: it corrects a cached response that failed.")
             return
         if "false_positive(" not in response_text and not self.ctx.test:
             FloxyDatabase.get_instance().submit(query_key.strip(), "",
@@ -814,26 +820,26 @@ class RequestProcessor:
         else:
             trace("Not storing false positive in DB.")
 
-    @staticmethod
-    def _invalidate_cached_response_if_device_missing(old_dialog_manager, command_reply):
-        """A cached response that commands a nonexistent device would replay the failure on
-        every future cache hit — evict its backing rows the first time it errors. Only round 1
-        can be cache-served (follow-up rounds have cache_query=None), so this fires at most
-        once per request.
-        TODO: _save_to_database still stores the final follow-up round's text under the
-        original query as a future cache candidate; correction-only rows could later form a
-        thinner majority than the intended scene. CacheAuditor is the safety net for now."""
+    def _invalidate_cached_response_if_failed(self, old_dialog_manager):
+        """A cached response whose command fails would replay the failure on every future
+        cache hit — evict its backing rows the first time it errors, whatever the error: a
+        mapping evicted for a passing fault costs three live answers to earn its place back,
+        one kept is a failure replayed for months. Only round 1 can be cache-served
+        (follow-up rounds have cache_query=None), so this fires at most once per request.
+        The request is then not stored either (_save_to_database): its final text is the
+        correction of a replay, not an answer to the query."""
         if not old_dialog_manager.last_response_was_cached:
             return
-        if "could not find device" not in _format_command_reply(command_reply).lower():
+        if not old_dialog_manager.command_processor.command_reply_contains_error:
+            trace("Cached response ran without an error — its rows stay.")
             return
+        self._cached_round_failed = True
         from assistant.llm.CachedLLM import CachedLLM
         ai = old_dialog_manager.ai
         if isinstance(ai, CachedLLM):
-            ai.invalidate_served_response("cached response referenced a nonexistent device")
+            ai.invalidate_served_response("a command of the cached response failed")
         else:
-            info("Cached response errored on a missing device but the LLM is not a CachedLLM "
-                 "wrapper — nothing to invalidate.")
+            info("Cached response errored but the LLM is not a CachedLLM wrapper — nothing to invalidate.")
 
     def _handle_background_commands(self, prompt_manager) -> Generator[AssistantEvent, None, str | None]:
         user_input_already_reported_on = None
@@ -907,7 +913,7 @@ class RequestProcessor:
             command_reply = old_dialog_manager.command_processor.command_reply
             result_parts = list(old_dialog_manager.command_processor.result_parts)
             fine("command reply:\n" + _format_command_reply(command_reply))
-            self._invalidate_cached_response_if_device_missing(old_dialog_manager, command_reply)
+            self._invalidate_cached_response_if_failed(old_dialog_manager)
             executed = old_dialog_manager.command_processor.executed_commands
             this_round = (tuple(executed), command_reply) if isinstance(command_reply, str) else None
             repeats = repeats + 1 if this_round is not None and this_round == previous_round else 0
