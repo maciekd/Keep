@@ -506,6 +506,28 @@ class TestDueTime:
         WatchList.check("sofa", wl)
         assert WatchList.render_due(wl, datetime.now() + timedelta(hours=1)) == WatchList.NOTHING_DUE
 
+    def test_a_date_that_is_no_day_of_the_calendar_fires_nothing(self, wl, log):
+        WatchList.save("Sofa", "on its way", "2026-02-30", wl, log)
+        assert WatchList.due_moment(WatchList.get("Sofa", wl)) is None
+        assert WatchList.pending(datetime(2026, 3, 5, 12, 0), directory=wl) == []
+        assert WatchList.render_due(wl, datetime(2026, 3, 5, 12, 0)) == WatchList.NOTHING_DUE
+
+    def test_a_look_on_the_day_settles_a_bare_date_only_when_it_came_after_the_morning(self, wl, log):
+        """A bare date is acted at in the morning, so a look earlier that day was a look before
+        the moment: the item still comes due. One later in the day settles it."""
+        WatchList.save("Sofa", "on its way", "2026-10-11", wl, log)
+        morning = WatchList.due_moment(WatchList.get("Sofa", wl))
+        path = wl / "sofa.md"
+
+        def looked_at(moment: datetime):
+            path.write_text("\n".join(f"Checked: {moment:%Y-%m-%d %H:%M}" if l.startswith("Checked:") else l
+                                      for l in path.read_text().splitlines()) + "\n")
+
+        looked_at(morning - timedelta(hours=2))
+        assert "sofa" in WatchList.render_due(wl, morning + timedelta(hours=4))
+        looked_at(morning + timedelta(hours=1))
+        assert WatchList.render_due(wl, morning + timedelta(hours=4)) == WatchList.NOTHING_DUE
+
     def test_the_due_item_says_how_long_ago_its_moment_was_reached(self, wl, log):
         WatchList.save("Water meter", "read it", "2026-10-11 17:00", wl, log)
         backdate(wl, "water-meter", "Checked", date(2026, 10, 11))

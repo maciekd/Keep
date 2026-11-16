@@ -986,6 +986,32 @@ class TestHandleBackgroundCommands:
         assert names.index('update_history') < names.index('add_command_result')
         assert "Lamp Marcus is off." in prompt_manager.add_command_result.call_args.args[0]
 
+    def test_a_second_cut_rounds_results_reach_the_history_one_by_one(self, handler):
+        """The cut round's row is capped like any other round's: the history is handed its
+        results apart, so a page the round fetched does not push the result after it out."""
+        first = self._cut_dm()
+        cut_again = self._cut_dm()
+        cut_again.command_processor.command_reply = "page\n\nLamp Marcus is off."
+        cut_again.command_processor.result_parts = ["page", "Lamp Marcus is off."]
+        cut_again.command_processor.executed_commands = ["open_url(a)", "home_control(lamp, off)"]
+        handler.dialog_manager = first
+        handler._rounds = [first]
+        handler._cap_hit()
+        with patch.object(handler, 'stream_response', return_value=iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch.object(handler, '_new_dialog_manager', return_value=cut_again):
+            self._exhaust_generator(handler._handle_background_commands(Mock()))
+        cut_again.command_processor.result_parts.clear()   # the processor forgets them with the reply
+        handler.request_context = RequestContext(user_input="turn the lamp off", user="Marcus")
+        prompt_manager = Mock()
+        handler._update_history(prompt_manager, "turn the lamp off")
+        text = prompt_manager.add_command_result.call_args.args[0]
+        parts = prompt_manager.add_command_result.call_args.kwargs["parts"]
+        assert parts == ["page", "Lamp Marcus is off."]
+        assert all(part in text for part in parts), "the history finds each result in the row's text"
+
     def test_a_second_cut_round_without_a_result_adds_no_command_row(self, handler):
         handler.dialog_manager = first = self._cut_dm()
         handler._rounds = [first]
