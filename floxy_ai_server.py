@@ -402,6 +402,9 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
         return RequestProcessor(**(voice.handler_kwargs() if voice else {}))
 
     assistant = Assistant(prompt_manager, _new_request_handler, _pool_size(running_as_testsuite))
+    for agent in agents:
+        if hasattr(agent, "busy"):   # the maintainer holds an urgent restart back while a turn is served
+            agent.busy = assistant.is_busy
 
     for name in INTERFACE_ORDER:
         if not _enabled(name, running_as_testsuite):

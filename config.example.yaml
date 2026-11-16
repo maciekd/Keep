@@ -391,6 +391,9 @@ is_developer: false
 # is on, the server checks out the branch developer_release names, pulls it and restarts if that
 # left it on other code than it is running. No new commits, no restart. false: the code only
 # changes on a restart_server. Read at each fire, no restart needed.
+# The same key covers the urgent update: once an hour the server asks whether a release the maintainer
+# marked urgent (in its signed tag) is out, and takes that one at once — after an answer in flight
+# has ended — telling you why in the chat.
 nightly_update: true
 
 # macOS only: on Linux systemd restarts a dead server by itself (the keep.service user unit) and the key is not read.

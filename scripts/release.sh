@@ -14,6 +14,13 @@
 #                           leave these released commits out of the what's new (a change
 #                           the household should not be told about, or one a later commit
 #                           undid); the commits are released all the same
+#   scripts/release.sh --urgent "<reason>" [<commit>]
+#                           an emergency release: the reason goes into the tag's subject
+#                           (`Release v… urgent: <reason>`), and an install that finds it at its
+#                           hourly check updates at once instead of at night, telling its owner
+#                           the reason (SignedRelease.urgent, CodeQualityMaintainer._urgent_update).
+#                           The signature covers it. It restarts every household in the middle
+#                           of the day — for what cannot wait for 03:00, nothing else
 #   scripts/release.sh [<commit>] <guidance for the note…>
 #                           any words that are not a commit go to Claude as guidance for the
 #                           what's new, e.g. `scripts/release.sh dont talk about icloud accounts
@@ -82,10 +89,15 @@ $log"
 }
 
 dry_run=false
+urgent=""
 ignore=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true; shift ;;
+    --urgent=*) urgent="${1#*=}"; [ -n "$urgent" ] || { echo "--urgent needs the reason, in one line." >&2; exit 1; }; shift ;;
+    --urgent)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "--urgent needs the reason, in one line." >&2; exit 1; }
+      urgent="$2"; shift 2 ;;
     --ignore-commits=*) list="${1#*=}"; read -ra hashes <<< "${list//,/ }"; ignore+=(${hashes[@]+"${hashes[@]}"}); shift ;;
     --ignore-commits)
       [ $# -ge 2 ] || { echo "--ignore-commits needs a list of commit hashes." >&2; exit 1; }
@@ -94,6 +106,9 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
+urgent="${urgent//$'\n'/ }"
+subject_tail=""
+[ -n "$urgent" ] && subject_tail=" urgent: $urgent"
 
 # The signers the installs check this release against: the file of the release they run now,
 # or, for the first signed release, the file the release itself brings.
@@ -158,6 +173,7 @@ for h in ${ignore[@]+"${ignore[@]}"}; do
 done
 
 echo "Releasing $version ($short)"
+[ -n "$urgent" ] && echo "  URGENT — installs update within the hour: $urgent"
 if [ -n "$baseline" ]; then
   [ "$baseline" != "$current" ] && echo "  (since $(git describe --tags --exact-match "$baseline" 2>/dev/null || git rev-parse --short "$baseline"), the last release before today — the ones released earlier today are included)"
   while read -r c; do
@@ -174,6 +190,10 @@ fi
 
 note=""
 if [ -n "$existing" ]; then
+  if [ -n "$urgent" ] && [ "$(git tag -l --format='%(contents:subject)' "$version")" != "Release $version$subject_tail" ]; then
+    echo "Tag $version exists already and does not say this — delete it (git tag -d $version) and release again." >&2
+    exit 1
+  fi
   note=$(git tag -l --format='%(contents:body)' "$version")
   echo "Tag $version exists already; keeping its what's new."
 elif [ -n "$baseline" ]; then
@@ -186,11 +206,11 @@ if $dry_run; then
   exit 0
 fi
 if [ -t 0 ]; then
-  read -r -p "Tag $version with this note and push the release? [y/N] " answer
+  read -r -p "Tag $version with this note and push the ${urgent:+URGENT }release? [y/N] " answer
   [[ "$answer" =~ ^[Yy] ]] || { echo "Not released."; exit 1; }
 fi
 if [ -z "$existing" ]; then
-  printf 'Release %s\n\n%s\n' "$version" "$note" | git tag -s "$version" -F - "$commit"
+  printf 'Release %s%s\n\n%s\n' "$version" "$subject_tail" "$note" | git tag -s "$version" -F - "$commit"
 fi
 signers=$(signers_now "$commit") || { echo "Neither the current release nor $short carries $SIGNERS." >&2; exit 1; }
 if ! git -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$version"; then
@@ -201,4 +221,8 @@ if ! git -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$version"; then
 fi
 rm -f "$signers"
 git push origin "$commit:refs/heads/release" "refs/tags/$version"
-echo "Done: release is $version — installs pick it up on their next restart_server."
+if [ -n "$urgent" ]; then
+  echo "Done: release is $version, urgent — installs pick it up at their next hourly check."
+else
+  echo "Done: release is $version — installs pick it up on their next restart_server."
+fi

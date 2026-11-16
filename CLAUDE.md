@@ -50,6 +50,14 @@ branch of the install's own (`CodeQualityMaintainer.own_branch` — somebody dev
 nightly update skips it and `restart_server` relaunches on it without pulling, until `leave_own_branch` goes
 back to the target branch. The memory curation is due from 04:00.
 
+An emergency does not wait for the night: `scripts/release.sh --urgent "<reason>"` writes the reason into the
+subject of the signed tag (`Release v… urgent: <reason>`), and once an hour — at a random point of the hour per
+install — `CodeQualityMaintainer._urgent_update` asks `SignedRelease.urgent` whether a release the checkout does
+not hold carries that marker under a signature that verifies (every release since HEAD is looked at, so a later
+ordinary one does not hide it). A yes is the nightly update now: after a turn in flight has ended (ten minutes
+at most), with the reason pushed to the chats, one attempt per tag, and held back by whatever holds the nightly
+update back (`nightly_update: false`, an own branch, a nightly run under way, an install that follows master).
+
 The machinery under both is `common/Updater.py` (switch, pull, requirements sync, relaunch through a start
 script handed the process's own pid). It reads no config and imports nothing of the assistant, so the iMessage
 satellite updates through the same code; `CodeQualityMaintainer` delegates to it and adds what is the server's

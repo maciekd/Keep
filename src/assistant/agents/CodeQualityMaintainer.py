@@ -1,6 +1,7 @@
 import html
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from ..llm import parse_llm_config
 from ..llm.ClaudeLLM import WORKSPACE_HEADER, claude_workspace_id
 from common.ConfigManager import ConfigManager
 from common.Paths import REPO_DIR, LOG_DIR, CACHE_DIR, AISERVER_DIR as _AISERVER_PATH
-from common.SignedRelease import RELEASE_BRANCH
+from common.SignedRelease import SignedRelease, RELEASE_BRANCH
 from common.Updater import Updater, GIT_TIMEOUT
 
 WORKING_DIR = str(REPO_DIR)
@@ -31,6 +32,9 @@ TEST_HEALTH_RUNS = 10
 CLAUDE_TIMEOUT = 60 * 60
 AUTH_STATUS_TIMEOUT = 30
 CHECK_INTERVAL = 900
+URGENT_CHECK_INTERVAL = 60 * 60   # how often an install asks whether a release marked urgent is out
+URGENT_IDLE_WAIT = 10 * 60        # how long an urgent update waits for a turn in flight to end
+URGENT_IDLE_POLL = 5
 
 API_KEY_CONFIG_KEY = "api_keys.anthropic"   # stands in for a Claude Code login, billed per token
 API_KEY_ENV = "ANTHROPIC_API_KEY"            # how the CLI takes a key: its environment, never argv
@@ -681,7 +685,8 @@ class CodeQualityMaintainer:
     is on (off by default, read at each fire); a night without recent commits skips the steps about
     the commits (bug analysis, test generation, test health) and keeps the log triage, the fix,
     the auto-merge and the open pins. What the run itself merges reaches the server at the next night's update or a
-    restart_server. Also
+    restart_server. Between the nights the same thread asks once an hour whether a release marked
+    urgent is out (`_urgent_update`) and takes that one at once. Also
     exposes the ad-hoc analyze_code / improve_code / restart helpers behind the self_analysis /
     self_improvement commands.
     """
@@ -691,9 +696,14 @@ class CodeQualityMaintainer:
         self._last_run_date = None
         self._boot_commit = ""   # HEAD when this process started; the nightly update restarts once it differs
         self._merged_tonight: list[str] = []   # the report lines of every PR the night merged, in order
+        self._next_urgent_check: Optional[float] = None   # monotonic; None until `start` — no check before
+        self._urgent_tried = ""   # the urgent tag an update was already attempted for
+        self.busy = lambda: False   # whether a request is being served; the launcher sets the assistant's
 
     def start(self):
         self._boot_commit = self._head_commit()
+        # Spread over the hour, so the installs do not all fetch — and restart — in the same minute.
+        self._next_urgent_check = time.monotonic() + random.uniform(0, URGENT_CHECK_INTERVAL)
         info(f"CodeQualityMaintainer: this process runs commit {self._boot_commit[:8] or 'unknown'}")
         self._forget_finished_interruption()
         self._running = True
@@ -715,6 +725,9 @@ class CodeQualityMaintainer:
                              "the new process runs the night")
                         return
                     self._execute_nightly_run()
+                elif self._urgent_check_due() and self._try_urgent_update():
+                    info("CodeQualityMaintainer: the urgent update is restarting the server")
+                    return
             except Exception as e:
                 error(f"CodeQualityMaintainer error: {e}")
             for _ in range(CHECK_INTERVAL):
@@ -881,7 +894,73 @@ class CodeQualityMaintainer:
             error(f"CodeQualityMaintainer: the nightly update raised, the night runs on the old code — {e!r}")
             return False
 
-    def _nightly_update(self) -> bool:
+    def _urgent_check_due(self) -> bool:
+        """Whether the hour since the last look for an urgent release is over; the clock starts
+        with `start`, at a random point of the first hour."""
+        if self._next_urgent_check is None or time.monotonic() < self._next_urgent_check:
+            return False
+        self._next_urgent_check = time.monotonic() + URGENT_CHECK_INTERVAL
+        return True
+
+    def _try_urgent_update(self) -> bool:
+        """`_urgent_update`, where a raise is a check that found nothing: the next hour asks again."""
+        try:
+            return self._urgent_update()
+        except Exception as e:
+            error(f"CodeQualityMaintainer: the check for an urgent release raised — {e!r}")
+            return False
+
+    def _urgent_update(self) -> bool:
+        """Once an hour: when a release the checkout does not hold is marked urgent
+        (`SignedRelease.urgent` — the marker is in the signed tag), the nightly update happens
+        now instead of at RUN_HOUR, after a turn in flight has ended, and the owner is told why.
+        Everything that holds the nightly update back holds this one back too: `nightly_update:
+        false`, a branch of the install's own, a nightly run under way; an install that follows
+        master has no releases to look at. One attempt per urgent tag — a release that could
+        not be taken is left to the night. True when the restart is under way."""
+        if not ConfigManager().get(NIGHTLY_UPDATE_KEY, True):
+            trace(f"CodeQualityMaintainer: {NIGHTLY_UPDATE_KEY} is off, no check for an urgent release.")
+            return False
+        if DevelopmentConfig.LOCAL_DEVELOPMENT_MODE or not self._boot_commit:
+            trace("CodeQualityMaintainer: no check for an urgent release (development mode or unknown boot commit).")
+            return False
+        target = self.target_branch()
+        if target != RELEASE_BRANCH:
+            trace(f"CodeQualityMaintainer: the install follows {target}, which has no releases — no urgent check.")
+            return False
+        own = self.own_branch()
+        if own:
+            info(f"CodeQualityMaintainer: the server runs {own}, a branch of this install's own — no urgent check.")
+            return False
+        if _nightly_lock.locked():
+            info("CodeQualityMaintainer: a nightly run is going, the check for an urgent release waits an hour.")
+            return False
+        tag, reason = SignedRelease.urgent()
+        if not tag:
+            info("CodeQualityMaintainer: hourly check — no urgent release.")
+            return False
+        if tag == self._urgent_tried:
+            info(f"CodeQualityMaintainer: the urgent release {tag} was already tried, left to the nightly update.")
+            return False
+        self._urgent_tried = tag
+        note(f"CodeQualityMaintainer: {tag} is an urgent release ({reason}), updating now.")
+        self._wait_until_idle()
+        return self._nightly_update(urgent=f"{tag} — {reason}")
+
+    def _wait_until_idle(self) -> None:
+        """Hold an urgent restart back while a request is being served, URGENT_IDLE_WAIT at most:
+        an answer in flight is not cut off, and a busy house still gets the update."""
+        deadline = time.monotonic() + URGENT_IDLE_WAIT
+        waited = False
+        while self._running and self.busy() and time.monotonic() < deadline:
+            if not waited:
+                info("CodeQualityMaintainer: a request is being served, the urgent update waits for it.")
+                waited = True
+            time.sleep(URGENT_IDLE_POLL)
+        if waited:
+            info(f"CodeQualityMaintainer: {'still busy, updating anyway' if self.busy() else 'idle now'}.")
+
+    def _nightly_update(self, urgent: str = "") -> bool:
         """The first thing of the night, at RUN_HOUR: check out the branch `developer_release`
         names, pull it, and restart when the code is no longer what this process booted on —
         commits pulled now or made locally since the start. No new commit, no restart. True when
@@ -889,8 +968,11 @@ class CodeQualityMaintainer:
         A PR trial is kept instead (`_trial_night`): the branch is merged into the trial's, and
         the checkout returns to it only once the trial is over. A branch of the install's own
         (`own_branch`) is left alone altogether.
-        `nightly_update: false` turns it off; it is read at each fire."""
+        `nightly_update: false` turns it off; it is read at each fire.
+        With *urgent* (the tag and reason of an urgent release, `_urgent_update`) it is the same
+        update in the middle of the day: the notes say so and are pushed to the chats."""
         from assistant.SystemNote import system_note
+        what = f"Urgent update ({urgent})" if urgent else "Nightly update"
         if not ConfigManager().get(NIGHTLY_UPDATE_KEY, True):
             info(f"CodeQualityMaintainer: {NIGHTLY_UPDATE_KEY} is off, no nightly update.")
             return False
@@ -916,42 +998,45 @@ class CodeQualityMaintainer:
             if trial is not None:
                 night = PullRequestTrial.overnight(trial)
                 if not night.ended:
-                    return self._trial_night(trial, night.failure)
+                    return self._trial_night(trial, night.failure, urgent)
                 trial_over = f"The trial of PR #{trial.number} is over: {night.ended}. "
             update = self._updater().update(target, self._boot_commit)
             if update.pull_failure:
-                system_note("server", "Nightly update failed, the server keeps running the old code: "
-                                      f"{update.pull_failure}", push=False)
+                system_note("server", f"{what} failed, the server keeps running the old code: "
+                                      f"{update.pull_failure}", push=bool(urgent))
                 return False
             if update.sync_failure:
-                system_note("server", f"Nightly update pulled {update.change} on {target} but the server keeps "
-                                      f"running the old code: {update.sync_failure}", push=False)
+                system_note("server", f"{what} pulled {update.change} on {target} but the server keeps "
+                                      f"running the old code: {update.sync_failure}", push=bool(urgent))
                 return False
             # A trial that ends on the commit its branch already stood on still restarts: the
             # process believes it is on a trial for as long as it runs.
             if not update.restart and not (trial_over and update.head):
                 return False
             span = f"{self._boot_commit[:8]} → {update.head[:8]}"
-            note(f"CodeQualityMaintainer: nightly update — {trial_over}{update.change} on {target} ({span}), restarting.")
+            note(f"CodeQualityMaintainer: {what} — {trial_over}{update.change} on {target} ({span}), restarting.")
             # History only: the startup announcement of the new process is what the chats get —
-            # but the end of a trial is news the user asked for, so that one is pushed.
-            system_note("server", f"{trial_over}Nightly update: {update.change} on {target}, the server is restarting.",
-                        push=bool(trial_over))
-            self.restart(f"nightly update {span}")
+            # but the end of a trial is news the user asked for, and a restart in the middle of
+            # the day needs its reason, so those are pushed.
+            system_note("server", f"{trial_over}{what}: {update.change} on {target}, the server is restarting.",
+                        push=bool(trial_over or urgent))
+            self.restart(f"{'urgent' if urgent else 'nightly'} update {span}")
             return True
         finally:
             _nightly_lock.release()
 
-    def _trial_night(self, trial, failure: str) -> bool:
+    def _trial_night(self, trial, failure: str, urgent: str = "") -> bool:
         """The nightly update while a PR trial lasts: `PullRequestTrial.overnight` has merged the
         night's code into the trial branch (or says in *failure* why not), and the server
         restarts on it when HEAD moved — with the normal branch as start.sh's fallback, like the
-        restart that began the trial. True when the restart is under way."""
+        restart that began the trial. True when the restart is under way. *urgent* as in
+        `_nightly_update`."""
         from assistant.SystemNote import system_note
+        what = f"Urgent update ({urgent})" if urgent else "Nightly update"
         target = trial.return_branch
         if failure:
-            system_note("server", f"Nightly update failed, the trial of PR #{trial.number} keeps running the old "
-                                  f"code: {failure}", push=False)
+            system_note("server", f"{what} failed, the trial of PR #{trial.number} keeps running the old "
+                                  f"code: {failure}", push=bool(urgent))
             return False
         head = self._head_commit()
         if not head or head == self._boot_commit:
@@ -960,16 +1045,17 @@ class CodeQualityMaintainer:
             return False
         failure, installed = self._sync_requirements()
         if failure:
-            system_note("server", f"Nightly update merged {target} into the trial of PR #{trial.number} but the "
-                                  f"server keeps running the old code: {failure}", push=False)
+            system_note("server", f"{what} merged {target} into the trial of PR #{trial.number} but the "
+                                  f"server keeps running the old code: {failure}", push=bool(urgent))
             return False
         span = f"{self._boot_commit[:8]} → {head[:8]}"
         detail = f", {installed}" if installed else ""
-        note(f"CodeQualityMaintainer: nightly update — PR #{trial.number} stays on trial with the newest {target} "
+        note(f"CodeQualityMaintainer: {what} — PR #{trial.number} stays on trial with the newest {target} "
              f"({span}){detail}, restarting.")
-        system_note("server", f"Nightly update: PR #{trial.number} is still on trial, now with the newest {target}"
-                              f"{detail}; the server is restarting.", push=False)
-        self.restart(f"nightly update of the PR #{trial.number} trial {span}", fallback_branch=target)
+        system_note("server", f"{what}: PR #{trial.number} is still on trial, now with the newest {target}"
+                              f"{detail}; the server is restarting.", push=bool(urgent))
+        self.restart(f"{'urgent' if urgent else 'nightly'} update of the PR #{trial.number} trial {span}",
+                     fallback_branch=target)
         return True
 
     @staticmethod

@@ -401,6 +401,117 @@ def _pr(number, login, fork=False):
 
 
 @pytest.mark.unit
+class TestUrgentUpdate:
+    """The hourly look for a release marked urgent: found, it is the nightly update now."""
+
+    URGENT = ("v2026.10.2", "the door lock answers to anyone")
+
+    @pytest.fixture(autouse=True)
+    def wiring(self, maintainer):
+        """An install on `release`, booted on BOOT, with an urgent release out and a pull that
+        goes through. Nothing here reaches git or start.sh."""
+        maintainer._boot_commit = BOOT
+        maintainer._running = True
+        self.config = {"nightly_update": True, "developer_release": False}
+        with patch.object(ConfigManager, 'get', side_effect=lambda key, default=None: self.config.get(key, default)), \
+                patch("common.SignedRelease.SignedRelease.urgent", return_value=self.URGENT) as urgent, \
+                patch.object(CodeQualityMaintainer, 'own_branch', return_value=None) as own, \
+                patch("assistant.agents.PullRequestTrial.PullRequestTrial.current", return_value=None), \
+                patch.object(Updater, 'pull', return_value=("", "")) as pull, \
+                patch.object(Updater, 'head_commit', return_value=NEWER), \
+                patch.object(Updater, 'commits_between', return_value=2), \
+                patch.object(Updater, 'sync', return_value=("", "")), \
+                patch.object(CodeQualityMaintainer, 'restart') as restart, \
+                patch('assistant.SystemNote.system_note') as note_:
+            self.urgent, self.own, self.pull, self.restart, self.note = urgent, own, pull, restart, note_
+            yield
+
+    def test_an_urgent_release_is_taken_at_once_and_the_owner_is_told_why(self, maintainer):
+        assert maintainer._urgent_update() is True
+        self.pull.assert_called_once_with("release")
+        self.restart.assert_called_once()
+        (_, text), kwargs = self.note.call_args
+        assert self.URGENT[0] in text and self.URGENT[1] in text
+        assert kwargs == {"push": True}, "a restart in the middle of the day reaches the chats"
+
+    def test_without_an_urgent_release_nothing_is_pulled(self, maintainer):
+        self.urgent.return_value = ("", "")
+        assert maintainer._urgent_update() is False
+        self.pull.assert_not_called()
+        self.restart.assert_not_called()
+
+    def test_nightly_update_off_turns_the_urgent_update_off_too(self, maintainer):
+        self.config["nightly_update"] = False
+        assert maintainer._urgent_update() is False
+        self.urgent.assert_not_called()
+
+    def test_an_install_that_follows_master_has_no_releases_to_ask_about(self, maintainer):
+        self.config["developer_release"] = True
+        assert maintainer._urgent_update() is False
+        self.urgent.assert_not_called()
+
+    def test_a_branch_of_the_installs_own_is_left_alone(self, maintainer):
+        self.own.return_value = "feat/trunk"
+        assert maintainer._urgent_update() is False
+        self.urgent.assert_not_called()
+        self.pull.assert_not_called()
+
+    def test_a_nightly_run_under_way_puts_the_check_off_without_using_up_the_attempt(self, maintainer):
+        from assistant.agents.CodeQualityMaintainer import _nightly_lock
+        with _nightly_lock:
+            assert maintainer._urgent_update() is False
+        self.pull.assert_not_called()
+        assert maintainer._urgent_update() is True
+
+    def test_an_urgent_release_that_could_not_be_taken_is_tried_once_and_left_to_the_night(self, maintainer):
+        self.pull.return_value = ("Git fetch failed: no route to host", "")
+        assert maintainer._urgent_update() is False
+        assert maintainer._urgent_update() is False
+        self.pull.assert_called_once_with("release")
+        assert "no route to host" in self.note.call_args[0][1]
+
+    def test_a_turn_in_flight_is_waited_for_before_the_restart(self, maintainer):
+        answers = iter([True, True, False, False])
+        maintainer.busy = lambda: next(answers)
+        with patch('assistant.agents.CodeQualityMaintainer.time.sleep') as sleep:
+            assert maintainer._urgent_update() is True
+        assert sleep.call_count == 2
+        self.restart.assert_called_once()
+
+    def test_a_house_that_never_falls_silent_is_updated_when_the_wait_is_over(self, maintainer):
+        from assistant.agents import CodeQualityMaintainer as module
+        maintainer.busy = lambda: True
+        clock = iter(range(0, 10 ** 6, module.URGENT_IDLE_WAIT // 3))
+        with patch.object(module.time, 'sleep'), patch.object(module.time, 'monotonic', side_effect=lambda: next(clock)):
+            assert maintainer._urgent_update() is True
+        self.restart.assert_called_once()
+
+    def test_a_pr_trial_takes_the_urgent_release_in_and_stays_on_trial(self, maintainer):
+        from assistant.agents.PullRequestTrial import PullRequestTrial, Trial, Overnight
+        trial = Trial(number=204, title="Tesla: close the trunk once", head_ref="feat/trunk",
+                      since="14:02", return_branch="release")
+        with patch.multiple(PullRequestTrial, current=Mock(return_value=trial),
+                            overnight=Mock(return_value=Overnight())):
+            assert maintainer._urgent_update() is True
+        self.pull.assert_not_called()
+        assert self.restart.call_args.kwargs == {"fallback_branch": "release"}
+        (_, text), kwargs = self.note.call_args
+        assert "PR #204" in text and self.URGENT[1] in text and kwargs == {"push": True}
+
+    def test_no_check_is_due_before_the_maintainer_was_started(self, maintainer):
+        assert maintainer._urgent_check_due() is False
+
+    def test_a_check_that_is_due_is_due_once_an_hour(self, maintainer):
+        from assistant.agents import CodeQualityMaintainer as module
+        maintainer._next_urgent_check = 100.0
+        with patch.object(module.time, 'monotonic', return_value=100.0):
+            assert maintainer._urgent_check_due() is True
+            assert maintainer._urgent_check_due() is False
+        with patch.object(module.time, 'monotonic', return_value=100.0 + module.URGENT_CHECK_INTERVAL):
+            assert maintainer._urgent_check_due() is True
+
+
+@pytest.mark.unit
 class TestAutoMergeCandidates:
     """On a public repository anyone can open a test-only PR, and a merged test file is code the
     next unit run executes: only trusted authors' PRs from this repository's own branches count."""

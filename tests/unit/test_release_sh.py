@@ -167,6 +167,38 @@ class TestSigning:
         assert repos.origin_state() == (None, {})
 
 
+class TestUrgent:
+    """`--urgent <reason>` marks the release in its signed tag; installs read the marker at
+    their hourly check (SignedRelease.urgent) and update at once."""
+
+    def test_the_tag_subject_is_what_an_installs_hourly_check_reads_the_reason_from(self, repos):
+        """A contract between release.sh and SignedRelease.URGENT_SUBJECT. The stranger's key
+        stops the script after the tag is made and before the push."""
+        from common.SignedRelease import URGENT_SUBJECT
+        repos.sign_with('stranger')
+        repos.history.commit(datetime(2026, 9, 1, 12, tzinfo=timezone.utc), 'feat: signers',
+                             {'res/release_signers': signing_key('maintainer')[1]})
+        repos.push()
+        repos.release('--urgent', 'the door lock answers to anyone', note=False)
+        subject = git(repos.dev, 'tag', '--list', '--format=%(contents:subject)', 'v2026.09.1').strip()
+        assert URGENT_SUBJECT.match(subject).group(1) == 'the door lock answers to anyone'
+
+    def test_an_ordinary_release_carries_no_urgent_marker(self, repos):
+        from common.SignedRelease import URGENT_SUBJECT
+        repos.sign_with('stranger')
+        repos.history.commit(datetime(2026, 9, 1, 12, tzinfo=timezone.utc), 'feat: signers',
+                             {'res/release_signers': signing_key('maintainer')[1]})
+        repos.push()
+        repos.release(note=False)
+        subject = git(repos.dev, 'tag', '--list', '--format=%(contents:subject)', 'v2026.09.1').strip()
+        assert subject and not URGENT_SUBJECT.match(subject)
+
+    def test_urgent_without_a_reason_stops_the_run_before_it_fetches(self, repos):
+        result = repos.release('--urgent', note=False)
+        assert result.returncode != 0
+        assert '--urgent' in result.stderr
+
+
 class TestRepeatedRelease:
     def test_releasing_the_current_release_again_changes_nothing(self, repos):
         repos.commits('2026.09')

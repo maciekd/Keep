@@ -10,7 +10,13 @@ tag is refused and the checkout stays where it is.
 
 Only the `release` branch is verified: the development machine follows master, and a PR
 trial runs a branch whose author was checked when it started — the release a trial takes in
-overnight is verified here like any other (`fetch`)."""
+overnight is verified here like any other (`fetch`).
+
+A release can be marked urgent: `scripts/release.sh --urgent <reason>` writes the reason into
+the subject of the tag (`Release v… urgent: <reason>`). The signature covers it, so only the
+holder of the release key can ask every install to update within the hour instead of at
+night (`urgent`)."""
+import re
 import subprocess
 
 from common.Paths import REPO_DIR, RES_DIR
@@ -20,6 +26,8 @@ SIGNERS_FILE = RES_DIR / "release_signers"
 RELEASE_BRANCH = "release"
 REMOTE_REF = f"origin/{RELEASE_BRANCH}"
 GIT_TIMEOUT = 120
+URGENT_SUBJECT = re.compile(r"^Release \S+ urgent: (.+)$")   # a contract with scripts/release.sh
+URGENT_REASON_LIMIT = 200
 
 
 def _git(*args: str, timeout: int = GIT_TIMEOUT) -> subprocess.CompletedProcess:
@@ -52,6 +60,40 @@ class SignedRelease:
             return (f"The newest release ({commit[:8]}) carries no tag signed by a key in "
                     f"{SIGNERS_FILE.name} — not updating, the checkout stays where it is."), "", ""
         return "", commit, tag
+
+    @staticmethod
+    def urgent() -> tuple[str, str]:
+        """Fetch `release` and look for a release marked urgent among the ones the checkout does
+        not hold yet — every one of them, since a later ordinary release must not hide the
+        urgent one before it. Returns (tag, reason) of the newest, ("", "") when there is none
+        or the tip does not verify: a release an install would refuse to move to is no reason
+        to hurry. A marker counts only on a tag whose own signature verifies."""
+        failure, commit, tip_tag = SignedRelease.fetch()
+        if failure:
+            info(f"SignedRelease: no urgent release looked for — {failure}")
+            return "", ""
+        signers = str(SIGNERS_FILE.resolve())
+        missed = _git("tag", "--list", "v*", "--sort=-creatordate", "--merged", commit, "--no-merged", "HEAD")
+        if missed.returncode != 0:
+            error(f"SignedRelease: the releases since HEAD could not be listed: {missed.stderr.strip()}")
+            return "", ""
+        tags = missed.stdout.split()
+        if not tags:
+            trace(f"SignedRelease: the checkout holds {tip_tag} already, nothing urgent to look for")
+            return "", ""
+        for tag in tags:
+            subject = _git("tag", "--list", "--format=%(contents:subject)", tag).stdout.strip()
+            marked = URGENT_SUBJECT.match(subject)
+            if not marked:
+                continue
+            if tag != tip_tag and _git("-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-tag", tag).returncode != 0:
+                error(f"SignedRelease: {tag} says it is urgent but its signature does not verify, ignored")
+                continue
+            reason = marked.group(1).strip()[:URGENT_REASON_LIMIT]
+            info(f"SignedRelease: {tag} is an urgent release the checkout does not hold — {reason}")
+            return tag, reason
+        info(f"SignedRelease: {len(tags)} release(s) since HEAD up to {tip_tag}, none urgent")
+        return "", ""
 
     @staticmethod
     def update(current_branch: str) -> tuple[str, str]:

@@ -42,13 +42,23 @@ class Install:
         (self.clone / '.git' / 'HEAD').write_text(f'ref: refs/heads/{on}\n')
         git(self.clone, 'reset', '-q', '--hard')
 
-    def tag(self, key: str | None, name: str = 'v2026.10.2'):
-        """The release tag on origin's tip: signed with the named throwaway key, or plain annotated."""
+    def tag(self, key: str | None, name: str = 'v2026.10.2', urgent: str = '', at: str = ''):
+        """The release tag on origin's tip (or the commit *at*): signed with the named throwaway
+        key, or plain annotated. With *urgent* its subject carries that reason the way
+        `release.sh --urgent` writes it."""
+        subject = f'Release {name}' + (f' urgent: {urgent}' if urgent else '')
         if key is None:
-            git(self.origin, 'tag', '-a', name, '-m', f'Release {name}', self.pushed)
+            git(self.origin, 'tag', '-a', name, '-m', subject, at or self.pushed)
         else:
             git(self.origin, '-c', 'gpg.format=ssh', '-c', f'user.signingkey={signing_key(key)[0]}',
-                'tag', '-s', name, '-m', f'Release {name}', self.pushed)
+                'tag', '-s', name, '-m', subject, at or self.pushed)
+
+    def release_once_more(self) -> str:
+        """A third commit on origin's `release`, on top of the pushed one; returns its hash."""
+        tree = git(self.origin, 'rev-parse', f'{self.pushed}^{{tree}}').strip()
+        commit = git(self.origin, 'commit-tree', tree, '-p', self.pushed, '-m', 'feat: three').strip()
+        git(self.origin, 'update-ref', 'refs/heads/release', commit)
+        return commit
 
     def head(self) -> str:
         """The commit the checked-out branch is at, read off its ref file: nothing here packs
@@ -167,3 +177,41 @@ class TestFetchAlone:
         failure, commit, tag = SignedRelease.fetch()
         assert failure and (commit, tag) == ('', '')
         assert repo.head() == repo.running
+
+
+class TestUrgentRelease:
+    """`urgent` is what the hourly check asks: is a release the checkout does not hold marked
+    urgent by the holder of the release key? A yes restarts the household in the middle of
+    the day, so the marker counts only under a signature that verifies."""
+
+    REASON = 'the door lock answers to anyone'
+
+    def test_a_signed_urgent_release_is_named_with_its_reason_and_nothing_moves(self, install):
+        repo = install()
+        repo.tag('maintainer', urgent=self.REASON)
+        assert SignedRelease.urgent() == ('v2026.10.2', self.REASON)
+        assert repo.head() == repo.running
+
+    def test_an_ordinary_release_is_not_urgent(self, install):
+        install().tag('maintainer')
+        assert SignedRelease.urgent() == ('', '')
+
+    def test_an_urgent_marker_signed_by_a_stranger_hurries_no_one(self, install):
+        install().tag('stranger', urgent=self.REASON)
+        assert SignedRelease.urgent() == ('', '')
+
+    def test_a_forged_urgent_tag_beside_the_real_release_tag_is_ignored(self, install):
+        repo = install()
+        repo.tag('maintainer')
+        repo.tag('stranger', name='v2026.10.3', urgent=self.REASON)
+        assert SignedRelease.urgent() == ('', '')
+
+    def test_a_later_ordinary_release_does_not_hide_the_urgent_one_before_it(self, install):
+        repo = install()
+        repo.tag('maintainer', urgent=self.REASON)
+        repo.tag('maintainer', name='v2026.10.3', at=repo.release_once_more())
+        assert SignedRelease.urgent() == ('v2026.10.2', self.REASON)
+
+    def test_an_install_that_already_runs_the_urgent_release_is_not_hurried_again(self, install):
+        install(current=True).tag('maintainer', urgent=self.REASON)
+        assert SignedRelease.urgent() == ('', '')
