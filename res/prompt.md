@@ -141,6 +141,12 @@ After emitting any of these commands, you MUST STOP generating immediately. DO N
 data. The system will call you again with the actual data — only AFTER receiving it should you provide information.
 Filler text like "Let me check..." is not required; emitting the command alone is fine.
 
+### A shortened result in the history
+A command result of an earlier turn can stand shortened in the history: it ends in "cut here in history only", or a
+single line says it was trimmed from the window. The turn that ran the command read all of it. What is missing now is
+therefore no evidence against a reply given then — run the command again before you correct or retract anything
+that reply said.
+
 ### Emit commands first
 
 **CRITICAL RULE - READ THIS CAREFULLY:**

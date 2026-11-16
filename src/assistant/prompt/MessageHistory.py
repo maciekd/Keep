@@ -49,6 +49,12 @@ class MessageHistory:
     # browse snapshot) HistoryCompressor collapses it at render time, before the trim.
     ROLE_COMMAND = DB_ROLE_COMMAND
     COMMAND_RESULT_CHARS = 6000   # per round, shared by its commands
+    # The newest turn's rounds render as the request sent them, up to this many chars together,
+    # until a later turn's round lands (_fresh): the turn after an answer must still see what
+    # the answer stood on. Cut to 1,000 chars a result at once, six results left the next turn
+    # without the evidence and it retracted a correct answer as made up (prod 2026-11-15).
+    # Memory only — the stored row is the capped one, and a restart renders that.
+    FRESH_RESULT_CHARS = 30000
     CUT_MARKER = " […cut here in history only: the turn that ran this read all {chars:,} chars…]"
     # The clock note a byte-prefix request put in front of its query (PromptManager.get_messages),
     # persisted as its own verbatim row so the next request renders the same bytes.
@@ -131,6 +137,10 @@ class MessageHistory:
         self._trim_cutoff = 0.0
         # Timestamps of the `command` rows a trim collapsed to a stub (TRIM_COLLAPSE_BYTES).
         self._collapsed: set[float] = set()
+        # The uncut text of the newest turn's command rows, by row timestamp (FRESH_RESULT_CHARS),
+        # and whether that turn has been answered — the next round then lets them go.
+        self._fresh: dict[float, str] = {}
+        self._fresh_answered = False
         # The TUI renders the window many times a second and nothing changes between renders,
         # so the trim's "nothing to do" traces log once per state: the window size whose trim
         # was last deferred, the size the collapse pass last looked at, the preloaded names
@@ -186,6 +196,7 @@ class MessageHistory:
         self.transient_entries = []
         self._trim_cutoff = 0.0
         self._collapsed = set()
+        self._fresh = {}
         self._preloaded_evicted = set()
         self._load_history()
         self.wipes += 1
@@ -346,8 +357,37 @@ class MessageHistory:
         superseded rows compressed, the hysteresis trim applied, then `window`'s rows of it
         (`visible`). get_history_messages sends it and render_for_display shows it, so the
         Prompt tab never drifts from the request."""
-        rendered = self._compressor.compress(self._render_entries(self.get_merged_entries(), self.max_render_chars))
-        return self.visible(self._hysteresis_trim(rendered), window)
+        rendered = self._with_fresh_results(self._render_entries(self.get_merged_entries(), self.max_render_chars))
+        return self.visible(self._hysteresis_trim(self._compressor.compress(rendered)), window)
+
+    def _with_fresh_results(self, rendered: list[tuple[dict, str, str]]) -> list[tuple[dict, str, str]]:
+        """`rendered` with the newest turn's command rows uncut (_fresh). A row goes back to
+        its stored, capped text for good — so it changes once — when it left the window or
+        when uncut it would put the window where the trim acts: over the ceiling, or over the
+        high watermark once it is older than trim_fresh_seconds. Oldest first."""
+        if not self._fresh:
+            return rendered
+        in_window = {entry["timestamp"] for entry, _, _ in rendered if entry["timestamp"] >= self._trim_cutoff}
+        for timestamp in [t for t in self._fresh if t not in in_window or t in self._collapsed]:
+            del self._fresh[timestamp]
+            trace("MessageHistory: an uncut command result left the window or was collapsed — let go")
+        stored = {entry["timestamp"]: len(content.encode("utf-8")) for entry, _, content in rendered}
+        total = sum(len(self._as_collapsed(row)[2].encode("utf-8")) for row in rendered
+                    if row[0]["timestamp"] >= self._trim_cutoff and not self._is_eviction_stub(row[0]))
+        total += sum(len(text.encode("utf-8")) - stored[timestamp] for timestamp, text in self._fresh.items())
+        now = time.time()
+        for timestamp in sorted(self._fresh):
+            young = now - timestamp < self.trim_fresh_seconds
+            limit = self.trim_ceiling_bytes if young else self.trim_high_bytes
+            if total <= limit:
+                break
+            extra = len(self._fresh.pop(timestamp).encode("utf-8")) - stored[timestamp]
+            total -= extra
+            info(f"MessageHistory: the uncut command result of {datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')} "
+                 f"would hold the window over {limit // 1024}KB — rendering its capped row from now on "
+                 f"({extra / 1024:.1f}KB less)")
+        return [(entry, role, self._fresh.get(entry["timestamp"], content)) if entry["role"] == self.ROLE_COMMAND
+                else (entry, role, content) for entry, role, content in rendered]
 
     def trim_window(self):
         """Advance the sticky trim cutoff the way the next get_history_messages() would, so a
@@ -867,15 +907,25 @@ class MessageHistory:
         fine(f"MessageHistory: toolkits in the {window or 'any'} window: {sorted(loaded) or 'none'}")
         return loaded
 
-    def _history_shares(self, parts: list[str]) -> list[int]:
-        """How many chars of each result the history keeps: the short ones whole, the long
-        ones an equal share of what the short ones leave of COMMAND_RESULT_CHARS."""
-        shares, left = [0] * len(parts), self.COMMAND_RESULT_CHARS
+    def _history_shares(self, parts: list[str], budget: int) -> list[int]:
+        """How many chars of each result a row of `budget` chars keeps: the short ones whole,
+        the long ones an equal share of what the short ones leave."""
+        shares, left = [0] * len(parts), budget
         by_length = sorted(range(len(parts)), key=lambda i: len(parts[i]))
         for position, i in enumerate(by_length):
             shares[i] = min(len(parts[i]), left // (len(parts) - position))
             left -= shares[i]
         return shares
+
+    def _capped(self, result: str, parts: list[str] | None, budget: int) -> tuple[str, list[str], list[int]]:
+        """`result` with its parts cut to their shares of `budget`, each cut one ending in the
+        marker; with the parts found in it and what each keeps."""
+        found = [p for p in parts or [] if p in result] or [result]
+        kept = self._history_shares(found, budget)
+        for part, share in zip(found, kept):
+            if share < len(part):
+                result = result.replace(part, part[:share] + self.CUT_MARKER.format(chars=len(part)), 1)
+        return result, found, kept
 
     def add_command_result(self, result: str, cap: bool = True, source: str | None = None,
                            parts: list[str] | None = None):
@@ -888,18 +938,23 @@ class MessageHistory:
         row, and each cut one ends in a marker saying the cut is the history's — read as a
         fetch that failed, it made a later turn retract figures the turn that ran the
         commands had read (prod 2026-11-15). Without parts the cap is on the whole text.
+        A cut row still renders uncut while its turn is the newest (FRESH_RESULT_CHARS).
         `source` is the preload stamp (preload_source) of a row one
         window alone renders; a command row never carries anything else there."""
         if not result or not result.strip():
             trace("MessageHistory: empty command result, nothing to persist")
             return
+        if source is None and self._fresh_answered:
+            # A preload is no round: it lands in front of the very turn the uncut rows are kept for.
+            if self._fresh:
+                info(f"MessageHistory: a later turn's round — the {len(self._fresh)} uncut command result(s) "
+                     f"of the turn before render capped from now on")
+            self._fresh, self._fresh_answered = {}, False
+        fresh = None
         if cap:
             whole = len(result)
-            found = [p for p in parts or [] if p in result] or [result]
-            kept = self._history_shares(found)
-            for part, share in zip(found, kept):
-                if share < len(part):
-                    result = result.replace(part, part[:share] + self.CUT_MARKER.format(chars=len(part)), 1)
+            fresh = self._capped(result, parts, self.FRESH_RESULT_CHARS)[0]
+            result, found, kept = self._capped(result, parts, self.COMMAND_RESULT_CHARS)
             if len(result) != whole:
                 info(f"MessageHistory: command result cut for history ({whole} → {len(result)} chars; "
                      f"{len(found)} result(s) keep {kept} of {[len(p) for p in found]})")
@@ -909,7 +964,20 @@ class MessageHistory:
         self._save_history_entry(self.ROLE_COMMAND, result, timestamp, source)
         trace(f"MessageHistory: command result persisted ({len(result)} chars{f', {source}' if source else ''})")
         self._load_history()
+        if fresh is not None and fresh != result:
+            self._keep_fresh(timestamp, fresh)
         self._notify_changed()
+
+    def _keep_fresh(self, timestamp: float, text: str):
+        """Render the row stored at `timestamp` as `text`, its uncut form, while its turn is
+        the newest. The turn's rounds share FRESH_RESULT_CHARS: the oldest go back to their
+        capped rows when a new one takes them over it."""
+        self._fresh[timestamp] = text
+        while len(self._fresh) > 1 and sum(len(t) for t in self._fresh.values()) > self.FRESH_RESULT_CHARS:
+            del self._fresh[min(self._fresh)]
+            trace("MessageHistory: the turn's uncut results are over their share — the oldest renders capped")
+        info(f"MessageHistory: the row is cut, the window renders it uncut ({len(text)} chars) until a later "
+             f"turn's round lands; {len(self._fresh)} uncut row(s), {sum(len(t) for t in self._fresh.values())} chars")
 
     def add_exchange(self, user: str | None, user_query: str | None, assistant_reply: str | None,
                      source: str | None = None, location: str | None = None,
@@ -935,6 +1003,10 @@ class MessageHistory:
 
         if assistant_reply is not None:
             self._save_history_entry("assistant", assistant_reply, current_time + 0.001)
+        if self._fresh and not self._fresh_answered:
+            trace(f"MessageHistory: the turn is answered — its {len(self._fresh)} uncut command result(s) "
+                  f"stay until a later turn's round")
+        self._fresh_answered = True
 
         self._load_history()
         self._notify_changed()

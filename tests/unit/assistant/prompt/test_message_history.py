@@ -1275,6 +1275,109 @@ class TestCommandResults:
         assert [m["role"] for m in msgs] == ["user", "assistant", "user", "assistant"]
         assert msgs[2]["content"] == big
 
+class TestTheNewestTurnsResultsStayUncut:
+    """The stored row is capped at once, but the window renders the newest turn's rounds as
+    the request sent them until a later turn's round lands: the turn after an answer must
+    still see the evidence the answer stood on."""
+
+    @pytest.fixture
+    def section(self):
+        section = _make_history_section()
+
+        def save(role, content, timestamp, source=None, location=None):
+            section.history.append({"role": role, "content": content, "timestamp": timestamp, "source": source})
+            section.history.sort(key=lambda e: e["timestamp"])
+
+        with patch.object(section, '_save_history_entry', side_effect=save), patch.object(section, '_load_history'):
+            yield section
+
+    def _round(self, letters="ABCDEF", each=4000):
+        parts = [letter * each for letter in letters]
+        return "result: \n" + "\n\n".join(parts), parts
+
+    def _command_turns(self, section):
+        """The window's turns that carry a command row (a row shares its turn with what stands beside it)."""
+        return [m["content"] for m in section.get_history_messages() if "result:" in m["content"]]
+
+    def _ask(self, section, question="How many did we order?", answer="Twelve, delivered on Friday."):
+        section.add_exchange("Marcus", question, answer)
+
+    def test_the_turn_after_the_answer_reads_the_round_as_the_request_sent_it(self, section):
+        result, parts = self._round()
+        section.add_exchange("Marcus", "What did we buy last year?", None)
+        section.add_command_result(result, parts=parts)
+        section.add_exchange(None, None, "Twelve, delivered on Friday.")
+        stored = next(e["content"] for e in section.history if e["role"] == "command")
+        assert len(stored) < len(result), "the row itself is capped"
+        assert result in self._command_turns(section)[0]
+        self._ask(section, "Are you sure?", "Yes.")
+        assert result in self._command_turns(section)[0], "a turn that ran nothing lets nothing go"
+
+    def test_a_later_turns_round_puts_the_capped_row_back(self, section):
+        result, parts = self._round()
+        section.add_command_result(result, parts=parts)
+        self._ask(section)
+        section.add_command_result("result: \nlights on")
+        first, second = self._command_turns(section)
+        assert result not in first and "cut here in history only" in first
+        assert "lights on" in second
+
+    def test_the_rounds_of_one_turn_stay_together(self, section):
+        result, parts = self._round("AB")
+        section.add_command_result(result, parts=parts)
+        section.add_command_result("result: \nnoted")
+        self._ask(section)
+        assert self._command_turns(section)[0].startswith(result)
+
+    def test_a_preload_in_front_of_the_next_turn_lets_nothing_go(self, section):
+        result, parts = self._round()
+        section.add_command_result(result, parts=parts)
+        self._ask(section)
+        section.add_command_result("# Toolkit: browser\n…", cap=False, source=MessageHistory.preload_source("text"))
+        assert any(result in turn for turn in self._command_turns(section))
+
+    def test_a_turns_rounds_share_the_uncut_budget_oldest_first(self, section):
+        each = section.FRESH_RESULT_CHARS * 2 // 3
+        first, second = "result: \n" + "A" * each, "result: \n" + "B" * each
+        section.add_command_result(first)
+        section.add_command_result(second)
+        section.trim_ceiling_bytes = section.FRESH_RESULT_CHARS * 4
+        turns = "\n".join(self._command_turns(section))
+        assert turns.count("B") == each
+        assert turns.count("A") == section.COMMAND_RESULT_CHARS - len("result: \n")
+
+    def test_a_result_far_over_the_budget_is_cut_to_it_not_kept_whole(self, section):
+        section.trim_ceiling_bytes = section.FRESH_RESULT_CHARS * 4
+        section.add_command_result("x" * (section.FRESH_RESULT_CHARS * 3))
+        (turn,) = [m["content"] for m in section.get_history_messages()]
+        assert turn.count("x") == section.FRESH_RESULT_CHARS
+
+    def test_an_uncut_row_that_would_put_the_window_over_the_ceiling_renders_capped_for_good(self, section):
+        result, parts = self._round()
+        section.add_command_result(result, parts=parts)
+        section.trim_ceiling_bytes = len(result) - 1
+        capped = self._command_turns(section)
+        assert len(capped[0]) < len(result)
+        section.trim_ceiling_bytes = MessageHistory.TRIM_CEILING_BYTES
+        assert self._command_turns(section) == capped, "a row changes once"
+
+    def test_an_uncut_row_gone_stale_gives_way_at_the_high_watermark(self, section):
+        result, parts = self._round()
+        section.add_command_result(result, parts=parts)
+        section.trim_high_bytes = len(result) - 1
+        assert result in self._command_turns(section)[0], "young: the ceiling is its limit"
+        section.trim_fresh_seconds = 0
+        assert len(self._command_turns(section)[0]) < len(result)
+
+    def test_a_wipe_forgets_the_uncut_texts(self, section):
+        result, parts = self._round()
+        section.add_command_result(result, parts=parts)
+        with patch('assistant.prompt.MessageHistory.FloxyDatabase') as db:
+            db.get_instance().delete_todays_history.return_value = 1
+            section.wipe_today()
+        assert section._fresh == {}
+
+
 class TestAddContextMessages:
     def test_a_failed_batch_write_propagates_without_reloading(self):
         from assistant.integration.Feed import FeedEntry
