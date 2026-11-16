@@ -443,6 +443,21 @@ class TestCachedLLMCoreMethods:
         assert result == ["chunk1", "chunk2"]
         assert cached_llm.last_response_was_cached is False
 
+    def test_streaming_cache_miss_hands_the_inner_llm_the_prompt_cache_hints(self, cached_llm, mock_llm,
+                                                                             mock_database):
+        """A keyed request that misses is an ordinary live request: the inner LLM places its
+        prompt-cache breakpoints by the same tail and follow-up facts as an unkeyed one."""
+        mock_database.get_response_counts_for_query.return_value = [("r1", 1)]
+        mock_llm.create_streaming_completion.return_value = iter(["chunk"])
+
+        cached_llm.cache_query = "hello"
+        list(cached_llm.create_streaming_completion([{"role": "user", "content": "hello"}],
+                                                    volatile_tail=2, follow_up=True))
+
+        kwargs = mock_llm.create_streaming_completion.call_args.kwargs
+        assert kwargs["volatile_tail"] == 2
+        assert kwargs["follow_up"] is True
+
     def test_streaming_cache_miss_different_commands(self, cached_llm, mock_llm, mock_database):
         """3+ responses but different commands → delegates to inner LLM"""
         mock_database.get_response_counts_for_query.return_value = [
