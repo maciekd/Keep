@@ -970,8 +970,18 @@ class AutonomousActionManager:
         for the half-price batch API (the nightly run; nobody is waiting for it)."""
         note("Rem: falling asleep — starting memory curation...")
         try:
-            ran = LongTermMemoryCurator.run(period_start, period_end, history=self.prompt_manager.message_history,
-                                            batch=batch)
+            history = self.prompt_manager.message_history
+            now = datetime.now()
+            catch_up_from = None
+            if period_start is None and period_end is None:
+                start = LongTermMemoryCurator.nightly_start(now)
+                catch_up_from = start if start < now.date() - timedelta(days=1) else None
+            if catch_up_from:
+                # Days a cut-off run left behind: in chunks, each reading the bank the one before wrote.
+                ran = LongTermMemoryCurator.run_span(catch_up_from, now.date(), history=history,
+                                                     curator=LongTermMemoryCurator(batch=batch))
+            else:
+                ran = LongTermMemoryCurator.run(period_start, period_end, history=history, batch=batch)
         except Exception as e:
             import traceback
             error(f"Memory curation failed: {e}")

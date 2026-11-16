@@ -2,7 +2,7 @@ import re
 import json
 import queue
 import threading
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import time
 import pytest
 from unittest.mock import Mock, patch
@@ -892,6 +892,24 @@ class TestAutonomousActionManager:
             # Should not raise
             manager._run_memory_curation()
 
+    @patch('assistant.agents.AutonomousActionManager.create_llm')
+    def test_the_nightly_run_goes_back_over_the_days_a_cut_off_run_left(self, mock_claude):
+        manager = AutonomousActionManager.get_instance(make_mock_prompt_manager(), test_mode=True)
+        today = date.today()
+        with patch('assistant.agents.AutonomousActionManager.LongTermMemoryCurator') as curator, \
+             patch.object(manager, '_report_memory_size'):
+            curator.nightly_start.return_value = today - timedelta(days=4)
+            manager._run_memory_curation(batch=True)
+            assert curator.run_span.call_args.args == (today - timedelta(days=4), today)
+            assert not curator.run.called
+            curator.reset_mock()
+            curator.nightly_start.return_value = today - timedelta(days=1)
+            manager._run_memory_curation(batch=True)
+            assert curator.run.called and not curator.run_span.called
+            curator.reset_mock()
+            manager._run_memory_curation(period_start=datetime(2026, 11, 1), period_end=datetime(2026, 11, 2))
+            assert curator.run.called and not curator.nightly_start.called, "an explicit period is curated as asked"
+
     @pytest.mark.parametrize("ran, reported", [({'interaction_count': 3}, [(3, 16, 2, 1)]), (None, [])])
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_a_curation_that_ran_reports_the_memory_size_and_a_skipped_one_does_not(self, mock_claude, ran, reported):
@@ -899,6 +917,7 @@ class TestAutonomousActionManager:
         manager = AutonomousActionManager.get_instance(make_mock_prompt_manager(), test_mode=True)
         module = 'assistant.agents.AutonomousActionManager'
         with patch(f'{module}.LongTermMemoryCurator.run', return_value=ran), \
+             patch(f'{module}.LongTermMemoryCurator.nightly_start', return_value=date.today() - timedelta(days=1)), \
              patch(f'{module}.MemoryFile.read', return_value="Marcus likes\ntea"), \
              patch(f'{module}.WatchList.items', return_value=[Mock(), Mock()]), \
              patch(f'{module}.Procedures.names', return_value=["descale-the-kettle"]), \

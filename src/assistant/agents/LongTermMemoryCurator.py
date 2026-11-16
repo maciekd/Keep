@@ -29,6 +29,9 @@ CURATION_CHUNK_DAYS = 4
 # prompt names no size at all: a model given a count and a limit tries to meet it by counting
 # words — 64000 output tokens of thinking twice in one night (2026-11-13), no bank written.
 MEMORY_WORD_LIMIT = 4000
+# How far back the nightly run reaches for days no run has curated (`nightly_start`).
+CATCH_UP_DAYS = 7
+JOURNAL_CUT_OFF = "- Result: reply cut off"   # the journal line of a run that kept the previous bank
 # A curated bank more than CONDENSE_TRIGGER over the limit gets a condensing pass after the
 # curation (`MemoryCondenser`, section by section), asked to cut CONDENSE_CUT of the limit or the
 # whole excess, whichever is more (`condense_cut`). The curation prompt cannot do it: with the
@@ -362,6 +365,45 @@ class LongTermMemoryCurator:
             except ValueError:
                 continue
         return max(stamps) if stamps else None
+
+    @classmethod
+    def curated_until(cls, since: datetime) -> datetime | None:
+        """The latest end of a period a run took into the bank, read from the dream journals
+        written after `since`: a journal says its period, and a run whose reply was cut off —
+        the previous bank kept — says that too and does not count. None when no such journal."""
+        ends = []
+        for path in MEMORY_LOG_DIR.glob("*_memory.md"):
+            try:
+                if datetime.strptime(path.name[:15], "%Y%m%d_%H%M%S") < since:
+                    continue
+                with open(path) as f:
+                    header = f.read(600).split("\n---", 1)[0]
+                period = next((line for line in header.split("\n") if line.startswith("- Period: ")), None)
+                if period is None or JOURNAL_CUT_OFF in header:
+                    continue
+                ends.append(datetime.fromisoformat(period.rsplit(" .. ", 1)[1].strip()))
+            except (ValueError, IndexError, OSError) as e:
+                trace(f"Rem: journal {path.name} not read for its period: {type(e).__name__}: {e}")
+        return max(ends) if ends else None
+
+    @classmethod
+    def nightly_start(cls, now: datetime) -> date:
+        """The first day the nightly run curates: yesterday, or the day the last run that
+        reached the bank ended on when that is earlier — a run cut off at the output cap
+        leaves its days to the next one, which started at yesterday's midnight all the same
+        and never went back (three days lost, 2026-11-12..14). At most CATCH_UP_DAYS back.
+        An install with no journal at all starts at yesterday: nothing was ever left behind."""
+        yesterday = now.date() - timedelta(days=1)
+        earliest = now.date() - timedelta(days=CATCH_UP_DAYS)
+        if cls.last_run_at() is None:
+            trace("Rem: no dream journal yet — the nightly run starts at yesterday")
+            return yesterday
+        until = cls.curated_until(datetime.combine(earliest, datetime.min.time()))
+        start = max(earliest, min(yesterday, until.date())) if until else earliest
+        if start < yesterday:
+            info(f"Rem: the bank is curated until {f'{until:%Y-%m-%d %H:%M}' if until else f'before {earliest}'} "
+                 f"— the nightly run catches up from {start}")
+        return start
 
     @classmethod
     def run_span(cls, start: date, end: date, history=None, curator: 'LongTermMemoryCurator' = None,
@@ -846,7 +888,7 @@ class LongTermMemoryCurator:
                 f.write(f"- New size: {metadata.get('new_memory_size', 0)} chars\n")
                 f.write(f"- LLM duration: {metadata.get('llm_duration_seconds', 0):.1f}s\n")
                 if metadata.get('truncated'):
-                    f.write("- Result: reply cut off at the output cap — previous bank kept\n")
+                    f.write(f"{JOURNAL_CUT_OFF} at the output cap — previous bank kept\n")
                 if metadata.get('condense'):
                     c = metadata['condense']
                     f.write(f"- Condensing pass: {c['from']} → {c.get('to', '?')} words (asked to remove {c['cut']}), "

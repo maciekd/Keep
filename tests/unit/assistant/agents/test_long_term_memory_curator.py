@@ -798,3 +798,65 @@ class TestLastRunAt:
             'old_memory_size': 0, 'new_memory_size': 9, 'llm_duration_seconds': 0.0, 'truncated': False,
             'condense': None, 'timestamp': 0.0, 'old_memory': '', 'full_prompt': ''})
         assert before <= LongTermMemoryCurator.last_run_at() <= datetime.now()
+
+
+@pytest.mark.unit
+class TestNightlyStart:
+    """A run cut off at the output cap keeps the previous bank; its days are the next run's."""
+
+    NOW = datetime(2026, 11, 16, 4, 0)
+
+    @pytest.fixture
+    def journal_dir(self, tmp_path, monkeypatch):
+        import assistant.agents.LongTermMemoryCurator as curator_mod
+        monkeypatch.setattr(curator_mod, "MEMORY_LOG_DIR", tmp_path / "memory")
+        (tmp_path / "memory").mkdir()
+        return tmp_path / "memory"
+
+    def _journal(self, journal_dir, written: datetime, period: tuple[datetime, datetime] | None, cut_off=False):
+        """Written by the real writer, so the reader is held to its format."""
+        metadata = {'interaction_count': 4, 'truncated': cut_off, 'old_memory': '', 'full_prompt': ''}
+        if period:
+            metadata.update(period_start=period[0].isoformat(timespec='minutes'),
+                            period_end=period[1].isoformat(timespec='minutes'))
+        path = LongTermMemoryCurator.save_debug_log("# Memory\n", metadata)
+        target = journal_dir / f"{written:%Y%m%d_%H%M%S}_{len(list(journal_dir.iterdir())):08d}_memory.md"
+        (journal_dir / path.rsplit("/", 1)[-1]).rename(target)
+
+    def _night(self, journal_dir, day: int, cut_off=False):
+        self._journal(journal_dir, datetime(2026, 11, day, 4, 30),
+                      (datetime(2026, 11, day - 1), datetime(2026, 11, day, 4, 5)), cut_off)
+
+    def test_after_a_whole_run_last_night_it_starts_at_yesterday(self, journal_dir):
+        self._night(journal_dir, 15)
+        assert LongTermMemoryCurator.nightly_start(self.NOW) == date(2026, 11, 15)
+
+    def test_cut_off_nights_are_gone_back_to(self, journal_dir):
+        self._night(journal_dir, 12)
+        for day in (13, 14, 15):
+            self._night(journal_dir, day, cut_off=True)
+        assert LongTermMemoryCurator.nightly_start(self.NOW) == date(2026, 11, 12)
+
+    def test_a_condensing_pass_on_its_own_curated_no_day(self, journal_dir):
+        self._night(journal_dir, 13)
+        self._journal(journal_dir, datetime(2026, 11, 15, 12, 0), None)
+        assert LongTermMemoryCurator.nightly_start(self.NOW) == date(2026, 11, 13)
+
+    def test_an_old_span_curated_last_does_not_hide_the_newer_days_already_done(self, journal_dir):
+        self._night(journal_dir, 15)
+        self._journal(journal_dir, datetime(2026, 11, 15, 18, 0), (datetime(2026, 11, 10), datetime(2026, 11, 12)))
+        assert LongTermMemoryCurator.nightly_start(self.NOW) == date(2026, 11, 15)
+
+    def test_it_never_reaches_further_back_than_the_catch_up_days(self, journal_dir):
+        self._night(journal_dir, 2)
+        self._night(journal_dir, 15, cut_off=True)
+        start = LongTermMemoryCurator.nightly_start(self.NOW)
+        assert date(2026, 11, 2) < start < date(2026, 11, 15)
+
+    def test_an_install_with_no_journal_starts_at_yesterday(self, journal_dir):
+        assert LongTermMemoryCurator.nightly_start(self.NOW) == date(2026, 11, 15)
+
+    def test_a_journal_that_cannot_be_read_for_its_period_is_passed_over(self, journal_dir):
+        self._night(journal_dir, 14)
+        (journal_dir / "20261115_043000_ab_memory.md").write_text("- Period: sometime .. later\n")
+        assert LongTermMemoryCurator.nightly_start(self.NOW) == date(2026, 11, 14)
