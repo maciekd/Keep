@@ -17,6 +17,11 @@ when possible — don't ask the user to paste secrets into the chat. A list item
 list of sections, `icloud.devices[0].display_name`, or one value of a list of plain values,
 `local_outposts.exclude_mics[0]`; the index equal to the list's length adds an item, and a refusal names the index to use.
 
+`config_delete(key: str)` — takes a setting out of config.yaml: a single value or a list of plain values is unset
+(its default applies); one list item — `telegram_bot.allowed_chat_ids[2]`, or a whole entry, `imap.accounts[1]` —
+is removed and the items after it move down one index, so remove one per turn; the answer names what a plain
+value's slot held. Whole sections are refused.
+
 `ai_message_footer` (top level, default true) is whether a message the assistant sends for the user — iMessage, WhatsApp — ends
 with the "[Sent with the help of AI 🤖]" footer; `config_set("ai_message_footer", "false")` turns it off at once.
 
@@ -110,4 +115,4 @@ with — if it failed, say why and offer to re-enter the value. Never ask for a 
 guess a key that config_help does not list.
 
 ### Stop-and-wait
-`list_integrations()`, `config_help`, `config_request`, `config_set`, `restart_integration`, `enable_integration`, `disable_integration`, `show_full_disk_access_setting`, `telegram_login`, `microsoft_login`, `google_login`, `google_login_code`, `icloud_login_code`, `volvo_login`, `volvo_login_code`, `spotify_login`, `spotify_login_code` return data: emit them and stop generating; the result arrives in the next round.
+`list_integrations()`, `config_help`, `config_request`, `config_set`, `config_delete`, `restart_integration`, `enable_integration`, `disable_integration`, `show_full_disk_access_setting`, `telegram_login`, `microsoft_login`, `google_login`, `google_login_code`, `icloud_login_code`, `volvo_login`, `volvo_login_code`, `spotify_login`, `spotify_login_code` return data: emit them and stop generating; the result arrives in the next round.

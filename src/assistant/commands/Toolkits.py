@@ -61,7 +61,7 @@ _FRONT_MATTER_KEYS = {"name", "summary", "commands", "sections", "hidden"}
 # The header of a rendered toolkit; MessageHistory recognises loaded toolkits by it.
 HEADER_PREFIX = "# Toolkit: "
 # A reference is not a web page: the history stores it whole, so the files stay bounded.
-MAX_FILE_CHARS = 10_000
+MAX_FILE_CHARS = 10_500
 
 
 @dataclass(frozen=True)
@@ -239,7 +239,8 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit("vault", "store a secret the user has said, or ask them for one you must never see",
             ("vault_add", "vault_request")),
     Toolkit("setup", "see which integrations are on, off, broken or unconfigured, and configure one",
-            ("list_integrations", "config_help", "config_request", "config_set", "restart_integration",
+            ("list_integrations", "config_help", "config_request", "config_set", "config_delete",
+             "restart_integration",
              "enable_integration", "disable_integration", "show_full_disk_access_setting", "telegram_login",
              "microsoft_login", "google_login",
              "google_login_code", "icloud_login_code", "volvo_login", "volvo_login_code", "spotify_login",
