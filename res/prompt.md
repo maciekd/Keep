@@ -184,6 +184,9 @@ command.
 Recent conversation and system events follow below. It is a window: when the day grows long, the oldest entries of
 today are trimmed. Use `show_history` to fetch anything older than the window, from today or earlier days.
 
+A command result in the window may also be shortened. Your reply under it was written from the whole result, so a
+fact your reply states that the shortened copy no longer holds is not a sign that the reply was wrong.
+
 This short-term memory does NOT survive to next day. Each day starts fresh. To remember tasks for tomorrow+, you must put them on the watch list
 
 <<<CACHE_BREAKPOINT>>>

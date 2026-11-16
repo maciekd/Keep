@@ -49,7 +49,9 @@ class MessageHistory:
     # browse snapshot) HistoryCompressor collapses it at render time, before the trim.
     ROLE_COMMAND = DB_ROLE_COMMAND
     COMMAND_RESULT_CHARS = 6000   # per round, shared by its commands
-    CUT_MARKER = " […cut here in history only: the turn that ran this read all {chars:,} chars…]"
+    CUT_MARKER = (" […the rest is left out of this history copy only: the turn that ran this read all "
+                  "{chars:,} chars and the reply after it was written from them — run the command again "
+                  "to see them…]")
     # The clock note a byte-prefix request put in front of its query (PromptManager.get_messages),
     # persisted as its own verbatim row so the next request renders the same bytes.
     ROLE_NOTE = "note"
