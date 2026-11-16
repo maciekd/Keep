@@ -234,6 +234,8 @@ class Commands:
         self._serial_queues: dict[str, queue.Queue] = {}
         self._serial_workers: dict[str, threading.Thread] = {}
 
+    _hosted_logged: Optional[tuple[int, int]] = None
+
     def _host(self, command_sets) -> dict[str, object]:
         """One instance of each set, by the command names it owns. A name with two owners
         would make the dispatch depend on the walk order, so it is refused here."""
@@ -247,7 +249,11 @@ class Commands:
                     raise ValueError(f"Command '{name}' has two owners: {other.__module__}.{other.__name__} "
                                      f"and {cls.__module__}.{cls.__name__}")
                 owners[name] = command_set
-        trace(f"Commands: hosting {len(owners)} command(s) from {len(command_sets)} integration command set(s)")
+        # Every pooled handler builds its own Commands: say it once, and again only if it changes.
+        hosted = (len(owners), len(command_sets))
+        if Commands._hosted_logged != hosted:
+            Commands._hosted_logged = hosted
+            trace(f"Commands: hosting {hosted[0]} command(s) from {hosted[1]} integration command set(s)")
         return owners
 
     def _owner(self, command: str):
