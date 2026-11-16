@@ -675,7 +675,7 @@ class TestKeepBracketsCommands:
 
     @pytest.fixture
     def parser(self):
-        return CommandParser(["config_set", "config_help", "config_request", "turn_on",
+        return CommandParser(["config_set", "config_help", "config_request", "config_delete", "turn_on",
                               "browse_wait", "browse_network"])
 
     def test_config_set_keeps_single_quoted_index(self, parser):
@@ -695,6 +695,10 @@ class TestKeepBracketsCommands:
     def test_config_help_and_request_keep_index(self, parser):
         assert parser.extract_command_and_params('config_help("icloud.devices[0]")')[0][1] == ["icloud.devices[0]"]
         assert parser.extract_command_and_params("config_request(icloud.devices[0].id)")[0][1] == ["icloud.devices[0].id"]
+
+    def test_config_delete_keeps_index(self, parser):
+        result, _ = parser.extract_command_and_params('config_delete("telegram_bot.allowed_chat_ids[4]")')
+        assert result == ("config_delete", ["telegram_bot.allowed_chat_ids[4]"])
 
     def test_batch_of_config_sets_all_keep_index(self, parser):
         text = ("config_set('icloud.devices[0].id', 'A')\n"

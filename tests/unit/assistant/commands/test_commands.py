@@ -2256,6 +2256,52 @@ class TestCmdConfigRequest:
             reply = commands_instance._run_config_request("owner_name")
         assert reply == "The value was refused (the value is empty) — nothing was saved."
 
+class TestCmdConfigDelete:
+    def test_validates_synchronously_then_deletes_on_the_config_lane(self, commands_instance):
+        with patch.object(ConfigStore, "check_delete") as check, patch.object(commands_instance, "background_command") as bg:
+            assert commands_instance.run("config_delete", ['"telegram_bot.allowed_chat_ids(4)"']) == ""
+        check.assert_called_once_with("telegram_bot.allowed_chat_ids[4]")
+        bg.assert_called_once_with(commands_instance._run_config_delete, "telegram_bot.allowed_chat_ids[4]", lane=Commands.CONFIG_LANE)
+
+    def test_a_refused_key_never_reaches_the_file(self, commands_instance):
+        with patch.object(ConfigStore, "delete_value") as delete, patch.object(commands_instance, "background_command") as bg:
+            answer = commands_instance.cmd_config_delete("vault.key")
+        assert answer.startswith("config_delete failed")
+        bg.assert_not_called()
+        delete.assert_not_called()
+
+    def test_a_removed_chat_id_is_in_force_without_a_restart(self, commands_instance):
+        with patch.object(ConfigStore, "is_present", return_value=True), \
+             patch.object(ConfigStore, "delete_value", return_value="removed"):
+            reply = commands_instance._run_config_delete("telegram_bot.allowed_chat_ids[4]")
+        assert reply == "removed. " + Commands.TELEGRAM_LIVE_HINT
+
+    def test_nothing_deleted_means_nothing_to_restart(self, commands_instance):
+        with patch.object(ConfigStore, "is_present", return_value=False), \
+             patch.object(ConfigStore, "delete_value", return_value="nothing to delete"):
+            assert commands_instance._run_config_delete("api_keys.serper") == "nothing to delete"
+
+    def test_an_interface_flag_that_falls_back_to_another_state_points_at_the_server_restart(self, commands_instance):
+        with patch.object(ConfigStore, "is_present", return_value=True), \
+             patch.object(ConfigStore, "delete_value", return_value="deleted"), \
+             patch.object(ConfigStore, "interface_enabled", side_effect=[True, False]):
+            reply = commands_instance._run_config_delete("interfaces.voice.enabled")
+        assert reply == "deleted. " + Commands.SERVER_RESTART_HINT
+        with patch.object(ConfigStore, "is_present", return_value=True), \
+             patch.object(ConfigStore, "delete_value", return_value="deleted"), \
+             patch.object(ConfigStore, "interface_enabled", return_value=True):
+            reply = commands_instance._run_config_delete("interfaces.telegram.enabled")
+        assert "restart_server" not in reply
+
+    def test_deleting_the_watchdog_key_removes_the_agent(self, commands_instance):
+        from common import Watchdog
+        with patch.object(ConfigStore, "is_present", return_value=True), \
+             patch.object(ConfigStore, "delete_value", return_value="deleted"), \
+             patch.object(Watchdog, "sync", return_value=None) as sync:
+            commands_instance._run_config_delete(Watchdog.KEY)
+        sync.assert_called_once_with(False)
+
+
 class TestCmdConfigSet:
     def test_validates_synchronously_then_writes_in_the_background(self, commands_instance):
         with patch.object(ConfigStore, "check_key") as check, patch.object(commands_instance, "background_command") as bg:

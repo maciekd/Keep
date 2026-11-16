@@ -1613,7 +1613,7 @@ class Commands:
     @staticmethod
     def _setup_activity():
         """A command that changes the setup ran — every command on the CONFIG_LANE (config_set,
-        config_request, enable / disable / restart_integration, the sign-ins and pairings of the
+        config_request, config_delete, enable / disable / restart_integration, the sign-ins and pairings of the
         integration folders), see background_command: on a young install setup is in progress
         for FTUE_SETUP_GRACE_HOURS more (FirstRun.in_ftue) — the setup toolkit stays preloaded
         and the INTEGRATIONS section stays in the prompt. A read-only command (config_help,
@@ -1889,6 +1889,39 @@ class Commands:
             return (f"{key} saved, but the {interface} interface was already {'on' if before else 'off'} "
                     f"(its default) — nothing changes and no restart is needed.")
         return f"{key} saved. {self._restart_hint(key)}"
+
+    def cmd_config_delete(self, parameter_string: str):
+        """Takes a key out of config.yaml (its default applies again) or one item out of a list,
+        which closes up — what config_set cannot do, since it only ever writes a value."""
+        key = ConfigSchema.normalize_key(parameter_string.strip().strip('"\''))
+        if not key:
+            return "config_delete failed: expected a setting key such as telegram_bot.allowed_chat_ids[2]"
+        try:
+            ConfigStore.check_delete(key)
+        except ConfigStoreError as e:
+            info(f"config_delete: refused — {e}")
+            return f"config_delete failed: {e}"
+        self.background_command(self._run_config_delete, key, lane=self.CONFIG_LANE)
+
+    def _run_config_delete(self, key: str) -> str:
+        interface = ConfigStore.interface_flag(key)
+        before = ConfigStore.interface_enabled(interface) if interface else None
+        was_set = ConfigStore.is_present(key)
+        try:
+            reply = ConfigStore.delete_value(key)
+        except ConfigStoreError as e:
+            info(f"config_delete: refused — {e}")
+            return f"config_delete failed: {e}"
+        if not was_set:
+            return reply
+        if key == Watchdog.KEY:
+            failure = Watchdog.sync(bool(ConfigManager().get(Watchdog.KEY, False)))
+            if failure:
+                return f"{reply}, but it could not be applied: {failure}"
+        if interface and ConfigStore.interface_enabled(interface) == before:
+            info(f"config_delete: {key} was already {'on' if before else 'off'} by default — no restart needed")
+            return f"{reply}. The {interface} interface stays {'on' if before else 'off'} — no restart is needed."
+        return f"{reply}. {self._restart_hint(key)}"
 
     TELEGRAM_FEED = "Telegram Feed"
 
@@ -2641,6 +2674,7 @@ class Commands:
     def describe_config_set(self, p):
         key = p.split(",", 1)[0].strip().strip('"\'')
         return f"Setting {key}" if key else "Setting a value"
+    def describe_config_delete(self, p):      return f"Deleting setting {p.strip()}" if p.strip() else "Deleting a setting"
     def describe_restart_integration(self, p): return f"Restarting {p.strip()}" if p.strip() else "Restarting an integration"
     def describe_enable_integration(self, p):  return f"Enabling {p.strip()}" if p.strip() else "Enabling an integration"
     def describe_disable_integration(self, p): return f"Disabling {p.strip()}" if p.strip() else "Disabling an integration"
