@@ -725,6 +725,7 @@ class DebugCommands:
                         zf.write(f, self._arcname(f))
                 else:
                     zf.write(path, self._arcname(path))
+        os.chmod(zip_path, 0o600)   # it holds config.yaml and the vault: the owner's alone, whatever the umask
         info(f"//wipe: backup written, {zip_path.stat().st_size / 1e6:.1f} MB")
         return zip_path
 

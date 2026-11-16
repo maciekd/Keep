@@ -9,8 +9,6 @@ line and summarised in `pending_note`, which the launcher posts as a system note
 history is up (this module is `common`, below the assistant)."""
 import io
 import re
-import os
-import shutil
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -18,6 +16,7 @@ from typing import Any, Optional
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from common import PrivateFile
 from common.Paths import CACHE_DIR
 from common.logging import info, trace, error
 
@@ -182,7 +181,7 @@ def migrate(data: CommentedMap, date_text: str) -> list[str]:
 def _backup(path: Path) -> None:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     target = BACKUP_DIR / f"config-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-before-migration.yaml"
-    shutil.copy2(path, target)
+    PrivateFile.copy(path, target)
     trace(f"Config migration: backed up to {target}")
 
 
@@ -206,10 +205,9 @@ def run(path: str) -> list[str]:
         trace("Config migration: the old sections held nothing to move")
         return []
     _backup(file)
-    tmp = file.with_suffix(file.suffix + ".tmp")
-    with open(tmp, "w") as f:
-        yaml.dump(data, f)
-    os.replace(tmp, file)
+    dumped = io.StringIO()
+    yaml.dump(data, dumped)
+    PrivateFile.write(file, dumped.getvalue())
     for line in done:
         info(f"Config migration: {line}")
     pending_note = ("Config: the mail and calendar settings were moved to the new accounts layout — "

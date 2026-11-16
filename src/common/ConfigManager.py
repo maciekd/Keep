@@ -3,7 +3,7 @@ import re
 import yaml
 import os
 
-from common import ConfigMigrations
+from common import ConfigMigrations, PrivateFile
 from common.Paths import CONFIG_PATH
 from common.logging import info
 from typing import Optional, Any
@@ -72,8 +72,7 @@ class ConfigManager:
 
         if not os.path.exists(config_path):
             info(f"No config file at {config_path} — writing a skeleton; the server will ask for the required keys")
-            with open(config_path, 'w') as f:
-                f.write(SKELETON)
+            PrivateFile.write(config_path, SKELETON)
             self.created_skeleton = True
 
         data = self._read(config_path)

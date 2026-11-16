@@ -7,9 +7,7 @@ Values are logged by key only, compared inside this module and discarded: nothin
 returns, formats or logs what the user typed or what config.yaml holds.
 """
 import io
-import os
 import re
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -18,7 +16,7 @@ from typing import Any, Optional
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from common import ConfigSchema
+from common import ConfigSchema, PrivateFile
 from common.ConfigManager import ENABLED_INTEGRATIONS_KEY, ConfigManager, integration_key
 from common.ConfigMigrations import looks_like_placeholder  # noqa: F401 — the store's callers import it from here
 from common.Paths import CACHE_DIR
@@ -200,7 +198,7 @@ def _stamp() -> str:
 def _backup(path: Path) -> None:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     target = BACKUP_DIR / f"config-{_stamp()}.yaml"
-    shutil.copy2(path, target)
+    PrivateFile.copy(path, target)
     old = sorted(BACKUP_DIR.glob("config-*.yaml"))[:-BACKUPS_KEPT]
     for stale in old:
         stale.unlink()
@@ -279,9 +277,7 @@ def _rewrite_locked(mutate, cut=None) -> None:
             trace("Config: the cut text reads differently from the changed config, writing the dump")
     if path.exists():
         _backup(path)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+    PrivateFile.write(path, text)
     _reload()
 
 
