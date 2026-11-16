@@ -24,6 +24,7 @@ DESCRIPTION_PROMPT_USER = "Analyze this image and return the JSON object as desc
 
 MAX_DIMENSION = 1024
 MAX_IMAGE_SIZE = 5 * 1024 * 1024
+TRANSPARENCY_BACKGROUND = (119, 119, 119)  # about the same contrast to black as to white
 
 
 def resize_to_jpeg(raw_bytes: bytes, max_dim: int = MAX_DIMENSION) -> Optional[bytes]:
@@ -41,7 +42,7 @@ def resize_to_jpeg(raw_bytes: bytes, max_dim: int = MAX_DIMENSION) -> Optional[b
             return None
 
     try:
-        img = ImageOps.exif_transpose(img).convert("RGB")  # a phone's JPEG is often stored turned, with the orientation in EXIF
+        img = _flattened(ImageOps.exif_transpose(img))  # a phone's JPEG is often stored turned, with the orientation in EXIF
         w, h = img.size
         if max(w, h) > max_dim:
             scale = max_dim / max(w, h)
@@ -54,6 +55,22 @@ def resize_to_jpeg(raw_bytes: bytes, max_dim: int = MAX_DIMENSION) -> Optional[b
             raise
         error(f"ImageAnalyzer: resize failed: {e}")
         return None
+
+
+def _flattened(img: Image.Image) -> Image.Image:
+    """`img` as RGB, what is transparent turned mid-grey. A plain convert drops the alpha and
+    leaves the colour under it, black in most exports: a drawing on a transparent background
+    reached vision black on black. Grey and not white, since what is drawn for a dark
+    background is white — black and white both stand out against it."""
+    if "transparency" in img.info:  # a palette entry or a colour key, not an alpha channel
+        img = img.convert("RGBA")
+    if not img.mode.endswith(("A", "a")):
+        return img.convert("RGB")
+    trace(f"ImageAnalyzer: {img.mode} image — flattening its transparency onto grey")
+    img = img.convert("RGBA")
+    flat = Image.new("RGB", img.size, TRANSPARENCY_BACKGROUND)
+    flat.paste(img, mask=img.getchannel("A"))
+    return flat
 
 
 def convert_via_sips(raw_bytes: bytes) -> Optional[bytes]:

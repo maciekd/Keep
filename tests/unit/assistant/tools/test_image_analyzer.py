@@ -50,6 +50,29 @@ class TestResizeToJpeg:
     def test_resize_rgba_converted_to_rgb(self):
         assert resize_to_jpeg(_png(size=(200, 200), mode="RGBA", color=(255, 0, 0, 128))) is not None
 
+    @pytest.mark.parametrize("ink", [0, 255], ids=["black_drawing", "white_drawing"])
+    @pytest.mark.parametrize("form", ["RGBA", "LA", "palette", "colour_key"])
+    def test_a_drawing_on_a_transparent_background_stands_out_whether_black_or_white(self, form, ink):
+        """Dropped alpha leaves the colour stored under it — the drawing's own here, as in most exports."""
+        box = (20, 20, 40, 40)
+        buf = io.BytesIO()
+        if form == "palette":
+            img = Image.new("P", (60, 60), 1)
+            img.putpalette([ink] * 6)
+            img.paste(0, box)
+            img.save(buf, format="PNG", transparency=1)
+        elif form == "colour_key":
+            img = Image.new("RGB", (60, 60), (ink, ink, 1))
+            img.paste((ink, ink, ink), box)
+            img.save(buf, format="PNG", transparency=(ink, ink, 1))
+        else:
+            img = Image.new("RGBA", (60, 60), (ink, ink, ink, 0))
+            img.paste((ink, ink, ink, 255), box)
+            img.convert(form).save(buf, format="PNG")
+        out = Image.open(io.BytesIO(resize_to_jpeg(buf.getvalue()))).convert("L")
+        assert abs(out.getpixel((30, 30)) - ink) < 15
+        assert abs(out.getpixel((5, 5)) - out.getpixel((30, 30))) > 80
+
     def test_resize_invalid_bytes_tries_sips_fallback(self):
         with patch('assistant.tools.ImageAnalyzer.convert_via_sips', return_value=None) as mock_sips:
             result = resize_to_jpeg(b"not an image")
