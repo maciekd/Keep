@@ -41,7 +41,7 @@ def resize_to_jpeg(raw_bytes: bytes, max_dim: int = MAX_DIMENSION) -> Optional[b
             return None
 
     try:
-        img = ImageOps.exif_transpose(img).convert("RGB")  # a phone's JPEG is often stored turned, with the orientation in EXIF
+        img = _on_white(ImageOps.exif_transpose(img))  # a phone's JPEG is often stored turned, with the orientation in EXIF
         w, h = img.size
         if max(w, h) > max_dim:
             scale = max_dim / max(w, h)
@@ -54,6 +54,21 @@ def resize_to_jpeg(raw_bytes: bytes, max_dim: int = MAX_DIMENSION) -> Optional[b
             raise
         error(f"ImageAnalyzer: resize failed: {e}")
         return None
+
+
+def _on_white(img: Image.Image) -> Image.Image:
+    """`img` as RGB, what is transparent turned white: a plain convert drops the alpha and
+    leaves the colour under it, which is black in most exports — a drawing on a transparent
+    background reached vision black on black."""
+    if img.mode == "P" and "transparency" in img.info:
+        img = img.convert("RGBA")
+    if img.mode not in ("RGBA", "LA", "PA"):
+        return img.convert("RGB")
+    trace(f"ImageAnalyzer: {img.mode} image — flattening its transparency onto white")
+    img = img.convert("RGBA")
+    flat = Image.new("RGB", img.size, (255, 255, 255))
+    flat.paste(img, mask=img.getchannel("A"))
+    return flat
 
 
 def convert_via_sips(raw_bytes: bytes) -> Optional[bytes]:

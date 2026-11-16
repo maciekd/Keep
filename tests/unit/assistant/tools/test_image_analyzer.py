@@ -50,6 +50,26 @@ class TestResizeToJpeg:
     def test_resize_rgba_converted_to_rgb(self):
         assert resize_to_jpeg(_png(size=(200, 200), mode="RGBA", color=(255, 0, 0, 128))) is not None
 
+    @pytest.mark.parametrize("mode", ["RGBA", "LA", "P"])
+    def test_a_transparent_background_reaches_vision_white_and_the_drawing_stays_dark(self, mode):
+        """An exported drawing is black lines on transparent black: dropped alpha is black on black."""
+        img = Image.new("RGBA", (60, 60), (0, 0, 0, 0))
+        for x in range(20, 40):
+            for y in range(20, 40):
+                img.putpixel((x, y), (0, 0, 0, 255))
+        buf = io.BytesIO()
+        if mode == "P":
+            paletted = img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=4)
+            paletted.paste(1, (0, 0, 60, 60))
+            paletted.paste(0, (20, 20, 40, 40))
+            paletted.putpalette([0, 0, 0, 0, 0, 0])
+            paletted.save(buf, format="PNG", transparency=1)
+        else:
+            img.convert(mode).save(buf, format="PNG")
+        out = Image.open(io.BytesIO(resize_to_jpeg(buf.getvalue()))).convert("L")
+        assert out.getpixel((5, 5)) > 240
+        assert out.getpixel((30, 30)) < 15
+
     def test_resize_invalid_bytes_tries_sips_fallback(self):
         with patch('assistant.tools.ImageAnalyzer.convert_via_sips', return_value=None) as mock_sips:
             result = resize_to_jpeg(b"not an image")
