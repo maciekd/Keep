@@ -10,7 +10,6 @@ psutil==7.1.3
 numpy==2.3.2   # the console's Crystal tab renders with it
 openai==2.13.0
 pyobjc==10.3.2   # 10.3 is the first pyobjc bleak 3 (the Plejd integration) accepts
-whisper-openai==1.0.0
 nodriver==0.48.1
 cloudscraper==1.2.71
 curl_cffi==0.14.0
