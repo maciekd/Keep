@@ -48,12 +48,14 @@ real install is repeated on a Mac before the release.
 ## The one switch: `common/Platform.py`
 
 A new module, the only place that asks the OS what it is. Nothing else tests `sys.platform` after
-this plan (the three that do today — `Browser`, `Clipboard`, `WebAccess` — move over).
+this plan (the three that do today — `Browser`, `Clipboard`, `WebAccess` — move over; `Telemetry`, which
+only reports the OS, is the one name on the allowlist of `tests/unit/common/test_platform.py`).
 
 ```python
 MAC, LINUX = "mac", "linux"
 def current() -> str            # MAC, LINUX, or the raw sys.platform of anything else
 def is_mac() -> bool
+def sys_platform() -> str       # current() as sys.platform spells it, for requirement markers
 def machine() -> str            # "the Mac" / "the server" — the noun user-facing texts use
 def mac_only(what: str) -> str  # one wording for every "X needs macOS" answer
 ```
@@ -71,19 +73,27 @@ script branches on `$os`. `KEEP_OS` exists for the script tests only.
   `pillow-heif` (HEIC, see §6).
 - The base file is torch-free: `whisper-openai`, which nothing imported, was the one pin that
   pulled torch in and is gone. Prove it in CI — the base install must not download torch.
-- `playsound==1.2.2` has no import in `src/`; confirm and drop the pin.
+- `playsound==1.2.2` has no import anywhere in the tree (the `playsound_*` names are methods of
+  `server_audio/PlaySound.py`); the pin is dropped.
 - `requirements-voice.txt` is installed on Linux too, minus what only the server's own audio
   needs: `mlx-whisper`, `silero-vad`, `sounddevice` and `lingua-language-detector` get
   `; sys_platform == "darwin"` (each is imported under `local_outposts/` or `server_audio/`
-  alone — re-check `soundfile`, which `ScribeWorker` and `PlaySound` import and speaker id may
-  need for decoding). torch, torchaudio, speechbrain, spaCy and the TTS clients stay.
+  alone, plus the lazy `sounddevice` of `VoiceInterface.stop`). `soundfile` stays on both: speechbrain
+  and supertonic depend on it, `torchaudio.load` (speaker id) can decode through it, and
+  `tests/unit/common/test_audio_log.py` reads with it. Its 0.12.1 has no aarch64 wheel — the pure
+  one installed there needs the system's libsndfile — so CI, and `ensure_packages` in §3, install
+  `libsndfile1`, and `libmagic1` for neonize's python-magic. torch, torchaudio, speechbrain, spaCy
+  and the TTS clients stay.
 - torch on Linux x86_64 defaults to the multi-GB CUDA build; speaker id does not need it. The
   installer passes PyTorch's CPU wheel index for the voice file, and `RequirementsChecker.install`
   does the same so a nightly pin bump does not swap the build (a `+cpu` local version must
   compare equal to the pin).
 - `RequirementsChecker`:
-  - `_check_file` evaluates environment markers (`packaging.requirements.Requirement`, already in
-    every venv through pip/pytest) and skips a pin whose marker is false.
+  - `_check_file` evaluates environment markers (`packaging.markers.Marker`, in the venv through
+    the pytest pin; imported lazily) and skips a pin whose marker is false. `sys_platform` is taken
+    from `Platform.sys_platform()`, so a test reads the files as the other system does. A marker
+    that cannot be evaluated — or `packaging` missing — leaves the pin checked: the worst case is
+    one pip run, which brings `packaging`.
   - Both groups are checked on both platforms, as today.
   - The Python version check is unchanged (3.12).
 - Integration pins to prove by installing, not by reading: `neonize` (WhatsApp, ships a native
@@ -94,7 +104,9 @@ script branches on `$os`. `KEEP_OS` exists for the script tests only.
   `pages.yml`). Expect the first run to surface a class the Mac hides: **case-sensitive paths**
   (an import or a `res/` name spelled in another case than the file).
 
-Done when: the unit suite is green on Ubuntu with no test skipped for being on Linux.
+Done when: the unit suite is green on Ubuntu with no test skipped for being on Linux — but for the
+tests of Mac-only code that need a library only the Mac installs (`importorskip`: the ten
+`TextLanguageDetector` tests on `lingua`, `test_video_rotation`'s three on AVFoundation).
 
 ## 2. Process lifecycle: systemd instead of Terminal, applets and launchd
 
@@ -184,7 +196,7 @@ The same one-line install, branching where the Mac is assumed:
   (stop with the reason otherwise — a container or WSL1), disk space through `df -Pk`, the same
   reachability checks. The terminal advice is skipped.
 - `ensure_clt` → on Linux `ensure_packages`: one `sudo apt-get install` of what is missing among
-  `git curl ca-certificates ffmpeg iproute2 procps`, plus `python3.12 python3.12-venv` where the
+  `git curl ca-certificates ffmpeg iproute2 procps libmagic1 libsndfile1` (§1), plus `python3.12 python3.12-venv` where the
   distribution has them. The command is printed before sudo asks; without sudo the list is shown
   and the install stops.
 - `ensure_python`: Ubuntu 24.04 has 3.12; Debian 12 (3.11) and 13 (3.13) do not, so the existing

@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from common import IntegrationDirs
+from common import IntegrationDirs, Platform
 from common.logging import error, info, trace
 from common.Paths import AISERVER_DIR, LOG_DIR
 
@@ -17,6 +17,9 @@ PIP_LOG = LOG_DIR / "pip-update.log"
 REQUIRED_PYTHON = (3, 12)
 # torch alone is hundreds of MB; a pin bump of the voice stack can take a while on a slow line.
 PIP_TIMEOUT = 15 * 60
+# On Linux x86_64 PyPI's torch is the multi-GB CUDA build; speaker id runs on the CPU one, which this index
+# serves as `<version>+cpu` — the higher version, so pip prefers it for the same pin.
+TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
 _REQ_LINE_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)(?:\[[^\]]+\])?\s*==\s*(\S+)\s*$")
 _DIRECT_REF_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*@\s*(\S+)\s*$")
@@ -28,6 +31,33 @@ _ARCHIVE_EXTENSIONS = (".whl", ".tar.gz", ".tar.bz2", ".zip")
 
 def _normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _split_marker(line: str) -> tuple[str, str]:
+    """(requirement, environment marker) of a line, the marker "" when it has none. A URL may hold
+    a `;` of its own, so after a direct reference a marker needs whitespace in front (PEP 508)."""
+    separator = r"\s+;\s*" if "@" in line.split(";")[0] else r"\s*;\s*"
+    parts = re.split(separator, line, maxsplit=1)
+    return parts[0], parts[1].strip() if len(parts) > 1 else ""
+
+
+def _marker_applies(marker: str, requirement: str) -> bool:
+    """Whether a pin with this environment marker is one this interpreter installs — on the
+    system `Platform` names, so a test of the other system's pins patches that. Anything
+    short of a clear "no" — a marker that does not parse, `packaging` not importable yet in a
+    venv pip has not filled — counts as yes: the pin is then checked, and pip has the last word."""
+    try:
+        from packaging.markers import Marker
+        return Marker(marker).evaluate({"sys_platform": Platform.sys_platform()})
+    except Exception as e:
+        info(f"Requirements check: marker {marker!r} of {requirement} not evaluated ({e!r}); the pin is checked")
+        return True
+
+
+def _same_version(installed: str, pinned: str) -> bool:
+    """A pin without a local version accepts any local build of it, as pip does (PEP 440):
+    torch from the CPU index is installed as `2.4.1+cpu` under the pin `2.4.1`."""
+    return installed == pinned or ("+" not in pinned and installed.partition("+")[0] == pinned)
 
 
 def _version_from_direct_ref(name: str, url: str) -> str | None:
@@ -53,6 +83,8 @@ class RequirementsChecker:
     interface on from the chat (config_set "interfaces.voice.enabled"), and the restart that
     follows must not be the first time the install learns it lacks requirements-voice.txt.
     Any missing or mismatched package aborts the server with install instructions.
+    A pin whose environment marker (`; sys_platform == "darwin"`) is false for this interpreter
+    is not checked — pip does not install it here either.
 
     A `-r other.txt` line is followed the way pip follows it — relative to the file it stands
     in — which is how the pins an integration keeps in its own folder
@@ -135,9 +167,13 @@ class RequirementsChecker:
     @staticmethod
     def install() -> str:
         """Runs pip in this venv over the voice file (it includes everything in the repository) and
-        the local integration folders' files, appending pip's output to PIP_LOG. Returns "" when pip exited 0, else what went wrong."""
-        cmd = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-               "-r", str(VOICE_REQUIREMENTS_FILE)]
+        the local integration folders' files, appending pip's output to PIP_LOG. On Linux pip is
+        given PyTorch's CPU index as well, so a pin bump never swaps the CPU build of torch for the
+        CUDA one. Returns "" when pip exited 0, else what went wrong."""
+        cmd = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check"]
+        if Platform.current() == Platform.LINUX:
+            cmd += ["--extra-index-url", TORCH_CPU_INDEX]
+        cmd += ["-r", str(VOICE_REQUIREMENTS_FILE)]
         for _, path in RequirementsChecker._local_groups():
             cmd += ["-r", str(path)]
         PIP_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +246,10 @@ class RequirementsChecker:
                         mismatched += i_mismatched
                         checked += i_checked
                     continue
+                line, marker = _split_marker(line)
+                if marker and not _marker_applies(marker, line):
+                    trace(f"{path.name}: {line} is not for this platform ({marker}), not checked")
+                    continue
                 m = _REQ_LINE_RE.match(line)
                 if m:
                     name, expected = m.group(1), m.group(2)
@@ -227,7 +267,7 @@ class RequirementsChecker:
                 except importlib.metadata.PackageNotFoundError:
                     missing.append(name)
                     continue
-                if expected is not None and actual != expected:
+                if expected is not None and not _same_version(actual, expected):
                     mismatched.append((name, expected, actual))
                 checked += 1
 

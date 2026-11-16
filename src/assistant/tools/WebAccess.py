@@ -5,7 +5,6 @@ import concurrent.futures
 import io
 import json
 import os
-import platform
 import re
 import shutil
 import signal
@@ -29,7 +28,7 @@ from nodriver.core.connection import ProtocolException, Transaction
 from bs4 import BeautifulSoup, Comment, NavigableString
 
 from ..integration.Integration import Integration
-from common import BrowseFillMask
+from common import BrowseFillMask, Platform
 from common.logging import info, trace, note, fine, error
 from common.ConfigManager import ConfigManager
 from common.Paths import CACHE_DIR, LOG_DIR
@@ -777,7 +776,7 @@ class WebAccess(Integration):
             "/Applications/Chromium.app/Contents/MacOS/Chromium",
             "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
         ]
-        if platform.system() == "Linux":
+        if Platform.current() == Platform.LINUX:
             candidates += [
                 "/usr/bin/google-chrome",
                 "/usr/bin/google-chrome-stable",
@@ -813,7 +812,7 @@ class WebAccess(Integration):
         if not chrome_path:
             install_hint = (
                 "install it with 'brew install --cask google-chrome'"
-                if platform.system() == "Darwin"
+                if Platform.is_mac()
                 else "install Google Chrome or Chromium (e.g. 'apt install chromium')"
             )
             error(
@@ -990,10 +989,10 @@ class WebAccess(Integration):
 
     @staticmethod
     def _ua_platform_token() -> str:
-        system = platform.system()
-        if system == "Darwin":
+        system = Platform.current()
+        if system == Platform.MAC:
             return "Macintosh; Intel Mac OS X 10_15_7"
-        if system == "Windows":
+        if system == "win32":
             return "Windows NT 10.0; Win64; x64"
         return "X11; Linux x86_64"
 

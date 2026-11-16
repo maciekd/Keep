@@ -6,8 +6,8 @@ itself on the key — on the server's Mac, which is where the TUI's user sits ev
 over `tui.py <host>`, and where an OAuth redirect to localhost has to land anyway.
 """
 import subprocess
-import sys
 
+from common import Platform
 from common.logging import error, info
 
 TIMEOUT = 5
@@ -15,7 +15,7 @@ TIMEOUT = 5
 
 def open_url(url: str) -> bool:
     """Open `url` in the default browser; False when the system could not."""
-    if sys.platform != "darwin":
+    if not Platform.is_mac():
         info("Browser: links are opened on macOS only")
         return False
     try:

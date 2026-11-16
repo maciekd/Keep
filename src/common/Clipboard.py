@@ -8,12 +8,12 @@ on the key, from the clipboard of the machine the server runs on.
 import io
 import re
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
 from PIL import Image
 
+from common import Platform
 from common.logging import error, info, trace
 
 MAX_EDGE = 1568          # the long edge Claude resamples a picture to anyway
@@ -39,7 +39,7 @@ def read_image() -> Optional[tuple[bytes, str]]:
 
 def read_text() -> str:
     """The clipboard's text, "" when it has none (or the system cannot say)."""
-    if sys.platform != "darwin":
+    if not Platform.is_mac():
         trace("Clipboard: text is read on macOS only")
         return ""
     try:
@@ -78,7 +78,7 @@ def fit(raw: bytes) -> tuple[bytes, str]:
 
 
 def _clipboard_picture() -> Optional[bytes]:
-    if sys.platform != "darwin":
+    if not Platform.is_mac():
         trace("Clipboard: pictures are read on macOS only")
         return None
     # A screenshot taken to the clipboard, a picture copied in a browser or Preview: the

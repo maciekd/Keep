@@ -581,3 +581,88 @@ def test_install_reports_a_timeout(tmp_path, monkeypatch, real_pip):
     monkeypatch.setattr(rc_module.subprocess, "run", run)
 
     assert "did not finish" in RequirementsChecker.install()
+
+
+# ---- environment markers and Linux (docs/plans/LINUX_PLAN.md §1) ----
+
+NOWHERE = 'sys_platform == "plan9"'
+EVERYWHERE = 'sys_platform != "plan9"'
+
+
+def test_a_pin_whose_marker_is_false_here_is_neither_missing_nor_looked_up(tmp_path, monkeypatch):
+    reqs = _write_reqs(tmp_path, f"pkg-a==1.0.0\npkg-elsewhere==2.0.0 ; {NOWHERE}   # another system's\n")
+    asked = _installed(monkeypatch, {"pkg-a": "1.0.0"})
+    assert RequirementsChecker._check_file(reqs) == ([], [], 1)
+    assert asked == ["pkg-a"]
+
+
+def test_a_pin_whose_marker_is_true_here_is_checked_like_any_other(tmp_path, monkeypatch):
+    reqs = _write_reqs(tmp_path, f"pkg-a==1.0.0;{EVERYWHERE}\npkg-b[extra]==2.0.0 ; {EVERYWHERE}\npkg-c==3.0.0 ; {EVERYWHERE}\n")
+    _installed(monkeypatch, {"pkg-a": "1.0.0", "pkg-b": "2.5.0"})
+    assert RequirementsChecker._check_file(reqs) == (["pkg-c"], [("pkg-b", "2.0.0", "2.5.0")], 2)
+
+
+def test_a_marker_nobody_can_evaluate_leaves_the_pin_checked(tmp_path, monkeypatch):
+    reqs = _write_reqs(tmp_path, "pkg-a==1.0.0 ; phase_of_moon == 'full'\n")
+    _installed(monkeypatch, {})
+    assert RequirementsChecker._check_file(reqs) == (["pkg-a"], [], 0)
+
+
+def test_a_direct_reference_keeps_the_semicolon_of_its_url_and_obeys_its_marker(tmp_path, monkeypatch):
+    url = "https://files.example/get;v=3/pkg_a-1.2.0-py3-none-any.whl"
+    reqs = _write_reqs(tmp_path, f"pkg-a @ {url}\npkg-a @ {url} ; {EVERYWHERE}\npkg-b @ {url} ; {NOWHERE}\n")
+    asked = _installed(monkeypatch, {"pkg-a": "1.2.0"})
+    assert RequirementsChecker._check_file(reqs) == ([], [], 2)
+    assert asked == ["pkg-a", "pkg-a"]
+
+
+def test_a_local_build_of_the_pinned_version_matches_the_pin(tmp_path, monkeypatch):
+    """torch from PyTorch's CPU index reports itself as 2.4.1+cpu; pip takes that for ==2.4.1."""
+    reqs = _write_reqs(tmp_path, "pkg-a==2.4.1\npkg-b==2.4.1\npkg-c==2.4.1+cpu\n")
+    _installed(monkeypatch, {"pkg-a": "2.4.1+cpu", "pkg-b": "2.4.10+cpu", "pkg-c": "2.4.1"})
+    assert RequirementsChecker._check_file(reqs) == (
+        [], [("pkg-b", "2.4.1", "2.4.10+cpu"), ("pkg-c", "2.4.1+cpu", "2.4.1")], 3)
+
+
+def _pip_command(tmp_path, monkeypatch, system) -> list:
+    import subprocess
+    from common import Platform
+    monkeypatch.setattr(Platform, "current", lambda: system)
+    monkeypatch.setattr(rc_module, "PIP_LOG", tmp_path / "pip-update.log")
+    commands = []
+    monkeypatch.setattr(rc_module.subprocess, "run",
+                        lambda cmd, **kwargs: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+    assert RequirementsChecker.install() == ""
+    return commands[0]
+
+
+def test_on_linux_pip_is_given_the_cpu_torch_index_and_on_the_mac_its_command_is_what_it_was(
+        tmp_path, monkeypatch, real_pip):
+    from common import Platform
+    on_the_mac = _pip_command(tmp_path, monkeypatch, Platform.MAC)
+    on_linux = _pip_command(tmp_path, monkeypatch, Platform.LINUX)
+    assert not any("index" in argument for argument in on_the_mac)
+    index = on_linux.index("--extra-index-url")
+    assert on_linux[index + 1].startswith("https://download.pytorch.org/") and on_linux[index + 1].endswith("/cpu")
+    assert on_linux[:index] + on_linux[index + 2:] == on_the_mac
+
+
+def test_a_linux_server_is_not_asked_for_what_only_the_macs_own_audio_and_apis_need(monkeypatch):
+    """The real files, read as Linux reads them: no pyobjc, no MLX Whisper, no audio device —
+    and still everything the phones' side of voice runs on."""
+    from common import Platform
+    monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+    asked = []
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: asked.append(name.lower()) or "0")
+    seen = set()
+    for name in ("requirements.txt", "requirements-voice.txt"):
+        RequirementsChecker._check_file(rc_module.AISERVER_DIR / name, seen)
+    assert not {"pyobjc", "mlx-whisper", "sounddevice", "silero-vad", "lingua-language-detector"} & set(asked)
+    assert {"torch", "torchaudio", "speechbrain", "soundfile", "spacy", "bleak"} <= set(asked)
+    monkeypatch.setattr(Platform, "current", lambda: Platform.MAC)
+    on_the_mac = []
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: on_the_mac.append(name.lower()) or "0")
+    seen = set()
+    for name in ("requirements.txt", "requirements-voice.txt"):
+        RequirementsChecker._check_file(rc_module.AISERVER_DIR / name, seen)
+    assert {"pyobjc", "mlx-whisper", "sounddevice", "silero-vad", "lingua-language-detector"} <= set(on_the_mac)
