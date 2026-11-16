@@ -1451,6 +1451,28 @@ class TestDueWatcher:
         (call,) = mgr.activity_check.call_args_list
         assert [(item.name, moment) for item, moment in call.kwargs["due"]] == [("airport-departures", datetime(2026, 10, 25, 6, 15))]
 
+    def test_a_bare_due_date_wakes_the_check_once_on_its_morning(self):
+        """An item that only waits for its date has no cadence and no time: the date itself is
+        the one moment the watcher has for it, and the check is told a date was reached —
+        not that a cadence poll is due."""
+        self.watch("sofa-delivery", "2026-10-25", checked="2026-10-20 12:00")
+        morning = WatchList.due_moment(WatchList.get("sofa-delivery"))
+        mgr = self.manager()
+        assert mgr._poll_due(datetime(2026, 10, 25, 0, 30)) is False, "the date has come, its morning has not"
+        assert mgr._poll_due(morning - timedelta(minutes=1)) is False
+        assert mgr._poll_due(morning) is True
+        assert mgr._poll_due(morning + timedelta(minutes=1)) is False
+        (call,) = mgr.activity_check.call_args_list
+        assert [(item.name, moment) for item, moment in call.kwargs["due"]] == [("sofa-delivery", morning)]
+        note = AutonomousActionManager._due_note(call.kwargs["due"], now=morning + timedelta(hours=3))
+        assert "sofa-delivery" in note and "2026-10-25" in note and "3 h" in note and "every" not in note
+
+    def test_a_bare_due_date_looked_at_after_its_morning_wakes_nothing(self):
+        self.watch("sofa-delivery", "2026-10-25", checked="2026-10-25 10:30")
+        mgr = self.manager()
+        assert mgr._poll_due(datetime(2026, 10, 25, 13, 0)) is False
+        mgr.activity_check.assert_not_called()
+
     def test_night_mode_leaves_a_cadence_poll_for_the_morning(self):
         WatchList.save("car-arrival", "waiting for the car", None, every="3m")
         checked = WatchList.stamp(WatchList.get("car-arrival").checked)

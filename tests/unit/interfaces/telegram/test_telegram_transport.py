@@ -845,6 +845,19 @@ class TestInboundMedia:
         hub.expect_photo.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_picture_file_over_the_bot_limit_holds_no_album_open(self, transport, hub):
+        """It is never downloaded, so no photo is on its way: an album announced for it would
+        hold back the pictures sent with it until the download timeout."""
+        update = self._document_update(name="scan.tiff", mime_type="image/tiff", file_size=25 * 1024 * 1024)
+        update.message.media_group_id = "album-1"
+        ctx = _file_context()
+        await transport._handle_document(update, ctx)
+        ctx.bot.get_file.assert_not_called()
+        hub.expect_photo.assert_not_called()
+        msg = received(hub)
+        assert msg.kind == KIND_DOCUMENT and msg.attachments[0].undelivered
+
+    @pytest.mark.asyncio
     async def test_document_download_failure_tells_the_user(self, transport, hub):
         update = self._document_update()
         ctx = MagicMock()
