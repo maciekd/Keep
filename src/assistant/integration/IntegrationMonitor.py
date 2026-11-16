@@ -3,7 +3,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from common import Platform
-from common.ConfigManager import ConfigManager
+from common.ConfigManager import ConfigManager, integration_key
 from .Feed import Feed
 from .FeedRunner import Feeds
 from .Integration import HealthWarning, Integration, IntegrationState
@@ -235,8 +235,8 @@ class IntegrationMonitor:
     def find(self, name: str) -> Optional[Integration]:
         """The registered integration called *name*, or — none of that name — the one of the
         folder called so (`home_assistant` for "Home Assistant"; the folder is what a report names), or
-        the one that used to be called so (`Integration.former_names`); None otherwise. Case
-        does not matter."""
+        the one that used to be called so (`Integration.former_names`, in any spelling the config
+        accepted — `integration_key`); None otherwise. Case does not matter."""
         wanted = name.strip().lower()
         integrations = self._snapshot()
         for integration in integrations:
@@ -246,8 +246,9 @@ class IntegrationMonitor:
             if folder_of(self._class_of(integration)) == wanted:
                 trace(f"IntegrationMonitor: '{name}' is the folder of {integration.name}")
                 return integration
+        key = integration_key(name)
         for integration in integrations:
-            if wanted in (former.lower() for former in self._class_of(integration).former_names):
+            if key in (integration_key(former) for former in self._class_of(integration).former_names):
                 info(f"IntegrationMonitor: '{name}' is the former name of {integration.name}")
                 return integration
         return None

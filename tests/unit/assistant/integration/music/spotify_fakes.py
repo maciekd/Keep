@@ -26,6 +26,7 @@ def make_account() -> SpotifyAccount:
     account._library_fetched_at = 0.0
     account._not_before = 0.0
     account._sign_in_again_noted = False
+    account._scopes_grown_noted = False
     account._search_ids = {}
     account._next_search_id = 0
     return account
