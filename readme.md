@@ -15,22 +15,16 @@ Self-hosted digital assistant
 <td>
 
 ### Keep
-Keep knows you and your family. It has analyzed your messages and every photo you’ve taken and has excellent long-term memory: it remembers all the names, all the places, all the plans and
+Keep knows you. It has analyzed your messages and every photo you’ve taken and has excellent long-term memory: it remembers all the names, all the places, all the plans and
 everything you need to do, without you explaining anything.
 
 Runs on a Mac you own, talks to you by chat, terminal and voice, and integrates with your life: shopping, appointments, cameras, the lot.
 
-### Cloud
 By default, Keep runs in the cloud. Keep stores everything on your Mac and thinks on Anthropic’s servers. Passwords and card numbers go in the Keep Vault, encrypted on your Mac: the model never sees them. Read the privacy section before you install.
 
 The cloud version is very robust. It uses a combination of Opus and Fable (estimated Anthropic API cost is $200 / month). On a Claude Max, Ultra or Team plan you get $100–500 of free API credits.
 
-### Local
-Keep can run 100% locally on your LLM of choice. We actively support:
-* Qwen 3.8 27B with vision (use oMLX with Splash)
-* DeepSeek V4.1 Flash 1017 with vision (use DwarfStar)
-
-If local is your goal, we recommend starting with the default cloud version and having it help you configure the local setup.
+Keep can also run 100% locally, on your LLM of choice: see **[Keep on local AI](docs/local-ai.md)**.
 
 Refined over two years of daily use in real homes.
 
@@ -38,15 +32,9 @@ Refined over two years of daily use in real homes.
 We recommend using a prepaid card for your AI - Revolut works very well and needs no 3DS normally.
 
 ### Requirements
-An Apple Silicon Mac with 16 GB RAM, signed in to your personal iCloud, to run the Keep server.
+<b>Mac</b> with 16 GB RAM is recommended, signed in to your personal iCloud, to run the Keep server. Keep also runs on <b>Debian</b> and <b>Ubuntu</b>.
 
 Everything else — email, smart home, cameras, cars — is optional, and Keep walks you through setting it up.
-
-For local AI we recommend:
-* 48 GB RAM for Qwen
-* 128 GB RAM for DeepSeek
-
-Linux is new and still in testing: Ubuntu 24.04 or Debian 12 and newer, on x86_64 or ARM64, with systemd.
 
 <img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">
 </td>
@@ -266,7 +254,7 @@ Curious how it fits together? The **[Keep Atlas](https://keep-ai.dev/atlas/)** i
 
 Let's be honest: an assistant that reads your mail, sees your photos and messages is a privacy minefield. Here is where Keep stands today.
 
-When running 100% local AI you are safe (see the note about telemetry below, though). 
+When running [100% local AI](docs/local-ai.md) you are safe (see the note about telemetry below, though).
 
 The default cloud setup:
 
