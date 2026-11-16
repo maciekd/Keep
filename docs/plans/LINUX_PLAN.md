@@ -12,24 +12,38 @@ systemd user session. A derivative that names `debian` in `ID_LIKE` (Raspberry P
 with a warning and is not tested. A machine without a screen is the normal case.
 
 **Decided**:
-- **Voice is Mac-only for now** — the whole `interfaces/voice` stack, not only the MLX microphones:
-  a phone Outpost's reply is played on the server's speakers (`ServerPlayback`), the volume is set
-  through `osascript`, and the audio path is tuned against CoreAudio. On Linux
-  `interfaces.voice.enabled` cannot be switched on and `requirements-voice.txt` is never installed
-  (no torch, no spaCy). The apps keep working as chats over `/stream`.
+- **Voice is split: the phones' side runs on Linux, the server's own audio stays on the Mac.**
+  A Linux server with `interfaces.voice.enabled` is what the tree already calls a phone-only
+  server. *Runs*: everything the iOS app uses in its default mode — TTS and the audio reply
+  streamed over `/stream`, `/stream_text`, `/identify_voice`, `/upload_audio_session`, `/log` —
+  with the vote, speaker id and the nightly voice discovery behind them. *Mac-only*: the local microphones (MLX Whisper), playback on
+  the server's speakers, the ambient-noise volume control (`osascript`), the end / thinking sounds
+  and the speakers as a `post_message` destination. No audio device is opened on Linux at all.
+  The iOS app is the only remote client: the Android Outposts are no longer supported.
 - **The GPU and temperature monitors are hidden** on Linux (`GpuMonitor`, `TempMonitor` and their
   Dashboard cards).
 
-**Mac-only, and said so to the user and the LLM**: Photos, Reminders, HomeClaw, a *local* Messages
-host, the iMessage satellite role, the Desktop shortcut, Full Disk Access, the `watchdog` key, the
+**Mac-only, and said so to the user and the LLM**: the server's own microphones and speakers,
+Photos, Reminders, HomeClaw, a *local* Messages host, the iMessage satellite role, the Desktop shortcut, Full Disk Access, the `watchdog` key, the
 local-backend start scripts (`scripts/local_ds4_start.sh`, `local_ollama_start.sh`).
 
 **iMessage on Linux** works the way it already does across two Macs: `imessage.host` /
 `imessage_chat.host` name a satellite on a Mac. `host: local` on Linux is a configuration error
 with a hint, not a crash.
 
-**Not in this plan**: Fedora/Arch, Docker images, Windows/WSL, a Linux voice backend
-(faster-whisper, PipeWire volume), a desktop launcher, GPU cards from `nvidia-smi`.
+**Not in this plan**: Fedora/Arch, Docker images, Windows/WSL, local audio on Linux
+(faster-whisper microphones, PipeWire playback and volume), a desktop launcher, GPU cards from `nvidia-smi`.
+
+## The Mac does not change
+
+Nothing a Mac install does is different after this plan: the same commands run in the same
+order, the prompt and the toolkit texts render byte for byte as before, and no config key changes
+meaning. Every Linux behaviour is a branch beside the Mac one, never a replacement of it — where
+one shared implementation would be simpler (HEIC through `pillow-heif`, video rotation through
+`ffmpeg`), the Mac still keeps its own. The only Mac-visible changes are two unused pins leaving
+`requirements.txt` (`whisper-openai`, `playsound`). The existing tests are the proof for the code
+that is moved rather than added (`start.sh`'s launch, `VoiceInterface`'s imports), and step 5's
+real install is repeated on a Mac before the release.
 
 ## The one switch: `common/Platform.py`
 
@@ -58,17 +72,25 @@ script branches on `$os`. `KEEP_OS` exists for the script tests only.
 - The base file is torch-free: `whisper-openai`, which nothing imported, was the one pin that
   pulled torch in and is gone. Prove it in CI — the base install must not download torch.
 - `playsound==1.2.2` has no import in `src/`; confirm and drop the pin.
-- `requirements-voice.txt`: unchanged in content; it is simply not a group on Linux.
+- `requirements-voice.txt` is installed on Linux too, minus what only the server's own audio
+  needs: `mlx-whisper`, `silero-vad`, `sounddevice` and `lingua-language-detector` get
+  `; sys_platform == "darwin"` (each is imported under `local_outposts/` or `server_audio/`
+  alone — re-check `soundfile`, which `ScribeWorker` and `PlaySound` import and speaker id may
+  need for decoding). torch, torchaudio, speechbrain, spaCy and the TTS clients stay.
+- torch on Linux x86_64 defaults to the multi-GB CUDA build; speaker id does not need it. The
+  installer passes PyTorch's CPU wheel index for the voice file, and `RequirementsChecker.install`
+  does the same so a nightly pin bump does not swap the build (a `+cpu` local version must
+  compare equal to the pin).
 - `RequirementsChecker`:
   - `_check_file` evaluates environment markers (`packaging.requirements.Requirement`, already in
     every venv through pip/pytest) and skips a pin whose marker is false.
-  - `_groups()` leaves the voice group out when `Platform` says voice cannot run here; `install()`
-    then runs pip over `requirements.txt` instead of the voice file.
+  - Both groups are checked on both platforms, as today.
   - The Python version check is unchanged (3.12).
 - Integration pins to prove by installing, not by reading: `neonize` (WhatsApp, ships a native
   library per platform), `bleak` (BlueZ over D-Bus), `curl_cffi`, `nodriver`, `uvloop`.
 - **CI**: a new workflow, `ubuntu-24.04`, x86_64 and arm64 runners: `pip install -r requirements.txt`
-  then the unit suite with `FLOXY_CONFIG=config.example.yaml`. No such job exists today (only
+  (proving it downloads no torch), then the voice file, then the unit suite with
+  `FLOXY_CONFIG=config.example.yaml`. No such job exists today (only
   `pages.yml`). Expect the first run to surface a class the Mac hides: **case-sensitive paths**
   (an import or a `res/` name spelled in another case than the file).
 
@@ -159,8 +181,8 @@ The same one-line install, branching where the Mac is assumed:
 
 - `check_mac` → `check_system`. Linux: `/etc/os-release` (`ID` ubuntu/debian, else `ID_LIKE`
   debian with a warning, else stop), `uname -m` x86_64/aarch64, a working `systemctl --user`
-  (stop with the reason otherwise — a container or WSL1), disk space through `df -Pk` (and a lower
-  `MIN_FREE_GB`: no voice stack), the same reachability checks. The terminal advice is skipped.
+  (stop with the reason otherwise — a container or WSL1), disk space through `df -Pk`, the same
+  reachability checks. The terminal advice is skipped.
 - `ensure_clt` → on Linux `ensure_packages`: one `sudo apt-get install` of what is missing among
   `git curl ca-certificates ffmpeg iproute2 procps`, plus `python3.12 python3.12-venv` where the
   distribution has them. The command is printed before sudo asks; without sudo the list is shown
@@ -172,21 +194,49 @@ The same one-line install, branching where the Mac is assumed:
   Chrome's `.deb` on x86_64, the `chromium` package on Debian/arm64. Ubuntu's Chromium is a snap —
   whether nodriver can drive it from a systemd user service is **unverified**; if not, the
   installer says the browse commands need Chrome and goes on.
-- `install_requirements`: `requirements.txt` only.
+- `install_requirements`: both files as on the Mac, the voice file with the CPU torch index (§1).
+  No PortAudio and no `mpv` from apt: nothing on Linux opens an audio device.
 - `KEEP_ROLE=imessage_satellite` on Linux stops: a satellite is a Mac.
 - `launch` / `summary`: `enable-linger`, `./start.sh`; the texts lose Terminal, Full Disk Access
-  and the microphone on Linux and gain the three `systemctl --user` lines worth knowing.
+  and the microphone prompt on Linux and gain the three `systemctl --user` lines worth knowing.
 - Telemetry's chip string comes from `sysctl` — on Linux `uname -m` and the CPU model of
   `/proc/cpuinfo`.
 - `tests/unit/test_install_sh.py` covers the Linux branch through `KEEP_OS` and stubbed `apt-get`.
 
 ## 4. The server on Linux: what switches off, and how it is said
 
-**Voice.** `VoiceInterface.enabled(config)` is false on Linux whatever the key says, with a boot
-log line naming the key. `config_set interfaces.voice.enabled` answers `Platform.mac_only(…)`
-instead of writing. Everything downstream already handles "no voice interface in this process"
-(`VoicesSectionGenerator.requires`, the console's Voice tab, no speaker destination, no TTS
-engines registered, port 43523 never bound).
+**Voice.** The interface starts on Linux without its local half. The seams are mostly there
+already — `local_outposts.enabled: false` is a supported phone-only setup, `RequestProcessor`
+takes `playback_factory=None`, and `_register_room` registers no destination without a local
+outpost manager. What changes in `VoiceInterface`, behind one `Platform` check
+(`local_audio = Platform.is_mac()`):
+
+- The module-level imports of `server_audio` (`ServerPlayback`, `PlaySound`,
+  `DynamicServerVolumeController` — each imports `sounddevice` at load) and of `local_outposts`
+  move into the branch that uses them; on Linux none of the three packages is imported.
+- `start`: no `start_local_outposts`, no volume controller; `MicrophoneDeps.play_sound` and
+  `.volume_controller` become optional, and the routes that use them (`/end`, the settings a
+  remote Outpost asks for) skip the sound and answer without the volume.
+- `handler_kwargs` leaves `playback_factory` out, so a handler has no `ServerPlayback`: a request
+  with `server_sound` (the local outposts, and the app in its server-sound mode) is answered
+  as text, logged once.
+- `stop` has nothing of the audio teardown to do.
+- Unchanged: speaker id, voice discovery, the TTS engines' registration, `/stream_text`, the
+  vote. The Outpost TCP server (43523) pushed mute commands to the local microphones and the
+  Android Outposts; the iOS app never connects to it, so on Linux it is not started and the port
+  leaves `role.sh`'s `listen_ports` there.
+
+Checked against the app (`ViewController.swift`, `TextStreamClient`, `VoiceIdentifier`,
+`AudioSessionRecorder`, `PCMStreamPlayer`): by default (`serverSoundMode = false`) it plays the
+`/stream` audio itself and calls only the routes listed above. Its server-sound mode — the reply
+on the server's speakers, `/end` for the end sound — is the one thing a Linux server cannot do;
+there the request is answered as text.
+
+Everything keyed to the server's speakers says so on Linux: `config_set` on `local_outposts.*`
+answers `Platform.mac_only(…)`, the VOICES section and the console's Voice tab show no local
+microphones (`DashboardTab` imports `LocalOutpostManager` for its mic card — hidden with it), and
+`{DESTINATIONS}` lists no room. The local TTS engine (`supertonic`) is to be proven on Linux in
+CI or marked Mac-only; ElevenLabs and Google are network clients.
 
 **Integrations.** `Integration` gains a class attribute `mac_only = False`; Photos, Reminders and
 HomeClaw set it. On Linux `bootstrap` never constructs such a class, even when
@@ -211,7 +261,7 @@ an install without Photos stays in SETUP and curates nightly, which is already a
   `<!-- mac -->` / `<!-- /mac -->` lines, dropped on Linux by the same code that handles
   `<!-- keep -->`. "this Mac" elsewhere becomes `Platform.machine()` or a neutral noun.
 - `IntegrationsSectionGenerator` drops the Full Disk Access line on Linux and states the platform
-  once ("The server runs on Linux; Photos, Reminders, HomeClaw and voice need a Mac").
+  once ("The server runs on Linux; Photos, Reminders, HomeClaw and the server's own microphones and speakers need a Mac").
 - `watchdog`: `config_set` answers that systemd already restarts the server.
 
 **Console.** `DashboardTab` builds no `GpuMonitor` / `TempMonitor` on Linux and draws neither
@@ -220,8 +270,9 @@ card; the CPU sample (psutil) stays.
 ## 5. Config and docs
 
 - `config.example.yaml` and the fragments of the Mac-only folders: one "macOS only" line at the
-  top of `local_outposts`, `voice_discovery`, `tts`, `watchdog`, `imessage_satellite`, Photos,
-  Reminders, HomeClaw, and the voice key under `interfaces`; `imessage` / `imessage_chat` say
+  top of `local_outposts`, `watchdog`, `imessage_satellite`, Photos, Reminders and HomeClaw; the
+  voice key under `interfaces` says what a Linux server does with it (the phones, not its own
+  microphones and speakers); `imessage` / `imessage_chat` say
   that a Linux server needs `host:` to name a satellite. `config_help` shows them verbatim.
 - README: requirements, the install line and what is Mac-only. `CLAUDE.md`: `Platform.py`,
   `scripts/service.sh`, the conftest's new refusals, and the rule "no `sys.platform` outside
@@ -256,6 +307,10 @@ A read cannot settle these; each has a place in the order below.
    package and the user in the `bluetooth` group. Both become notes in the integrations' config
    comments once seen.
 6. A nightly update end to end: pull, pip, restart through the unit, HEAD moved.
+7. A voice turn from the iOS app against a Linux server: the spoken reply, the `/stream_text`
+   overlay, the speaker's name, a barge-in — and what the app shows when its server-sound mode
+   is switched on against a server without speakers.
+8. Speaker id's first model load and its speed on CPU-only torch, on x86_64 and aarch64.
 
 ## Order of work
 
@@ -263,7 +318,9 @@ Each step leaves `master` releasable for Macs.
 
 1. **Platform.py, requirement markers, RequirementsChecker, CI on Ubuntu** (§1) — until the suite
    is green there. Mac behaviour unchanged.
-2. **The switches** (§4) and the helpers (§6), tested under a patched `Platform.current` on the Mac.
+2. **The switches** (§4) and the helpers (§6), tested under a patched `Platform.current` on the
+   Mac — the voice split included: a test imports `VoiceInterface` with `sounddevice` refused and
+   starts it as Linux.
 3. **Scripts and the unit** (§2), tested through `KEEP_OS` and the staged process table.
 4. **install.sh** (§3) and the texts (§5).
 5. **A real install** on an Ubuntu 24.04 machine and a Debian 12 one: the verification list, the
