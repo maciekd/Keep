@@ -2,7 +2,8 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
-from common.ConfigManager import ConfigManager
+from common import Platform
+from common.ConfigManager import ConfigManager, integration_key
 from .Feed import Feed
 from .FeedRunner import Feeds
 from .Integration import HealthWarning, Integration, IntegrationState
@@ -46,6 +47,7 @@ class DisabledIntegration(Integration):
     class is never constructed (no threads, logins or library scans), `list_integrations`
     shows it as disabled with the config_set line that enables it, and `restart` rebuilds it
     once the list holds its name."""
+    can_enable = True
 
     def __init__(self, cls: type):
         super().__init__()
@@ -66,6 +68,19 @@ class DisabledIntegration(Integration):
 
     def check_health(self) -> bool:
         return False
+
+
+class MacOnlyIntegration(DisabledIntegration):
+    """Stands in for an integration that needs macOS (`Integration.mac_only`) on a server that
+    is not a Mac: disabled to every gate — its toolkit, commands and prompt section stay away —
+    whatever `enabled_integrations` says (a config copied from a Mac), with the reason as its
+    problem, so `list_integrations` and the console's Catalog tab can say why. Nothing enables
+    it: `can_enable` is what the "enable it" hints of the contracts ask."""
+    can_enable = False
+
+    def __init__(self, cls: type):
+        super().__init__(cls)
+        self._last_error = Platform.mac_only(self._name)
 
 
 class IntegrationMonitor:
@@ -138,6 +153,13 @@ class IntegrationMonitor:
         """Build the singleton and register it; a constructor that raises registers an
         UnavailableIntegration placeholder instead. *start* runs on the new instance right
         after registration (the context feeders' thread start) and again on every restart."""
+        if cls.mac_only and not Platform.is_mac():
+            integration = MacOnlyIntegration(cls)
+            info(f"Integration '{integration.name}' needs macOS — not built")
+            with self._lock:
+                self._integrations[integration.name] = integration
+                self._restartable[integration.name.lower()] = (cls, start)
+            return integration
         if not cls.enabled(self._config_manager):
             integration = DisabledIntegration(cls)
             info(f"Integration '{integration.name}' disabled (not in enabled_integrations) — not built")
@@ -212,9 +234,9 @@ class IntegrationMonitor:
 
     def find(self, name: str) -> Optional[Integration]:
         """The registered integration called *name*, or — none of that name — the one of the
-        folder called so (`music` for "Sonos & Spotify"; the folder is what a report names), or
-        the one that used to be called so (`Integration.former_names`); None otherwise. Case
-        does not matter."""
+        folder called so (`home_assistant` for "Home Assistant"; the folder is what a report names), or
+        the one that used to be called so (`Integration.former_names`, in any spelling the config
+        accepted — `integration_key`); None otherwise. Case does not matter."""
         wanted = name.strip().lower()
         integrations = self._snapshot()
         for integration in integrations:
@@ -224,16 +246,16 @@ class IntegrationMonitor:
             if folder_of(self._class_of(integration)) == wanted:
                 trace(f"IntegrationMonitor: '{name}' is the folder of {integration.name}")
                 return integration
+        key = integration_key(name)
         for integration in integrations:
-            if wanted in (former.lower() for former in self._class_of(integration).former_names):
+            if key in (integration_key(former) for former in self._class_of(integration).former_names):
                 info(f"IntegrationMonitor: '{name}' is the former name of {integration.name}")
                 return integration
         return None
 
     def resembling(self, name: str) -> List[Tuple[str, Optional[str]]]:
         """(name, folder) of the registered integrations *name* is a near miss of: their name
-        or folder contains it, or it contains theirs ("Spotify" and "Sonos & Spotify", "Microsoft"
-        and "Microsoft 365"); a short name is a near miss of nothing, and so is nothing of a
+        or folder contains it, or it contains theirs ("Microsoft" and "Microsoft 365"); a short name is a near miss of nothing, and so is nothing of a
         short one, since "x" is in every other word. `find` first: an exact match is not a
         near miss."""
         wanted = name.strip().lower()
@@ -507,6 +529,7 @@ class IntegrationMonitor:
             "setup_after": cls.setup_after,
             "setup_after_reason": cls.setup_after_reason,
             "accounts": integration.accounts_status(),
+            "needs_mac": isinstance(integration, MacOnlyIntegration),
         }
         if isinstance(integration, Feed):
             # The feed's own axis (catching up / live / stopped), next to the health state.

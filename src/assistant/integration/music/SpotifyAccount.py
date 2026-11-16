@@ -86,6 +86,7 @@ class SpotifyAccount(SingletonMixin):
         self._library_fetched_at = 0.0
         self._not_before = 0.0      # a 429's Retry-After: no library fetch before then
         self._sign_in_again_noted = False
+        self._scopes_grown_noted = False
 
         self._search_ids: Dict[str, str] = {}   # "AA" -> "spotify:track:…", for the conversation
         self._next_search_id = 0
@@ -155,6 +156,7 @@ class SpotifyAccount(SingletonMixin):
             return failure
         self._user_client = None
         self._sign_in_again_noted = False
+        self._scopes_grown_noted = False
         self.refresh_library(force=True)
         return ""
 
@@ -243,6 +245,7 @@ class SpotifyAccount(SingletonMixin):
                 self._note_scopes_grown()
             else:
                 self._sign_in_again_noted = False
+                self._scopes_grown_noted = False
             return playlists, total
         except NotSignedIn as e:
             info(f"Spotify: playlist library not listed — {e}")
@@ -297,9 +300,9 @@ class SpotifyAccount(SingletonMixin):
     def _note_scopes_grown(self):
         """Says once that the sign-in predates the scopes asked for now: the library is still
         listed, what needs the new scopes is not there until the user signs in again."""
-        if self._sign_in_again_noted:
+        if self._scopes_grown_noted:
             return
-        self._sign_in_again_noted = True
+        self._scopes_grown_noted = True
         info("Spotify: the token on file lacks the scopes now asked for — the library is still listed, the user is told")
         system_note("Spotify", "Spotify: the household's Spotify sign-in is from before a speaker system that starts "
                                "Spotify itself (over Spotify Connect) was turned on. The playlists (S- ids) are still "

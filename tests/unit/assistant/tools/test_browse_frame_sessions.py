@@ -412,7 +412,22 @@ class TestExecuteActionFrameRouting:
                 patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
             assert run(wa._async_execute_action(0, None)) is None
         consent.assert_awaited_once()
+        assert consent.await_args.kwargs == {'click_only': True}
         mouse.assert_awaited_once_with(40.0, 20.0)
+
+    def test_a_cover_the_consent_pass_could_only_remove_is_left_in_place(self):
+        # the site's own modal over the target: nothing was pressed, so nothing was
+        # answered — no second look, no "consent was answered" report, the JS click
+        wa = self.covered_wa()
+        main_eval = AsyncMock(side_effect=[self.META, None, self.COVERED,
+                                           'https://shop.example/checkout', True])
+        consent = AsyncMock(return_value={'clicked': 0, 'removed': 1})
+        with patch.object(WebAccess, '_evaluate', new=main_eval), \
+                patch.object(WebAccess, '_async_remove_cookies_banner', new=consent), \
+                patch.object(WebAccess, '_async_dispatch_click_at', new=AsyncMock()) as mouse:
+            assert run(wa._async_execute_action(0, None)) is None
+        mouse.assert_not_awaited()
+        assert wa._click_answered_consent is False
 
     def test_covered_element_with_no_banner_to_answer_falls_back_to_js_click(self):
         wa = self.covered_wa()

@@ -28,6 +28,14 @@ from interfaces.voice.microphones.local_outposts.TextLanguageDetector import Tex
 from interfaces.voice.microphones.local_outposts.WhisperWorker import segment_metrics, metrics_risky, wake_word_hallucination_risky, normalize_loudness
 
 
+@pytest.fixture
+def lingua():
+    """The real classifier behind TextLanguageDetector. It is pinned for macOS alone, with the rest of
+    the server's own audio (requirements-voice.txt), so a Linux run has none to classify with."""
+    return pytest.importorskip("lingua")
+
+
+
 @pytest.fixture(autouse=True)
 def cancel_outpost_timers(monkeypatch):
     """An outpost arms 2.5/5/15 s listen timers as it runs; none may outlive its test."""
@@ -930,7 +938,7 @@ class TestOverheardTranscriptLogging:
         outpost._on_transcript("the dentist asked whether Michelle works", CLEAN, AUDIO)
         assert logged and not any("dentist" in line for line in logged)
 
-    def test_overheard_language_override_is_logged_without_its_words(self, logged, monkeypatch):
+    def test_overheard_language_override_is_logged_without_its_words(self, logged, monkeypatch, lingua):
         self._allow_overheard(monkeypatch, False)
         det = TextLanguageDetector({"en", "sv"})
         outpost, _ = make_outpost(awaiting_wakeword=True, languages=("en-US", "sv-SE"),
@@ -3102,7 +3110,7 @@ class TestTextLanguageDetector:
         # No arbitration: the audio label passes straight through.
         assert det.arbitrate("Spela sportbil med Miriam Bryant.", "en") == "en"
 
-    def test_overrides_confident_disagreement(self):
+    def test_overrides_confident_disagreement(self, lingua):
         # The exact bug: Whisper heard 'en' for a plainly Swedish command. Text wins.
         det = TextLanguageDetector({"en", "sv"})
         assert det.active is True
@@ -3122,7 +3130,7 @@ class TestTextLanguageDetector:
         assert det.arbitrate("", "en") == "en"
         assert det.arbitrate("   ", "sv") == "sv"
 
-    def test_arbitrate_does_not_route_to_unaccepted_candidate(self):
+    def test_arbitrate_does_not_route_to_unaccepted_candidate(self, lingua):
         # for_outpost loads every language as a *candidate* but accepts only 'en'. When the
         # text classifies confidently as a candidate we do NOT accept (Swedish here),
         # arbitrate must KEEP Whisper's audio label, not route to that language — routing is
@@ -3135,7 +3143,7 @@ class TestTextLanguageDetector:
         assert det.is_foreign("Spela sportbil med Miriam Bryant.") is True   # confidently sv
         assert det.arbitrate("Spela sportbil med Miriam Bryant.", "en") == "en"
 
-    def test_is_foreign_flags_unaccepted_language(self):
+    def test_is_foreign_flags_unaccepted_language(self, lingua):
         # English-only deployment: overheard Swedish (with an English wake word prefix) is a
         # non-command language. for_outpost loads ambient 'sv' as a candidate so it classifies.
         det = TextLanguageDetector.for_outpost({"en"})
@@ -3174,7 +3182,7 @@ class TestTextLanguageDetector:
 
 @pytest.mark.unit
 class TestLanguageArbitrationInGate:
-    def test_swedish_text_overrides_whisper_english_label(self):
+    def test_swedish_text_overrides_whisper_english_label(self, lingua):
         # End-to-end through the transcript gate: a Swedish command mislabelled 'en-US'
         # by Whisper must be sent to the server as 'sv-SE'.
         det = TextLanguageDetector({"en", "sv"})
@@ -3184,7 +3192,7 @@ class TestLanguageArbitrationInGate:
         client.send_query.assert_called_once()
         assert client.send_query.call_args[0][1] == "sv-SE"
 
-    def test_wake_word_stripped_before_classification(self):
+    def test_wake_word_stripped_before_classification(self, lingua):
         # The English wake word "Michelle" must not pull a short Swedish command to 'en'.
         det = TextLanguageDetector({"en", "sv"})
         outpost, client = make_outpost(awaiting_wakeword=True, languages=("en-US", "sv-SE"),
@@ -3205,7 +3213,7 @@ class TestForeignLanguageVeto:
     """English-only deployment: a wake word inside overheard non-command-language speech is a
     hallucinated address. The same TextLanguageDetector.is_foreign gate the WakeWordTest runs."""
 
-    def test_whisper_foreign_wake_word_is_vetoed(self):
+    def test_whisper_foreign_wake_word_is_vetoed(self, lingua):
         det = TextLanguageDetector.for_outpost({"en"})
         outpost, client = make_outpost(awaiting_wakeword=True, languages=("en-US",), lang_detector=det)
         outpost._on_transcript("Michelle, har du sett var fjärrkontrollen är?", CLEAN, AUDIO, language="en")
@@ -3218,7 +3226,7 @@ class TestForeignLanguageVeto:
         outpost._on_transcript("Michelle, turn off the kitchen lights.", CLEAN, AUDIO, language="en")
         client.send_query.assert_called_once()
 
-    def test_bilingual_swedish_command_not_vetoed(self):
+    def test_bilingual_swedish_command_not_vetoed(self, lingua):
         # Swedish IS accepted in a bilingual deployment — the veto stays out of the way and the
         # command routes to sv-SE (arbitration), exactly as before.
         det = TextLanguageDetector.for_outpost({"en", "sv"})
@@ -3227,7 +3235,7 @@ class TestForeignLanguageVeto:
         client.send_query.assert_called_once()
         assert client.send_query.call_args[0][1] == "sv-SE"
 
-    def test_scribe_verify_foreign_language_vetoes(self):
+    def test_scribe_verify_foreign_language_vetoes(self, lingua):
         # Scribe verifying a Whisper wake-word send, but the transcript is overheard Swedish
         # (English-only) → treat Whisper's detection as a false positive and kill the request.
         det = TextLanguageDetector.for_outpost({"en"})
@@ -3400,7 +3408,7 @@ class TestMatchingCommandPrefix:
         assert v.veto is None
         assert "kopp kaffe" not in v.rest  # the bleed never becomes part of the vote
 
-    def test_verify_foreign_veto_stands_without_agreement(self):
+    def test_verify_foreign_veto_stands_without_agreement(self, lingua):
         det = TextLanguageDetector.for_outpost({"en"})
         v = gate_scribe_verify("Michelle, har du sett var fjärrkontrollen är?",
                                "Have you seen where the remote is?", det)

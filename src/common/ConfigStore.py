@@ -1,13 +1,13 @@
 """Writes one value into config.yaml and says which keys are set — without ever handing a
 value on. The assistant's `config_request` feeds `set_value` from the masked prompt; its
-`list_integrations` / `config_help` render `describe_key`. plans/SELF_SETUP_PLAN.md §3.2.
+`list_integrations` / `config_help` render `describe_key`; `config_delete` takes a key or
+one list item out again (`delete_value`). plans/SELF_SETUP_PLAN.md §3.2.
 
 Values are logged by key only, compared inside this module and discarded: nothing here
 returns, formats or logs what the user typed or what config.yaml holds.
 """
-import os
+import io
 import re
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -16,7 +16,7 @@ from typing import Any, Optional
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from common import ConfigSchema
+from common import ConfigSchema, PrivateFile
 from common.ConfigManager import ENABLED_INTEGRATIONS_KEY, ConfigManager, integration_key
 from common.ConfigMigrations import looks_like_placeholder  # noqa: F401 — the store's callers import it from here
 from common.Paths import CACHE_DIR
@@ -198,7 +198,7 @@ def _stamp() -> str:
 def _backup(path: Path) -> None:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     target = BACKUP_DIR / f"config-{_stamp()}.yaml"
-    shutil.copy2(path, target)
+    PrivateFile.copy(path, target)
     old = sorted(BACKUP_DIR.glob("config-*.yaml"))[:-BACKUPS_KEPT]
     for stale in old:
         stale.unlink()
@@ -249,27 +249,44 @@ def _parent_node(data: CommentedMap, key: str):
     return node
 
 
-def _rewrite(mutate) -> None:
+def _rewrite(mutate, cut=None) -> None:
     """Load config.yaml round-trip, apply *mutate(data)*, back the file up, write it
-    atomically and reload the running config. One writer at a time."""
+    atomically and reload the running config. One writer at a time. *cut(data, text)*, asked
+    before the change, may offer the file's text with the change already made: it is written
+    in place of the dump when both read as the same config."""
     with _WRITE_LOCK:
-        _rewrite_locked(mutate)
+        _rewrite_locked(mutate, cut)
 
 
-def _rewrite_locked(mutate) -> None:
+def _rewrite_locked(mutate, cut=None) -> None:
     path = Path(ConfigManager.config_path())
     yaml = _yaml()
-    data = yaml.load(path.read_text()) if path.exists() else None
+    original = path.read_text() if path.exists() else ""
+    data = yaml.load(original)
     if data is None:
         data = CommentedMap()
+    offered = cut(data, original) if cut else None
     mutate(data)
+    dumped = io.StringIO()
+    yaml.dump(data, dumped)
+    text = dumped.getvalue()
+    if offered is not None:
+        if _same_config(offered, text):
+            text = offered
+        else:
+            trace("Config: the cut text reads differently from the changed config, writing the dump")
     if path.exists():
         _backup(path)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w") as f:
-        yaml.dump(data, f)
-    os.replace(tmp, path)
+    PrivateFile.write(path, text)
     _reload()
+
+
+def _same_config(a: str, b: str) -> bool:
+    try:
+        return YAML(typ="safe").load(a) == YAML(typ="safe").load(b)
+    except Exception as e:
+        trace(f"Config: the cut text does not parse ({type(e).__name__})")
+        return False
 
 
 def set_value(key: str, raw: str) -> str:
@@ -310,6 +327,128 @@ def set_value(key: str, raw: str) -> str:
     _rewrite(mutate)
     info(f"Config: set {key} ({'replaced' if outcome['existed'] else 'new'})")
     return f"{key} saved"
+
+
+def check_delete(key: str) -> None:
+    """Raises ConfigStoreError unless *key* names something `delete_value` takes out: a single
+    value, a list of plain values, or one item of a list. A whole section and a whole list of
+    sections stay — one slip would drop every account in it, passwords included."""
+    key = key.strip()
+    if is_denied(key) or _under(key, OWNER_TYPED_PREFIXES):
+        raise ConfigStoreError(f"'{key}' cannot be deleted from here — edit config.yaml by hand")
+    if not ConfigSchema.is_known_key(key):
+        raise ConfigStoreError(f"'{key}' is not a known setting — config_help lists the sections")
+    if _under(key, (ENABLED_INTEGRATIONS_KEY,)):
+        raise ConfigStoreError(f"{ENABLED_INTEGRATIONS_KEY} is changed by name — use disable_integration")
+    if isinstance(ConfigSchema.split_key(key)[-1], int):
+        return
+    kind = ConfigSchema.leaf_type(key)
+    if kind is dict:
+        raise ConfigStoreError(f"'{key}' is a whole section — delete its keys one by one, or edit config.yaml by hand")
+    if kind is list and not ConfigSchema.is_scalar_list(key):
+        raise ConfigStoreError(f"'{key}' is a list of sections — remove one item, e.g. {key}[0]")
+
+
+def _holder(data, parts: list):
+    """The mapping or list of *data* that holds the last of *parts*, None when the path is
+    not there — nothing is created on the way."""
+    node = data
+    for part in parts[:-1]:
+        if isinstance(part, int):
+            if not isinstance(node, list) or part >= len(node):
+                return None
+        elif not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    leaf = parts[-1]
+    if isinstance(leaf, int):
+        return node if isinstance(node, list) and leaf < len(node) else None
+    return node if isinstance(node, dict) and leaf in node else None
+
+
+def delete_value(key: str) -> str:
+    """Take *key* out of config.yaml — a single value or a list of plain values goes back to
+    unset (the default applies), a list item is removed and the items after it close up — and
+    reload the running config. Returns the confirmation text: the key, and for an item of a
+    list of plain values the entry it held (like `replaced_entry`, so a wrong index can be put
+    back); never any other value."""
+    key = key.strip()
+    check_delete(key)
+    parts = ConfigSchema.split_key(key)
+    leaf = parts[-1]
+    if not is_present(key):
+        info(f"Config: {key} is not in config.yaml, nothing to delete")
+        return f"{key} is not in config.yaml — nothing to delete"
+    entry = replaced_entry(key)
+    left = {}
+
+    def mutate(data):
+        node = _holder(data, parts)
+        if node is None:
+            raise ConfigStoreError(f"'{key}' is no longer in config.yaml")
+        value = node[leaf]
+        if isinstance(leaf, str) and isinstance(value, dict):
+            raise ConfigStoreError(f"'{key}' is a whole section — delete its keys one by one, or edit config.yaml by hand")
+        if isinstance(leaf, str) and isinstance(value, list) and any(isinstance(item, (dict, list)) for item in value):
+            raise ConfigStoreError(f"'{key}' is a list of sections — remove one item, e.g. {key}[0]")
+        del node[leaf]
+        left["count"] = len(node)
+
+    def cut(data, text):
+        node = _holder(data, parts)
+        return None if node is None else _without_lines(text, node, leaf)
+
+    _rewrite(mutate, cut)
+    if isinstance(leaf, str):
+        info(f"Config: deleted {key}")
+        return f"{key} deleted — it is unset now, its default applies"
+    parent = ConfigSchema.join_key(parts[:-1])
+    info(f"Config: removed {key}, {left['count']} item(s) left in {parent}")
+    held = f" (it held {entry})" if entry else ""
+    after = ", the items after it moved down one index" if leaf < left["count"] else ""
+    return f"{key} removed{held} — {parent} now has {left['count']} item(s){after}"
+
+
+def _blank_or_comment(line: str) -> bool:
+    return not line.strip() or line.lstrip().startswith("#")
+
+
+def _without_lines(text: str, node, leaf) -> Optional[str]:
+    """*text* without the lines of *node*'s entry *leaf*, every other line untouched — a dump
+    after a delete loses the comments and blank lines that followed the entry, which is where
+    the next key's own comment stands. None for whatever is not plain block style (a flow
+    list, a key sharing its line); the caller checks the result against the changed config,
+    so a wrong cut is never written."""
+    if node.fa.flow_style():
+        return None
+    lines = text.splitlines(keepends=True)
+    try:
+        start, column = node.lc.item(leaf) if isinstance(leaf, int) else node.lc.key(leaf)
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
+    if start >= len(lines):
+        return None
+    first = lines[start]
+    indent = len(first) - len(first.lstrip())
+    if isinstance(leaf, int):
+        if not first.lstrip().startswith("-"):
+            return None
+    elif indent != column:
+        return None
+    end = start + 1
+    while end < len(lines) and (_blank_or_comment(lines[end])
+                                or len(lines[end]) - len(lines[end].lstrip()) > indent):
+        end += 1
+    while end - 1 > start and _blank_or_comment(lines[end - 1]):
+        end -= 1
+    if len(node) == 1:
+        # The last entry: the key above keeps an explicit empty value instead of a null.
+        above = next((i for i in range(start - 1, -1, -1) if not _blank_or_comment(lines[i])), None)
+        m = re.match(r"^([^#\n]*:)(\s*(?:#.*)?\n?)$", lines[above]) if above is not None else None
+        if m is None:
+            return None
+        lines[above] = f"{m.group(1)} {'[]' if isinstance(leaf, int) else '{}'}{m.group(2)}"
+    return "".join(lines[:start] + lines[end:])
 
 
 def _promoted(value: str, key: str) -> CommentedSeq:
@@ -409,15 +548,8 @@ def rename_keys(renames: dict[str, str], integrations: Optional[dict[str, str]] 
                     node[i] = new
                     done.append(f"{ENABLED_INTEGRATIONS_KEY}: {listed} → {new}")
 
-    def present(key: str) -> bool:
-        try:
-            _current_value(key)
-            return True
-        except KeyError:
-            return False
-
     listed = {integration_key(n) for n in ConfigManager.get_instance().enabled_integrations()}
-    if not any(present(old) for old in renames) and not any(integration_key(old) in listed for old in integrations or {}):
+    if not any(is_present(old) for old in renames) and not any(integration_key(old) in listed for old in integrations or {}):
         trace("Config: no renamed keys to migrate")
         return done
     _rewrite(mutate)
@@ -436,6 +568,16 @@ def _current_value(key: str) -> Any:
             raise KeyError(key)
         node = node[part]
     return node
+
+
+def is_present(key: str) -> bool:
+    """True when config.yaml has *key* at all, whatever it holds."""
+    try:
+        _current_value(key.strip())
+        return True
+    except (KeyError, ValueError):
+        return False
+
 
 def replaced_entry(key: str) -> str:
     """The entry a write to *key* takes the place of, when *key* is a taken index of a list of

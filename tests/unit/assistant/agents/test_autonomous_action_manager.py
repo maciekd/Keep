@@ -1327,10 +1327,30 @@ class TestRoundNote:
             "post_message(owner, Dry ride this morning)\nNO",
             ["load_toolkit(weather)"])
 
-        assert [kind for kind, _ in writes] == ["assistant", "command", "assistant"]
-        assert "load_toolkit(weather)" in writes[1][1]
-        assert "forecast" not in writes[1][1], "the note stands in for the result, it does not carry it"
-        assert "post_message" in writes[2][1]
+        assert [kind for kind, _ in writes] == ["command", "assistant", "command", "assistant"]
+        assert "load_toolkit(weather)" in writes[2][1]
+        assert "forecast" not in writes[2][1], "the note stands in for the result, it does not carry it"
+        assert "post_message" in writes[3][1]
+
+    def test_the_rows_of_a_check_open_with_a_user_side_row_that_says_whose_they_are(self):
+        """2026-11-16: a check's first reply was a bare assistant row, and the chat turn after
+        it took the check's commands for its own."""
+        writes = self.two_round_check("load_toolkit(weather)", "post_message(owner, Dry ride)\nNO",
+                                      ["load_toolkit(weather)"])
+
+        assert writes[0][0] == "command"
+        assert "Autonomous check" in writes[0][1]
+        assert sum("background check" in text for _, text in writes) == 1, "one opening per check"
+
+    def test_a_check_with_nothing_to_do_leaves_no_opening_row(self):
+        pm = make_mock_prompt_manager()
+        mgr, mock_llm = make_manager(prompt_manager=pm)
+        mock_llm.think_with_messages.return_value = "NO"
+
+        mgr.activity_check("p")
+
+        pm.add_command_result.assert_not_called()
+        pm.update_history.assert_not_called()
 
     def test_the_first_round_keeps_its_thinking_like_the_later_rounds(self):
         writes = self.two_round_check(
@@ -1338,8 +1358,8 @@ class TestRoundNote:
             "<thinking>dry</thinking>post_message(owner, Dry ride)\nNO",
             ["load_toolkit(weather)"])
 
-        assert "bike day" in writes[0][1]
-        assert "dry" in writes[2][1]
+        assert "bike day" in writes[1][1]
+        assert "dry" in writes[3][1]
 
     def test_the_note_cuts_long_parameters_and_is_never_a_toolkit_load(self):
         from assistant.commands.Toolkits import loaded_name
@@ -1450,6 +1470,28 @@ class TestDueWatcher:
         assert mgr._poll_due(datetime(2026, 10, 25, 6, 16)) is False, "fired once, night or not"
         (call,) = mgr.activity_check.call_args_list
         assert [(item.name, moment) for item, moment in call.kwargs["due"]] == [("airport-departures", datetime(2026, 10, 25, 6, 15))]
+
+    def test_a_bare_due_date_wakes_the_check_once_on_its_morning(self):
+        """An item that only waits for its date has no cadence and no time: the date itself is
+        the one moment the watcher has for it, and the check is told a date was reached —
+        not that a cadence poll is due."""
+        self.watch("sofa-delivery", "2026-10-25", checked="2026-10-20 12:00")
+        morning = WatchList.due_moment(WatchList.get("sofa-delivery"))
+        mgr = self.manager()
+        assert mgr._poll_due(datetime(2026, 10, 25, 0, 30)) is False, "the date has come, its morning has not"
+        assert mgr._poll_due(morning - timedelta(minutes=1)) is False
+        assert mgr._poll_due(morning) is True
+        assert mgr._poll_due(morning + timedelta(minutes=1)) is False
+        (call,) = mgr.activity_check.call_args_list
+        assert [(item.name, moment) for item, moment in call.kwargs["due"]] == [("sofa-delivery", morning)]
+        note = AutonomousActionManager._due_note(call.kwargs["due"], now=morning + timedelta(hours=3))
+        assert "sofa-delivery" in note and "2026-10-25" in note and "3 h" in note and "every" not in note
+
+    def test_a_bare_due_date_looked_at_after_its_morning_wakes_nothing(self):
+        self.watch("sofa-delivery", "2026-10-25", checked="2026-10-25 10:30")
+        mgr = self.manager()
+        assert mgr._poll_due(datetime(2026, 10, 25, 13, 0)) is False
+        mgr.activity_check.assert_not_called()
 
     def test_night_mode_leaves_a_cadence_poll_for_the_morning(self):
         WatchList.save("car-arrival", "waiting for the car", None, every="3m")
@@ -2117,3 +2159,106 @@ class TestCurationSlotAcrossTheHour:
         ran, _ = self._run_ticks(mgr, [datetime(2026, 9, 15, 23, 30), datetime(2026, 9, 16, 0, 30)],
                                  last_run=datetime(2026, 9, 14, 4, 31))
         assert ran == 1, "a process up again at 23:30 curates the missed day; 00:30 is before the new day's hour"
+
+
+class TestChecksGiveWayToTheUser:
+    """2026-11-16: the gate was asked once, before a check started. One check waited 57 s
+    behind another's lock and ran inside a chat turn; another ran its commands while the
+    chat ran the same ones."""
+
+    @staticmethod
+    def check(reply="config_delete(telegram.allowed_chat_ids[4])", during_think=None):
+        pm = make_mock_prompt_manager()
+        mgr, mock_llm = make_manager(prompt_manager=pm)
+        mock_llm.handles_thinking_internally.return_value = True
+
+        def think(*_a, **_k):
+            if during_think:
+                during_think(mgr)
+            return reply
+
+        mock_llm.think_with_messages.side_effect = think
+        return mgr, mock_llm, pm
+
+    @staticmethod
+    def run(mgr):
+        inst = Mock()
+        inst.command_queue = queue.Queue()
+        inst.command_being_processed = False
+        inst.command_running_in_background = False
+        inst.command_reply = None
+        inst.flush_buffer.return_value = None
+        inst.process.return_value = None
+        with patch('assistant.commands.CommandProcessor.CommandProcessor', return_value=inst):
+            mgr.activity_check("p")
+        return inst.process
+
+    def test_a_request_that_began_while_the_check_waited_for_its_turn_stops_it_unasked(self):
+        mgr, mock_llm, _ = self.check()
+        mgr.notify_user_interaction_started()
+
+        self.run(mgr)
+
+        mock_llm.think_with_messages.assert_not_called()
+
+    @pytest.mark.parametrize("ended", [False, True], ids=["still in flight", "over already"])
+    def test_a_request_that_began_while_the_model_thought_leaves_the_reply_unrun_and_unstored(self, ended):
+        def user_writes(mgr):
+            mgr.notify_user_interaction_started()
+            if ended:
+                mgr.notify_user_interaction_ended()
+
+        mgr, _, pm = self.check(during_think=user_writes)
+
+        process = self.run(mgr)
+
+        process.assert_not_called()
+        pm.update_history.assert_not_called()
+        pm.add_command_result.assert_not_called()
+
+    def test_a_request_that_ended_before_the_check_read_the_history_does_not_stop_it(self):
+        mgr, _, _ = self.check()
+        mgr.notify_user_interaction_started()
+        mgr.notify_user_interaction_ended()
+        mgr.last_user_interaction_at -= 3600   # the quiet period is long over
+
+        assert self.run(mgr).called
+
+    def test_the_resume_turn_of_a_restart_holds_the_checks_until_it_is_handed_over(self):
+        mgr, mock_llm, _ = self.check()
+        mgr.hold_for_resume()
+        self.run(mgr)
+        mock_llm.think_with_messages.assert_not_called()
+
+        mgr.release_resume_hold()
+        assert mgr.is_user_interaction_active(), "the turn starts within the quiet period"
+        assert not mgr.is_user_interaction_active(0)
+
+
+class TestBracketsSurviveInTheHistory:
+    """2026-11-16: every `[…]` was stripped from a check's stored reply (meant for emotion
+    tags), so `…allowed_chat_ids[4]` read as a delete of the whole list."""
+
+    CALL = "config_delete(telegram.allowed_chat_ids[4])\npost_message(owner, Freed slot [4])"
+
+    @pytest.mark.parametrize("save", ["_save_autonomous_result_to_history",
+                                      "clean_result_and_potentially_add_to_history"])
+    def test_an_index_and_bracketed_message_text_are_stored_as_written(self, save):
+        pm = make_mock_prompt_manager()
+        mgr, _ = make_manager(prompt_manager=pm)
+
+        getattr(mgr, save)(f"<thinking>one slot</thinking>{self.CALL}")
+
+        stored = pm.update_history.call_args.args[2]
+        assert "allowed_chat_ids[4]" in stored
+        assert "slot [4]" in stored
+
+    @pytest.mark.parametrize("save", ["_save_autonomous_result_to_history",
+                                      "clean_result_and_potentially_add_to_history"])
+    def test_a_verdict_with_a_voice_tag_beside_it_is_still_only_a_verdict(self, save):
+        pm = make_mock_prompt_manager()
+        mgr, _ = make_manager(prompt_manager=pm)
+
+        getattr(mgr, save)("[sighs] NO")
+
+        pm.update_history.assert_not_called()

@@ -8,9 +8,10 @@ removes its file; every replaced or deleted version is copied to `log/memory/wat
 first, which is a debugging trail the LLM never reads.
 
 An item may carry a due date, which may name a time (`due`: "2026-11-08" or "2026-11-08 17:00");
-a due *time* is a moment the assistant acts at — `due_moment` reads it, and the item is due for a poll
-from then until it is looked at again (checked, re-dated or deleted), so a reminder the check
-failed to deliver comes back on the next one instead of being lost; a bare date fires nothing.
+the due is a moment the assistant acts at — `due_moment` reads it, a bare date as that morning
+(`BARE_DATE_HOUR`) — and the item is due for a poll from then until it is looked at again (checked,
+re-dated or deleted), so a reminder the check failed to deliver comes back on the next one instead
+of being lost, and an item that only waits for its date is looked at when the date comes.
 An item may carry a check cadence (`every`: "1d", "6h", "weekly" — free text the LLM reads)
 and always carries when it was last looked at (`checked`, with the time of day): `updated`
 moves when the state changes, `checked` whenever someone looks (the assistant's `save_watch` is a
@@ -47,6 +48,8 @@ COMMANDS = ("save_watch", "checked_watch", "delete_watch")
 # STALE in the prompt: the assistant and the curator then know which ones to look at.
 STALE_AFTER_DAYS = 14
 OVERDUE_AFTER_DAYS = 2
+# The hour a due date without a time is acted at.
+BARE_DATE_HOUR = 9
 EMPTY = "Nothing is being watched."
 NOTHING_DUE = "No item is due for a poll."
 # The header of a loaded item, as `load_watch(name)` returns it.
@@ -297,9 +300,14 @@ def render(directory: Path = None, today: date = None) -> str:
 
 
 def due_moment(item: Item) -> datetime | None:
-    """The moment a due *time* names — None for a bare date or free text, which fire nothing."""
+    """The moment the due names: its time, or the morning of a bare date. None for free text,
+    which fires nothing."""
     text = item.due.strip()
-    return stamp(text) if re.match(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}", text) else None
+    if re.match(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}", text):
+        return stamp(text)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) and (day := stamp(text)):
+        return day + timedelta(hours=BARE_DATE_HOUR)
+    return None
 
 
 def fell_due(item: Item, now: datetime = None) -> datetime | None:

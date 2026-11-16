@@ -337,7 +337,9 @@ class TestCmdShowPhoto:
         mock_telegram.send_photo.assert_called_once_with(jpeg_a, caption="Photo A")
 
     def test_show_photo_multiple_ids_all_missing(self, commands_instance):
-        with patch("integrations.photos.PhotosCommands.FloxyDatabase") as mock_db_cls:
+        # the Photos library is faked: unpatched, the album path opens the real one of the Mac it runs on
+        with patch("integrations.photos.PhotosCommands.FloxyDatabase") as mock_db_cls, \
+             patch("sqlite3.connect", return_value=Mock()):
             mock_db_cls.get_instance.return_value.get_photo_by_id.return_value = None
             result = photo_commands(commands_instance)._run_show_photo("999", "888")
 

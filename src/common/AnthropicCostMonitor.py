@@ -11,21 +11,23 @@ from .ConfigManager import config
 
 
 class AnthropicCostMonitor:
-    """Periodically fetches Anthropic organization spend per workspace into the DashboardTab.
+    """Periodically fetches Anthropic organization spend per API key into the DashboardTab.
 
     Requires the `api_keys.anthropic_admin` key; runs on a daemon thread and reports
-    fetch problems through the tab's cost_error rather than raising. Every API key belongs
-    to one workspace, so a workspace per machine splits the bill per machine; the cost
-    report reports the default workspace without an id, shown as "Default".
+    fetch problems through the tab's cost_error rather than raising. The figures are the
+    billed ones of the Usage and Cost Analytics API (beta), which can lag the usage by some
+    hours; spend made without an API key (the Console's workbench) is shown as "No key".
     """
 
-    API_URL = "https://api.anthropic.com/v1/organizations/cost_report"
-    WORKSPACES_URL = "https://api.anthropic.com/v1/organizations/workspaces"
-    DEFAULT_WORKSPACE = "Default"
-    MIN_WORKSPACE_COST = 1.0  # Only show workspaces with > $1 total spend
+    API_URL = "https://api.anthropic.com/v1/organizations/analytics/cost"
+    KEYS_URL = "https://api.anthropic.com/v1/organizations/api_keys"
+    BETA = "analytics-usage-cost-2026-08-24"
+    NO_KEY = "No key"
+    MIN_KEY_COST = 1.0  # Only show keys with > $1 total spend
     MAX_PAGES = 10
     MAX_DAYS = 60
-    API_PAGE_LIMIT = 31
+    API_SPAN_DAYS = 31  # the most one request may cover
+    API_PAGE_LIMIT = 1000
 
     def __init__(self, dashboard_tab, fetch_interval: float = 300.0):
         self._dashboard_tab = dashboard_tab
@@ -67,77 +69,51 @@ class AnthropicCostMonitor:
             trace("AnthropicCostMonitor: no admin API key configured")
             return
 
-        now = datetime.now(timezone.utc)
-        starting_at = (now - timedelta(days=self.MAX_DAYS)).strftime("%Y-%m-%dT00:00:00Z")
-        ending_at = (now + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
-
+        today = datetime.now(timezone.utc).date()
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
-        }
-        params = {
-            "starting_at": starting_at,
-            "ending_at": ending_at,
-            "bucket_width": "1d",
-            "limit": self.API_PAGE_LIMIT,
-            "group_by[]": "workspace_id",
+            "anthropic-beta": self.BETA,
         }
 
-        # Collect all day buckets, handling pagination
-        all_buckets = []
-        page = None
-        for _ in range(self.MAX_PAGES):
-            if page:
-                params["page"] = page
-
-            resp = requests.get(self.API_URL, headers=headers, params=params, timeout=30)
-
-            if resp.status_code in (401, 403):
-                self._dashboard_tab.cost_error = "Invalid admin API key"
-                trace(f"AnthropicCostMonitor: auth failed ({resp.status_code})")
+        # One row per day and key that spent anything, fetched a span at a time up to the end of today
+        rows = []
+        span_start = today - timedelta(days=self.MAX_DAYS - 1)
+        end = today + timedelta(days=1)
+        while span_start < end:
+            span_end = min(span_start + timedelta(days=self.API_SPAN_DAYS), end)
+            span_rows = self._fetch_rows(headers, span_start, span_end)
+            if span_rows is None:
                 return
+            rows.extend(span_rows)
+            span_start = span_end
 
-            if resp.status_code >= 400:
-                trace(f"AnthropicCostMonitor: API error {resp.status_code}: {resp.text[:200]}")
-            resp.raise_for_status()
-            body = resp.json()
-            all_buckets.extend(body.get("data", []))
+        key_ids = {row.get("group", {}).get("api_key_id") for row in rows}
+        names = self._key_names(headers) if key_ids - {None} else {}
 
-            if body.get("has_more"):
-                page = body.get("next_page")
-            else:
-                break
-
-        workspace_ids = {result.get("workspace_id") for bucket in all_buckets for result in bucket.get("results", [])}
-        names = self._workspace_names(headers) if workspace_ids - {None} else {}
-
-        # Aggregate: {date_str: {workspace: total_dollars}}
-        # Response structure: each bucket has starting_at + results[]
-        # Each result has workspace_id (None for the default one), amount (cents as decimal string)
+        # Aggregate: {date_str: {key name: total_dollars}}; amount is cents as a decimal string
         daily_costs = defaultdict(lambda: defaultdict(float))
-        workspace_totals = defaultdict(float)
+        key_totals = defaultdict(float)
 
-        for bucket in all_buckets:
-            date_str = bucket.get("starting_at", "")[:10]  # "2026-04-15"
-            for result in bucket.get("results", []):
-                workspace_id = result.get("workspace_id")
-                workspace = names.get(workspace_id, workspace_id) if workspace_id else self.DEFAULT_WORKSPACE
-                amount_dollars = float(result.get("amount", "0")) / 100.0
-                daily_costs[date_str][workspace] += amount_dollars
-                workspace_totals[workspace] += amount_dollars
+        for row in rows:
+            date_str = row.get("starting_at", "")[:10]  # "2026-04-15"
+            key_id = row.get("group", {}).get("api_key_id")
+            key = names.get(key_id, key_id) if key_id else self.NO_KEY
+            amount_dollars = float(row.get("cost", {}).get("amount", "0")) / 100.0
+            daily_costs[date_str][key] += amount_dollars
+            key_totals[key] += amount_dollars
 
-        significant = sorted(w for w, total in workspace_totals.items() if total > self.MIN_WORKSPACE_COST)
-        if len(significant) < len(workspace_totals):
-            trace(f"AnthropicCostMonitor: left out workspaces at <= ${self.MIN_WORKSPACE_COST:.0f}: "
-                  f"{sorted(set(workspace_totals) - set(significant))}")
+        significant = sorted(k for k, total in key_totals.items() if total > self.MIN_KEY_COST)
+        if len(significant) < len(key_totals):
+            trace(f"AnthropicCostMonitor: left out keys at <= ${self.MIN_KEY_COST:.0f}: "
+                  f"{sorted(set(key_totals) - set(significant))}")
 
         filtered_daily = {}
-        for date_str, workspaces in daily_costs.items():
-            filtered = {w: cost for w, cost in workspaces.items() if w in significant}
+        for date_str, keys in daily_costs.items():
+            filtered = {k: cost for k, cost in keys.items() if k in significant}
             if filtered:
                 filtered_daily[date_str] = filtered
 
-        today = now.date()
         cost_dates = [(today - timedelta(days=self.MAX_DAYS - 1 - i)) for i in range(self.MAX_DAYS)]
         cost_date_strs = [d.strftime("%Y-%m-%d") for d in cost_dates]
 
@@ -149,7 +125,7 @@ class AnthropicCostMonitor:
             return sum(sum(models.values()) for ds, models in filtered_daily.items() if ds in date_set)
 
         self._dashboard_tab.daily_costs = filtered_daily
-        self._dashboard_tab.cost_workspaces = significant
+        self._dashboard_tab.cost_keys = significant
         self._dashboard_tab.total_cost_30d = _sum_costs(thirty_day_strs)
         self._dashboard_tab.total_cost_1d = _sum_costs(today_str)
         self._dashboard_tab.total_cost_yesterday = _sum_costs(yesterday_str)
@@ -158,21 +134,50 @@ class AnthropicCostMonitor:
         self._dashboard_tab.cost_error = ""
         self._dashboard_tab.cost_last_updated = time.time()
 
-        fine(f"AnthropicCostMonitor: fetched {len(all_buckets)} day buckets, "
-             f"{len(significant)} workspaces > $1 {significant}, "
+        fine(f"AnthropicCostMonitor: fetched {len(rows)} rows, "
+             f"{len(significant)} keys > $1 {significant}, "
              f"30d ${self._dashboard_tab.total_cost_30d:.0f} / "
              f"yesterday ${self._dashboard_tab.total_cost_yesterday:.0f} / 1d ${self._dashboard_tab.total_cost_1d:.0f}")
 
-    def _workspace_names(self, headers: dict) -> dict:
-        """Workspace id -> name, archived ones included so their past spend keeps its name;
-        {} when the list cannot be read, and the chart shows the ids instead."""
-        try:
-            resp = requests.get(self.WORKSPACES_URL, headers=headers, timeout=30,
-                                params={"limit": 1000, "include_archived": "true"})
+    def _fetch_rows(self, headers: dict, start, end) -> Optional[list]:
+        """The cost rows of the days from `start` up to `end`, every page of them; None when
+        the admin key is refused, which the tab is told."""
+        params = {
+            "starting_at": start.strftime("%Y-%m-%dT00:00:00Z"),
+            "ending_at": end.strftime("%Y-%m-%dT00:00:00Z"),
+            "time_bucket_width": "1d",
+            "group_by[]": "api_key_id",
+            "limit": self.API_PAGE_LIMIT,
+        }
+        rows = []
+        for _ in range(self.MAX_PAGES):
+            resp = requests.get(self.API_URL, headers=headers, params=params, timeout=30)
+
+            if resp.status_code in (401, 403):
+                self._dashboard_tab.cost_error = "Invalid admin API key"
+                trace(f"AnthropicCostMonitor: auth failed ({resp.status_code})")
+                return None
+
+            if resp.status_code >= 400:
+                trace(f"AnthropicCostMonitor: API error {resp.status_code}: {resp.text[:200]}")
             resp.raise_for_status()
-            names = {w["id"]: w["name"] for w in resp.json().get("data", [])}
-            trace(f"AnthropicCostMonitor: {len(names)} workspaces named")
+            body = resp.json()
+            rows.extend(body.get("data", []))
+
+            if not body.get("has_more"):
+                break
+            params["page"] = body.get("next_page")
+        return rows
+
+    def _key_names(self, headers: dict) -> dict:
+        """API key id -> name, inactive and archived ones included so their past spend keeps
+        its name; {} when the list cannot be read, and the chart shows the ids instead."""
+        try:
+            resp = requests.get(self.KEYS_URL, headers=headers, timeout=30, params={"limit": 1000})
+            resp.raise_for_status()
+            names = {k["id"]: k["name"] for k in resp.json().get("data", [])}
+            trace(f"AnthropicCostMonitor: {len(names)} keys named")
             return names
         except Exception as e:
-            trace(f"AnthropicCostMonitor: workspace names unavailable, showing ids: {e}")
+            trace(f"AnthropicCostMonitor: key names unavailable, showing ids: {e}")
             return {}

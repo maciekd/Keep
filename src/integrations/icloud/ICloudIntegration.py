@@ -17,6 +17,7 @@ from pyicloud.exceptions import (PyiCloudFailedLoginException, PyiCloudAPIRespon
                                  PyiCloudAcceptTermsException, PyiCloud2FARequiredException)
 from pyicloud.services.findmyiphone import FindMyiPhoneServiceManager
 
+from common import Platform
 from common.ConfigManager import ConfigManager
 from common.Paths import ICLOUD_SESSION_DIR
 from assistant.tools.Geocoding import reverse_geocode
@@ -273,6 +274,14 @@ class ICloudIntegration(Integration):
     AUTO_CODE_LOGIN_HINT = ("Apple texted a 6-digit code to the trusted phone; the iMessage feed reads it from "
                             "Messages on this Mac and the server submits it by itself — nothing for the user to "
                             "do unless a minute passes; then they tell the assistant the code (icloud_login_code)")
+    # A server that is no Mac reads text messages through an iMessage satellite or not at all.
+    LOGIN_HINT_OFF_MAC = ("Apple texted a 6-digit code and this server reads no text messages (the iMessage feed "
+                          "is not running), so the user enters it: they tell it to the assistant, which runs "
+                          "icloud_login_code(code), or type it in the console's iCloud tab (Ctrl-E)")
+    AUTO_CODE_LOGIN_HINT_OFF_MAC = ("Apple texted a 6-digit code to the trusted phone; the iMessage feed reads it "
+                                    "through its satellite and the server submits it by itself — nothing for the "
+                                    "user to do unless a minute passes; then they tell the assistant the code "
+                                    "(icloud_login_code)")
 
     SESSION_EXPIRED_2FA_MESSAGE = (
         "iCloud is waiting for a 2FA code: the server submits the one Apple texts on its own, so try again "
@@ -593,6 +602,8 @@ class ICloudIntegration(Integration):
         """The 2FA hint the setup commands answer with: with a code reader live the user has
         nothing to type — the FTUE assistant told the user to type the code the reader was about
         to submit (2026-10-19), because the class hint cannot know about the reader."""
+        if not Platform.is_mac():
+            return self.AUTO_CODE_LOGIN_HINT_OFF_MAC if self._reader_live() else self.LOGIN_HINT_OFF_MAC
         return self.AUTO_CODE_LOGIN_HINT if self._reader_live() else self.login_hint
 
     def _reader_live(self) -> bool:
@@ -1416,7 +1427,8 @@ class ICloudIntegration(Integration):
         if self.sms_request_pending():
             return None
         if not self._reader_live():
-            return "nothing on this Mac reads the code Apple texts, the user enters it"
+            return (f"nothing on {'this Mac' if Platform.is_mac() else 'this server'} reads the code Apple texts, "
+                    "the user enters it")
         parked = self._parked_reason()
         if parked:
             return f"sign-ins are parked: {parked}"

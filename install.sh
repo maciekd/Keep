@@ -10,6 +10,11 @@
 # config.yaml and hands the terminal to start.sh. Every step is idempotent: re-run the same
 # command to resume after a failure or to upgrade an existing install.
 #
+# On Linux (Ubuntu, Debian; docs/plans/LINUX_PLAN.md) the same steps run with that system's
+# means: the missing system packages come from apt — the one command run with sudo, printed
+# before sudo asks (with an `apt-get update` before it where apt's lists are empty) — and start.sh runs the server as a systemd user unit. Each such branch stands
+# beside the Mac's (`linux`); a Mac runs what it always ran.
+#
 # Environment overrides (all optional):
 #   KEEP_DIR           where to install            (default: ~/Keep); the variable must
 #                      reach bash, not curl:  curl ... | KEEP_DIR=~/somewhere bash
@@ -34,6 +39,7 @@
 #   KEEP_LAN_ACCESS=1|0  satellite only: whether it answers the network (1: the Keep server is on
 #                      another Mac) or this Mac alone (0: the server is another user of this Mac).
 #                      Skips that prompt; without a terminal to ask on, 0 is assumed.
+# (KEEP_OS names the system instead of `uname -s`. It is for the tests alone, as in scripts/role.sh.)
 #
 # Written for the bash 3.2 that ships with macOS: no associative arrays, mapfile or ${var,,}.
 # Everything sits inside main() so a truncated download runs nothing at all.
@@ -66,8 +72,14 @@ main() {
   trap on_error ERR
   trap on_exit EXIT
   trap on_interrupt INT TERM
+  refuse_before_anything
   open_log
   resolve_role
+  if linux && satellite; then
+    fail "$KEEP_DIR/config.yaml names role: imessage_satellite, and a satellite is a Mac." \
+      "It serves the Messages app of a macOS user. Remove the key for a Keep server, and install the satellite" \
+      "on the Mac that holds the Messages account."
+  fi
 
   printf '\n  %sKeep%s - personal AI done right\n' "$C_BOLD" "$C_RESET"
   if satellite; then
@@ -81,11 +93,17 @@ main() {
   init_telemetry
   telemetry_started
 
-  step "Checking this Mac"
-  check_mac
-
-  step "Xcode Command Line Tools"
-  ensure_clt
+  if linux; then
+    step "Checking this machine"
+    check_linux
+    step "System packages"
+    ensure_packages
+  else
+    step "Checking this Mac"
+    check_mac
+    step "Xcode Command Line Tools"
+    ensure_clt
+  fi
 
   step "Python 3.12"
   ensure_python
@@ -118,6 +136,10 @@ main() {
     write_config
   fi
 
+  if linux; then
+    find_browser
+    enable_linger
+  fi
   summary
   # shellcheck disable=SC2046
   telemetry_event install_finished elapsed_s="$SECONDS" python="$PY_SOURCE" \
@@ -128,6 +150,40 @@ main() {
 # ------------------------------------------------------------- the role -----
 
 satellite() { [ "${ROLE:-server}" = imessage_satellite ]; }
+
+# The one OS switch, as scripts/role.sh has it: Linux, or anything else, which runs the Mac's
+# commands as they always ran. KEEP_OS is for the tests alone.
+OS=${KEEP_OS:-$(uname -s)}
+linux() { [ "$OS" = Linux ]; }
+
+# What a Linux install cannot be, said before a folder or a log is made for it.
+refuse_before_anything() {
+  linux || return 0
+  [ "$(id -u)" -ne 0 ] || fail "Please run the installer as your normal user, not as root." \
+    "Keep runs as a systemd service of your own account, under your home directory. The installer asks" \
+    "for sudo once, for the system packages, and shows the command first."
+  if [ "${KEEP_ROLE:-}" = imessage_satellite ]; then
+    fail "An iMessage satellite is a Mac: it serves the Messages app of a macOS user." \
+      "Run this command on the Mac that holds the Messages account. On this machine, leave KEEP_ROLE out" \
+      "to install a Keep server, which then names that satellite as imessage.host."
+  fi
+  local dir=$KEEP_DIR
+  if [ -d "$dir" ]; then dir=$(cd "$dir" 2>/dev/null && pwd -P || printf '%s' "$dir"); fi
+  if unit_unsafe "$KEEP_DIR" || unit_unsafe "$dir"; then
+    fail "Keep cannot be installed in '$KEEP_DIR'." \
+      "The server runs as a systemd unit, and a space, a quote, a backslash, \$ or % in the folder's path" \
+      "means something else there. Choose a path without them: curl ... | KEEP_DIR=/srv/keep bash"
+  fi
+}
+
+# unit_unsafe <path>: start.sh would refuse to write the systemd unit for a checkout there
+# (ensure_unit in scripts/service.sh has the same set and says why).
+unit_unsafe() {
+  case "$1" in
+    *[[:space:][:cntrl:]\"\'\\\$%]*) return 0 ;;
+  esac
+  return 1
+}
 
 # The role comes from KEEP_ROLE on a fresh install and from config.yaml on an existing one — the
 # file is what floxy_ai_server.py and start.sh read (common/Role.py, scripts/role.sh), so it is
@@ -209,10 +265,18 @@ open_log() {
     mkdir -p "$KEEP_DIR/log"
     LOG="$KEEP_DIR/log/install.log"
   else
-    LOG=$(/usr/bin/mktemp -t keep-install)
+    LOG=$(temp_log)
   fi
   log ""
   log "Keep installer started $(date '+%Y-%m-%d %H:%M:%S') by $(id -un)"
+}
+
+# A file for the log outside $KEEP_DIR. With the template spelled out, since GNU's mktemp takes no
+# bare prefix for -t as BSD's does; this form is the same file to both.
+temp_log() {
+  local mktemp=/usr/bin/mktemp dir=${TMPDIR:-/tmp}
+  [ -x "$mktemp" ] || mktemp=mktemp
+  "$mktemp" "${dir%/}/keep-install.XXXXXX"
 }
 
 # A directory that holds nothing but log/install.log is one an earlier run created and then
@@ -341,7 +405,7 @@ run() {
 ask() {
   local prompt=$1 var=$2 secret=${3:-}
   [ -n "$TTY" ] || fail "No terminal to ask on." \
-    "Run the installer from Terminal, or set the value in the environment (see the top of install.sh)."
+    "Run the installer from $(if linux; then echo "a terminal (over ssh: ssh -t)"; else echo Terminal; fi), or set the value in the environment (see the top of install.sh)."
   printf '  %s%s%s ' "$C_BOLD" "$prompt" "$C_RESET" >"$TTY"
   if [ -n "$secret" ]; then
     IFS= read -r -s "$var" <"$TTY"
@@ -386,14 +450,22 @@ check_mac() {
     esac
   fi
 
-  # System binaries by absolute path: with Homebrew's GNU coreutils first on PATH, df -g,
-  # mktemp -t <prefix> and stat -f are not the BSD commands this script was written for.
-  local free
-  free=$(/bin/df -Pk "$HOME" | tail -n 1 | awk '{ print int($4 / 1048576) }')
+  check_disk
+  check_network
+}
+
+# The POSIX form of df (-P: one line per filesystem, -k: kilobytes), which BSD's and GNU's both
+# answer alike; by its absolute path, so that Homebrew's coreutils on a Mac's PATH change nothing.
+check_disk() {
+  local free df=/bin/df
+  [ -x "$df" ] || df=df
+  free=$("$df" -Pk "$HOME" | tail -n 1 | awk '{ print int($4 / 1048576) }')
   [ "${free:-0}" -ge "$MIN_FREE_GB" ] 2>/dev/null || fail "Only ${free:-?} GB free on the disk holding $HOME; Keep needs about $MIN_FREE_GB GB." \
     "The speech and speaker-identification models are the bulk of it."
   ok "Disk: ${free} GB free"
+}
 
+check_network() {
   start_spinner "Testing network"
   reachable https://github.com || fail "Cannot reach github.com." "Check the network connection and try again."
   if satellite; then   # it talks to GitHub (the code) and to its Keep server, never to Anthropic
@@ -410,6 +482,238 @@ reachable() {
   local code
   code=$(curl -sS -o /dev/null --max-time 15 -w '%{http_code}' "$1" 2>>"$LOG" || true)
   [ -n "$code" ] && [ "$code" != "000" ]
+}
+
+# ------------------------------------------------------- 1. on Linux --------
+
+OS_RELEASE=/etc/os-release   # the distribution's own description of itself
+CPUINFO=/proc/cpuinfo
+NETWORK_UNCHECKED=""         # curl was not there yet when the machine was checked
+
+# os_release <KEY>: one value of /etc/os-release, without its quotes. Read, not sourced: the file
+# is shell syntax, and nothing of it is to become a variable of this script.
+os_release() {
+  { sed -n "s/^$1=//p" "$OS_RELEASE" 2>/dev/null || true; } | head -n 1 | tr -d "\"'"
+}
+
+# The CPU as the install report names it: the architecture, and the model where /proc/cpuinfo
+# has one (x86 says "model name"; an ARM board "Model" or nothing at all).
+linux_chip() {
+  local model
+  model=$(awk -F ':[ \t]*' '/^(model name|Model)[ \t]*:/ { print $2; exit }' "$CPUINFO" 2>/dev/null || true)
+  printf '%s' "$(uname -m)${model:+ $model}"
+}
+
+check_linux() {
+  local id like name version major
+  id=$(os_release ID)
+  like=$(os_release ID_LIKE)
+  name=$(os_release PRETTY_NAME)
+  name=${name:-${id:-an unknown system}}
+  version=$(os_release VERSION_ID)
+  major=${version%%.*}
+  case "$id" in
+    ubuntu|debian) ;;
+    *) case " $like " in
+         *" debian "*|*" ubuntu "*) warn "$name is not Ubuntu or Debian but is built on one: installing, untested." ;;
+         *) fail "Keep installs on Ubuntu and Debian (and on macOS); this is $name." \
+              "The installer gets the system's packages with apt and knows no other package manager." ;;
+       esac ;;
+  esac
+  case "$id:$major" in
+    ubuntu:[0-9]|ubuntu:1[0-9]|ubuntu:2[0-3]) warn "$name is older than Ubuntu 24.04, the oldest Keep is tried on." ;;
+    debian:[0-9]|debian:1[01])                warn "$name is older than Debian 12, the oldest Keep is tried on." ;;
+  esac
+
+  local arch
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64|aarch64) ;;
+    *) fail "Keep needs a 64-bit Intel/AMD or ARM machine (x86_64, aarch64); this one is $arch." \
+         "The packages Keep is built on are published for those two." ;;
+  esac
+  ok "$name on $(linux_chip)"
+
+  # The server is a systemd unit of this user (scripts/service.sh). No user manager to talk to is
+  # a container, WSL without systemd, or a shell reached through su or sudo -u, which has no
+  # session of its own.
+  local said
+  command -v systemctl >/dev/null 2>&1 || fail "This system has no systemd (systemctl is not installed)." \
+    "Keep runs as a systemd user service; a container or an init without systemd cannot run it."
+  if ! said=$(systemctl --user show-environment 2>&1); then
+    log "systemctl --user show-environment: $said"
+    fail "systemd has no user session for $(id -un): $(printf '%s' "$said" | head -n 1)" \
+      "Keep runs as a systemd user service. Log in as $(id -un) directly (ssh $(id -un)@this-machine, or at its" \
+      "console) rather than through su or sudo -u, and run the installer again. A container without" \
+      "systemd, and WSL without systemd enabled, cannot run Keep."
+  fi
+  ok "systemd user session"
+
+  check_disk
+  if command -v curl >/dev/null 2>&1; then
+    check_network
+  else
+    NETWORK_UNCHECKED=1
+    dim "curl is not installed yet: the network is tested once it is."
+  fi
+}
+
+# ------------------------------------------------- 2. system packages -------
+
+# What the server needs of the system (LINUX_PLAN.md §1, §3): git and curl for the install itself
+# and the updates, ffmpeg for voice messages and clips, iproute2 (ss) and procps (pgrep) for
+# start.sh and stop.sh, libsndfile and libmagic for the Python packages that load them, and
+# openssh-client for ssh-keygen, which git verifies a release's signed tag with (SignedRelease).
+APT_PACKAGES="git curl ca-certificates ffmpeg iproute2 procps libsndfile1 libmagic1 openssh-client"
+
+# package_installed <name>: dpkg has it — under its own name, or under the one the 64-bit time_t
+# transition gave some libraries (Ubuntu 24.04's libmagic1 is libmagic1t64, which apt installs
+# when asked for libmagic1).
+package_installed() {
+  local name
+  for name in "$1" "$1t64"; do
+    if [ "$(dpkg-query -W -f='${db:Status-Status}' "$name" 2>/dev/null || true)" = installed ]; then return 0; fi
+  done
+  return 1
+}
+
+# The distribution has a python3.12 of its own to offer (Ubuntu 24.04; Debian 12 and 13 do not,
+# and get theirs from uv in the next step).
+apt_offers_python() {
+  local policy
+  policy=$(apt-cache policy python3.12-venv 2>/dev/null || true)
+  case "$policy" in *"Candidate: "[0-9]*) return 0 ;; esac
+  return 1
+}
+
+missing_packages() {
+  local name missing=""
+  for name in $APT_PACKAGES; do
+    package_installed "$name" || missing="$missing $name"
+  done
+  if ! find_python && apt_offers_python; then
+    for name in python3.12 python3.12-venv; do
+      package_installed "$name" || missing="$missing $name"
+    done
+  fi
+  printf '%s' "${missing# }"
+}
+
+ensure_packages() {
+  local missing apt_line
+  missing=$(missing_packages)
+  if [ -z "$missing" ]; then
+    ok "Already installed: $APT_PACKAGES"
+  else
+    apt_line="sudo apt-get install -y --no-install-recommends $missing"
+    note "Keep needs these system packages, which are not installed: ${C_BOLD}$missing${C_RESET}"
+    note "This is what the installer runs as root (after an apt-get update, only where apt has no lists to find them in):"
+    note "  ${C_BOLD}$apt_line${C_RESET}"
+    command -v sudo >/dev/null 2>&1 || fail "sudo is not installed, so the installer cannot install the system packages." \
+      "As root, run:  apt-get install -y --no-install-recommends $missing" \
+      "Then run the installer again, as $(id -un)."
+    if [ -z "$TTY" ] && ! sudo -n -v >/dev/null 2>&1; then
+      fail "sudo needs a password and there is no terminal to ask for it on." \
+        "Run this yourself, then the installer again:" "  $apt_line"
+    fi
+    printf '  … %s\n' "apt-get install (sudo may ask for your password; apt's output goes to the log)"
+    log ""
+    log "--- $apt_line"
+    local offset
+    offset=$(($(wc -c <"$LOG") + 1))
+    if ! apt_install "$missing"; then
+      # A new cloud image comes with no package lists at all, and apt then knows no package by name.
+      if apt_lists_stale "$offset"; then
+        note "apt does not know them: its package lists are empty or old, as on a new machine. Refreshing them first:"
+        note "  ${C_BOLD}sudo apt-get update${C_RESET}"
+        log ""
+        log "--- sudo apt-get update"
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get update </dev/null >>"$LOG" 2>&1 || log "apt-get update failed"
+        # With its lists apt may have a python3.12 to offer, which it could not say before.
+        missing=$(missing_packages)
+        apt_line="sudo apt-get install -y --no-install-recommends $missing"
+        note "  ${C_BOLD}$apt_line${C_RESET}"
+        log ""
+        log "--- $apt_line"
+        apt_install "$missing" || apt_failed "$apt_line" \
+          "apt-get update ran and apt still does not have them: see what it said above and in the log."
+      else
+        apt_failed "$apt_line" \
+          "If apt could not find a package, its lists may be old: sudo apt-get update, then run the installer again."
+      fi
+    fi
+    ok "Installed: $missing"
+    missing=$(missing_packages)
+    [ -z "$missing" ] || fail "apt-get finished, but these are still not installed: $missing." \
+      "Install them by hand and run the installer again."
+  fi
+  if [ -n "$NETWORK_UNCHECKED" ]; then check_network; fi
+}
+
+# apt_install <packages>: the install, with apt's output in the log. stdin is taken away: with
+# `curl ... | bash` it is the script itself, and nothing run as root is to read from it or wait on it.
+apt_install() {
+  # shellcheck disable=SC2086
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $1 </dev/null >>"$LOG" 2>&1
+}
+
+# apt_lists_stale <log offset>: the apt-get whose output starts there knew a package by no name.
+apt_lists_stale() {
+  tail -c +"$1" "$LOG" 2>/dev/null | grep -q 'Unable to locate package'
+}
+
+# apt_failed <apt line> <hint>
+apt_failed() {
+  printf '\n  %s✖ apt-get install failed. Last lines of the log:%s\n\n' "$C_RED" "$C_RESET"
+  tail -n 15 "$LOG" | sed 's/^/    │ /'
+  fail "The system packages could not be installed." "$2" \
+    "Without sudo rights, ask an administrator to run:  $1"
+}
+
+# Chrome, for the browse commands and the web search (WebAccess drives it headless). Nothing is
+# installed here — a browser is the user's to choose — and without one the server runs all the
+# same. The names are the ones WebAccess looks for.
+BROWSER=""
+find_browser() {
+  local name
+  for name in google-chrome google-chrome-stable chromium chromium-browser; do
+    if command -v "$name" >/dev/null 2>&1; then
+      BROWSER=$(command -v "$name")
+      log "browser: $BROWSER"
+      return 0
+    fi
+  done
+  log "browser: none of google-chrome, google-chrome-stable, chromium, chromium-browser is on PATH"
+}
+
+# What to install for the browse commands, by distribution and architecture. Google publishes
+# Chrome for x86_64 only; Debian has Chromium as a package; Ubuntu's Chromium is a snap, which the
+# server drives from its systemd unit like any other (seen on 24.04, arm64 — LINUX_PLAN.md).
+browser_advice() {
+  local deb=https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+  if [ "$(uname -m)" = x86_64 ]; then
+    note "  Google Chrome:  curl -fsSLo /tmp/chrome.deb $deb && sudo apt-get install -y /tmp/chrome.deb"
+    if [ "$(os_release ID)" = debian ]; then note "  or Chromium:    sudo apt-get install -y chromium"; fi
+  elif [ "$(os_release ID)" = ubuntu ]; then
+    note "  Chromium:  sudo snap install chromium   (Google has no Chrome for ARM)"
+  else
+    note "  Chromium:  sudo apt-get install -y chromium"
+  fi
+}
+
+# The user's services start at boot and outlive the last logout only with lingering on; without it
+# the server would stop when the ssh session that installed it ends. One's own user needs no sudo
+# for it where polkit has its defaults.
+LINGER=""
+enable_linger() {
+  local said
+  if said=$(loginctl --no-ask-password enable-linger "$(id -un)" 2>&1); then
+    LINGER=on
+    log "loginctl enable-linger $(id -un): ok"
+  else
+    LINGER=refused
+    log "loginctl enable-linger $(id -un) failed: $said"
+  fi
 }
 
 # --------------------------------------------------------- 2. Xcode CLT -----
@@ -442,26 +746,41 @@ ensure_clt() {
 
 # A candidate must be CPython 3.12 built for arm64 (a Rosetta 3.12 would pull x86 wheels
 # and MLX would never install) with the ssl, sqlite3 and venv modules present.
+# On Linux the architecture is the machine's, which check_linux accepted, and ensurepip must be
+# there as well: Debian and Ubuntu ship it apart (python3.12-venv), and a python3.12 without it
+# imports venv and then fails to make one.
 python_ok() {
   [ -n "$1" ] && [ -x "$1" ] || return 1
-  "$1" - <<'EOF' >>"$LOG" 2>&1
-import platform, sys
+  local arch=arm64 also=""
+  if linux; then arch=$(uname -m); also=ensurepip; fi
+  # shellcheck disable=SC2086
+  "$1" - "$arch" $also <<'EOF' >>"$LOG" 2>&1
+import importlib, platform, sys
 assert sys.version_info[:2] == (3, 12), sys.version
-assert platform.machine() == "arm64", platform.machine()
+assert platform.machine() == sys.argv[1], platform.machine()
 import ssl, sqlite3, venv  # noqa: F401
+for module in sys.argv[2:]:
+    importlib.import_module(module)
 EOF
+}
+
+# What python_ok asks for, in the words of the messages.
+python_needs() {
+  if linux; then echo "CPython 3.12 for $(uname -m) with ssl, sqlite3, venv and ensurepip"
+  else echo "CPython 3.12 for arm64 with ssl, sqlite3 and venv"; fi
 }
 
 python_version() { "$1" -c 'import platform; print(platform.python_version())' 2>/dev/null; }
 
 find_python() {
   shopt -s nullglob
-  local c
+  local c uv_build=macos-aarch64-none      # how uv names the folder of the build for this machine
+  if linux; then uv_build="linux-$(uname -m)-gnu"; fi
   for c in \
       "$(command -v python3.12 2>/dev/null || true)" \
       /opt/homebrew/opt/python@3.12/bin/python3.12 \
       /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 \
-      "$HOME"/.local/share/uv/python/cpython-3.12.*-macos-aarch64-none/bin/python3.12 \
+      "$HOME"/.local/share/uv/python/cpython-3.12.*-$uv_build/bin/python3.12 \
       "$HOME"/.pyenv/versions/3.12.*/bin/python3.12; do
     [ -n "$c" ] || continue
     if python_ok "$c"; then PY="$c"; shopt -u nullglob; return 0; fi
@@ -477,9 +796,11 @@ ensure_python() {
     ok "Python $(python_version "$PY") at $PY"
     return
   fi
-  dim "No usable Python 3.12 found (need an arm64 CPython 3.12 with ssl, sqlite3 and venv)."
+  if linux; then dim "No usable Python 3.12 found (need a $(python_needs))."
+  else dim "No usable Python 3.12 found (need an arm64 CPython 3.12 with ssl, sqlite3 and venv)."; fi
 
-  if command -v brew >/dev/null 2>&1; then
+  # Homebrew is the Mac's way; on Linux a distribution without a 3.12 of its own gets uv's.
+  if ! linux && command -v brew >/dev/null 2>&1; then
     # Homebrew's python@3.12 is versioned: it adds python3.12 next to whatever python3 the
     # machine already has and changes nothing else.
     note "Installing python@3.12 with Homebrew (adds the versioned python3.12 only)."
@@ -505,7 +826,7 @@ ensure_python() {
   fi
 
   python_ok "$PY" || fail "Installed Python at '$PY' but it does not pass the checks." \
-    "It must be CPython 3.12 for arm64 with ssl, sqlite3 and venv. See the log for details."
+    "It must be $(python_needs). See the log for details."
   ok "Python $(python_version "$PY") at $PY"
 }
 
@@ -545,7 +866,7 @@ ensure_repo() {
     # A full clone, not a shallow one: the assistant's self-improvement agent works with
     # branches and history in this very checkout.
     local final="$KEEP_DIR/log/install.log" parked
-    parked=$(/usr/bin/mktemp -t keep-install)
+    parked=$(temp_log)
     mv "$LOG" "$parked"
     rmdir "$KEEP_DIR/log"
     LOG="$parked"
@@ -568,7 +889,8 @@ ensure_venv() {
     return
   fi
   if [ -e "$venv" ]; then
-    warn "Existing .venv is not an arm64 Python 3.12; recreating it."
+    if linux; then warn "Existing .venv is not a usable Python 3.12; recreating it."
+    else warn "Existing .venv is not an arm64 Python 3.12; recreating it."; fi
     rm -rf "$venv"
   fi
   run "python3.12 -m venv .venv" "$PY" -m venv "$venv"
@@ -588,9 +910,20 @@ install_requirements() {
   local offset
   offset=$(($(wc -c <"$LOG") + 1))
   SPINNER_STATUS="pip_status $offset $PIP_EXPECTED_PACKAGES"
-  run "pip install" "$py" -m pip install -r "$KEEP_DIR/requirements-voice.txt"
+  if linux; then
+    SPINNER_STATUS="pip_status $offset $PIP_EXPECTED_PACKAGES_LINUX"
+    # torch's default build for Linux x86_64 is the CUDA one, gigabytes that speaker identification
+    # has no use for; PyTorch's own index has the CPU build (common/RequirementsChecker.py passes
+    # the same index, so an update does not swap the build).
+    run "pip install" "$py" -m pip install --extra-index-url "$TORCH_CPU_INDEX" -r "$KEEP_DIR/requirements-voice.txt"
+  else
+    run "pip install" "$py" -m pip install -r "$KEEP_DIR/requirements-voice.txt"
+  fi
   SPINNER_STATUS=""
 }
+
+TORCH_CPU_INDEX="https://download.pytorch.org/whl/cpu"
+PIP_EXPECTED_PACKAGES_LINUX=230   # PIP_EXPECTED_PACKAGES without what only a Mac installs (the pyobjc frameworks, MLX)
 
 # pip_status <log offset> <expected package count>: progress read off pip's own output.
 # Pip works in passes: it resolves first, printing "Collecting <pkg>" per package while it
@@ -713,20 +1046,27 @@ obtain_api_key() {
     explain_credit
     printf '\n'
   fi
-  local attempt=0 workspace_attempt=0
+  # An attempt is a key Anthropic was asked about: an empty Enter or a slip of the paste uses none
+  # up (ten of those in a row is nobody typing, and ends the loop all the same).
+  local attempt=0 workspace_attempt=0 slips=0 asked=""
   while :; do
+    asked=""
     if [ -z "$API_KEY" ]; then
-      attempt=$((attempt + 1))
-      [ "$attempt" -le 3 ] || fail "No valid API key after 3 attempts." \
+      [ "$attempt" -lt 3 ] || fail "No valid API key after 3 attempts." \
+        "Re-run the installer when you have one, or pass it as ANTHROPIC_API_KEY=... in the environment."
+      [ "$slips" -lt 10 ] || fail "No API key entered." \
         "Re-run the installer when you have one, or pass it as ANTHROPIC_API_KEY=... in the environment."
       ask "Anthropic API key:" API_KEY secret
       API_KEY=$(printf '%s' "$API_KEY" | tr -d '[:space:]')
+      asked=1
     fi
     case "$API_KEY" in
       sk-ant-*) ;;
-      "")  warn "Nothing entered."; continue ;;
-      *)   warn "That does not look like an Anthropic key (they start with sk-ant-)."; API_KEY=""; continue ;;
+      "")  warn "Nothing entered."; slips=$((slips + 1)); continue ;;
+      *)   warn "That does not look like an Anthropic key (they start with sk-ant-)."; API_KEY=""; slips=$((slips + 1)); continue ;;
     esac
+    slips=0
+    [ -z "$asked" ] || attempt=$((attempt + 1))
     verify_api_key
     case "$VERIFY_CODE" in
       200) ok "Key verified with the Anthropic API${WORKSPACE_ID:+ (workspace $WORKSPACE_ID)}"; return ;;
@@ -770,8 +1110,8 @@ write_config() {
 # Keep configuration, written by install.sh on $(date '+%Y-%m-%d'). config.example.yaml documents
 # every setting; the assistant sets up the optional integrations itself once it runs.
 api_keys:
-  anthropic: $API_KEY
-${WORKSPACE_ID:+  anthropic_workspace: $WORKSPACE_ID   # the key is not tied to one workspace, so every request names this one}
+  anthropic: $API_KEY${WORKSPACE_ID:+
+  anthropic_workspace: $WORKSPACE_ID   # the key is not tied to one workspace, so every request names this one}
 $(if [ "$BRANCH" = master ]; then echo "developer_release: true   # installed from master, the development line; restart_server keeps following it"
    else echo "developer_release: false  # restart_server follows the release branch; true: master, the development line"; fi)
 vault:
@@ -883,6 +1223,7 @@ choose_lan_access() {
 # config.yaml, so the server's events carry the same one and the install joins the turns
 # that follow it. A re-run reads the id, and the opt-out, from the existing config.yaml.
 POSTHOG_HOST="https://eu.i.posthog.com"
+KERNEL_UUID=/proc/sys/kernel/random/uuid   # Linux: a fresh uuid at every read
 POSTHOG_PROJECT_KEY="phc_nvbSSUXHLCDv5oDic5ULNwQXTJT2Xk4SrdMSQbMGjyCk"
 
 init_telemetry() {
@@ -895,6 +1236,8 @@ init_telemetry() {
     TELEMETRY_ID=$(config_telemetry_value id)
   fi
   [ -n "$TELEMETRY_ID" ] || TELEMETRY_ID=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || true)
+  # uuidgen is a package of its own on Debian (uuid-runtime); the kernel hands out the same thing.
+  [ -n "$TELEMETRY_ID" ] || TELEMETRY_ID=$(cat "$KERNEL_UUID" 2>/dev/null || true)
   log "telemetry: install id ${TELEMETRY_ID:-none}"
 }
 
@@ -989,6 +1332,12 @@ telemetry_role() { if satellite; then printf 'role=%s' "$ROLE"; fi; }
 telemetry_started() {
   local fresh=true
   [ ! -f "$KEEP_DIR/config.yaml" ] || fresh=false
+  if linux; then
+    telemetry_event install_started fresh=$fresh branch="$BRANCH" terminal="${TERM_PROGRAM:-unknown}" \
+      os=Linux distribution="$(os_release PRETTY_NAME)" chip="$(linux_chip)" \
+      default_dir=$([ "$KEEP_DIR" = "$HOME/Keep" ] && echo true || echo false)
+    return
+  fi
   telemetry_event install_started fresh=$fresh branch="$BRANCH" terminal="${TERM_PROGRAM:-unknown}" \
     macos="$(sw_vers -productVersion 2>/dev/null || echo unknown)" \
     chip="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)" \
@@ -1023,6 +1372,7 @@ telemetry_event() {
 
 summary() {
   if satellite; then satellite_summary; return; fi
+  if linux; then linux_summary; return; fi
   printf '\n  %s✔ Keep is installed%s\n\n' "$C_GREEN$C_BOLD" "$C_RESET"
   note "Folder     $KEEP_DIR"
   note "Config     $KEEP_DIR/config.yaml"
@@ -1030,6 +1380,63 @@ summary() {
   note "Start      $KEEP_DIR/start.sh      (server + console)"
   note "Stop       $KEEP_DIR/stop.sh"
   note "Upgrade    re-run the install command"
+  printf '\n'
+}
+
+# A Linux server is a systemd unit on a machine that usually has no screen: the summary says how
+# to look at it, how to stop it for good and how to reach the console from somewhere else.
+linux_summary() {
+  local me host
+  me=$(id -un)
+  host=$(hostname 2>/dev/null || true)
+  host=${host:-this-machine}
+  printf '\n  %s✔ Keep is installed%s\n\n' "$C_GREEN$C_BOLD" "$C_RESET"
+  note "Folder     $KEEP_DIR"
+  note "Config     $KEEP_DIR/config.yaml"
+  note "Log        $LOG"
+  note "Start      $KEEP_DIR/start.sh      (starts the service; in a terminal, the console follows)"
+  note "Stop       $KEEP_DIR/stop.sh       (until the next start or boot)"
+  note "Console    $KEEP_DIR/keep.sh       (needs a terminal)"
+  note "Upgrade    re-run the install command"
+  printf '\n'
+  note "${C_BOLD}Keep runs as a service of your account${C_RESET}, the systemd user unit keep.service: systemd"
+  if [ "$LINGER" = refused ]; then
+    note "starts it again when it dies."
+  else
+    note "starts it at boot, with nobody logged in, and again when it dies."
+  fi
+  note "  whether it runs           systemctl --user status keep"
+  note "  its starts and stops      journalctl --user -u keep"
+  note "  what the server printed   $KEEP_DIR/log/raw-floxy.log"
+  note "  no start at boot          systemctl --user disable keep.service   (stop.sh alone leaves that on)"
+  if [ "$LINGER" = refused ]; then
+    printf '\n'
+    warn "Could not let your services run while you are logged out (loginctl enable-linger was refused)."
+    note "Until that is on, Keep stops when your last session ends and does not start at boot. Turn it on with:"
+    note "  sudo loginctl enable-linger $me"
+  fi
+  printf '\n'
+  note "${C_BOLD}The setup is a conversation in the console${C_RESET}: Keep introduces itself there and walks you"
+  note "through the rest, Telegram first — after that the chat is on your phone. From another computer:"
+  note "  ssh -t $me@$host $KEEP_DIR/keep.sh"
+  note "(-t gives the console the terminal it needs; closing it leaves the server running.)"
+  printf '\n'
+  if [ "$(config_value interfaces lan_access | tr '[:upper:]' '[:lower:]')" = true ]; then
+    note "${C_BOLD}The server answers the whole network${C_RESET} (interfaces.lan_access: true in config.yaml):"
+    note "the phone app reaches it, and so does anyone on the network — there is no password."
+  else
+    note "${C_BOLD}The server answers this machine only${C_RESET} until interfaces.lan_access is on: the phone app needs"
+    note "it (the console over ssh, as above, does not). Ask Keep to turn it on — there is no password,"
+    note "whoever reaches the address is then the owner, so only on a network you trust."
+  fi
+  printf '\n'
+  if [ -n "$BROWSER" ]; then
+    note "Browser    $BROWSER  (for the web search and the browse commands)"
+  else
+    warn "No Chrome or Chromium found: Keep runs without one, but cannot search or browse the web until one is installed."
+    browser_advice
+    note "  No reinstall is needed afterwards: $KEEP_DIR/start.sh picks it up."
+  fi
   printf '\n'
 }
 
@@ -1104,6 +1511,7 @@ launch() {
     dim "KEEP_NO_START is set; not starting the $what."
     exit 0
   fi
+  if linux; then launch_linux; fi
   if [ -z "$TTY" ] || [ -z "$IS_TTY" ]; then
     dim "Not an interactive terminal; start Keep with: $KEEP_DIR/start.sh"
     exit 0
@@ -1118,6 +1526,21 @@ launch() {
   printf '\n'
   trap - ERR EXIT INT TERM
   cd "$KEEP_DIR"
+  exec ./start.sh <"$TTY"
+}
+
+# On Linux a start needs no terminal — the server is the unit, not a window — so an install over
+# plain ssh ends with a running server too; only the console waits for a terminal.
+launch_linux() {
+  trap - ERR EXIT INT TERM
+  cd "$KEEP_DIR"
+  if [ -z "$TTY" ] || [ -z "$IS_TTY" ]; then
+    dim "Starting Keep as keep.service. No terminal here, so no console: open it with $KEEP_DIR/keep.sh"
+    printf '\n'
+    exec ./start.sh </dev/null
+  fi
+  dim "Starting Keep. The first start loads models for a while; the console takes over when the server is up."
+  printf '\n'
   exec ./start.sh <"$TTY"
 }
 

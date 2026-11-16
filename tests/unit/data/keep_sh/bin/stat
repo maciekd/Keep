@@ -1,0 +1,20 @@
+#!/bin/bash
+# keep.sh's test double for GNU `stat`, as scripts/role.sh asks it on the Linux branch: the owner
+# of /proc/<pid> (`-c %u`: this user's for 4242, another's for 4343), the working directory of a
+# process (`-c '%d %i' /proc/<pid>/cwd`: this checkout's device and inode, some other folder's
+# when KEEP_TEST_CWD is set, unreadable for another user's process) and those of a folder. The
+# real numbers come from the system's own stat, GNU's or BSD's; anything else is passed to it.
+real() { command /usr/bin/stat -c '%d %i' "$1" 2>/dev/null || command /usr/bin/stat -f '%d %i' "$1"; }
+target=${!#}
+case " $* " in *" -c %u "*)
+    case "$target" in /proc/4242) echo "$UID"; exit 0;; /proc/4343) echo $((UID + 1)); exit 0;; esac
+    exit 1;;
+esac
+case " $* " in *" -c %d %i "*)
+    case "$target" in
+        /proc/4343/cwd) exit 1;;
+        /proc/*/cwd) if [ -n "$KEEP_TEST_CWD" ]; then echo "47 47"; else real .; fi; exit 0;;
+    esac
+    real "$target"; exit;;
+esac
+exec /usr/bin/stat "$@"

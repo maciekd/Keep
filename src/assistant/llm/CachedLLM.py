@@ -67,7 +67,8 @@ class CachedLLM(AbstractLLM):
                 return
 
         self.last_response_was_cached = False
-        yield from self.llm.create_streaming_completion(messages, thinking=thinking)
+        yield from self.llm.create_streaming_completion(messages, thinking=thinking, volatile_tail=volatile_tail,
+                                                        follow_up=follow_up)
 
     def invalidate_served_response(self, reason: str) -> int:
         """Mark every row backing the most recently served cached response as not_cachable.
@@ -155,6 +156,10 @@ class CachedLLM(AbstractLLM):
         """A served cached reply ended nowhere: None, so the wrapped LLM's last stop
         reason is never taken for this reply's."""
         return None if self.last_response_was_cached else self.llm.last_stop_reason
+
+    @property
+    def last_usage(self):
+        return None if self.last_response_was_cached else self.llm.last_usage
 
     def output_cap(self) -> int | None:
         return self.llm.output_cap()

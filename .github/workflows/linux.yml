@@ -1,0 +1,61 @@
+# The unit suite on Ubuntu, x86_64 and arm64 — the proof that the server's code runs on Linux
+# (docs/plans/LINUX_PLAN.md). The installs are the ones a Linux install runs: the base file, which must
+# stay free of torch, then the voice file with PyTorch's CPU wheel index.
+name: Linux
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      FLOXY_CONFIG: config.example.yaml
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements*.txt
+            src/integrations/*/requirements.txt
+      # libmagic1: python-magic (neonize, the WhatsApp integration) loads it at import.
+      # libsndfile1: soundfile's arm64 wheel brings no libsndfile of its own.
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libmagic1 libsndfile1
+      - name: Base requirements
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: The base requirements bring no torch
+        run: |
+          if python -m pip show torch >/dev/null 2>&1; then
+            echo "::error::requirements.txt installed torch: $(python -m pip show torch | grep -i '^required-by')"
+            exit 1
+          fi
+      - name: Voice requirements (CPU torch)
+        run: python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-voice.txt
+      - name: torch is the CPU build
+        run: python -c "import torch; print(torch.__version__); assert not torch.cuda.is_available() and torch.version.cuda is None, torch.version.cuda"
+      - name: Unit tests
+        run: python -m pytest tests/unit --override-ini="log_cli=false" -q --tb=short

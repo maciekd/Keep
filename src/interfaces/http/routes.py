@@ -32,9 +32,13 @@ class HttpDeps:
     microphone_routes: Any = None
     # False when no voice interface runs in this process: audio-mode clients get text instead.
     voice_enabled: bool = True
+    # False on a server without speakers of its own (common/Platform): a server_sound request
+    # is answered as text.
+    server_sound: bool = True
 
 
 _voiceless_audio_client_reported = False
+_server_sound_reported = False
 
 
 def _downgrade_audio_client(context: RequestContext) -> RequestContext:
@@ -49,6 +53,20 @@ def _downgrade_audio_client(context: RequestContext) -> RequestContext:
         _voiceless_audio_client_reported = True
         info(message)
     return replace(context, source=SOURCE_TEXT_CHAT, text_only=True)
+
+
+def _downgrade_server_sound(context: RequestContext) -> RequestContext:
+    """A server without speakers of its own cannot play the reply: a `server_sound` request
+    (the app in its server-sound mode) gets the TextChat rendering instead of silence."""
+    global _server_sound_reported
+    message = (f"Server-sound request from {context.source}, and this server has no speakers of its own — "
+               f"answering as TextChat text.")
+    if _server_sound_reported:
+        trace(message)
+    else:
+        _server_sound_reported = True
+        info(message)
+    return replace(context, source=SOURCE_TEXT_CHAT, text_only=True, server_sound=False)
 
 
 def _confidence(args: dict) -> Optional[float]:
@@ -76,7 +94,9 @@ def build_blueprint(deps: HttpDeps) -> Blueprint:
 
             req_data = RequestData(request.method, request.url, args, dict(request.headers), json_body=json_body)
             context = RequestContext.from_request_data(req_data)
-            if not deps.voice_enabled and not context.text_only and not context.server_sound:
+            if context.server_sound and not deps.server_sound:
+                context = _downgrade_server_sound(context)
+            elif not deps.voice_enabled and not context.text_only and not context.server_sound:
                 context = _downgrade_audio_client(context)
             query = req_data.args.get('query', '')
             request_id = req_data.args.get('request_id')

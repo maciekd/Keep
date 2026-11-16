@@ -68,6 +68,7 @@ def failure(integration) -> Exception:
     return raised.value
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 class TestWhichHostTheConfigNames:
     def test_without_an_address_nothing_needs_configuring(self):
@@ -187,6 +188,7 @@ class TestASatelliteThatCannotBeUsed:
 
 
 @pytest.mark.unit
+@pytest.mark.usefixtures("on_a_mac")
 class TestASatelliteOnTheServersOwnMac:
     """A satellite under another macOS user answers the loopback alone, so the Mac's name reaches nothing."""
 
@@ -204,6 +206,29 @@ class TestASatelliteOnTheServersOwnMac:
     def test_a_problem_that_is_not_the_connection_does_not_question_the_address(self):
         refused = HostHealth(False, REFUSED, "the satellite refused the token")
         assert "127.0.0.1" not in SatelliteHints.problem("http://keep-mini.local:8901", refused, "imessage", "iMessage")
+
+
+class TestASatelliteOfALinuxServer:
+    """A Linux server has no Mac of its own: the satellite is always another machine, and
+    nothing the owner is told may send them to "this Mac"."""
+
+    AWAY = HostHealth(False, UNREACHABLE, "no connection (Connection refused)")
+
+    @pytest.fixture(autouse=True)
+    def linux(self, monkeypatch):
+        from common import Platform
+        monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+
+    def test_an_unreachable_satellite_is_never_looked_for_on_the_servers_own_loopback(self):
+        said = SatelliteHints.problem("http://keep-mini.local:8901", self.AWAY, "imessage", "iMessage Feed")
+        assert "127.0.0.1" not in said and "this same Mac" not in said
+        assert "lan_access" in said and "imessage.host" in said and "start.sh" in said
+
+    def test_the_grant_is_asked_for_on_the_satellites_mac_with_no_command_that_is_not_offered_here(self):
+        """Contract with Commands.MAC_ONLY_COMMANDS: show_full_disk_access_setting is refused on Linux."""
+        said = SatelliteHints.full_disk_access(ADDRESS)
+        assert ADDRESS in said and "Full Disk Access" in said and "start.sh" in said
+        assert "show_full_disk_access_setting" not in said and "this one" not in said and "server's Mac" not in said
 
 
 class TestASatelliteThatWorksAndIsOutOfStep:

@@ -229,6 +229,7 @@ class TestCurationProgress:
         assert CurationProgress.begin(chunks_total=0, chunks_done=0, now=0.0).fraction(5.0) == 0.0
 
 
+@pytest.mark.usefixtures("on_a_mac")
 class TestSetup:
     def test_waits_for_photos(self, env):
         env.enabled = ["iMessage Feed", "iCloud"]
@@ -520,6 +521,7 @@ class TestExpanding:
                                       "The first-run setup is complete."]
 
 
+@pytest.mark.usefixtures("on_a_mac")
 class TestThread:
     def test_does_not_start_without_state(self, env):
         env.pipeline.start()
@@ -583,6 +585,7 @@ class TestThread:
         assert len(attempts) == 2 and State.load(env.path).stage == Stage.DONE
 
 
+@pytest.mark.usefixtures("on_a_mac")
 class TestSnappiness:
     def test_a_wait_reason_is_traced_once_until_it_changes(self, env, monkeypatch):
         from assistant import FirstRun
@@ -608,6 +611,7 @@ class TestSnappiness:
         assert State.load(env.path).stage == Stage.INDEXING and waits == [0.01]
 
 
+@pytest.mark.usefixtures("on_a_mac")
 class TestDesktopShortcut:
     """The shortcut is built the first time the Full Disk Access probe passes, once, and the
     state remembers the attempt."""
@@ -765,3 +769,37 @@ class TestDesktopShortcut:
             env.pipeline.tick(state)
         waits = [m for m in traced if "Desktop shortcut waits" in m or "Photos integration" in m]
         assert len(waits) == 2
+
+
+class TestOnAServerThatIsNotAMac:
+    """No Desktop shortcut, login item or Full Disk Access to wait for, and no Photos to index."""
+
+    @pytest.fixture(autouse=True)
+    def linux(self, monkeypatch):
+        from common import Platform
+        monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+
+    @pytest.fixture
+    def untouched(self, monkeypatch):
+        def never(*args, **kwargs):
+            raise AssertionError("a Mac-only step ran on Linux")
+        for module, name in ((FirstRun.FullDiskAccess, "granted"), (FirstRun.DesktopShortcut, "ensure"),
+                             (FirstRun.Autostart, "enable")):
+            monkeypatch.setattr(module, name, never)
+        chat = Mock()
+        monkeypatch.setattr(FirstRun, "notifier", lambda: chat)
+        return chat
+
+    def test_the_shortcut_step_is_stamped_at_once_without_a_probe_a_turn_or_a_row(self, env, untouched):
+        state = env.state_at(Stage.SETUP)
+        assert env.pipeline.desktop_shortcut(state, now=0.0) is False
+        saved = State.load(env.path)
+        assert saved.desktop_shortcut_at is not None and not saved.full_disk_access_awaited
+        untouched.open_conversation.assert_not_called()
+        assert _rows(env.history) == []
+
+    def test_a_config_copied_from_a_mac_does_not_send_the_pipeline_waiting_for_photos(self, env):
+        assert "Photos" in env.enabled
+        state = env.state_at(Stage.SETUP)
+        assert env.pipeline.tick(state) is False
+        assert State.load(env.path).stage == Stage.SETUP

@@ -12,12 +12,19 @@
 # running is asked of this user's processes of this checkout only (scripts/role.sh), so the Keep
 # server of the Mac's other user never passes for this install's process — the satellite of a
 # second macOS user would otherwise not start at that user's login.
+# macOS only. On Linux systemd starts the server (the user unit keep.service, scripts/service.sh).
 cd "$(dirname "$0")"
 
 RLOG=log/restart.log
 rlog() { mkdir -p log; echo "[$(date '+%Y-%m-%d %H:%M:%S')] autostart.sh: $*" >> "$RLOG"; }
 
 . scripts/role.sh || { rlog "scripts/role.sh is missing — this checkout is incomplete, nothing started"; exit 1; }
+
+if [ "$os" = Linux ]; then
+    rlog "run on Linux — this is the Mac's login item; nothing started"
+    echo "autostart.sh is for macOS. On Linux systemd starts Keep: ./start.sh installs and enables the user unit keep.service." >&2
+    exit 1
+fi
 
 if [ -n "$(own_listeners $up_port)" ] || [ -n "$(own_processes "$KEEP_PROCESS")" ]; then
     rlog "a $what is already running — nothing to start"

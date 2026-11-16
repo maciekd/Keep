@@ -515,7 +515,7 @@ class FloxyDatabase:
 
     def mark_responses_not_cachable(self, query: str, responses: List[str]) -> int:
         """Mark every cachable row matching (query, response) as not_cachable — used when a
-        served cached response turns out to be bad (e.g. it commands a nonexistent device).
+        served cached response turns out to be bad (a command of it failed).
         Query matching uses the same punctuation normalization as get_response_counts_for_query
         so all key variants of the query are covered. Returns the number of rows marked."""
         if not responses:

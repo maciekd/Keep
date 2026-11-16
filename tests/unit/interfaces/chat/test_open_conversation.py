@@ -76,6 +76,7 @@ class TestOpenConversation:
         hub.register(FakeTransport(owners=[]))
         assert hub.open_conversation(BRIEF) is False
         assert hub.assistant.requests == []
+        hub.stop()
 
     def test_reply_started_brackets_every_reply(self):
         transport = FakeTransport(owners=[111])

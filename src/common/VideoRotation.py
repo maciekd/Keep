@@ -1,15 +1,23 @@
-"""Bakes a clip's display rotation into its pixels, for players that read the coded frames and drop the matrix."""
+"""Bakes a clip's display rotation into its pixels, for players that read the coded frames and drop the matrix.
+
+On a Mac the re-encode is AVFoundation's; on any other system it is `ffmpeg`'s, which applies the
+display matrix by itself when it re-encodes."""
 import importlib
 import os
+import subprocess
 import tempfile
 import threading
 import time
 from types import SimpleNamespace
 from typing import Optional
 
+from common import Platform
 from common.logging import error, info, trace
 
 EXPORT_TIMEOUT_SECONDS = 180
+# The frame fitted into 1280x1280 without ever growing — what the Mac's 720p preset does for
+# either orientation — and even sides, which H.264 needs.
+_FFMPEG_SCALE = "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
 _STATUS_COMPLETED = 3  # AVAssetExportSessionStatusCompleted
 
 _FRAMEWORK_NAMES = {
@@ -46,6 +54,35 @@ def _load_frameworks() -> SimpleNamespace:
         return _frameworks
 
 
+def _bake_with_ffmpeg(video_bytes: bytes, timeout: float) -> Optional[bytes]:
+    """The same re-encode through ffmpeg, which rotates the frames by the display matrix and
+    writes none when it re-encodes. None — the clip goes out as it is — when ffmpeg is missing,
+    fails or takes longer than *timeout*."""
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="floxy-rotate-") as folder:
+        source = os.path.join(folder, "source.mp4")
+        target = os.path.join(folder, "upright.mp4")
+        with open(source, "wb") as f:
+            f.write(video_bytes)
+        command = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", source, "-vf", _FFMPEG_SCALE,
+                   "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-movflags", "+faststart", target]
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            error(f"VideoRotation: ffmpeg could not re-encode the clip ({type(e).__name__}: {e}), clip sent as it is")
+            return None
+        if result.returncode != 0 or not os.path.exists(target) or not os.path.getsize(target):
+            detail = (result.stderr or b"").decode("utf-8", errors="replace").strip()[-300:]
+            error(f"VideoRotation: ffmpeg failed (exit {result.returncode}: {detail}), clip sent as it is")
+            return None
+        with open(target, "rb") as f:
+            upright = f.read()
+    trace(f"VideoRotation: clip re-encoded by ffmpeg in {time.monotonic() - started:.1f}s "
+          f"({len(video_bytes) / 1024 / 1024:.1f} -> {len(upright) / 1024 / 1024:.1f} MB)")
+    return upright
+
+
 def bake_rotation(video_bytes: bytes, timeout: float = EXPORT_TIMEOUT_SECONDS) -> Optional[bytes]:
     """*video_bytes* re-encoded so that the frames are stored the way the track's display matrix
     shows them and the matrix itself becomes identity. None when it cannot be done — AVFoundation
@@ -55,6 +92,8 @@ def bake_rotation(video_bytes: bytes, timeout: float = EXPORT_TIMEOUT_SECONDS) -
     A phone's portrait clip is a landscape stream plus a 90° matrix; Telegram for iOS reads the
     matrix for the layout, then renders the unrotated raster into it. Only a clip whose matrix is
     not identity needs this, see `Mp4Metadata.mp4_is_rotated`."""
+    if not Platform.is_mac():
+        return _bake_with_ffmpeg(video_bytes, timeout)
     try:
         fw = _load_frameworks()
     except ImportError as e:

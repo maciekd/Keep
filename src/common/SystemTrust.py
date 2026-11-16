@@ -19,6 +19,8 @@ because they do not go through Python's ssl module: curl_cffi (WebAccess' last-r
 and gRPC (google-cloud-speech)."""
 import ssl
 
+from common import Platform
+
 # The interpreter's own class, the one `install()` swaps out. Looked up by module so the
 # result is the same whether or not the swap has happened yet when this module is imported.
 _OPENSSL_CONTEXT = next(cls for cls in ssl.SSLContext.__mro__ if cls.__module__ == "ssl")
@@ -43,7 +45,8 @@ def install() -> str:
     except ImportError:
         return "TLS trust: truststore is not installed, verifying against the bundled CA list only"
     truststore.inject_into_ssl()
-    return "TLS trust: verifying against the system trust store (the keychain), bundled CA list on top"
+    store = "the keychain" if Platform.is_mac() else "the system's CA certificates"
+    return f"TLS trust: verifying against the system trust store ({store}), bundled CA list on top"
 
 
 def unverified_context() -> ssl.SSLContext:

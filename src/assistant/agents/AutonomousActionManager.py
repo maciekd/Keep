@@ -162,6 +162,10 @@ Now analyze the conversation and system state above and respond accordingly.
 """
 
 
+class _UserTookOver(Exception):
+    """A user request began while a check was running: the check stops where it is."""
+
+
 def _describe_duration(seconds: float) -> str:
     """'3 min', '2 h 15 min' or '1 d 4 h' — how late a wake-up is, in the note and the log."""
     return WatchList.describe_duration(timedelta(seconds=seconds))
@@ -173,8 +177,18 @@ class AutonomousActionManager:
     Singleton with a daemon thread on PERIODIC_CHECK_INTERVAL_SECONDS; checks are suppressed
     while a user request is in flight, and scheduled wake-ups persist in SCHEDULE_FILE across
     restarts — one that fell due while the server was down fires right after startup.
+
+    A check stays out of the user's way for its whole length, not only at its start: the
+    gate its caller passed is asked again once the check has the lock (the wait behind
+    another check can be a minute), and after every LLM round — a request that began since
+    the check read the history ends it there, the round's commands unrun, and the check runs
+    again from a fresh history once the user is quiet (`_retry_when_quiet`). On 2026-11-16 two
+    checks ran beside chat turns without either: one repeated the chat's config change, the
+    other answered the user's request a second time.
     """
     _instance: Optional['AutonomousActionManager'] = None
+    # The opening row the running check has still to leave in the history (`_mark_check_rows`)
+    _check_opening: Optional[str] = None
 
     @classmethod
     def get_instance(cls, prompt_manager: PromptManager = None, test_mode: bool = False) -> 'AutonomousActionManager':
@@ -203,6 +217,8 @@ class AutonomousActionManager:
         self._user_interaction_lock = threading.Lock()
         self._user_requests_in_flight = 0
         self.last_user_interaction_at: float = 0.0
+        self._user_request_started_at: float = 0.0
+        self._plain_retry_pending = False
         # One caffeine loop at most: a repeated caffeinate() moves the deadline, it never
         # starts a second loop (67 of them once ran side by side, each checking every 3 min).
         self._caffeine_lock = threading.Lock()
@@ -311,7 +327,7 @@ class AutonomousActionManager:
     def notify_user_interaction_started(self):
         with self._user_interaction_lock:
             self._user_requests_in_flight += 1
-            self.last_user_interaction_at = time.time()
+            self.last_user_interaction_at = self._user_request_started_at = time.time()
 
     def notify_user_interaction_ended(self):
         with self._user_interaction_lock:
@@ -336,6 +352,62 @@ class AutonomousActionManager:
                     return False
                 return True
             return (time.time() - self.last_user_interaction_at) < quiet_seconds
+
+    def hold_for_resume(self):
+        """The boot found a conversation to resume (the launcher's resume turn): it counts as
+        a request in flight from now, so the checks of the startup grace wait for it — the
+        turn itself starts up to half a minute later, and on 2026-11-16 an overdue periodic
+        check began 5 s ahead of it and acted on the conversation it was about to continue."""
+        info("Autonomous checks wait for the conversation the restart interrupted")
+        self.notify_user_interaction_started()
+
+    def release_resume_hold(self):
+        """The resume turn has started (it counts itself from here) or was given up."""
+        trace("Resume hold released: the quiet period after a request runs from now")
+        self.notify_user_interaction_ended()
+
+    def _user_took_over(self, since: float) -> bool:
+        """Whether a user request is in flight or began after *since* — the moment a check
+        read the history, which is all it knows of the conversation."""
+        return self.is_user_interaction_active(0) or self._user_request_started_at > since
+
+    def _yield_to_user(self, since: float, where: str):
+        if self._user_took_over(since):
+            raise _UserTookOver(where)
+
+    def _retry_when_quiet(self, prompt: str | None, wakeup: dict | None,
+                          due: list[tuple[WatchList.Item, datetime]] | None, quiet: float):
+        """Run a check that gave way to the user again once the user has been quiet for
+        *quiet* seconds — the whole check, from a history that holds what the user did
+        meanwhile. Several plain checks waiting are one: they would say the same."""
+        if self.test_mode:
+            trace("Test mode: a check that gave way to the user is not retried")
+            return
+        plain = not wakeup and not due
+        if plain:
+            with self._user_interaction_lock:
+                if self._plain_retry_pending:
+                    trace("A check is waiting for the user to be quiet already — this one is dropped for it")
+                    return
+                self._plain_retry_pending = True
+
+        def _wait_and_run():
+            while self.running and self.is_user_interaction_active(quiet):
+                time.sleep(SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS)
+            if plain:
+                self._plain_retry_pending = False
+            if not self.running:
+                return
+            if plain and self.prompt_manager.is_night_mode_active():
+                info("The check that gave way to the user is not run again: Night mode is active")
+                return
+            info("The user is quiet — running the check that gave way again")
+            try:
+                self.activity_check(prompt, wakeup=wakeup, due=due)
+            except Exception as e:
+                error(f"Retried check failed: {type(e).__name__}: {e}")
+
+        threading.Thread(target=_wait_and_run, daemon=True, name="CheckRetry").start()
 
     def _run_periodic_check(self):
         last_memory_curation_date = None
@@ -435,10 +507,46 @@ class AutonomousActionManager:
                   f"after {ACTIVITY_CHECK_LOCK_TIMEOUT_SECONDS} s — several wake-ups scheduled "
                   f"for the same minute queue up like this")
             return ""
+        quiet = SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS if wakeup else USER_INTERACTION_QUIET_PERIOD_SECONDS
         try:
-            return self._activity_check_inner(prompt, wakeup, due, started)
+            # The caller asked before the wait for the lock, which can be a whole check long.
+            if self.is_user_interaction_active(quiet):
+                info(f"This {kind} gives way before it starts: a user request is in flight or recent "
+                     f"({time.time() - started:.0f} s after it was fired) — it runs once the user is quiet")
+            else:
+                return self._activity_check_inner(prompt, wakeup, due, started)
+        except _UserTookOver as e:
+            info(f"This {kind} gives way to the user {e} — it runs again, from a fresh history, "
+                 f"once the user is quiet")
         finally:
+            self._check_opening = None
             self.activity_check_lock.release()
+        self._retry_when_quiet(prompt, wakeup, due, quiet)
+        return ""
+
+    @staticmethod
+    def _opening_note(wakeup: dict | None, due: list[tuple[WatchList.Item, datetime]] | None) -> str:
+        """The row that opens a check's rows in the history. A check's replies are stored as
+        assistant rows like a chat reply, and without it the first of them read as the chat's
+        own last turn: on 2026-11-16 a chat turn took a check's commands for its own and
+        answered for them."""
+        if wakeup:
+            why = "a scheduled wake-up"
+        elif due:
+            why = "watch items due: " + ", ".join(item.name for item, _ in due)
+        else:
+            why = "periodic"
+        return (f"[Autonomous check ({why}) at {time.strftime('%H:%M')}: the rows from here to the next "
+                f"message are the work of a background check that ran beside the chat. They are no part "
+                f"of a chat turn, and no chat turn ran their commands.]")
+
+    def _mark_check_rows(self):
+        """Leaves the check's opening row in the history, before the first row the check
+        writes — a check that answers NO writes none and leaves no opening either."""
+        if self._check_opening:
+            trace("Autonomous check opens its rows in the history")
+            self.prompt_manager.add_command_result(self._check_opening)
+            self._check_opening = None
 
     @staticmethod
     def _due_note(due: list[tuple[WatchList.Item, datetime]], now: datetime = None) -> str:
@@ -476,6 +584,8 @@ class AutonomousActionManager:
                 info("Check for autonomous action...")
             is_real_run = prompt is None
             history_messages = []
+            self._check_opening = self._opening_note(wakeup, due)
+            snapshot_at = time.time()   # what the user does from here on the check cannot see
             if is_real_run:
                 prompt = self.prompt_manager.prompt
                 prompt = prompt.replace("[WHISPER]", "").replace("[THINKING]", "")
@@ -511,6 +621,7 @@ class AutonomousActionManager:
             result = self._think(messages, volatile_tail=1)
             fine(f"Raw result:\n {result}")
             trace(f"Thought for {time.time() - start_time:.2f}s")
+            self._yield_to_user(snapshot_at, "before its first commands (the reply is dropped unrun)")
 
             from assistant.commands.CommandProcessor import CommandProcessor
             command_processor = CommandProcessor(self.test_mode)
@@ -586,12 +697,15 @@ class AutonomousActionManager:
                     self._save_autonomous_result_to_history(result)
                 self._save_round_note(command_processor.executed_commands[noted:])
                 noted = len(command_processor.executed_commands)
+                self._yield_to_user(snapshot_at, "between two rounds (the commands so far ran and are in the history)")
 
                 info("Checking with AI again...")
                 start_time = time.time()
                 result = self._think(messages, follow_up=True)
                 trace(f"Follow-up thought for {time.time() - start_time:.2f}s")
                 fine(f"Follow-up raw result:\n {result}")
+                self._yield_to_user(snapshot_at, "before a follow-up round's commands (that reply is dropped "
+                                                 "unrun; the rounds before it are in the history)")
 
                 # The same processor reads every round of the check: the command cap is per reply.
                 command_processor.start_new_reply()
@@ -685,13 +799,22 @@ class AutonomousActionManager:
                     return
 
     def clean_result_and_potentially_add_to_history(self, result: str) -> str:
-        # Only the thinking and the emotion brackets go: a strip of every `<…>` tag took the
-        # `<invoke>` / `<tool_call>` markup of the calls with it and left bare values (#135).
-        result_cleaned = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL)
-        result_cleaned = re.sub(r'\[[^\]]*\]', '', result_cleaned).strip()
-        if result_cleaned and not self._is_no(result_cleaned):
+        # Only the thinking goes, as from a chat turn's row: a strip of every `<…>` tag took
+        # the `<invoke>` / `<tool_call>` markup of the calls with it and left bare values
+        # (#135), and a strip of every `[…]` (meant for emotion tags) took the index out of
+        # `…allowed_chat_ids[4]` — on 2026-11-16 the chat read its own history as a delete of
+        # the whole list and wrote the list back.
+        result_cleaned = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL).strip()
+        if result_cleaned and not self._is_verdict_only(result_cleaned):
+            self._mark_check_rows()
             self.prompt_manager.update_history(None, None, result_cleaned)
         return result_cleaned
+
+    @classmethod
+    def _is_verdict_only(cls, text: str) -> bool:
+        """Whether *text* is the NO verdict and nothing else — a bracket tag a voice model
+        puts beside it is no content."""
+        return cls._is_no(re.sub(r'\[[^\]]*\]', '', text))
 
     ROUND_NOTE_PARAM_CHARS = 40
 
@@ -720,14 +843,16 @@ class AutonomousActionManager:
         result the check alone read (a user-side row, so the two replies stay separate turns)."""
         note = self._round_note(executed)
         info(f"Autonomous round left its note in the history: {note}")
+        self._mark_check_rows()
         self.prompt_manager.add_command_result(note)
 
     def _save_autonomous_result_to_history(self, result: str):
         thinking_match = re.search(r'<thinking>(.*?)</thinking>', result, flags=re.DOTALL)
         thinking_text = thinking_match.group(1).strip() if thinking_match else ""
 
-        visible = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL)
-        visible = re.sub(r'\[[^\]]*\]', '', visible).strip()
+        # Brackets stay: they are indexes and message text of the calls (see
+        # clean_result_and_potentially_add_to_history).
+        visible = re.sub(r'<thinking>.*?</thinking>', '', result, flags=re.DOTALL).strip()
 
         parts = []
         if thinking_text:
@@ -737,10 +862,11 @@ class AutonomousActionManager:
             # model then mimicked in fresh responses — an unclosed prefix the
             # streaming parser couldn't strip.
             parts.append(f"<thinking>{thinking_text}</thinking>")
-        if visible and not self._is_no(visible):
+        if visible and not self._is_verdict_only(visible):
             parts.append(visible)
 
         if parts:
+            self._mark_check_rows()
             self.prompt_manager.update_history(None, None, "\n".join(parts))
 
     # --- the due watcher ------------------------------------------------------------------

@@ -1143,7 +1143,50 @@ class TestCommandResults:
             section.add_command_result("x" * (section.COMMAND_RESULT_CHARS + 500))
         content = save.call_args.args[1]
         assert content.startswith("x" * section.COMMAND_RESULT_CHARS)
-        assert content.endswith("[…result truncated in history…]")
+        assert not content.startswith("x" * (section.COMMAND_RESULT_CHARS + 1))
+        assert f"{section.COMMAND_RESULT_CHARS + 500:,}" in content, "the marker says how much the turn itself read"
+
+    def _stored(self, section, result, parts):
+        with patch.object(section, '_save_history_entry') as save, \
+             patch.object(section, '_load_history'), patch.object(section, '_notify_changed'):
+            section.add_command_result(result, parts=parts)
+        return save.call_args.args[1]
+
+    def test_the_results_of_a_round_share_the_cap(self):
+        """One long page does not push the results after it out of the row: read against a
+        row that ended inside the first page, a later turn took its own figures from the
+        second for made up and retracted them (prod 2026-11-15). The short result stays
+        whole and the long ones split what it leaves."""
+        section = self._section_with([])
+        cap = section.COMMAND_RESULT_CHARS
+        page, board, search = "P" * (cap * 3), "B" * (cap * 2), "Kimi 46"
+        content = self._stored(section, "result: \n" + "\n\n".join([page, board, search]), [page, board, search])
+        share = (cap - len(search)) // 2
+        assert content.count("B") == share
+        assert content.count("P") == cap - len(search) - share
+        assert content.endswith("\n\nKimi 46")
+        assert f"{cap * 3:,}" in content and f"{cap * 2:,}" in content, "each cut result says how much was read"
+
+    def test_a_round_under_the_cap_in_total_is_stored_whole(self):
+        section = self._section_with([])
+        parts = ["a" * (section.COMMAND_RESULT_CHARS // 2), "b" * (section.COMMAND_RESULT_CHARS // 2)]
+        assert self._stored(section, "\n\n".join(parts), parts) == "\n\n".join(parts)
+
+    def test_many_long_results_keep_the_round_at_the_cap(self):
+        section = self._section_with([])
+        parts = [letter * (section.COMMAND_RESULT_CHARS * 2) for letter in "ABCDE"]
+        content = self._stored(section, "\n\n".join(parts), parts)
+        kept = [content.count(letter) for letter in "ABCDE"]
+        assert sum(kept) <= section.COMMAND_RESULT_CHARS
+        assert min(kept) >= section.COMMAND_RESULT_CHARS // 5
+
+    def test_parts_that_are_not_in_the_text_leave_the_cap_on_the_whole(self):
+        """An error framing may reword the reply: the cap must not be lost with the parts."""
+        section = self._section_with([])
+        with patch.object(section, '_save_history_entry') as save, \
+             patch.object(section, '_load_history'), patch.object(section, '_notify_changed'):
+            section.add_command_result("x" * (section.COMMAND_RESULT_CHARS * 2), parts=["somewhere else"])
+        assert save.call_args.args[1].count("x") == section.COMMAND_RESULT_CHARS
 
     def test_uncapped_result_stored_whole(self):
         section = self._section_with([])

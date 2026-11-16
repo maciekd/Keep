@@ -7,13 +7,14 @@ from typing import Generator
 from common.logging import error, trace
 from assistant.commands.formats.CommandFormat import CommandFormat
 from assistant.commands.formats.KeepFormat import KeepFormat
+from .LLMUsage import LLMUsage
 
 
 class Thinking(IntEnum):
     """How much a request may reason, in the caller's terms — each backend maps it to what it
     has. NORMAL is a conversation turn: whatever the backend does by default. FULL is the
     memory curator: the deepest reasoning and the headroom for a long, complete answer (on
-    Claude the adaptive-thinking parameter and the 64k output cap, on ds4 effort high, on
+    Claude the adaptive-thinking parameter and the 128k output cap, on ds4 effort high, on
     Gemini thinking level high; ChatGPT has nothing for it and refuses). MORE is between —
     the autonomous check: more reasoning where a backend has levels to give (ds4 one step up,
     medium at least) and exactly NORMAL everywhere else, never the long-answer headroom. A
@@ -251,6 +252,12 @@ class AbstractLLM(ABC):
         'max_tokens', 'refusal'…), or None when the backend does not report it. A caller
         that persists a reply verbatim checks this for 'max_tokens' before trusting it."""
         return getattr(self, '_last_stop_reason', None)
+
+    @property
+    def last_usage(self) -> LLMUsage | None:
+        """What the most recent completion used and cost, or None when the backend does not
+        report it. For the log line of a caller whose calls are worth accounting for."""
+        return None
 
     def output_cap(self) -> int | None:
         """The output-token cap a chat request is sent with, named in the note the request

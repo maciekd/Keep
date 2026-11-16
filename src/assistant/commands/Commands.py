@@ -21,7 +21,7 @@ from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandi
 from common.logging import trace, info, note, error, fine
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, IssueDraft, JobPullRequest
 from common.ConfigManager import ConfigManager
-from common import ConfigSchema, ConfigStore, FullDiskAccess, IntegrationDirs, Watchdog
+from common import ConfigSchema, ConfigStore, FullDiskAccess, IntegrationDirs, Platform, Watchdog
 from common.ConfigStore import ConfigStoreError
 from common.DevelopmentConfig import PREPEND_USER_QUERY_KEY
 from assistant.ChannelProfile import AUTONOMOUS
@@ -158,6 +158,11 @@ class Commands:
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
     PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
+    # Commands that act on the Mac itself: on any other system `run` refuses them and the
+    # toolkit texts leave them out.
+    MAC_ONLY_COMMANDS = Toolkits.MAC_ONLY_COMMANDS
+    # Config sections that only mean something on a Mac: `config_set` says so instead of writing.
+    MAC_ONLY_CONFIG = {"local_outposts": "The server's own microphones and speakers"}
     # Actions whose effect is the answer: a request ending on them without a word stays
     # silent. Any other command ending a silent request gets one more round to reply
     # (RequestProcessor._reply_owed). restart_server reports through a system note;
@@ -234,6 +239,8 @@ class Commands:
         self._serial_queues: dict[str, queue.Queue] = {}
         self._serial_workers: dict[str, threading.Thread] = {}
 
+    _hosted_logged: Optional[tuple[int, int]] = None
+
     def _host(self, command_sets) -> dict[str, object]:
         """One instance of each set, by the command names it owns. A name with two owners
         would make the dispatch depend on the walk order, so it is refused here."""
@@ -247,7 +254,11 @@ class Commands:
                     raise ValueError(f"Command '{name}' has two owners: {other.__module__}.{other.__name__} "
                                      f"and {cls.__module__}.{cls.__name__}")
                 owners[name] = command_set
-        trace(f"Commands: hosting {len(owners)} command(s) from {len(command_sets)} integration command set(s)")
+        # Every pooled handler builds its own Commands: say it once, and again only if it changes.
+        hosted = (len(owners), len(command_sets))
+        if Commands._hosted_logged != hosted:
+            Commands._hosted_logged = hosted
+            trace(f"Commands: hosting {hosted[0]} command(s) from {hosted[1]} integration command set(s)")
         return owners
 
     def _owner(self, command: str):
@@ -1136,7 +1147,7 @@ class Commands:
         if folder is None:
             near = self._integrations_resembling(name)
             if near:
-                # A near miss is the integration misnamed ("Spotify" for "Sonos & Spotify"),
+                # A near miss is the integration misnamed ("Microsoft" for "Microsoft 365"),
                 # not a new one: on 2026-10-26 two such jobs ran in new-integration mode and
                 # had the fix closed as straying. Ask back instead.
                 info(f"improve_integration: no integration named '{name}', but it resembles "
@@ -1613,7 +1624,7 @@ class Commands:
     @staticmethod
     def _setup_activity():
         """A command that changes the setup ran — every command on the CONFIG_LANE (config_set,
-        config_request, enable / disable / restart_integration, the sign-ins and pairings of the
+        config_request, config_delete, enable / disable / restart_integration, the sign-ins and pairings of the
         integration folders), see background_command: on a young install setup is in progress
         for FTUE_SETUP_GRACE_HOURS more (FirstRun.in_ftue) — the setup toolkit stays preloaded
         and the INTEGRATIONS section stays in the prompt. A read-only command (config_help,
@@ -1669,6 +1680,9 @@ class Commands:
         lines = []
         for status in sorted(statuses, key=lambda s: s["name"].lower()):
             line = f"{status['name']} — {self._STATE_LABELS.get(status['state'], status['state'])}"
+            if status.get("needs_mac"):
+                lines.append(f"{status['name']} — needs macOS: {status['last_error']}")
+                continue
             if status["state"] == "disabled":
                 line += f'; enable: enable_integration("{status["name"]}")'
                 if status.get("setup_after"):
@@ -1755,6 +1769,9 @@ class Commands:
         except ConfigStoreError as e:
             info(f"config_request: refused — {e}")
             return f"config_request failed: {e}"
+        if refusal := self._needs_mac(key):
+            info(f"config_request: refused — {refusal}")
+            return f"config_request failed: {refusal}"
         ctx = self._current_context
         source = getattr(ctx, "source", None)
         conversation = getattr(ctx, "conversation", None)
@@ -1836,7 +1853,7 @@ class Commands:
         if key == "is_developer":
             return cls.IS_DEVELOPER_HINT
         if key == Watchdog.KEY:
-            return cls.WATCHDOG_HINT
+            return cls.WATCHDOG_HINT if Platform.is_mac() else cls.WATCHDOG_ON_LINUX
         if key == PREPEND_USER_QUERY_KEY:
             return cls.PREPEND_HINT
         if key == cls.AI_FOOTER_KEY:
@@ -1868,7 +1885,24 @@ class Commands:
         except ConfigStoreError as e:
             info(f"config_set: refused — {e}")
             return f"config_set failed: {e}"
+        if refusal := self._needs_mac(key):
+            info(f"config_set: refused — {refusal}")
+            return f"config_set failed: {refusal}"
         self.background_command(self._run_config_set, [key, value], lane=self.CONFIG_LANE)
+
+    WATCHDOG_ON_LINUX = ("the watchdog key is for a Mac, where launchd revives a dead server. This server runs "
+                         "under systemd, which already restarts it when it dies — nothing to set.")
+
+    @classmethod
+    def _needs_mac(cls, key: str) -> Optional[str]:
+        """Why *key* is not written on a server that is not a Mac; None on a Mac and for every
+        key that means the same everywhere."""
+        if Platform.is_mac():
+            return None
+        if key == Watchdog.KEY:
+            return cls.WATCHDOG_ON_LINUX
+        what = cls.MAC_ONLY_CONFIG.get(key.split(".", 1)[0].split("[", 1)[0])
+        return Platform.mac_only(what) if what else None
 
     def _run_config_set(self, key: str, value: str) -> str:
         interface = ConfigStore.interface_flag(key)
@@ -1889,6 +1923,39 @@ class Commands:
             return (f"{key} saved, but the {interface} interface was already {'on' if before else 'off'} "
                     f"(its default) — nothing changes and no restart is needed.")
         return f"{key} saved. {self._restart_hint(key)}"
+
+    def cmd_config_delete(self, parameter_string: str):
+        """Takes a key out of config.yaml (its default applies again) or one item out of a list,
+        which closes up — what config_set cannot do, since it only ever writes a value."""
+        key = ConfigSchema.normalize_key(parameter_string.strip().strip('"\''))
+        if not key:
+            return "config_delete failed: expected a setting key such as telegram_bot.allowed_chat_ids[2]"
+        try:
+            ConfigStore.check_delete(key)
+        except ConfigStoreError as e:
+            info(f"config_delete: refused — {e}")
+            return f"config_delete failed: {e}"
+        self.background_command(self._run_config_delete, key, lane=self.CONFIG_LANE)
+
+    def _run_config_delete(self, key: str) -> str:
+        interface = ConfigStore.interface_flag(key)
+        before = ConfigStore.interface_enabled(interface) if interface else None
+        was_set = ConfigStore.is_present(key)
+        try:
+            reply = ConfigStore.delete_value(key)
+        except ConfigStoreError as e:
+            info(f"config_delete: refused — {e}")
+            return f"config_delete failed: {e}"
+        if not was_set:
+            return reply
+        if key == Watchdog.KEY:
+            failure = Watchdog.sync(bool(ConfigManager().get(Watchdog.KEY, False)))
+            if failure:
+                return f"{reply}, but it could not be applied: {failure}"
+        if interface and ConfigStore.interface_enabled(interface) == before:
+            info(f"config_delete: {key} was already {'on' if before else 'off'} by default — no restart needed")
+            return f"{reply}. The {interface} interface stays {'on' if before else 'off'} — no restart is needed."
+        return f"{reply}. {self._restart_hint(key)}"
 
     TELEGRAM_FEED = "Telegram Feed"
 
@@ -1935,6 +2002,11 @@ class Commands:
             known = ", ".join(sorted(self._known_integration_names()))
             info(f"{verb}_integration: no integration named '{name}'")
             return f"No integration named '{name}'. Known: {known}"
+        needs_mac = next((s for s in self._known_integration_statuses()
+                          if s["name"] == canonical and s.get("needs_mac")), None)
+        if enable and needs_mac:
+            info(f"enable_integration: {canonical} needs macOS, refused")
+            return f"enable_integration failed: {needs_mac['last_error']}"
         was_listed = ConfigManager.get_instance().integration_enabled(canonical)
         try:
             changed = (ConfigStore.enable_integration if enable else ConfigStore.disable_integration)(canonical)
@@ -1992,7 +2064,9 @@ class Commands:
             return f"{status['name']} cannot be restarted from here — restart the server for a config change to apply."
         state = status["state"]
         line = f"{status['name']} restarted: {self._STATE_LABELS.get(state, state)}"
-        if state == "disabled":
+        if status.get("needs_mac"):
+            line = f"{status['name']} was not started: {status['last_error']}"
+        elif state == "disabled":
             line += f' — not in enabled_integrations; enable_integration("{status["name"]}") adds it'
         elif state == "not_configured":
             missing = [k["key"] for k in ConfigStore.describe_keys(status["config_keys"]) if not k["set"]]
@@ -2302,11 +2376,12 @@ class Commands:
             combined = []
             for lr in list_results:
                 combined.extend(lr)
+            parts = [b["text"] for b in combined if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
             if str_results:
                 combined.append({"type": "text", "text": "\n\n".join(str_results)})
-            cp.set_command_reply(combined, contains_error=contains_error)
+            cp.set_command_reply(combined, contains_error=contains_error, parts=parts + str_results)
         elif str_results:
-            cp.set_command_reply("\n\n".join(str_results), contains_error=contains_error)
+            cp.set_command_reply("\n\n".join(str_results), contains_error=contains_error, parts=str_results)
         else:
             trace(f"{len(results)} background result(s), all empty — nothing to publish.")
 
@@ -2640,6 +2715,7 @@ class Commands:
     def describe_config_set(self, p):
         key = p.split(",", 1)[0].strip().strip('"\'')
         return f"Setting {key}" if key else "Setting a value"
+    def describe_config_delete(self, p):      return f"Deleting setting {p.strip()}" if p.strip() else "Deleting a setting"
     def describe_restart_integration(self, p): return f"Restarting {p.strip()}" if p.strip() else "Restarting an integration"
     def describe_enable_integration(self, p):  return f"Enabling {p.strip()}" if p.strip() else "Enabling an integration"
     def describe_disable_integration(self, p): return f"Disabling {p.strip()}" if p.strip() else "Disabling an integration"
@@ -2751,6 +2827,9 @@ class Commands:
         if f is None:
             error(f"Unknown command: {command}")
             return f"Unknown command: {command}"
+        if command in self.MAC_ONLY_COMMANDS and not Platform.is_mac():
+            info(f"Command {command} refused: it needs macOS and this server runs on {Platform.current()}")
+            return f"{command} failed: {Platform.mac_only(command)}"
         if refusal := self.refused(command):
             return refusal
 

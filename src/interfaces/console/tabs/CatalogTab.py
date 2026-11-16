@@ -6,7 +6,7 @@ from typing import Dict, FrozenSet, List, NamedTuple, Optional, Tuple
 from assistant.integration.Accounts import render_accounts_status, STATE_OK
 from assistant.integration.Feed import Feed
 from assistant.integration.Integration import Integration, IntegrationState
-from assistant.integration.IntegrationMonitor import IntegrationMonitor
+from assistant.integration.IntegrationMonitor import IntegrationMonitor, MacOnlyIntegration
 from common.logging import trace
 from interfaces.console import Theme
 from interfaces.console.framework.TUIScreen import TUIScreen, Color
@@ -43,6 +43,8 @@ STATUS = {
     IntegrationState.RATE_LIMITED: Status("rate limited", Theme.COLOR_ORANGE, True),
     IntegrationState.DISABLED: Status("disabled", Theme.COLOR_DIM),
 }
+# An integration that needs macOS, on a server that is not a Mac: disabled, and not to be turned on.
+NEEDS_MAC = Status("needs macOS", Theme.COLOR_DIM)
 
 
 class Entry(NamedTuple):
@@ -60,8 +62,12 @@ class Entry(NamedTuple):
         return self.integration.state is not IntegrationState.DISABLED
 
     @property
+    def needs_mac(self) -> bool:
+        return isinstance(self.integration, MacOnlyIntegration)
+
+    @property
     def status(self) -> Status:
-        return STATUS[self.integration.state]
+        return NEEDS_MAC if self.needs_mac else STATUS[self.integration.state]
 
 
 class CatalogTab(TabView):
@@ -161,6 +167,8 @@ class CatalogTab(TabView):
 
     @staticmethod
     def _ask(entry: Entry) -> str:
+        if entry.needs_mac:
+            return ""       # nothing turns it on here
         return f': "{"disable" if entry.enabled else "enable"} {entry.name}"'
 
     # --- Summary tiles ---
@@ -249,6 +257,8 @@ class CatalogTab(TabView):
                 facts.append(Fact("Config", "its key is set" if count == 1 else f"all {count} keys are set", Theme.COLOR_LABEL))
         tags = self._tags(entry)
         facts.append(Fact("Brings", tags, Theme.COLOR_TEAL) if tags else Fact("Brings", "–", Theme.COLOR_FAINT))
+        if entry.needs_mac:
+            return facts + self._wrapped("Turn on", integration.last_error, value_w, Theme.COLOR_LABEL, ERROR_MAX_ROWS)
         facts.append(Fact("Turn off" if entry.enabled else "Turn on", f"ask Keep{self._ask(entry)}", Theme.COLOR_TEXT))
         return facts
 

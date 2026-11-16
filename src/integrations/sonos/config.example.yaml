@@ -1,0 +1,9 @@
+# Sonos: the speakers on the local network, enable with `enabled_integrations: [Sonos]`. Spotify plays on them
+# through the Sonos Spotify service, so the household's Spotify account must be linked in the Sonos app; search
+# needs api_keys.spotify, and a spotify_login() adds the playlists of the user's own library. The Sonos favorites
+# and playlists are in the MUSIC data as F-0, F-1, … and P-0, P-1, … (the first 10 of each, in the Sonos app's order).
+sonos:
+  # Sonos zone name -> the room name the LLM sees; a blank value hides the zone. Optional.
+  room_mapping: {}
+  #   "Kitchen Front": Kitchen
+  #   "Kitchen Back": ""

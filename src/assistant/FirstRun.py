@@ -61,7 +61,7 @@ from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 
-from common import Autostart, DesktopShortcut, FullDiskAccess
+from common import Autostart, DesktopShortcut, FullDiskAccess, Platform
 from common.ConfigManager import config
 from common.FloxyDatabase import FloxyDatabase, PHOTO_HISTORY_SOURCE
 from common.Paths import AISERVER_DIR, CACHE_DIR
@@ -99,12 +99,40 @@ from dropping out and have them configure the most important integrations. Once 
 are in the system starts to shine - before that we're a blank slate and provide no value for the user.
 
 First introduce yourself. Then explain the setup process briefly. First setup takes normally around 15-20 minutes.
+<!-- mac -->
 Indexing messages and photos gives you deep contextual knowledge of the user — that is what makes you truly smart and helpful.
+<!-- /mac -->
+<!-- linux -->
+Reading the user's messages, mail and calendar gives you deep contextual knowledge of the user — that is what makes you truly smart and helpful.
+<!-- /linux -->
 
 Guide the user through the setup one step at a time, with list_integrations and config_help as your map. 
 
 Set up in this order:
 
+<!-- linux -->
+This server runs on Linux. Photos, Reminders, HomeClaw and microphones and speakers on the server itself need a
+Mac: list_integrations shows them as "needs macOS" — never offer them, and never send the user to System Settings.
+
+1. Telegram — the chat on the user's phone.
+The server answers this machine only until `interfaces.lan_access` is on, which the phone app needs (the setup
+toolkit has the warning that goes with it): say so when the user asks for the app or for voice, not before.
+
+2. Mail and calendar, whichever the user has: list_integrations names the integrations, config_help what each needs.
+
+3. The home: lights, speakers, cameras, the car — ask what they have and set up what there is an integration for.
+
+4. iMessage, only when the household has a Mac that stays on: the messages are read through an iMessage satellite
+on that Mac (config_help("imessage") has the install). Skip it otherwise.
+
+Once you have a deep understanding of the user and his/her family/friends you will be able to be truly helpful and
+be truly intelligent. The messages, the mail and the calendar are important because you'll get loads of
+background/context on the user that way.
+
+From those feeds and the conversations you'll create a comprehensive long term memory of the users life, curated
+every night. That's when you start being able to be truly helpful and create value.
+<!-- /linux -->
+<!-- mac -->
 1. Telegram — the chat on the user's phone, and the lifeline for step 2, which closes this terminal.
 
 2. Full Disk Access — needed for Messages database and other integrations. You can open the dialog for the user 
@@ -145,12 +173,18 @@ that way.
 
 Using Photos, iMessage and other Feeds you'll create a comprehensive long term memory of the users life. That's when
 you start being able to be truly helpful and create value.
+<!-- /mac -->
 
 Then whatever they want.
 
 The user needs to know what each step does and what you need from them, not
 the mechanics: config_help may hand you file paths, database names, permission systems and remote-access caveats -
+<!-- mac -->
 translate those into plain language ("the Mac may ask you to allow this once, so it's easiest if you're sitting at it")
+<!-- /mac -->
+<!-- linux -->
+translate those into plain language ("you create an app password at your mail provider and type it here once")
+<!-- /linux -->
 rather than repeating them.
 
 In your first message feel free to use bold/italics so the message looks nice (you can always use it but it's nice to
@@ -160,10 +194,17 @@ start with a bit more fancy message). Feel free to use a bit of humor. Examples 
 
 Try to be very concise, users will churn if you write a lot of text. Keep it short.
 
+<!-- mac -->
 Rough outline of the setup process:
 * We load the iMessage history and index one month of photos.
 * Then curate the first long-term memory from that month of messages and photos. It will be good but not perfect; it will improve over time.
 * Backfill three years of photos. Their descriptions come out better thanks to the memory above.
+<!-- /mac -->
+<!-- linux -->
+Rough outline of the setup process:
+* We connect the chat, then the accounts and the home.
+* Every night a long-term memory is curated from what happened. It will be good but not perfect; it will improve over time.
+<!-- /linux -->
 
 If the history shows you have met before, skip the introduction and continue where you left off."""
 
@@ -256,7 +297,8 @@ def brief() -> str:
     """The system turn that opens the first conversation."""
     name = config.get_owner_name()
     owner = _OWNER_UNKNOWN if name == _NO_OWNER else _OWNER_KNOWN.format(name=name)
-    return BRIEF.format(owner=owner)
+    from assistant.commands.formats.Rewriter import gate_platform   # the brief never passes the rewriter
+    return gate_platform(BRIEF).format(owner=owner)
 
 
 # --- The pipeline -------------------------------------------------------------------------
@@ -367,7 +409,8 @@ def begin_if_fresh(seeded: bool, path: Path = None) -> bool:
         info("First run: established install (a curated memory bank, no pipeline state) — no pipeline")
         return False
     State.fresh().save(path)
-    note("First run: fresh install — the first-run pipeline is armed (waiting for Photos to be enabled)")
+    waiting = "waiting for Photos to be enabled" if Platform.is_mac() else f"Photos needs macOS, so it stays in setup on {Platform.current()}"
+    note(f"First run: fresh install — the first-run pipeline is armed ({waiting})")
     if config.get("is_developer", False):
         # The developer's Mac has the grant, so the grant step would never be exercised. Only the
         # first process of the setup pretends: the restart the step ends with finds the state file
@@ -532,6 +575,12 @@ class Pipeline:
         the stamp ends the probing (#167). Returns whether the shortcut was built now."""
         if state.desktop_shortcut_at is not None:
             return False
+        if not Platform.is_mac():
+            state.desktop_shortcut_at = time.time()
+            state.save(self._path)
+            info(f"First run: no Desktop shortcut, login item or Full Disk Access on {Platform.current()} — "
+                 f"the step is stamped done")
+            return False
         now = now if now is not None else time.monotonic()
         if now < self._shortcut_probe_at:
             return False
@@ -583,6 +632,11 @@ class Pipeline:
         return bool(step and step(state))
 
     def _setup(self, state: State) -> bool:
+        if not Platform.is_mac():
+            # Photos is a Mac's: a config copied from one may still list it, and the stages after
+            # this one would wait for a feed that is never built. The nightly curation runs anyway.
+            self._waiting(f"Photos needs macOS — the pipeline stays in setup on {Platform.current()}")
+            return False
         if not _enabled(PHOTOS_INTEGRATION):
             self._waiting("waiting for the Photos integration to be enabled")
             return False

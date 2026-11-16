@@ -1,6 +1,6 @@
 #!/bin/bash
 # Sourced by start.sh, stop.sh, autostart.sh and keep.sh from the repository root: what this
-# install runs, the ports that go with it, and which processes on the Mac are its own.
+# install runs, the ports that go with it, and which processes on the machine are its own.
 #
 # An install is a Keep server or an iMessage satellite (common/Role.py). The root key `role` of
 # config.yaml decides, and a satellite listens on imessage_satellite.port alone — never on the
@@ -31,13 +31,23 @@
 # one user, a server and a satellite or a second checkout, are both `python floxy_ai_server.py`
 # and must not stop each other.
 
+# The one OS switch of the scripts, as common/Platform.py is the Python side's: Linux, or anything
+# else, which runs the Mac's commands as they always ran. KEEP_OS is for the script tests alone —
+# they run each system's branch on the other one; nothing else sets it.
+os=${KEEP_OS:-$(uname -s)}
+
 me=$(id -u)
 # This checkout as lsof tells a working directory with -FDi: the device and the inode of the
 # folder, never its name. A name does not compare — lsof escapes what the caller's locale cannot
 # print, and the login applet and launchd run without one (~/Kęp is K\xc4\x99p there), as it
 # escapes a tab or a backslash in any locale, while pwd prints the bytes. The pair is the same
 # however the folder was reached: through a symlink, in another case.
-here=$(/usr/bin/stat -f '0x%Xd %i' . 2>/dev/null)
+# On Linux the same pair comes from stat, for the folder here and for /proc/<pid>/cwd there.
+if [ "$os" = Linux ]; then
+    here=$(stat -L -c '%d %i' . 2>/dev/null)
+else
+    here=$(/usr/bin/stat -f '0x%Xd %i' . 2>/dev/null)
+fi
 
 # The reader of config.yaml, for config_value and config_trouble. install.sh carries the same
 # program between the same two marker lines (it runs before a checkout exists, so it cannot
@@ -132,6 +142,7 @@ case "$role" in
     server)
         what=server
         listen_ports="8888 43523"   # everything the process binds; a start needs them all free
+        [ "$os" != Linux ] || listen_ports=8888   # no Outpost TCP server there (VoiceInterface)
         up_port=8888                # the one that says it is up
         console_port=5151 ;;
     imessage_satellite)
@@ -157,19 +168,49 @@ case "$role" in
             role_problem="role: $role in config.yaml is not a role — remove the key for a Keep server, or set it to imessage_satellite"
         fi ;;
 esac
+# A satellite is a Mac: floxy_ai_server.py refuses the role on Linux, and so do the scripts.
+if [ "$os" = Linux ] && [ "$role" = imessage_satellite ]; then
+    role_problem="role: imessage_satellite in config.yaml needs macOS — an iMessage satellite runs on a Mac. Remove the key for a Keep server"
+    listen_ports=""; up_port=""
+fi
 
 # own_listeners <port>...: the pids of this user's processes listening on any of the TCP ports.
 # (lsof exits 1 as soon as one of several ports has no listener, so callers read the output.)
+# On Linux ss lists every listening socket of the machine, and names a pid only for the caller's
+# own processes unless root asks — so each pid's owner is checked as well (/proc/<pid> belongs
+# to the user the process runs as).
 own_listeners() {
     [ $# -gt 0 ] || return 0
+    if [ "$os" = Linux ]; then
+        local pid
+        for pid in $(ss -Hltnp 2>/dev/null | awk -v ports=" $* " '
+                {
+                    port = ""
+                    for (i = 1; i <= NF; i++) if ($i ~ /:[0-9]+$/) { port = $i; sub(/.*:/, "", port); break }
+                    if (port == "" || index(ports, " " port " ") == 0) next
+                    line = $0
+                    while (match(line, /pid=[0-9]+/)) {
+                        print substr(line, RSTART + 4, RLENGTH - 4)
+                        line = substr(line, RSTART + RLENGTH)
+                    }
+                }' | sort -un); do
+            [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" = "$me" ] && echo "$pid"
+        done
+        return 0
+    fi
     # shellcheck disable=SC2046
     lsof -a -u "$me" -t $(printf -- '-iTCP:%s ' "$@") -sTCP:LISTEN 2>/dev/null
     return 0
 }
 
 # cwd_of <pid>: the device and the inode of the process's working directory, as `here` has this
-# checkout's; nothing when lsof cannot read it.
+# checkout's; nothing when lsof cannot read it (on Linux: when /proc/<pid>/cwd cannot be followed —
+# the process is gone or another user's).
 cwd_of() {
+    if [ "$os" = Linux ]; then
+        stat -L -c '%d %i' "/proc/$1/cwd" 2>/dev/null
+        return 0
+    fi
     lsof -a -p "$1" -d cwd -FDi 2>/dev/null |
         awk '/^D/ { device = substr($0, 2) } /^i/ { inode = substr($0, 2) }
              END { if (device != "" && inode != "") print device, inode }'

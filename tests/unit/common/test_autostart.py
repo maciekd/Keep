@@ -7,6 +7,9 @@ import pytest
 
 from common import Autostart
 
+# The Mac's own behaviour, whatever system the suite runs on (common/Platform).
+pytestmark = pytest.mark.usefixtures("on_a_mac")
+
 
 class FakeMac:
     """subprocess.run for osascript, osacompile (laying out the bundle) and open. `items` is the

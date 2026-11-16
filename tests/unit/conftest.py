@@ -78,10 +78,32 @@ class _NoRelaunchPopen(subprocess.Popen):
             raise RuntimeError(f"a unit test tried to build an applet in the checkout: {words}")
         if words[:1] == ["osascript"] and any("login item" in w for w in words):
             raise RuntimeError("a unit test tried to read or change this Mac's login items")
+        # The Linux branches of common/Browser and common/Clipboard: on a developer's Linux desktop
+        # the first would open a real browser window, the others read what they last copied.
+        if words[:1] == ["xdg-open"]:
+            raise RuntimeError(f"a unit test tried to open a real browser: {words}")
+        if words[:1] in (["wl-paste"], ["xclip"]):
+            raise RuntimeError(f"a unit test tried to read this machine's clipboard: {words}")
+        # A Linux server is the systemd user unit keep.service (scripts/service.sh): unstubbed, a
+        # start or a stop would restart or end the developer's own server, and linger outlives
+        # the suite. The script tests run the scripts over bash functions of these names.
+        if words[:1] in (["systemctl"], ["systemd-run"], ["loginctl"]):
+            raise RuntimeError(f"a unit test tried to reach this machine's systemd: {words}")
         super().__init__(args, *rest, **kwargs)
 
 
 subprocess.Popen = _NoRelaunchPopen
+
+
+
+@pytest.fixture
+def on_a_mac(monkeypatch):
+    """The Mac's own behaviour is under test (a login item, launchd, Messages on this machine):
+    `common.Platform` answers macOS whatever system the suite runs on. A test of the Linux branch
+    patches `Platform.current` itself."""
+    from common import Platform
+    monkeypatch.setattr(Platform, "current", lambda: Platform.MAC)
+
 
 # openai is imported here, at collection, rather than by the first ChatGPTLLM test on each
 # worker: the import is ~80 ms, and the test that paid it was recorded as slow, moved to the
@@ -298,6 +320,19 @@ def reset_system_note():
     SystemNote.set_history(None)
     yield
     SystemNote.set_history(None)
+
+
+@pytest.fixture(autouse=True)
+def no_destination_outlives_its_test():
+    """The destination registry is process-wide and its list is counted by the tests of the
+    prompt's `{DESTINATIONS}` line: an `owner` a hub left registered (a console transport test
+    that never stopped its hub) made the iMessage chat's list one entry longer in whichever
+    worker ran both. What a test registered is gone when it ends, stopped or not."""
+    from assistant import Destinations
+    before = list(Destinations._destinations)
+    yield
+    with Destinations._lock:
+        Destinations._destinations[:] = [d for d in Destinations._destinations if d in before]
 
 
 @pytest.fixture

@@ -471,13 +471,15 @@ class TestDue:
 
 @pytest.mark.unit
 class TestDueTime:
-    """A due *time* is a moment the assistant acts at: the item is due for a poll from then
-    until it is looked at again, so a reminder a check failed to deliver comes back rather than
-    being lost; a bare date is a fact in the index and fires nothing."""
+    """A due is a moment the assistant acts at — a bare date that morning: the item is due for a
+    poll from then until it is looked at again, so a reminder a check failed to deliver comes
+    back rather than being lost."""
 
-    def test_a_due_time_is_read_and_a_bare_date_or_free_text_is_not(self):
+    def test_a_due_time_is_read_a_bare_date_is_that_morning_and_free_text_is_nothing(self):
         assert WatchList.due_moment(WatchList.Item("x", due="2026-10-11 17:00")) == datetime(2026, 10, 11, 17, 0)
-        assert WatchList.due_moment(WatchList.Item("x", due="2026-10-11")) is None
+        morning = WatchList.due_moment(WatchList.Item("x", due="2026-10-11"))
+        assert morning.date() == date(2026, 10, 11) and 6 <= morning.hour <= 12
+        assert WatchList.due_moment(WatchList.Item("x", due="2026-10-11 or so")) is None
         assert WatchList.due_moment(WatchList.Item("x", due="when the tour is announced")) is None
 
     def test_an_item_is_due_from_its_moment_until_it_is_looked_at(self, wl, log):
@@ -495,10 +497,36 @@ class TestDueTime:
         WatchList.save("Water meter", "snoozed", "2026-10-11 19:00", wl, log)
         assert WatchList.render_due(wl, datetime(2026, 10, 11, 18, 0)) == WatchList.NOTHING_DUE
 
-    def test_a_bare_due_date_never_makes_an_item_due_for_a_poll(self, wl, log):
+    def test_an_item_with_only_a_bare_due_date_is_due_from_that_morning_until_looked_at(self, wl, log):
         WatchList.save("Sofa", "on its way", "2026-10-11", wl, log)
         backdate(wl, "sofa", "Checked", date(2026, 10, 1))
-        assert WatchList.render_due(wl, datetime(2026, 10, 13, 9, 0)) == WatchList.NOTHING_DUE
+        assert WatchList.render_due(wl, datetime(2026, 10, 11, 0, 30)) == WatchList.NOTHING_DUE
+        assert "sofa" in WatchList.render_due(wl, datetime(2026, 10, 11, 13, 0))
+        assert "sofa" in WatchList.render_due(wl, datetime(2026, 10, 13, 9, 0)), "left alone, it comes back"
+        WatchList.check("sofa", wl)
+        assert WatchList.render_due(wl, datetime.now() + timedelta(hours=1)) == WatchList.NOTHING_DUE
+
+    def test_a_date_that_is_no_day_of_the_calendar_fires_nothing(self, wl, log):
+        WatchList.save("Sofa", "on its way", "2026-02-30", wl, log)
+        assert WatchList.due_moment(WatchList.get("Sofa", wl)) is None
+        assert WatchList.pending(datetime(2026, 3, 5, 12, 0), directory=wl) == []
+        assert WatchList.render_due(wl, datetime(2026, 3, 5, 12, 0)) == WatchList.NOTHING_DUE
+
+    def test_a_look_on_the_day_settles_a_bare_date_only_when_it_came_after_the_morning(self, wl, log):
+        """A bare date is acted at in the morning, so a look earlier that day was a look before
+        the moment: the item still comes due. One later in the day settles it."""
+        WatchList.save("Sofa", "on its way", "2026-10-11", wl, log)
+        morning = WatchList.due_moment(WatchList.get("Sofa", wl))
+        path = wl / "sofa.md"
+
+        def looked_at(moment: datetime):
+            path.write_text("\n".join(f"Checked: {moment:%Y-%m-%d %H:%M}" if l.startswith("Checked:") else l
+                                      for l in path.read_text().splitlines()) + "\n")
+
+        looked_at(morning - timedelta(hours=2))
+        assert "sofa" in WatchList.render_due(wl, morning + timedelta(hours=4))
+        looked_at(morning + timedelta(hours=1))
+        assert WatchList.render_due(wl, morning + timedelta(hours=4)) == WatchList.NOTHING_DUE
 
     def test_the_due_item_says_how_long_ago_its_moment_was_reached(self, wl, log):
         WatchList.save("Water meter", "read it", "2026-10-11 17:00", wl, log)
@@ -524,6 +552,7 @@ class TestPending:
             backdate(wl, name, "Checked", date(2026, 10, 11))
         pending = WatchList.pending(datetime(2026, 10, 11, 18, 0), directory=wl)
         assert [(item.name, moment) for item, moment in pending] == [
+            ("dated", datetime(2026, 10, 11, WatchList.BARE_DATE_HOUR)),
             ("sooner", datetime(2026, 10, 11, 17, 0)), ("later", datetime(2026, 10, 11, 19, 0))]
 
     def test_a_due_time_looked_at_since_is_not_pending(self, wl, log):

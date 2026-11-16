@@ -35,7 +35,7 @@ def test_file_documents_its_commands_and_no_others(toolkit: Toolkit):
     text = toolkit.text()
     assert len(text) <= Toolkits.MAX_FILE_CHARS
     documented = _documented(text)
-    for command in toolkit.commands:
+    for command in toolkit.offered_commands():   # all of them on a Mac; elsewhere without the Mac's own
         assert command in documented, f"{toolkit.name}.md does not show `{command}(`"
     foreign = {c for c in documented if Toolkits.owner_of(c) not in (None, toolkit)}
     # A file may point at another toolkit's command in prose or an example (the x toolkit names

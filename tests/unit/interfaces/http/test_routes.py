@@ -283,3 +283,36 @@ class TestStreamRoute:
         r, body = get(a, "/stream?query=hi&text=true&source=TextChat&request_id=r6")
         assert r.status_code == 200
         assert body.decode() == "Hello\x1eDone!\x1e"
+
+
+class TestServerSoundWithoutSpeakers:
+    """A server without speakers of its own (not a Mac) cannot play a reply: the app in its
+    server-sound mode is answered as text, voice interface or not."""
+
+    @pytest.mark.parametrize("voice_enabled", [True, False])
+    def test_a_server_sound_request_gets_the_reply_as_text(self, assistant, voice_enabled):
+        a = Quart(__name__)
+        register(a, HttpDeps(assistant=assistant, voice_enabled=voice_enabled, server_sound=False))
+        r, body = get(a, "/stream?server_sound=true&source=VoiceToVoice&query=hi")
+        assert "text/plain" in r.headers["Content-Type"]
+        assert body.decode() == "Hello\x1eDone!\x1e"
+        context, _ = assistant.calls[0]
+        assert context.text_only and not context.server_sound
+
+    def test_an_audio_request_still_gets_audio(self, assistant):
+        a = Quart(__name__)
+        register(a, HttpDeps(assistant=assistant, voice_enabled=True, server_sound=False))
+        r, _ = get(a, "/stream?source=VoiceToVoice&query=hi")
+        context, _ = assistant.calls[0]
+        assert not context.text_only and r.headers["Content-Type"] == "audio/mpeg"
+
+    def test_the_http_interface_offers_server_sound_on_a_mac_alone(self, monkeypatch):
+        from common import Platform
+        from interfaces.http.HttpInterface import HttpInterface
+        offered = {}
+        for system in (Platform.MAC, Platform.LINUX):
+            monkeypatch.setattr(Platform, "current", lambda system=system: system)
+            interface = HttpInterface(8888)
+            interface.start(Mock())
+            offered[system] = interface.deps.server_sound
+        assert offered == {Platform.MAC: True, Platform.LINUX: False}

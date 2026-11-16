@@ -39,9 +39,16 @@ Find My): run `icloud_devices` and point the entry at the new id.
 `config_set`, `restart_integration` and `icloud_login_code` are in the `setup` toolkit.
 
 ### The 2FA code
+<!-- mac -->
 A sign-in with the password ends with Apple texting a 6-digit code to the account's trusted phone, and a system note
 says whether the server reads it by itself (the iMessage feed is running and the text reaches Messages on this Mac)
 or the user has to enter it. Either way, when the user tells you the code, run `icloud_login_code(code: str)`, e.g.
+<!-- /mac -->
+<!-- linux -->
+A sign-in with the password ends with Apple texting a 6-digit code to the account's trusted phone, and a system note
+says whether the server reads it by itself (the iMessage feed is running and the text reaches its satellite's Mac)
+or the user has to enter it. Either way, when the user tells you the code, run `icloud_login_code(code: str)`, e.g.
+<!-- /linux -->
 `icloud_login_code("123456")` — it submits the code and answers with the outcome. The other way in is the console's
 iCloud tab (Integrations tab, iCloud sub-tab, Ctrl-E). A code is single-use and lasts a few minutes; the newest text
 holds the current one. Never `restart_integration("iCloud")` while a code is pending — a restart opens a new

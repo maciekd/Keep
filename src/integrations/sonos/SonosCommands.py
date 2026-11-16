@@ -1,9 +1,9 @@
 from assistant.commands.CommandSet import CommandSet
 from common.logging import trace
-from integrations.music.MusicIntegration import MusicManager
+from integrations.sonos.SonosIntegration import SonosIntegration
 
 
-class MusicCommands(CommandSet):
+class SonosCommands(CommandSet):
     """The Sonos-only command left in the folder: a Sonos favorite or playlist by name. The music
     commands every speaker system answers (play, pause, play_music …) and the Spotify sign-in are
     core's, run against the MusicSystem contract."""
@@ -11,8 +11,8 @@ class MusicCommands(CommandSet):
     SELF_EVIDENT_COMMANDS = frozenset({"sonos_enqueue_and_play"})
 
     @property
-    def music_manager(self) -> MusicManager:
-        return MusicManager.get_instance()
+    def sonos(self) -> SonosIntegration:
+        return SonosIntegration.get_instance()
 
     #  todo: this is not in the prompt, do we still want it?
     def cmd_sonos_enqueue_and_play(self, *args: str):
@@ -20,15 +20,15 @@ class MusicCommands(CommandSet):
             return "sonos_enqueue_and_play failed: expected 'zone, playlist' parameters"
         room = args[0].strip()
         playlist = args[1].strip()
-        if problem := self.music_manager.zone_problem(room):
+        if problem := self.sonos.zone_problem(room):
             return f"sonos_enqueue_and_play failed: {problem}"
 
-        if playlist in self.music_manager.get_favorites(room):
+        if playlist in self.sonos.get_favorites(room):
             trace("Sonos favorite, playing.")
-            self.music_manager.play_favorite(room, playlist)
+            self.sonos.play_favorite(room, playlist)
         else:
             trace("Sonos playlist, playing.")
-            self.music_manager.play_playlist(room, playlist, shuffle=True)
+            self.sonos.play_playlist(room, playlist, shuffle=True)
 
     def describe_sonos_enqueue_and_play(self, p):
         parts = [x.strip() for x in p.split(",", 1)]

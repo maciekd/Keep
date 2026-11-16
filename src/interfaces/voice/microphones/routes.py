@@ -29,9 +29,10 @@ class MicrophoneDeps:
     singletons are looked up at call time, like the launcher did."""
     running_handlers: Callable[[], list]
     speech_analyzer: SpeechAnalyzer
-    play_sound: Any
     wake_word: str
     configured_languages: Callable[[], list]
+    # The server's own speakers; None on a server without local audio (common/Platform).
+    play_sound: Any = None
     speaker_identifier: Callable[[], Optional[SpeakerIdentifier]] = SpeakerIdentifier.get_instance
     stt_confidence_monitor: Callable[[], STTConfidenceMonitor] = STTConfidenceMonitor.get_instance
     # Optional: exposes current_noise_db / current_volume for the wake-word log line.
@@ -396,6 +397,9 @@ class MicrophoneRoutes:
         @bp.route('/end')
         async def end():
             try:
+                if deps.play_sound is None:
+                    trace("No end sound: this server has no speakers of its own")
+                    return "", 204
                 info("Playing end sound")
                 deps.play_sound.playsound_end()
                 return "", 204

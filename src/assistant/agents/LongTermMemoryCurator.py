@@ -16,6 +16,7 @@ from assistant.integration.calendar.CalendarAccess import CalendarAccess, EVENTS
 from assistant.integration.calendar.Event import NO_EVENTS
 from common.logging import info, error, trace
 from ..llm.AbstractLLM import LLMRefusalError, Thinking
+from ..llm.LLMUsage import LLMUsage
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
 from common.vault.Redactor import redact_for_storage
 
@@ -25,14 +26,15 @@ HISTORY_SOURCE = "memory_curation"   # the `source` of the system row a finished
 # A span longer than this is curated in chunks of this many days, one after another, each
 # reading the bank the previous one wrote (`run_span`).
 CURATION_CHUNK_DAYS = 4
-# The size the curator is told to keep the bank under. The LLM cannot count words in a 40 KB
-# document, so the prompt also states the measured count ({MEMORY_SIZE}) rather than trusting it to.
+# The size the bank is kept around. The code keeps it (the condensing pass below); the curation
+# prompt names no size at all: a model given a count and a limit tries to meet it by counting
+# words — 64000 output tokens of thinking twice in one night (2026-11-13), no bank written.
 MEMORY_WORD_LIMIT = 4000
 # A curated bank more than CONDENSE_TRIGGER over the limit gets a condensing pass after the
 # curation (`MemoryCondenser`, section by section), asked to cut CONDENSE_CUT of the limit or the
 # whole excess, whichever is more (`condense_cut`). The curation prompt cannot do it: with the
 # period's interactions and the "never drop a fact" rules in front of it the model rewords an
-# oversize bank at the same length however plainly the size note demands a cut — three nights
+# oversize bank at the same length however plainly it is told to cut — three nights
 # at ~5000 words, and a test pass with the full prompt cut 8 words of 992 asked. After, not
 # before: a pass before the curation lands the bank on the limit and the curation then adds the
 # period's facts on top of it (a 5269-word bank condensed to 4020 came back at 4357), so the bank
@@ -86,8 +88,6 @@ The long-term memory has three parts:
 ## Current memory bank:
 {CURRENT_MEMORY}
 
-{MEMORY_SIZE}
-
 ## Current watch list (open items):
 {WATCHLIST}
 
@@ -96,7 +96,7 @@ The long-term memory has three parts:
 
 ## Your task:
 Update the memory bank based on new information. You may add, modify, remove and restructure information as needed.
-Keep the memory bank concise - no more than {WORD_LIMIT} words. Condense or remove outdated/less important information as needed.
+Keep the memory bank concise: a fact the period supersedes is replaced, not kept beside the new one, and what is outdated goes. Its size is not yours to manage - do not count words.
 
 Then bring the watch list in line with what the period shows, with commands (see the output format).
 
@@ -105,7 +105,6 @@ Rules:
 - The bank does NOT include command syntax or how to interpret commands (the AI already understands natural language and has extensive knowledge of available commands). A procedure is different: there the exact commands and code that worked are the point
 - Do NOT include song/playlist/favorite IDs
 - Focus on personal preferences, patterns, and facts about the family that help personalization
-- Make sure to keep the entire memory under {WORD_LIMIT} words
 - When a user corrects a misheard command (e.g. by saying "No, I said X" right after), the original action was based on a MISHEARD phrase. Record the STT correction, but do NOT add anything from the misinterpreted action as a genuine preference
 - Be very mindful of making assumptions - errors sneak easily into the memory bank and can propagate over time - so only enter things you are sure of in the memory
 - Remove a fact only when it of extremely low value or recent interactions give positive evidence against it: contradicted, superseded, explicitly retracted, or expired. Not being mentioned in this period's logs is not necessarily staleness
@@ -587,21 +586,6 @@ class LongTermMemoryCurator:
         return len(text.split())
 
     @staticmethod
-    def memory_size_note(word_count: int) -> str:
-        """The measured size of the bank, stated so the LLM does not have to estimate it."""
-        note = f"The current memory bank is {word_count} words (the limit is {MEMORY_WORD_LIMIT} words)."
-        if word_count > MEMORY_WORD_LIMIT:
-            excess = word_count - MEMORY_WORD_LIMIT
-            note += (f" It is OVER the limit by {excess} words: the updated bank you output must be at least "
-                     f"{excess} words shorter than the current one, on top of any additions you make.")
-            if excess > MEMORY_WORD_LIMIT * 0.1:
-                note += (" Condensing the bank is a REQUIRED part of this run, not optional: you MUST condense "
-                         "to meet the limit. Removing the least important information is acceptable.")
-        else:
-            note += f" You have {MEMORY_WORD_LIMIT - word_count} words of headroom for additions."
-        return note
-
-    @staticmethod
     def needs_condensing(word_count: int) -> bool:
         return word_count > MEMORY_WORD_LIMIT * (1 + CONDENSE_TRIGGER)
 
@@ -685,13 +669,11 @@ class LongTermMemoryCurator:
             .replace("{TODAY}", f"{datetime.now():%Y-%m-%d}") \
             .replace("{INTERACTION_HISTORY}", interaction_history) \
             .replace("{CALENDAR}", calendar_data) \
-            .replace("{WORD_LIMIT}", str(MEMORY_WORD_LIMIT)) \
             .replace("{WATCH_WORD_LIMIT}", str(WatchList.NOTE_WORD_LIMIT)) \
             .replace("{PERIOD}", period_text) \
             .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "") \
             .replace("{TIPS}", self._tips_prompt())
-        full_prompt = prompt.replace("{CURRENT_MEMORY}", current_memory) \
-            .replace("{MEMORY_SIZE}", self.memory_size_note(word_count))
+        full_prompt = prompt.replace("{CURRENT_MEMORY}", current_memory)
 
         # Send to LLM with thinking enabled for complex reasoning
         info("Rem: deep in REM — consolidating the period's memories with the AI...")
@@ -699,6 +681,8 @@ class LongTermMemoryCurator:
         response = self._think(full_prompt, "Please curate the memory now.")
         llm_duration = time.time() - start_time
         trace(f"Rem: woke after {llm_duration:.1f}s of dreaming")
+        llm_call = LLMUsage.describe_call(self.llm)
+        info(f"Rem: the curation call — {llm_call}")
 
         response, commands = self._split_commands(response)
         new_memory, truncated = self._accept(response, current_memory)
@@ -726,6 +710,7 @@ class LongTermMemoryCurator:
             'old_memory_size': len(current_memory),
             'new_memory_size': len(new_memory),
             'llm_duration_seconds': llm_duration,
+            'llm_call': llm_call,
             'truncated': truncated,
             'condense': condense,
             'timestamp': time.time(),
@@ -864,12 +849,16 @@ class LongTermMemoryCurator:
                 f.write(f"- Old size: {metadata.get('old_memory_size', 0)} chars\n")
                 f.write(f"- New size: {metadata.get('new_memory_size', 0)} chars\n")
                 f.write(f"- LLM duration: {metadata.get('llm_duration_seconds', 0):.1f}s\n")
+                if metadata.get('llm_call'):
+                    f.write(f"- Curation call: {metadata['llm_call']}\n")
                 if metadata.get('truncated'):
                     f.write("- Result: reply cut off at the output cap — previous bank kept\n")
                 if metadata.get('condense'):
                     c = metadata['condense']
                     f.write(f"- Condensing pass: {c['from']} → {c.get('to', '?')} words (asked to remove {c['cut']}), "
                             f"{c.get('llm_duration_seconds', 0):.1f}s\n")
+                    if c.get('usage'):
+                        f.write(f"- Condensing calls: {c['usage']}\n")
                 f.write("\n")
                 f.write("---\n\n")
 
@@ -918,6 +907,7 @@ class LongTermMemoryCurator:
     def _think_whole(self, prompt: str, what: str) -> str:
         """One LLM call whose reply must be complete: a reply cut off at the output cap raises."""
         response = self.llm.think(system_message=prompt, user_message="Please do it now.", thinking=Thinking.FULL)
+        info(f"Memory split: the call for {what} — {LLMUsage.describe_call(self.llm)}")
         if getattr(self.llm, 'last_stop_reason', None) == 'max_tokens':
             raise RuntimeError(f"the AI's reply was cut off at its output limit while {what}")
         return response

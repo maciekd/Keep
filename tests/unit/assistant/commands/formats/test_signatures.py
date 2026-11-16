@@ -97,7 +97,7 @@ class TestReaders:
 
 
 def _documented() -> set[str]:
-    return {c for t in Toolkits.TOOLKITS for c in t.commands} | set(Toolkits.CORE_COMMANDS)
+    return {c for t in Toolkits.TOOLKITS for c in t.offered_commands()} | set(Toolkits.CORE_COMMANDS)
 
 
 @pytest.mark.unit

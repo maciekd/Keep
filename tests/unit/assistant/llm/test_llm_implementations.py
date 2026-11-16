@@ -366,9 +366,21 @@ class TestClaudeLLM:
         llm = ClaudeLLM()
         messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
         params = llm._build_api_params(messages, thinking=True, stream=False)
-        assert params['max_tokens'] == ClaudeLLM.THINKING_MAX_TOKENS
+        assert params['max_tokens'] == llm.thinking_cap()
         assert params['thinking']['type'] == "adaptive"
         assert params['stream'] is False
+
+    @patch('assistant.llm.ClaudeLLM.config')
+    def test_thinking_cap_follows_what_the_model_accepts(self, mock_config):
+        """A contract with the Anthropic API: the 5-generation models take 128k output
+        tokens, and a model before them answers 400 to anything over 64k."""
+        mock_config.get_api_key.return_value = "k"
+        from assistant.llm.ClaudeLLM import ClaudeLLM
+        messages = [{"role": "user", "content": "hi"}]
+        for model in ("claude-fable-5-2", "claude-opus-5-5", "claude-haiku-5-5"):
+            assert ClaudeLLM(model)._build_api_params(messages, thinking=True, stream=False)['max_tokens'] == 128000
+        for model in ("claude-sonnet-4-5", "claude-haiku-4-5"):
+            assert ClaudeLLM(model)._build_api_params(messages, thinking=True, stream=False)['max_tokens'] <= 64000
 
     @patch('assistant.llm.ClaudeLLM.config')
     def test_non_streaming_request_carries_an_explicit_timeout(self, mock_config):
@@ -391,8 +403,9 @@ class TestClaudeLLM:
         client = Anthropic(api_key="k")
         with pytest.raises(ValueError, match="Streaming is required"):
             client._calculate_nonstreaming_timeout(ClaudeLLM.THINKING_MAX_TOKENS, None)
-        llm = ClaudeLLM()
+        llm = ClaudeLLM("claude-fable-5-2")
         params = llm._build_api_params([{"role": "user", "content": "hi"}], thinking=True, stream=False)
+        assert params['max_tokens'] == ClaudeLLM.THINKING_MAX_TOKENS
         assert params['timeout'].read >= 3600 * params['max_tokens'] / 128_000
 
     @patch('assistant.llm.ClaudeLLM.config')
@@ -1178,6 +1191,7 @@ class TestGeminiLLM:
         from google.genai.types import ThinkingLevel
         assert GeminiLLM("gemini-3.7-flash")._min_thinking_level() == ThinkingLevel.LOW
         assert GeminiLLM("gemini-3.8-flash")._min_thinking_level() == ThinkingLevel.LOW
+        assert GeminiLLM("gemini-4-hydrogen")._min_thinking_level() == ThinkingLevel.LOW
         assert GeminiLLM("gemini-3.5-flash")._min_thinking_level() == ThinkingLevel.MINIMAL
 
     @patch('assistant.llm.GeminiLLM.config')

@@ -51,10 +51,12 @@ class Install:
                 'tag', '-s', name, '-m', f'Release {name}', self.pushed)
 
     def head(self) -> str:
-        return git(self.clone, 'rev-parse', 'HEAD')
+        """The commit the checked-out branch is at, read off its ref file: nothing here packs
+        refs or detaches HEAD, and a git process to ask costs what the budget does not have."""
+        return (self.clone / '.git' / 'refs' / 'heads' / self.branch()).read_text().strip()
 
     def branch(self) -> str:
-        return git(self.clone, 'rev-parse', '--abbrev-ref', 'HEAD')
+        return (self.clone / '.git' / 'HEAD').read_text().strip().removeprefix('ref: refs/heads/')
 
 
 def _spawned(command: list, cwd: Path, timeout: int, **_) -> subprocess.CompletedProcess:

@@ -9,6 +9,7 @@ from typing import Optional
 
 from PIL import Image, ImageOps
 
+from common import Platform
 from common.logging import info, error, trace, fine
 from ..llm.AbstractLLM import LLMPreempted
 
@@ -24,24 +25,25 @@ DESCRIPTION_PROMPT_USER = "Analyze this image and return the JSON object as desc
 
 MAX_DIMENSION = 1024
 MAX_IMAGE_SIZE = 5 * 1024 * 1024
+TRANSPARENCY_BACKGROUND = (119, 119, 119)  # about the same contrast to black as to white
 
 
 def resize_to_jpeg(raw_bytes: bytes, max_dim: int = MAX_DIMENSION) -> Optional[bytes]:
     try:
         img = Image.open(io.BytesIO(raw_bytes))
     except Exception:
-        trace("ImageAnalyzer: Pillow can't open image, falling back to sips")
-        raw_bytes = convert_via_sips(raw_bytes)
+        trace("ImageAnalyzer: Pillow can't open image, falling back to the system's converter")
+        raw_bytes = convert_to_jpeg(raw_bytes)
         if not raw_bytes:
             return None
         try:
             img = Image.open(io.BytesIO(raw_bytes))
         except Exception as e:
-            error(f"ImageAnalyzer: resize failed after sips conversion: {e}")
+            error(f"ImageAnalyzer: resize failed after the conversion: {e}")
             return None
 
     try:
-        img = ImageOps.exif_transpose(img).convert("RGB")  # a phone's JPEG is often stored turned, with the orientation in EXIF
+        img = _flattened(ImageOps.exif_transpose(img))  # a phone's JPEG is often stored turned, with the orientation in EXIF
         w, h = img.size
         if max(w, h) > max_dim:
             scale = max_dim / max(w, h)
@@ -54,6 +56,44 @@ def resize_to_jpeg(raw_bytes: bytes, max_dim: int = MAX_DIMENSION) -> Optional[b
             raise
         error(f"ImageAnalyzer: resize failed: {e}")
         return None
+
+
+def _flattened(img: Image.Image) -> Image.Image:
+    """`img` as RGB, what is transparent turned mid-grey. A plain convert drops the alpha and
+    leaves the colour under it, black in most exports: a drawing on a transparent background
+    reached vision black on black. Grey and not white, since what is drawn for a dark
+    background is white — black and white both stand out against it."""
+    if "transparency" in img.info:  # a palette entry or a colour key, not an alpha channel
+        img = img.convert("RGBA")
+    if not img.mode.endswith(("A", "a")):
+        return img.convert("RGB")
+    trace(f"ImageAnalyzer: {img.mode} image — flattening its transparency onto grey")
+    img = img.convert("RGBA")
+    flat = Image.new("RGB", img.size, TRANSPARENCY_BACKGROUND)
+    flat.paste(img, mask=img.getchannel("A"))
+    return flat
+
+
+def convert_to_jpeg(raw_bytes: bytes) -> Optional[bytes]:
+    """An image Pillow cannot open by itself (a phone's HEIC) as JPEG bytes, None when it cannot
+    be converted: through macOS's `sips` on a Mac, through pillow-heif elsewhere."""
+    if Platform.is_mac():
+        return convert_via_sips(raw_bytes)
+    return convert_via_pillow_heif(raw_bytes)
+
+
+def convert_via_pillow_heif(raw_bytes: bytes) -> Optional[bytes]:
+    """Convert HEIC / HEIF bytes to JPEG with pillow-heif — the pin a Linux install carries."""
+    try:
+        import pillow_heif
+        heif = pillow_heif.open_heif(io.BytesIO(raw_bytes))
+        buf = io.BytesIO()
+        heif.to_pillow().convert("RGB").save(buf, format="JPEG", quality=95)
+    except Exception as e:
+        error(f"ImageAnalyzer: pillow-heif conversion failed: {type(e).__name__}: {e}")
+        return None
+    info(f"ImageAnalyzer: pillow-heif conversion succeeded ({len(raw_bytes)} -> {buf.tell()} bytes)")
+    return buf.getvalue()
 
 
 def convert_via_sips(raw_bytes: bytes) -> Optional[bytes]:

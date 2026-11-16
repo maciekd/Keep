@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+from common import Platform
 from common.logging import info, trace, error
 
 CHAT_DB = Path.home() / "Library/Messages/chat.db"
@@ -40,7 +41,10 @@ def pretending_missing() -> bool:
 
 def granted(chat_db: Path = CHAT_DB) -> bool:
     """Whether this process may read chat.db. A Mac without Messages set up has no file and
-    answers False: the grant is then not observable this way."""
+    answers False: the grant is then not observable this way. Only macOS has the grant at all."""
+    if not Platform.is_mac():
+        trace(f"Full Disk Access probe: no such grant on {Platform.current()}")
+        return False
     if _pretend_missing:
         trace("Full Disk Access probe: pretending the grant is missing (developer test)")
         return False
@@ -58,12 +62,15 @@ def granted(chat_db: Path = CHAT_DB) -> bool:
 
 def observable(chat_db: Path = CHAT_DB) -> bool:
     """Whether the probe can answer at all: chat.db exists only on a Mac with Messages set up."""
-    return chat_db.exists()
+    return Platform.is_mac() and chat_db.exists()
 
 
 def open_settings(run=subprocess.run) -> str | None:
     """Open System Settings on the Full Disk Access pane, on the Mac's own screen. Returns None
     when the pane was opened, else why not."""
+    if not Platform.is_mac():
+        info(f"Full Disk Access: no System Settings on {Platform.current()} — nothing opened")
+        return Platform.mac_only("Full Disk Access")
     try:
         result = run(["open", SETTINGS_URL], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired) as e:

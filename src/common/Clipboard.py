@@ -4,16 +4,22 @@ PNG class the clipboard converts any picture to, or the file a Finder copy put t
 `pbpaste` for the text — so no AppKit runs in the server process. A terminal only ever
 delivers text on its stdin, so a picture pasted into the TUI has to be fetched like this,
 on the key, from the clipboard of the machine the server runs on.
+
+On Linux the same two reads go through `wl-paste` (Wayland) or `xclip` (X11), whichever is
+installed, and only while the process has a desktop session; a server without one has no
+clipboard and the paste comes back empty.
 """
 import io
+import os
 import re
+import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
 from PIL import Image
 
+from common import Platform
 from common.logging import error, info, trace
 
 MAX_EDGE = 1568          # the long edge Claude resamples a picture to anyway
@@ -39,9 +45,8 @@ def read_image() -> Optional[tuple[bytes, str]]:
 
 def read_text() -> str:
     """The clipboard's text, "" when it has none (or the system cannot say)."""
-    if sys.platform != "darwin":
-        trace("Clipboard: text is read on macOS only")
-        return ""
+    if not Platform.is_mac():
+        return _linux_clipboard("text/plain").decode("utf-8", errors="replace")
     try:
         out = subprocess.run(["pbpaste"], capture_output=True, timeout=TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -78,9 +83,13 @@ def fit(raw: bytes) -> tuple[bytes, str]:
 
 
 def _clipboard_picture() -> Optional[bytes]:
-    if sys.platform != "darwin":
-        trace("Clipboard: pictures are read on macOS only")
-        return None
+    if not Platform.is_mac():
+        data = _linux_clipboard("image/png")
+        if not data:
+            trace("Clipboard: no picture on the clipboard")
+            return None
+        info(f"Clipboard: picture read ({len(data) / 1024:.0f} kB PNG)")
+        return data
     # A screenshot taken to the clipboard, a picture copied in a browser or Preview: the
     # clipboard renders any picture type as PNG on request.
     out = _osascript("get the clipboard as «class PNGf»")
@@ -103,6 +112,35 @@ def _clipboard_picture() -> Optional[bytes]:
         return data
     trace("Clipboard: no picture on the clipboard")
     return None
+
+
+def _linux_tool(mime: str) -> Optional[list[str]]:
+    """The command that writes the clipboard's *mime* rendering to stdout, None without a
+    desktop session or a tool for it."""
+    if Platform.current() != Platform.LINUX:
+        return None
+    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"):
+        return ["wl-paste", "--no-newline", "--type", mime]
+    if os.environ.get("DISPLAY") and shutil.which("xclip"):
+        return ["xclip", "-selection", "clipboard", "-o", "-t", "UTF8_STRING" if mime == "text/plain" else mime]
+    return None
+
+
+def _linux_clipboard(mime: str) -> bytes:
+    """The clipboard's content as *mime*, b"" when it holds none, or the server has no desktop."""
+    command = _linux_tool(mime)
+    if command is None:
+        trace(f"Clipboard: no desktop session or clipboard tool (wl-paste, xclip) on {Platform.label()}")
+        return b""
+    try:
+        out = subprocess.run(command, capture_output=True, timeout=TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        error(f"Clipboard: {command[0]} failed: {e}")
+        return b""
+    if out.returncode != 0:
+        trace(f"Clipboard: {command[0]} declined: {out.stderr.decode('utf-8', errors='replace').strip()}")
+        return b""
+    return out.stdout
 
 
 def _osascript(script: str) -> bytes:

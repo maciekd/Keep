@@ -156,6 +156,7 @@ class TestHandleBackgroundCommands:
         dm.command_processor = Mock()
         dm.command_processor.command_running_in_background = command_running
         dm.command_processor.command_reply = command_reply
+        dm.command_processor.result_parts = []
         dm.command_processor.command_queue = Mock()
         dm.command_processor.command_queue.empty.return_value = queue_empty
         # Explicit falsy values: Mock auto-attributes are truthy and would route every
@@ -425,10 +426,11 @@ class TestHandleBackgroundCommands:
 
         assert reply == "result: \nsearch result here"
 
-    def test_cached_response_with_missing_device_invalidates_cache(self, handler):
+    def test_cached_response_whose_command_fails_is_evicted_whatever_the_error(self, handler):
+        """Not only a missing device: a dead playlist id replayed from the cache fails with
+        an error of the music system's own."""
         from assistant.llm.CachedLLM import CachedLLM
-        error_text = "Command 'turn_on(Mysbelysning (Kök))' returned an error: \"could not find device &quot;Mysbelysning (Kök)&quot;\"."
-        dm = self._make_mock_dm(command_reply=error_text)
+        dm = self._make_mock_dm(command_reply="play_music failed: could not start 2 in Gym")
         dm.command_processor.command_reply_contains_error = True
         dm.last_response_was_cached = True
         dm.ai = Mock(spec=CachedLLM)
@@ -436,6 +438,7 @@ class TestHandleBackgroundCommands:
         self._run_one_round(handler, dm)
 
         dm.ai.invalidate_served_response.assert_called_once()
+        assert handler._cached_round_failed
 
     def test_no_cache_invalidation_when_not_cached(self, handler):
         from assistant.llm.CachedLLM import CachedLLM
@@ -446,17 +449,18 @@ class TestHandleBackgroundCommands:
         self._run_one_round(handler, dm)
 
         dm.ai.invalidate_served_response.assert_not_called()
+        assert not handler._cached_round_failed
 
-    def test_no_cache_invalidation_for_other_errors(self, handler):
+    def test_cached_response_that_succeeds_keeps_its_rows(self, handler):
         from assistant.llm.CachedLLM import CachedLLM
-        dm = self._make_mock_dm(command_reply="Command 'x()' returned an error: \"timeout talking to Indigo\".")
-        dm.command_processor.command_reply_contains_error = True
+        dm = self._make_mock_dm(command_reply="Playing 'Workout' in Gym")
         dm.last_response_was_cached = True
         dm.ai = Mock(spec=CachedLLM)
 
         self._run_one_round(handler, dm)
 
         dm.ai.invalidate_served_response.assert_not_called()
+        assert not handler._cached_round_failed
 
     def test_cache_invalidation_survives_non_cachedllm_ai(self, handler):
         """test_suite_mode skips the CachedLLM wrapper — the isinstance guard must keep
@@ -492,6 +496,7 @@ class TestHandleBackgroundCommands:
         dm2 = Mock()
         dm2.command_processor = Mock()
         dm2.command_processor.command_reply = None
+        dm2.command_processor.result_parts = []
         dm2.command_processor.command_queue = Mock()
         dm2.command_processor.command_reply_contains_error = False
         dm2.command_processor.executed_commands = []
@@ -983,6 +988,32 @@ class TestHandleBackgroundCommands:
         names = [c[0] for c in prompt_manager.mock_calls]
         assert names.index('update_history') < names.index('add_command_result')
         assert "Lamp Marcus is off." in prompt_manager.add_command_result.call_args.args[0]
+
+    def test_a_second_cut_rounds_results_reach_the_history_one_by_one(self, handler):
+        """The cut round's row is capped like any other round's: the history is handed its
+        results apart, so a page the round fetched does not push the result after it out."""
+        first = self._cut_dm()
+        cut_again = self._cut_dm()
+        cut_again.command_processor.command_reply = "page\n\nLamp Marcus is off."
+        cut_again.command_processor.result_parts = ["page", "Lamp Marcus is off."]
+        cut_again.command_processor.executed_commands = ["open_url(a)", "home_control(lamp, off)"]
+        handler.dialog_manager = first
+        handler._rounds = [first]
+        handler._cap_hit()
+        with patch.object(handler, 'stream_response', return_value=iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch.object(handler, '_new_dialog_manager', return_value=cut_again):
+            self._exhaust_generator(handler._handle_background_commands(Mock()))
+        cut_again.command_processor.result_parts.clear()   # the processor forgets them with the reply
+        handler.request_context = RequestContext(user_input="turn the lamp off", user="Marcus")
+        prompt_manager = Mock()
+        handler._update_history(prompt_manager, "turn the lamp off")
+        text = prompt_manager.add_command_result.call_args.args[0]
+        parts = prompt_manager.add_command_result.call_args.kwargs["parts"]
+        assert parts == ["page", "Lamp Marcus is off."]
+        assert all(part in text for part in parts), "the history finds each result in the row's text"
 
     def test_a_second_cut_round_without_a_result_adds_no_command_row(self, handler):
         handler.dialog_manager = first = self._cut_dm()
@@ -1781,6 +1812,18 @@ class TestSaveToDatabase:
                 source="VoiceToVoice", location="Kitchen"
             )
 
+    def test_correction_of_a_failed_cached_response_is_not_stored(self, full_handler):
+        """Stored, the correction would be a cache candidate under the query it never answered."""
+        with patch("assistant.RequestProcessor.FloxyDatabase") as mock_db_cls:
+            mock_db = Mock()
+            mock_db_cls.get_instance.return_value = mock_db
+            full_handler.dialog_manager.last_response_was_cached = False
+            full_handler._cached_round_failed = True
+
+            full_handler._save_to_database("query", "My bad, play_music(Gym, S-6)")
+
+            mock_db.submit.assert_not_called()
+
     def test_false_positive_skips_save(self, full_handler):
         with patch("assistant.RequestProcessor.FloxyDatabase") as mock_db_cls:
             mock_db = Mock()
@@ -2175,7 +2218,24 @@ class TestCommandResultPersistence:
     def test_plain_reply_persisted_as_sent(self, handler):
         prompt_manager, dm = self._run(handler, "iMessage — disabled")
         assert dm.reply_to_llm == "result: \niMessage — disabled"
-        prompt_manager.add_command_result.assert_called_once_with("result: \niMessage — disabled", cap=True)
+        prompt_manager.add_command_result.assert_called_once_with("result: \niMessage — disabled", cap=True, parts=ANY)
+
+    def test_the_rounds_results_reach_the_history_one_by_one(self, handler):
+        """The history caps each command's result by itself, so it needs them apart."""
+        dm1 = TestHandleBackgroundCommands._make_mock_dm(command_running=True, command_reply="page\n\nboard")
+        dm1.command_processor.result_parts = ["page", "board"]
+        dm1.command_processor.command_reply_contains_error = False
+        dm1.command_processor.executed_commands = ["open_url(a)", "open_url(b)"]
+        handler.dialog_manager = dm1
+        dm2 = TestHandleBackgroundCommands._make_mock_dm()
+        prompt_manager = Mock()
+        with patch.object(handler, 'stream_response', return_value=iter([])), \
+             patch.object(handler, '_wait_for_initial_command'), \
+             patch.object(handler, '_wait_for_background_command'), \
+             patch.object(handler, '_wait_for_command_reply'), \
+             patch('assistant.RequestProcessor.DialogManager', return_value=dm2):
+            TestHandleBackgroundCommands._exhaust_generator(handler._handle_background_commands(prompt_manager))
+        assert prompt_manager.add_command_result.call_args.kwargs["parts"] == ["page", "board"]
 
     def test_every_command_round_is_a_follow_up_to_the_llm(self, handler):
         """A round after a command ends in the result, which the next round of the request
@@ -2194,12 +2254,12 @@ class TestCommandResultPersistence:
         or not: capped, the reference would be cut yet still count as loaded. A round without
         one keeps the cap (its result may be a web page)."""
         prompt_manager, _ = self._run(handler, "# Toolkit: email\n…", executed=["load_toolkit(email)"])
-        prompt_manager.add_command_result.assert_called_once_with("result: \n# Toolkit: email\n…", cap=False)
+        prompt_manager.add_command_result.assert_called_once_with("result: \n# Toolkit: email\n…", cap=False, parts=ANY)
         prompt_manager, _ = self._run(handler, "# Toolkit: email\n…\n\npage",
                                       executed=["load_toolkit(email)", "open_url(x)"])
-        prompt_manager.add_command_result.assert_called_once_with("result: \n# Toolkit: email\n…\n\npage", cap=False)
+        prompt_manager.add_command_result.assert_called_once_with("result: \n# Toolkit: email\n…\n\npage", cap=False, parts=ANY)
         prompt_manager, _ = self._run(handler, "page", executed=["open_url(x)"])
-        prompt_manager.add_command_result.assert_called_once_with("result: \npage", cap=True)
+        prompt_manager.add_command_result.assert_called_once_with("result: \npage", cap=True, parts=ANY)
 
     def test_a_load_watch_round_is_a_toolkit_load_for_the_cap_too(self, handler):
         """load_watch brings the watch toolkit's reference along with the item, so its result is
@@ -2207,14 +2267,14 @@ class TestCommandResultPersistence:
         header would still count the toolkit as loaded."""
         reply = "# Watch: solar\n…\n\n# Toolkit: watch\n…"
         prompt_manager, _ = self._run(handler, reply, executed=['load_watch("solar")'])
-        prompt_manager.add_command_result.assert_called_once_with(f"result: \n{reply}", cap=False)
+        prompt_manager.add_command_result.assert_called_once_with(f"result: \n{reply}", cap=False, parts=ANY)
 
     def test_block_reply_persists_text_and_notes_images(self, handler):
         blocks = [{"type": "text", "text": "Front door camera:"},
                   {"type": "image", "source": {"type": "base64", "data": "xx"}}]
         prompt_manager, _ = self._run(handler, blocks)
         prompt_manager.add_command_result.assert_called_once_with(
-            "Front door camera:\n[image not kept in history]", cap=True)
+            "Front door camera:\n[image not kept in history]", cap=True, parts=ANY)
 
     def test_error_report_persisted_too(self, handler):
         prompt_manager, dm = self._run(handler, "boom", contains_error=True)

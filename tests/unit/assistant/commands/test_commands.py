@@ -2,7 +2,7 @@ import re
 import threading
 import time
 from collections import deque
-from unittest.mock import Mock, call, patch, MagicMock
+from unittest.mock import ANY, Mock, call, patch, MagicMock
 
 import pytest
 from pathlib import Path
@@ -240,7 +240,7 @@ class TestBackgroundCommand:
         commands_instance.background_command(fn, "params")
         commands_instance.wait_for_background(timeout=5)
         fn.assert_called_once_with("params")
-        commands_instance.command_processor.set_command_reply.assert_called_once_with("result_data", contains_error=False)
+        commands_instance.command_processor.set_command_reply.assert_called_once_with("result_data", contains_error=False, parts=ANY)
         commands_instance.command_processor.background_command_done.assert_called_once()
 
     def test_worker_exception_publishes_with_error_flag(self, commands_instance):
@@ -248,7 +248,7 @@ class TestBackgroundCommand:
         commands_instance.background_command(fn, "params")
         commands_instance.wait_for_background(timeout=5)
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "Command failed: boom", contains_error=True)
+            "Command failed: boom", contains_error=True, parts=ANY)
 
     def test_publish_leaves_the_pending_sync_reply_to_the_processor(self, commands_instance):
         """A sync command error appended earlier this round is the processor's own part of
@@ -262,7 +262,7 @@ class TestBackgroundCommand:
         commands_instance.background_command(fn, "params")
         commands_instance.wait_for_background(timeout=5)
 
-        cp.set_command_reply.assert_called_once_with("weather data", contains_error=False)
+        cp.set_command_reply.assert_called_once_with("weather data", contains_error=False, parts=ANY)
 
     def test_forget_batch_results_starts_the_next_publish_from_nothing(self, commands_instance):
         cp = commands_instance.command_processor
@@ -272,7 +272,7 @@ class TestBackgroundCommand:
 
         commands_instance.background_command(Mock(return_value="two"), None)
         assert commands_instance.wait_for_background(timeout=5)
-        cp.set_command_reply.assert_called_with("two", contains_error=False)
+        cp.set_command_reply.assert_called_with("two", contains_error=False, parts=ANY)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +296,7 @@ class TestBackgroundWorkerReplies:
         commands_instance.background_command(fn_data, None)
         assert commands_instance.wait_for_background(timeout=5)
 
-        commands_instance.command_processor.set_command_reply.assert_called_once_with("weather data", contains_error=False)
+        commands_instance.command_processor.set_command_reply.assert_called_once_with("weather data", contains_error=False, parts=ANY)
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +366,7 @@ class TestBackgroundLanes:
         assert commands_instance.wait_for_background(timeout=5)
 
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "slow result\n\nfast result", contains_error=False)
+            "slow result\n\nfast result", contains_error=False, parts=ANY)
 
     def test_lifecycle_fires_once_around_the_whole_batch(self, commands_instance, journal):
         log, lock = journal
@@ -412,7 +412,7 @@ class TestBackgroundLanes:
         assert commands_instance.wait_for_background(timeout=5)
 
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "fine\n\nCommand failed: boom\n\nfine", contains_error=True)
+            "fine\n\nCommand failed: boom\n\nfine", contains_error=True, parts=ANY)
 
     def test_browser_lane_runs_strictly_in_order(self, commands_instance, journal):
         log, lock = journal
@@ -441,7 +441,7 @@ class TestBackgroundLanes:
         page.release.set()
         assert commands_instance.wait_for_background(timeout=5)
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "page result\n\nsearch result", contains_error=False)
+            "page result\n\nsearch result", contains_error=False, parts=ANY)
 
     def test_config_lane_runs_one_at_a_time_in_order(self, commands_instance, journal):
         log, lock = journal
@@ -510,7 +510,7 @@ class TestBackgroundLanes:
         cp = commands_instance.command_processor
         commands_instance.background_command(Mock(return_value="one"), None)
         assert commands_instance.wait_for_background(timeout=5)
-        cp.set_command_reply.assert_called_once_with("one", contains_error=False)
+        cp.set_command_reply.assert_called_once_with("one", contains_error=False, parts=ANY)
         # The reply is still unconsumed: a real CommandProcessor would hold it.
         cp.command_reply = "one"
 
@@ -518,7 +518,7 @@ class TestBackgroundLanes:
         assert commands_instance.wait_for_background(timeout=5)
         assert cp.background_command_start.call_count == 2
         assert cp.background_command_done.call_count == 2
-        cp.set_command_reply.assert_called_with("one\n\ntwo", contains_error=False)
+        cp.set_command_reply.assert_called_with("one\n\ntwo", contains_error=False, parts=["one", "two"])
 
 
 
@@ -1584,6 +1584,7 @@ class TestShortUrl:
         assert len(out) <= 20
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 class TestDescribeDispatcher:
     def test_describe_dim_with_brightness(self, commands_instance):
@@ -2256,6 +2257,52 @@ class TestCmdConfigRequest:
             reply = commands_instance._run_config_request("owner_name")
         assert reply == "The value was refused (the value is empty) — nothing was saved."
 
+class TestCmdConfigDelete:
+    def test_validates_synchronously_then_deletes_on_the_config_lane(self, commands_instance):
+        with patch.object(ConfigStore, "check_delete") as check, patch.object(commands_instance, "background_command") as bg:
+            assert commands_instance.run("config_delete", ['"telegram_bot.allowed_chat_ids(4)"']) == ""
+        check.assert_called_once_with("telegram_bot.allowed_chat_ids[4]")
+        bg.assert_called_once_with(commands_instance._run_config_delete, "telegram_bot.allowed_chat_ids[4]", lane=Commands.CONFIG_LANE)
+
+    def test_a_refused_key_never_reaches_the_file(self, commands_instance):
+        with patch.object(ConfigStore, "delete_value") as delete, patch.object(commands_instance, "background_command") as bg:
+            answer = commands_instance.cmd_config_delete("vault.key")
+        assert answer.startswith("config_delete failed")
+        bg.assert_not_called()
+        delete.assert_not_called()
+
+    def test_a_removed_chat_id_is_in_force_without_a_restart(self, commands_instance):
+        with patch.object(ConfigStore, "is_present", return_value=True), \
+             patch.object(ConfigStore, "delete_value", return_value="removed"):
+            reply = commands_instance._run_config_delete("telegram_bot.allowed_chat_ids[4]")
+        assert reply == "removed. " + Commands.TELEGRAM_LIVE_HINT
+
+    def test_nothing_deleted_means_nothing_to_restart(self, commands_instance):
+        with patch.object(ConfigStore, "is_present", return_value=False), \
+             patch.object(ConfigStore, "delete_value", return_value="nothing to delete"):
+            assert commands_instance._run_config_delete("api_keys.serper") == "nothing to delete"
+
+    def test_an_interface_flag_that_falls_back_to_another_state_points_at_the_server_restart(self, commands_instance):
+        with patch.object(ConfigStore, "is_present", return_value=True), \
+             patch.object(ConfigStore, "delete_value", return_value="deleted"), \
+             patch.object(ConfigStore, "interface_enabled", side_effect=[True, False]):
+            reply = commands_instance._run_config_delete("interfaces.voice.enabled")
+        assert reply == "deleted. " + Commands.SERVER_RESTART_HINT
+        with patch.object(ConfigStore, "is_present", return_value=True), \
+             patch.object(ConfigStore, "delete_value", return_value="deleted"), \
+             patch.object(ConfigStore, "interface_enabled", return_value=True):
+            reply = commands_instance._run_config_delete("interfaces.telegram.enabled")
+        assert "restart_server" not in reply
+
+    def test_deleting_the_watchdog_key_removes_the_agent(self, commands_instance):
+        from common import Watchdog
+        with patch.object(ConfigStore, "is_present", return_value=True), \
+             patch.object(ConfigStore, "delete_value", return_value="deleted"), \
+             patch.object(Watchdog, "sync", return_value=None) as sync:
+            commands_instance._run_config_delete(Watchdog.KEY)
+        sync.assert_called_once_with(False)
+
+
 class TestCmdConfigSet:
     def test_validates_synchronously_then_writes_in_the_background(self, commands_instance):
         with patch.object(ConfigStore, "check_key") as check, patch.object(commands_instance, "background_command") as bg:
@@ -2373,6 +2420,7 @@ class TestCmdConfigSet:
         assert "restart_integration" not in reply and "restart_server" not in reply
         assert ConfigStore.coerce("ai_message_footer", "false") is False
 
+    @pytest.mark.usefixtures("on_a_mac")
     @pytest.mark.parametrize("value, wanted", [("true", True), ("false", False)])
     def test_the_watchdog_key_is_applied_at_once_from_the_value_just_saved(self, commands_instance, value, wanted):
         """The launchd agent follows the key the moment it is written: the config the sync reads

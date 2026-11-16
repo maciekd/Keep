@@ -21,6 +21,7 @@ someone has signed in.
 import subprocess
 from pathlib import Path
 
+from common import Platform
 from common import Applet
 from common.Paths import AISERVER_DIR
 from common.logging import info, trace, error
@@ -75,6 +76,9 @@ def registered(app: Path = APP, run=subprocess.run) -> tuple[bool | None, str | 
 def enable(app: Path = APP, script: Path = SCRIPT, run=subprocess.run) -> str | None:
     """Build the applet when missing, register it as a login item unless it is one, and run it
     once (see the module note). Returns None when the server now starts at login, else why not."""
+    if not Platform.is_mac():
+        info(f"Autostart: a login item is a Mac's — nothing registered on {Platform.current()}")
+        return Platform.mac_only("The login item")
     if not Applet.build(app, script, run=run):
         return f"{app.name} could not be built (the log says why)"
     is_registered, failure = registered(app, run)

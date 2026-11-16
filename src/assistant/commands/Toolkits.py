@@ -44,7 +44,7 @@ from assistant.integration.music.MusicSystem import MusicSystem
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.mail.MailSource import MailSource
 from common.ConfigManager import config
-from common import IntegrationDirs
+from common import IntegrationDirs, Platform
 from common.Paths import RES_DIR
 from common.logging import error, trace
 
@@ -60,8 +60,11 @@ EVERY_COMMAND_PHRASE = "Every command of this toolkit"
 _FRONT_MATTER_KEYS = {"name", "summary", "commands", "sections", "hidden"}
 # The header of a rendered toolkit; MessageHistory recognises loaded toolkits by it.
 HEADER_PREFIX = "# Toolkit: "
+# Commands that act on the Mac itself. On any other system the toolkit texts leave them out
+# (they stand between `<!-- mac -->` lines) and `Commands.run` refuses them.
+MAC_ONLY_COMMANDS = frozenset({"show_full_disk_access_setting"})
 # A reference is not a web page: the history stores it whole, so the files stay bounded.
-MAX_FILE_CHARS = 10_000
+MAX_FILE_CHARS = 10_500
 
 
 @dataclass(frozen=True)
@@ -119,9 +122,19 @@ class Toolkit:
         return []
 
     def text(self) -> str:
-        """The reference as the LLM receives it: a folder toolkit's front matter is not part of it."""
+        """The reference as the LLM receives it: a folder toolkit's front matter is not part of
+        it, nor a passage written for another system than the one the server runs on
+        (`<!-- mac -->` / `<!-- linux -->`, formats.Rewriter)."""
+        from assistant.commands.formats.Rewriter import gate_platform
         text = self.path.read_text(encoding="utf-8")
-        return _FRONT_MATTER_RE.sub("", text, count=1) if self.file else text
+        return gate_platform(_FRONT_MATTER_RE.sub("", text, count=1) if self.file else text)
+
+    def offered_commands(self) -> tuple[str, ...]:
+        """The commands the reference documents on this system: all of them on a Mac, the
+        others without the ones that act on the Mac itself (MAC_ONLY_COMMANDS)."""
+        if Platform.is_mac():
+            return self.commands
+        return tuple(c for c in self.commands if c not in MAC_ONLY_COMMANDS)
 
     def stop_and_wait(self) -> frozenset[str]:
         """The commands the reference's `### Stop-and-wait` section names (or every command of
@@ -239,7 +252,8 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit("vault", "store a secret the user has said, or ask them for one you must never see",
             ("vault_add", "vault_request")),
     Toolkit("setup", "see which integrations are on, off, broken or unconfigured, and configure one",
-            ("list_integrations", "config_help", "config_request", "config_set", "restart_integration",
+            ("list_integrations", "config_help", "config_request", "config_set", "config_delete",
+             "restart_integration",
              "enable_integration", "disable_integration", "show_full_disk_access_setting", "telegram_login",
              "microsoft_login", "google_login",
              "google_login_code", "icloud_login_code", "volvo_login", "volvo_login_code", "spotify_login",

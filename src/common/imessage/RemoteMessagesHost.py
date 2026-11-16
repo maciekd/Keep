@@ -99,6 +99,14 @@ class RemoteMessagesHost(MessagesHost):
             info(f"iMessage satellite: {self.address}, wire version {Wire.WIRE_VERSION}")
 
     @classmethod
+    def unusable(cls, why: str) -> "RemoteMessagesHost":
+        """A host that sends nothing and answers every call NOT_CONFIGURED with *why*: what a
+        section gets whose `host` cannot be built at all (`local` on a server that is not a Mac)."""
+        host = cls("", "")
+        host._misconfigured = why
+        return host
+
+    @classmethod
     def _check(cls, address: str, token: str) -> str:
         """Why nothing can be sent with this address and token, "" when it can."""
         try:

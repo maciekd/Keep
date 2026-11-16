@@ -6,9 +6,10 @@ Telegram bot it had set up itself an hour earlier. Names only — which keys are
 `list_integrations`' business — so it costs a few dozen tokens. Polled, so an integration the
 user enables, or breaks, reaches the LLM as a delta note. The last line is the Full Disk Access
 grant (`common/FullDiskAccess`), the one setup step made at the Mac itself: the assistant decides
-from it whether the step is ahead, done, or failed after the restart."""
+from it whether the step is ahead, done, or failed after the restart. A server that is not a Mac
+has no such grant: its last line names the system instead, and what needs a Mac."""
 from ..PromptSectionGenerator import PromptSectionGenerator
-from common import FullDiskAccess
+from common import FullDiskAccess, Platform
 from common.logging import info
 
 
@@ -61,7 +62,7 @@ class IntegrationsSectionGenerator(PromptSectionGenerator):
         if text != self.content:
             on, unconfigured, broken = self.group(statuses)
             info(f"Integrations section: {len(on)} on, {len(unconfigured)} not configured, {len(broken)} with a problem; "
-                 f"Full Disk Access {self.ACCESS[access]}")
+                 + (f"Full Disk Access {self.ACCESS[access]}" if Platform.is_mac() else f"on {Platform.label()}"))
         return text
 
     @classmethod
@@ -92,5 +93,17 @@ class IntegrationsSectionGenerator(PromptSectionGenerator):
             lines.append("On but not configured: " + ", ".join(unconfigured) + ".")
         if broken:
             lines.append("On with a problem: " + ", ".join(broken) + ".")
-        lines.append(f"Full Disk Access for this server process: {cls.ACCESS[full_disk_access]}.")
+        if Platform.is_mac():
+            lines.append(f"Full Disk Access for this server process: {cls.ACCESS[full_disk_access]}.")
+        else:
+            lines.append(cls.needs_a_mac(statuses))
         return "\n".join(lines)
+
+    LOCAL_AUDIO = "the server's own microphones and speakers"
+
+    @classmethod
+    def needs_a_mac(cls, statuses: list[dict]) -> str:
+        """The platform line of a server that is not a Mac: what cannot be set up on it."""
+        names = sorted((s["name"] for s in statuses if s.get("needs_mac")), key=str.lower)
+        return (f"The server runs on {Platform.label()}; {', '.join([*names, cls.LOCAL_AUDIO])} need a Mac — "
+                f"never offer them.")

@@ -68,6 +68,37 @@ class TestExtract:
 
 
 @pytest.mark.unit
+class TestPictureFiles:
+    @pytest.mark.parametrize("name, mime_type", [
+        ("scan.jpg", "image/jpeg"), ("IMG_0001.HEIC", "image/heic"), ("unnamed", "image/webp"),
+        ("drawing.PNG", ""), ("photo.heic", "application/octet-stream")])
+    def test_a_picture_is_known_by_its_type_or_by_its_extension_under_a_generic_type(self, name, mime_type):
+        assert MediaIntake.is_picture(name, mime_type)
+
+    @pytest.mark.parametrize("name, mime_type", [
+        ("logo.svg", "image/svg+xml"), ("invoice.pdf", "application/pdf"), ("notes.txt", "text/plain"),
+        ("README", ""), ("holiday.jpg", "application/pdf")])
+    def test_what_vision_cannot_be_shown_is_no_picture(self, name, mime_type):
+        assert not MediaIntake.is_picture(name, mime_type)
+
+    def test_a_large_picture_is_scaled_to_the_cap_and_keeps_its_shape(self):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (4096, 1024), "blue").save(buf, format="PNG")
+        jpeg = MediaIntake.picture_as_jpeg(buf.getvalue())
+        assert Image.open(io.BytesIO(jpeg)).size == (MediaIntake.PICTURE_MAX_DIMENSION, MediaIntake.PICTURE_MAX_DIMENSION // 4)
+
+    def test_a_picture_that_raises_in_the_converter_is_none(self):
+        with patch("assistant.tools.ImageAnalyzer.resize_to_jpeg", side_effect=OSError("image file is truncated")):
+            assert MediaIntake.picture_as_jpeg(b"\xff\xd8 cut short") is None
+
+    def test_a_picture_that_reaches_the_text_readers_is_unreadable(self):
+        with pytest.raises(UnreadableDocument):
+            extract_document_text("broken.png", "image/png", b"not a picture")
+
+
+@pytest.mark.unit
 class TestDocumentText:
     def test_the_body_names_the_file_its_type_and_size_then_the_caption_then_the_text(self):
         body, headline = document_text(document(b"a,b\n1,2\n", "text/csv", "sales.csv"), "Which sold more?")

@@ -577,6 +577,18 @@ class TestRenameKeys:
         assert ConfigManager.get_instance().enabled_integrations() == ["iMessage Feed", "Photos"]
         assert ConfigStore.rename_keys({}, {"iMessage": "iMessage Feed"}) == []
 
+    def test_sonos_and_spotify_however_spelled_becomes_sonos_a_contract_with_every_installs_config(self, files):
+        """2026-11-13: the release that made the integration "Sonos" must find the old name in an
+        install's list, or the speakers are silently off after the update."""
+        from common import Migrations
+        files.write_text("enabled_integrations: [Tesla, sonos-and-spotify, HEOS]\nsonos:\n  room_mapping: {Den: Office}\n")
+        ConfigManager.get_instance().reload()
+        assert len(ConfigStore.rename_keys({}, Migrations.INTEGRATION_RENAMES)) == 1
+        ConfigManager.get_instance().reload()
+        assert ConfigManager.get_instance().enabled_integrations() == ["Tesla", "Sonos", "HEOS"]
+        assert ConfigManager.get_instance().get("sonos.room_mapping") == {"Den": "Office"}
+        assert ConfigStore.rename_keys({}, Migrations.INTEGRATION_RENAMES) == []
+
     def test_nothing_to_rename_leaves_the_file_untouched(self, files, tmp_path):
         before = files.read_text()
         assert ConfigStore.rename_keys(self.RENAMES, {"Telegram Monitor": "Telegram Feed"}) == []
@@ -588,3 +600,113 @@ class TestRenameKeys:
         ConfigManager.get_instance().reload()
         assert ConfigStore.rename_keys(self.RENAMES) == []
         assert _load(files) == {"telegram": {"bot_token": "old"}, "telegram_bot": {"bot_token": "new"}}
+
+
+class TestDeleteValue:
+    MICS = "local_outposts.exclude_mics"
+
+    def _mics(self, files, *names):
+        for i, name in enumerate(names):
+            ConfigStore.set_value(f"{self.MICS}[{i}]", name)
+        return lambda: _load(files)["local_outposts"]["exclude_mics"]
+
+    def test_an_item_of_a_list_of_values_is_removed_and_the_list_closes_up(self, files):
+        mics = self._mics(files, "Acme Headset", "Desk Mic", "Hall Mic")
+        answer = ConfigStore.delete_value(f"{self.MICS}[1]")
+        assert mics() == ["Acme Headset", "Hall Mic"]
+        assert ConfigManager.get_instance().get(self.MICS) == ["Acme Headset", "Hall Mic"]
+        # a wrong index can be put back: the answer names the entry and the new length
+        assert "Desk Mic" in answer and "2 item" in answer
+
+    def test_the_duplicate_a_replace_left_behind_can_be_cleaned_up(self, files):
+        """What the owner hit: the only way to drop an entry was to overwrite its slot."""
+        files.write_text(CONFIG + "local_outposts:\n  exclude_mics:\n    - Acme Headset\n    - Desk Mic\n    - Acme Headset\n")
+        ConfigManager.reset_instance()
+        ConfigStore.delete_value(f"{self.MICS}[2]")
+        assert _load(files)["local_outposts"]["exclude_mics"] == ["Acme Headset", "Desk Mic"]
+
+    def test_the_last_item_leaves_an_empty_list_not_a_hole(self, files):
+        mics = self._mics(files, "Acme Headset")
+        ConfigStore.delete_value(f"{self.MICS}[0]")
+        assert mics() == []
+        assert ConfigStore.is_set(self.MICS) is False
+
+    def test_a_whole_entry_of_a_list_of_sections_is_removed_without_stating_what_it_held(self, files):
+        ConfigStore.set_value("tesla.vehicles[1].name", "second_car")
+        ConfigStore.set_value("tesla.vehicles[1].vin", "5YJ3E1EA7KF000002")
+        answer = ConfigStore.delete_value("tesla.vehicles[0]")
+        assert _load(files)["tesla"]["vehicles"] == [{"name": "second_car", "vin": "5YJ3E1EA7KF000002"}]
+        assert "5YJ3E1EA7KF000001" not in answer and "home_car" not in answer
+
+    def test_a_deleted_key_is_unset_and_the_default_applies(self, files):
+        ConfigStore.delete_value("vault.default_country_code")
+        assert "default_country_code" not in _load(files)["vault"]
+        assert ConfigManager.get_instance().get("vault.default_country_code", 1) == 1
+        assert ConfigStore.is_set("vault.default_country_code") is False
+
+    def test_a_whole_list_of_values_is_deleted_as_one_key(self, files):
+        self._mics(files, "Acme Headset", "Desk Mic")
+        ConfigStore.delete_value(self.MICS)
+        assert "exclude_mics" not in _load(files)["local_outposts"]
+
+    def test_every_other_line_of_the_file_stays_as_it_was(self, files):
+        """A dump after a delete drops the comment and the blank line that followed the entry —
+        the next section's own heading."""
+        text = CONFIG.replace("  default_country_code: 46\n", "  default_country_code: 46  # Sweden\n\n# where the house is\n")
+        files.write_text(text)
+        ConfigManager.reset_instance()
+        ConfigStore.delete_value("vault.default_country_code")
+        assert files.read_text() == text.replace("  default_country_code: 46  # Sweden\n", "")
+        ConfigStore.delete_value("tesla.vehicles[0]")
+        assert "    - name: home_car" not in files.read_text()
+        assert "  vehicles: []\n\nvault:\n" in files.read_text()
+        assert "\n# where the house is\n\nlocation:\n" in files.read_text()
+
+    def test_an_item_of_a_list_written_in_brackets_is_removed_too(self, files):
+        files.write_text(CONFIG + "local_outposts:\n  exclude_mics: [Acme Headset, Desk Mic]\n")
+        ConfigManager.reset_instance()
+        ConfigStore.delete_value(f"{self.MICS}[0]")
+        assert _load(files)["local_outposts"]["exclude_mics"] == ["Desk Mic"]
+
+    @pytest.mark.parametrize("key", ["pager.password", "local_outposts.exclude_mics[0]", "tesla.vehicles[4]"])
+    def test_what_is_not_there_is_reported_and_nothing_is_written(self, files, tmp_path, key):
+        assert "nothing to delete" in ConfigStore.delete_value(key)
+        assert files.read_text() == CONFIG
+        assert not (tmp_path / "backups").exists()
+
+    @pytest.mark.parametrize("key", [
+        "vault.key",                      # denied to config_set as well
+        "tesla",                          # a whole section
+        "location.home",                  # a section inside one
+        "tesla.vehicles",                 # every vehicle at once
+        "enabled_integrations[0]",        # disable_integration's, which also stops the integration
+        "enabled_integrations",
+        "nosuchsection.key",
+    ])
+    def test_refuses_what_one_slip_would_cost_too_much(self, files, key):
+        with pytest.raises(ConfigStoreError):
+            ConfigStore.delete_value(key)
+        assert files.read_text() == CONFIG
+
+    @pytest.mark.parametrize("key", ["imessage_chat.owners[0]", "imessage_chat.guests", "imessage.host",
+                                     "imessage_chat.host_token"])
+    def test_what_only_the_user_types_is_not_deleted_from_the_chat_either(self, files, monkeypatch, key):
+        monkeypatch.setattr(ConfigSchema, "is_known_key", lambda k: True)
+        with pytest.raises(ConfigStoreError, match="by hand"):
+            ConfigStore.check_delete(key)
+
+    def test_a_section_the_example_does_not_spell_out_is_still_not_deleted_whole(self, files):
+        ConfigStore.set_value("pager.relay.host", "pager.example")
+        with pytest.raises(ConfigStoreError, match="whole section"):
+            ConfigStore.delete_value("pager.relay")
+        assert _load(files)["pager"]["relay"] == {"host": "pager.example"}
+
+    def test_backs_up_before_deleting(self, files, tmp_path):
+        ConfigStore.delete_value("owner_name")
+        backups = list((tmp_path / "backups").glob("config-*.yaml"))
+        assert [b.read_text() for b in backups] == [CONFIG]
+
+    def test_the_answer_for_a_single_value_never_states_it(self, files, capsys):
+        answer = ConfigStore.delete_value("tesla.tessie_access_token")
+        assert "tok-real" not in answer
+        assert "tok-real" not in capsys.readouterr().out

@@ -1,4 +1,4 @@
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
@@ -21,7 +21,7 @@ class TestSetCommands:
 
         pump.set_room_target.assert_called_once_with(21.0)
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
-            "The room target is now 21 °C", contains_error=False)
+            "The room target is now 21 °C", contains_error=False, parts=ANY)
 
     def test_a_decimal_comma_and_a_unit_are_accepted(self, commands_instance, pump):
         commands_instance.run("set_hot_water", ["52,5 °C"])

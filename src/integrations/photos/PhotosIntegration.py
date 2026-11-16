@@ -57,6 +57,7 @@ class PhotosIntegration(Integration, Feed):
     Pours one history row per asset into the dialog history, as a Feed. check_health() verifies
     the library database and, once an hour, that iCloud photo downloads still work."""
     sensitive = True
+    mac_only = True
     setup_after = "iCloud"
     setup_after_reason = "the photos the library keeps only in iCloud download through it"
 

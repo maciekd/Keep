@@ -36,7 +36,7 @@ from common.DraftPlaceholder import (COMMAND_LABEL, COMMANDS_LABEL, PREFILL_LABE
 from common.Mp4Metadata import mp4_display_size, mp4_duration_seconds, mp4_is_rotated
 from common.VideoRotation import bake_rotation
 from common.logging import error, fine, info, note, trace
-from interfaces.chat import FallbackNotice, RichText
+from interfaces.chat import FallbackNotice, MediaIntake, RichText
 from interfaces.chat.ChatTransport import ChatTransport
 from interfaces.chat.ChatTypes import (DECISION_APPROVE, DECISION_CANCEL, DECISION_DENY, KIND_DOCUMENT, KIND_PHOTO,
                                        KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE, PHASE_COMMANDS, PHASE_PREFILL, PHASE_QUEUED,
@@ -967,7 +967,8 @@ class TelegramTransport(Integration, ChatTransport):
         """A file sent as a document (a PDF, a text file, anything attached rather than shot).
         The chat layer reads its text; only the download and Telegram's size cap are handled
         here — a file over the cap is handed on undelivered, so the assistant answers the
-        message all the same."""
+        message all the same. A picture sent as a file (the way to send an uncompressed
+        original) goes the photo's way instead, to vision and into the album."""
         chat_id = await self._admit(update)
         if chat_id is None:
             return
@@ -981,6 +982,11 @@ class TelegramTransport(Integration, ChatTransport):
              f"{file_size / 1024:.0f} KB): {caption or '[no caption]'}")
         self._track_message_text(chat_id, message.message_id, caption or f"[document {name}]")
 
+        hub = self._hub
+        sender = self._sender_name(update)
+        group_id = getattr(message, 'media_group_id', None)
+        picture = (hub is not None and file_size <= TELEGRAM_BOT_MAX_DOWNLOAD
+                   and MediaIntake.is_picture(name, mime_type))
         if file_size > TELEGRAM_BOT_MAX_DOWNLOAD:
             limit = f"{TELEGRAM_BOT_MAX_DOWNLOAD // (1024 * 1024)} MB"
             info(f"Telegram [{chat_id}]: document {name} exceeds the {limit} bot download limit, "
@@ -988,17 +994,35 @@ class TelegramTransport(Integration, ChatTransport):
             attachment = Attachment(b"", mime_type, KIND_DOCUMENT, name=name, size=file_size,
                                     undelivered=f"it is over the {limit} Telegram lets a bot download")
         else:
+            if picture:
+                # Announced before the download, as a photo is: files sent together are an album too.
+                hub.expect_photo(self, chat_id, sender, group_id)
             try:
                 file = await context.bot.get_file(document.file_id)
                 data = bytes(await file.download_as_bytearray())
             except Exception as e:
                 error(f"Telegram [{chat_id}]: document download failed: {e}")
+                if picture:
+                    hub.photo_dropped(self, chat_id)
                 await message.reply_text("Sorry, I couldn't download that file.")
                 return
             trace(f"Telegram [{chat_id}]: document {name} downloaded ({len(data)} bytes)")
+            if picture:
+                jpeg = await asyncio.to_thread(MediaIntake.picture_as_jpeg, data)
+                if jpeg:
+                    info(f"Telegram [{chat_id}]: document {name} is a picture, handed on as a photo "
+                         f"({len(jpeg)} bytes, group {group_id})")
+                    hub.receive(self, IncomingMessage(
+                        conversation=chat_id, sender=sender, message_id=message.message_id,
+                        kind=KIND_PHOTO, text=caption, attachments=[Attachment(jpeg, "image/jpeg", "photo", name=name)],
+                        group_id=group_id, chat_name=self._chat_name(update), **self._guest_fields(update)))
+                    return
+                info(f"Telegram [{chat_id}]: document {name} is a picture that could not be decoded — "
+                     f"handed on as a document, the assistant is told")
+                hub.photo_dropped(self, chat_id)
             attachment = Attachment(data, mime_type, KIND_DOCUMENT, name=name, size=len(data))
         await self._receive(update, IncomingMessage(
-            conversation=chat_id, sender=self._sender_name(update), message_id=message.message_id,
+            conversation=chat_id, sender=sender, message_id=message.message_id,
             kind=KIND_DOCUMENT, text=caption, attachments=[attachment],
             reply_to_text=self._reply_to_text(update), reply_to_bot=self._replies_to_bot(update),
             chat_name=self._chat_name(update), **self._guest_fields(update)))

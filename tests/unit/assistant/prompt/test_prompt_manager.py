@@ -2187,8 +2187,8 @@ def test_add_command_result_passes_the_cap_through(prompt_test_environment):
     with patch.object(manager.message_history, "add_command_result") as add:
         manager.add_command_result("result: \n# Toolkit: web", cap=False)
         manager.add_command_result("result: \npage")
-    assert add.call_args_list == [call("result: \n# Toolkit: web", cap=False, source=None),
-                                  call("result: \npage", cap=True, source=None)]
+    assert add.call_args_list == [call("result: \n# Toolkit: web", cap=False, source=None, parts=None),
+                                  call("result: \npage", cap=True, source=None, parts=None)]
 
 
 @pytest.mark.unit

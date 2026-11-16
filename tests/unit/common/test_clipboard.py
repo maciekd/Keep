@@ -2,13 +2,12 @@
 pictures."""
 import io
 import subprocess
-import sys
 from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
-from common import Clipboard
+from common import Clipboard, Platform
 
 
 def png(width: int, height: int, color=(10, 20, 30)) -> bytes:
@@ -66,7 +65,7 @@ def fake_run(answers: dict):
 class TestReadImage:
     @pytest.fixture(autouse=True)
     def mac(self, monkeypatch):
-        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(Platform, "current", lambda: Platform.MAC)
 
     def test_the_png_class_is_decoded_from_the_hex_osascript_prints(self, monkeypatch):
         raw = png(20, 10)
@@ -102,6 +101,8 @@ class TestReadImage:
 
 
 def test_other_platforms_read_nothing(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+    for display in ("DISPLAY", "WAYLAND_DISPLAY"):      # a server: no desktop session
+        monkeypatch.delenv(display, raising=False)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no tool is run off macOS"))
     assert Clipboard.read_image() is None and Clipboard.read_text() == ""

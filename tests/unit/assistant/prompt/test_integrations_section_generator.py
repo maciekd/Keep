@@ -35,6 +35,7 @@ def no_real_probe():
         yield
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 class TestRender:
     def test_groups_the_enabled_integrations_by_state_and_leaves_the_disabled_out(self):
@@ -127,3 +128,24 @@ class TestPollLogging:
         with patch("assistant.FirstRun.in_ftue", return_value=False) as predicate:
             section._fetch_content()
         assert predicate.call_args.kwargs == {"verbose": False}
+
+
+@pytest.mark.unit
+class TestOnAServerThatIsNotAMac:
+    @pytest.fixture(autouse=True)
+    def linux(self, monkeypatch):
+        from common import Platform
+        monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+
+    def test_the_last_line_names_the_system_and_what_needs_a_mac_instead_of_the_grant(self):
+        statuses = STATUSES + [dict(_status("Reminders", "disabled"), needs_mac=True),
+                               dict(_status("HomeClaw", "disabled"), needs_mac=True)]
+        text = IntegrationsSectionGenerator.render(statuses, full_disk_access=False)
+        last = text.splitlines()[-1]
+        assert "Full Disk Access" not in text
+        assert "Linux" in last and "HomeClaw, Reminders" in last and "microphones" in last
+        assert "Arlo" not in last, "an integration that is merely disabled can be enabled here"
+
+    def test_an_integration_that_needs_a_mac_is_on_no_other_line(self):
+        text = IntegrationsSectionGenerator.render([dict(_status("Photos", "disabled"), needs_mac=True)])
+        assert text.splitlines()[1] == "On: nothing yet." and text.count("Photos") == 1

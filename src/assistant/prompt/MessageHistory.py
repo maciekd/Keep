@@ -48,7 +48,10 @@ class MessageHistory:
     # would cut a list_integrations table in half. Once a later row supersedes it (a newer
     # browse snapshot) HistoryCompressor collapses it at render time, before the trim.
     ROLE_COMMAND = DB_ROLE_COMMAND
-    COMMAND_RESULT_CHARS = 6000
+    COMMAND_RESULT_CHARS = 6000   # per round, shared by its commands
+    CUT_MARKER = (" […the rest is left out of this history copy only: the turn that ran this read all "
+                  "{chars:,} chars and the reply after it was written from them — run the command again "
+                  "to see them…]")
     # The clock note a byte-prefix request put in front of its query (PromptManager.get_messages),
     # persisted as its own verbatim row so the next request renders the same bytes.
     ROLE_NOTE = "note"
@@ -866,20 +869,42 @@ class MessageHistory:
         fine(f"MessageHistory: toolkits in the {window or 'any'} window: {sorted(loaded) or 'none'}")
         return loaded
 
-    def add_command_result(self, result: str, cap: bool = True, source: str | None = None):
+    def _history_shares(self, parts: list[str]) -> list[int]:
+        """How many chars of each result the history keeps: the short ones whole, the long
+        ones an equal share of what the short ones leave of COMMAND_RESULT_CHARS."""
+        shares, left = [0] * len(parts), self.COMMAND_RESULT_CHARS
+        by_length = sorted(range(len(parts)), key=lambda i: len(parts[i]))
+        for position, i in enumerate(by_length):
+            shares[i] = min(len(parts[i]), left // (len(parts) - position))
+            left -= shares[i]
+        return shares
+
+    def add_command_result(self, result: str, cap: bool = True, source: str | None = None,
+                           parts: list[str] | None = None):
         """Persist a command round's result (the `result: …` text the LLM was shown) as a
         `command` row, ordered after the newest row so it follows the assistant round that
         ran the command even when the reply was instant. `cap=False` stores it whole (a
-        toolkit reference; the cap is for web pages and log dumps). `source` is the
-        preload stamp (preload_source) of a row one window alone renders; a command row
-        never carries anything else there."""
+        toolkit reference; the cap is for web pages and log dumps). `parts` are the results
+        of the round's commands as they stand in `result`: they share the cap
+        (_history_shares), so one long page does not push the results after it out of the
+        row, and each cut one ends in a marker saying the cut is the history's — read as a
+        fetch that failed, it made a later turn retract figures the turn that ran the
+        commands had read (prod 2026-11-15). Without parts the cap is on the whole text.
+        `source` is the preload stamp (preload_source) of a row one
+        window alone renders; a command row never carries anything else there."""
         if not result or not result.strip():
             trace("MessageHistory: empty command result, nothing to persist")
             return
-        if cap and len(result) > self.COMMAND_RESULT_CHARS:
-            info(f"MessageHistory: command result truncated for history "
-                 f"({len(result)} → {self.COMMAND_RESULT_CHARS} chars)")
-            result = result[:self.COMMAND_RESULT_CHARS] + " […result truncated in history…]"
+        if cap:
+            whole = len(result)
+            found = [p for p in parts or [] if p in result] or [result]
+            kept = self._history_shares(found)
+            for part, share in zip(found, kept):
+                if share < len(part):
+                    result = result.replace(part, part[:share] + self.CUT_MARKER.format(chars=len(part)), 1)
+            if len(result) != whole:
+                info(f"MessageHistory: command result cut for history ({whole} → {len(result)} chars; "
+                     f"{len(found)} result(s) keep {kept} of {[len(p) for p in found]})")
         entries = self.get_merged_entries()
         newest = entries[-1]["timestamp"] if entries else 0.0
         timestamp = max(time.time(), newest + 0.001)

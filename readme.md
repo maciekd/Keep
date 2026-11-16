@@ -46,6 +46,8 @@ For local AI we recommend:
 * 48 GB RAM for Qwen
 * 128 GB RAM for DeepSeek
 
+Linux is new and still in testing: Ubuntu 24.04 or Debian 12 and newer, on x86_64 or ARM64, with systemd.
+
 <img src="docs/images/banner.svg" align="left" width="2000" height="0" alt="">
 </td>
 </tr>
@@ -59,6 +61,11 @@ You can have Keep running in minutes:
 curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/release/install.sh | bash
 ```
 The installer is self-contained, it won't touch anything else on your Mac.
+
+The same line installs a Linux server (new, in testing). There Keep runs as a systemd service of your own account,
+and the installer asks for sudo once, for a handful of apt packages — it shows the command first. A few things stay
+on the Mac: Photos, Reminders, HomeKit, and the server's own microphones and speakers — voice on a Linux server is
+the phone app's. iMessage works through a Mac that stays on, which lends its Messages to the server.
 
 <br>
 

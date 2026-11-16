@@ -39,7 +39,8 @@ def hub(transport):
     hub = ChatHub()
     hub.register(transport)
     transport.start(hub)
-    return hub
+    yield hub
+    hub.stop()
 
 
 def jpeg(width: int, height: int) -> bytes:
@@ -145,6 +146,7 @@ class TestHistoryFeedHooks:
         feed.user_submitted.assert_called_once_with("hello")
         assert wait_until(lambda: feed.turn_finished.call_count == 1)
         feed.turn_started.assert_called_once_with()
+        hub.stop()
 
     def test_no_turn_starts_without_a_hub(self, pane):
         feed = MagicMock()
@@ -167,6 +169,7 @@ class TestHistoryFeedHooks:
         assert kinds(pane) == [KIND_ASSISTANT]
         req, query = hub.assistant.requests[0]
         assert (req.user, query) == ("system", "The server has just started…")
+        hub.stop()
 
 
 class TestConsoleDraft:

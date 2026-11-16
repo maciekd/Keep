@@ -206,32 +206,26 @@ class TestCurationPeriod:
         assert "the recent interactions below" in prompt
 
 
-class TestMemoryWordCount:
-    """The LLM cannot count the words of a 40 KB bank, so the prompt states the measured count."""
+class TestThePromptNamesNoSize:
+    """The bank's size is kept by code (the condensing pass). Given a count and a limit the
+    model tried to meet it by counting words and thought through its whole output cap
+    (2026-11-13), so the curation prompt carries neither, whatever the size of the bank."""
 
-    def _curator(self):
+    @pytest.mark.parametrize('words', [MEMORY_WORD_LIMIT - 899, MEMORY_WORD_LIMIT + 163,
+                                       int(MEMORY_WORD_LIMIT * 1.3) + 7])
+    def test_neither_the_limit_nor_the_measured_count_is_in_the_prompt(self, words):
         llm = Mock()
-        llm.think.return_value = "# Memory\nUpdated bank with enough words to pass the shrink check"
-        return LongTermMemoryCurator(llm=llm, test_mode=True)
-
-    def test_prompt_states_measured_word_count_and_limit(self):
-        curator = self._curator()
-        memory = "# Memory\n" + " ".join(["word"] * 499)
+        llm.last_stop_reason = None
+        llm.think.return_value = "<memory># Memory\nUpdated bank with enough words to pass the shrink check</memory>"
+        curator = LongTermMemoryCurator(llm=llm, test_mode=True)
+        memory = "# Memory\n" + " ".join(["word"] * (words - 2))
+        assert curator.word_count(memory) == words
         curator.curate_memory_with_data("history", "", memory)
-        prompt = curator.llm.think.call_args.kwargs['system_message']
-        assert "The current memory bank is 501 words" in prompt
-        assert f"no more than {MEMORY_WORD_LIMIT} words" in prompt
+        prompt = curator.llm.think.call_args_list[0].kwargs['system_message']
+        assert memory in prompt
+        assert str(MEMORY_WORD_LIMIT) not in prompt and str(words) not in prompt
+        assert str(abs(words - MEMORY_WORD_LIMIT)) not in prompt
         assert "{MEMORY_SIZE}" not in prompt and "{WORD_LIMIT}" not in prompt
-
-    def test_under_limit_reports_headroom(self):
-        note = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT - 900)
-        assert "900 words of headroom" in note
-        assert "OVER" not in note
-
-    def test_over_limit_demands_a_cut_of_the_excess(self):
-        note = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + 2162)
-        assert "OVER the limit by 2162 words" in note
-        assert "at least 2162 words shorter" in note
 
 
 def _bank(words: int) -> str:
@@ -264,7 +258,7 @@ class TestCondensingPass:
         curator = self._curator([f"<memory>{curated}</memory>", f"<section>{condensed}</section>"])
         memory, metadata = curator.curate_memory_with_data("the period's history", "", loaded)
         first, second = [c.kwargs['system_message'] for c in curator.llm.think.call_args_list]
-        assert "the period's history" in first and loaded in first and "headroom" in first
+        assert "the period's history" in first and loaded in first
         assert "the period's history" not in second and curated in second      # one section: one condensing call
         assert memory.rstrip("\n") == condensed
         assert metadata['condense']['from'] == curator.word_count(curated)
@@ -273,13 +267,13 @@ class TestCondensingPass:
         assert metadata['new_memory_size'] == len(memory)
 
     def test_a_loaded_bank_over_the_trigger_is_curated_as_it_is(self):
-        # The curation sees the whole bank, size note included; the cut comes after
+        # The curation sees the whole bank and is asked for no cut; the cut comes after
         oversize = _bank(int(MEMORY_WORD_LIMIT * 1.3))
         curator = self._curator([f"<memory>{_bank(3000)}</memory>"])
         _, metadata = curator.curate_memory_with_data("history", "", oversize)
         assert curator.llm.think.call_count == 1
         prompt = curator.llm.think.call_args.kwargs['system_message']
-        assert oversize in prompt and "REQUIRED" in prompt
+        assert oversize in prompt
         assert metadata['condense'] is None
 
     def test_a_curated_bank_under_the_trigger_is_not_condensed(self):
@@ -761,13 +755,6 @@ class TestReferenceResultsLeaveTheTranscript:
             curator.curate_memory(datetime(2026, 9, 10, 14, 3), datetime(2026, 9, 10, 16, 30))
         assert curator.floxy_db.get_interaction_history.call_args.kwargs["skip_command_result"] is is_reference_result
 
-
-
-def test_size_note_demands_condensing_only_when_over_the_limit_by_a_tenth():
-    mild = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + MEMORY_WORD_LIMIT // 10)
-    severe = LongTermMemoryCurator.memory_size_note(MEMORY_WORD_LIMIT + MEMORY_WORD_LIMIT // 10 + 1)
-    assert "words shorter" in mild and "REQUIRED" not in mild
-    assert "REQUIRED" in severe
 
 
 @pytest.mark.unit

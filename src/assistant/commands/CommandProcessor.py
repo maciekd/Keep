@@ -122,6 +122,9 @@ class CommandProcessor:
         self._notes: list[str] = []
         self._batch_reply: str | list | None = None
         self._batch_reply_contains_error = False
+        # The texts of the batch's results one by one, as they stand in command_reply: the
+        # history's cap is shared between them.
+        self.result_parts: list[str] = []
         # Written on the command worker thread; read by _handle_background_commands after
         # the queue drains, so no lock is needed. A fresh CommandProcessor is built per
         # LLM round, which keeps both round-scoped.
@@ -359,9 +362,11 @@ class CommandProcessor:
 
     # Runs on: a background lane thread. `content` is the batch's results — all of the
     # round's so far — and `contains_error` whether one of them failed.
-    def set_command_reply(self, content: str | list, contains_error: bool = False):
+    def set_command_reply(self, content: str | list, contains_error: bool = False,
+                          parts: list[str] | None = None):
         info("Command done.")
         self._batch_reply = content
+        self.result_parts = parts or []
         self._batch_reply_contains_error = contains_error
         self._compose_reply()
         self._log_command_reply(content)
@@ -403,6 +408,7 @@ class CommandProcessor:
         self._notes = []
         self._batch_reply = None
         self._batch_reply_contains_error = False
+        self.result_parts = []
         self.commands.forget_batch_results()
 
     def _log_command_reply(self, content: str | list):

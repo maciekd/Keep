@@ -793,10 +793,26 @@ class TestAppleLocation:
             assert PhotoProcessor._get_location("missing") == ""
 
 
+@pytest.fixture
+def bsd_lstat():
+    """`os.lstat` as macOS answers it: PhotoProcessor reads `st_flags` for the dataless bit of
+    an iCloud placeholder, a field only a BSD's stat result has. The files of these tests are
+    plain ones, so the flags are whatever the real system says — none where it has no such field."""
+    import os
+    real = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        st = real(path, *args, **kwargs)
+        return types.SimpleNamespace(st_flags=getattr(st, "st_flags", 0), st_size=st.st_size, st_mode=st.st_mode)
+
+    with patch("integrations.photos.PhotoProcessor.os.lstat", lstat):
+        yield
+
+
 class TestPhotoProcessorICloudPlaceholderType:
 
     @pytest.mark.unit
-    def test_local_file_returns_none(self, tmp_path):
+    def test_local_file_returns_none(self, tmp_path, bsd_lstat):
         from integrations.photos.PhotoProcessor import PhotoProcessor
         local_file = tmp_path / "IMG_1234.heic"
         local_file.write_bytes(b"image data" * 200)
@@ -804,7 +820,7 @@ class TestPhotoProcessorICloudPlaceholderType:
         assert result is None
 
     @pytest.mark.unit
-    def test_tiny_file_returns_truncated(self, tmp_path):
+    def test_tiny_file_returns_truncated(self, tmp_path, bsd_lstat):
         from integrations.photos.PhotoProcessor import PhotoProcessor
         stub = tmp_path / "IMG_1234.heic"
         stub.write_bytes(b"\xff\xd8\xff\xe0converted_jpeg")
@@ -2308,7 +2324,7 @@ class TestPhotoProcessorGetVideoBytes:
                 "cloud_master_guid": "MASTER-1", "cloud_asset_guid": "ASSET-1", "library_scope": 3}
 
     @pytest.mark.unit
-    def test_local_original_used_when_it_fits(self, tmp_path):
+    def test_local_original_used_when_it_fits(self, tmp_path, bsd_lstat):
         from integrations.photos.PhotoProcessor import PhotoProcessor
         (tmp_path / "0/00").mkdir(parents=True)
         clip = b"small clip" * 200
@@ -2322,7 +2338,7 @@ class TestPhotoProcessorGetVideoBytes:
         dl.assert_not_called()
 
     @pytest.mark.unit
-    def test_large_local_original_falls_back_to_icloud_rendition(self, tmp_path):
+    def test_large_local_original_falls_back_to_icloud_rendition(self, tmp_path, bsd_lstat):
         from integrations.photos.PhotoProcessor import PhotoProcessor
         (tmp_path / "0/00").mkdir(parents=True)
         (tmp_path / "0/00/clip.mov").write_bytes(b"x" * 5000)

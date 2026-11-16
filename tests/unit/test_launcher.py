@@ -150,15 +150,15 @@ class TestTelegramOnlyBoot:
 
 @pytest.mark.unit
 class TestDisabledSonosIsLeftAlone:
-    def test_build_does_not_build_the_music_integration(self, telegram_only_config, quiet_heavy_startup):
+    def test_build_does_not_build_the_sonos_integration(self, telegram_only_config, quiet_heavy_startup):
         # Only the IntegrationMonitor builds it (mocked away here, as on an install where
-        # Sonos & Spotify is disabled): built at startup it discovers speakers on its own.
-        from integrations.music.MusicIntegration import MusicIntegration
-        MusicIntegration.reset_instance()
+        # Sonos is disabled): built at startup it discovers speakers on its own.
+        from integrations.sonos.SonosIntegration import SonosIntegration
+        SonosIntegration.reset_instance()
         import floxy_ai_server
         server = floxy_ai_server.build(8999, running_as_testsuite=False)
         try:
-            assert MusicIntegration.peek_instance() is None
+            assert SonosIntegration.peek_instance() is None
         finally:
             server.stop()
 
@@ -551,6 +551,33 @@ class TestResumeConversation:
             opened.assert_called_once_with("the turn")
             console.waiting[0]()        # a TUI client connects hours later
             opened.assert_called_once()
+
+    def test_the_autonomous_checks_are_held_from_the_boot_until_the_turn_is_handed_over(self):
+        """2026-11-16: the checks of the startup grace ran 5 s ahead of the resume turn."""
+        console, checks = self.FakeConsole(), self.FakeChecks()
+        server = type("Server", (), {"interfaces": [console], "assistant": self.FakeAssistant()})()
+        with patch("assistant.agents.AutonomousActionManager.AutonomousActionManager.current",
+                   return_value=checks), self.resume(server) as opened:
+            assert checks.held and not opened.called
+            console.waiting[0]()
+            assert opened.called and not checks.held
+
+    def test_a_turn_that_is_never_opened_releases_the_checks_all_the_same(self):
+        console, checks = self.FakeConsole(), self.FakeChecks()
+        server = type("Server", (), {"interfaces": [console], "assistant": self.FakeAssistant(busy=True)})()
+        with patch("assistant.agents.AutonomousActionManager.AutonomousActionManager.current",
+                   return_value=checks), self.resume(server):
+            console.waiting[0]()
+            assert not checks.held
+
+    class FakeChecks:
+        held = False
+
+        def hold_for_resume(self):
+            self.held = True
+
+        def release_resume_hold(self):
+            self.held = False
 
     def test_the_first_run_brief_waits_for_the_intro_however_long(self):
         import floxy_ai_server

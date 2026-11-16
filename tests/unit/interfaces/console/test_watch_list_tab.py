@@ -36,7 +36,8 @@ class TestAssess:
         (item(updated_days_ago=WatchList.STALE_AFTER_DAYS), STALE),
         (item(every="when it rains", checked=timedelta(hours=1)), POLLED),
         (item(due_in=5), WAITING),
-        (item(due_in=0), WAITING),
+        (item(due_in=0, checked=timedelta(hours=1)), WAITING),
+        (item(due_in=0), PAST_DUE),
         (item(), OPEN),
     ])
     def test_an_item_gets_the_state_its_cadence_and_dates_put_it_in(self, entry, kind):

@@ -13,6 +13,9 @@ import common.VideoRotation as VideoRotation
 from common.Mp4Metadata import mp4_display_size, mp4_duration, mp4_is_rotated
 from common.VideoRotation import bake_rotation
 
+# The Mac's own behaviour, whatever system the suite runs on (common/Platform).
+pytestmark = pytest.mark.usefixtures("on_a_mac")
+
 # The pyobjc frameworks are imported here, at collection, like the conftest's openai: the four
 # imports are ~90 ms, and the first real export on a worker paid them inside the test, was
 # recorded as slow, moved to the front of the next run's collection and paid them again.

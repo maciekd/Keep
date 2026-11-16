@@ -800,6 +800,63 @@ class TestInboundMedia:
         assert att.data == b"" and att.size == 25 * 1024 * 1024 and att.name == "film.mov"
         assert "20 MB" in att.undelivered
 
+    @staticmethod
+    def _jpeg(size=(40, 30)) -> bytes:
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", size, "red").save(buf, format="JPEG")
+        return buf.getvalue()
+
+    @pytest.mark.asyncio
+    async def test_a_picture_sent_as_a_file_goes_to_vision_as_a_photo(self, transport, hub):
+        update = self._document_update(name="drawing.jpg", mime_type="image/jpeg", caption="What is this?")
+        update.message.media_group_id = "album-1"
+        await transport._handle_document(update, _file_context(self._jpeg()))
+        hub.expect_photo.assert_called_once_with(transport, 123, "Anna", "album-1")
+        hub.photo_dropped.assert_not_called()
+        msg = received(hub)
+        assert msg.kind == KIND_PHOTO and msg.text == "What is this?" and msg.group_id == "album-1"
+        att = msg.attachments[0]
+        assert att.kind == "photo" and att.mime_type == "image/jpeg" and att.data[:2] == b"\xff\xd8"
+
+    @pytest.mark.asyncio
+    async def test_a_picture_file_that_cannot_be_decoded_stays_a_document_and_releases_the_album(self, transport, hub):
+        update = self._document_update(name="broken.png", mime_type="image/png")
+        with patch("interfaces.chat.MediaIntake.picture_as_jpeg", return_value=None):
+            await transport._handle_document(update, _file_context(b"not a picture"))
+        hub.photo_dropped.assert_called_once_with(transport, 123)
+        msg = received(hub)
+        assert msg.kind == KIND_DOCUMENT and msg.attachments[0].data == b"not a picture"
+
+    @pytest.mark.asyncio
+    async def test_a_picture_file_whose_download_fails_releases_the_album(self, transport, hub):
+        update = self._document_update(name="drawing.jpg", mime_type="image/jpeg")
+        ctx = MagicMock()
+        ctx.bot.get_file = AsyncMock(side_effect=RuntimeError("network"))
+        await transport._handle_document(update, ctx)
+        hub.expect_photo.assert_called_once()
+        hub.photo_dropped.assert_called_once_with(transport, 123)
+        hub.receive.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_document_that_is_no_picture_announces_no_photo(self, transport, hub):
+        await transport._handle_document(self._document_update(), _file_context(b"%PDF-1.4 fake"))
+        hub.expect_photo.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_picture_file_over_the_bot_limit_holds_no_album_open(self, transport, hub):
+        """It is never downloaded, so no photo is on its way: an album announced for it would
+        hold back the pictures sent with it until the download timeout."""
+        update = self._document_update(name="scan.tiff", mime_type="image/tiff", file_size=25 * 1024 * 1024)
+        update.message.media_group_id = "album-1"
+        ctx = _file_context()
+        await transport._handle_document(update, ctx)
+        ctx.bot.get_file.assert_not_called()
+        hub.expect_photo.assert_not_called()
+        msg = received(hub)
+        assert msg.kind == KIND_DOCUMENT and msg.attachments[0].undelivered
+
     @pytest.mark.asyncio
     async def test_document_download_failure_tells_the_user(self, transport, hub):
         update = self._document_update()

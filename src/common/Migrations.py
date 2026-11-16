@@ -14,7 +14,10 @@ CONFIG_KEY_RENAMES = {
 # 2026-11-10: "iMessage" became "iMessage Feed" and "WhatsApp" "WhatsApp Feed" (and the bot,
 # which is in no list, "Telegram Chat"), so the names read the same everywhere: a Chat is the
 # assistant's account, a Feed the owner's.
-INTEGRATION_RENAMES = {"Telegram Monitor": "Telegram Feed", "iMessage": "iMessage Feed", "WhatsApp": "WhatsApp Feed"}
+# 2026-11-13: "Sonos & Spotify" became "Sonos": the Spotify account is core's and every speaker
+# system's (HEOS too), so the integration is the speakers alone. Its section was `sonos` already.
+INTEGRATION_RENAMES = {"Telegram Monitor": "Telegram Feed", "iMessage": "iMessage Feed", "WhatsApp": "WhatsApp Feed",
+                       "Sonos & Spotify": "Sonos"}
 # The Telethon session: without the move the feed would ask for a new login (code + 2FA).
 FILE_RENAMES = {
     "telegram_monitor.session": "telegram_feed.session",

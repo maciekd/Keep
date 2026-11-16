@@ -167,7 +167,7 @@ def no_provider_hint() -> str:
         hints.append(f"{integration.name} is enabled but not configured: set "
                      f"{', '.join(integration.missing_config_keys())} (config_help / config_request).")
     for placeholder in monitor.of_type(DisabledIntegration):
-        if issubclass(placeholder.cls, VehicleProvider):
+        if placeholder.can_enable and issubclass(placeholder.cls, VehicleProvider):
             hints.append(f'{placeholder.name} is disabled: enable_integration("{placeholder.name}").')
     for placeholder in monitor.of_type(UnavailableIntegration):
         if issubclass(placeholder.cls, VehicleProvider):
