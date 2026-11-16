@@ -1,0 +1,9 @@
+#!/bin/bash
+# Stands in for the venv's python under scripts/test_under_load.sh: prints what a test of the
+# script reads back from the run's output file, and ends like a pytest run.
+echo "argv: $*"
+if [ -n "$REPORT_PROCESSES" ]; then
+    echo "niceness: $(ps -o nice= -p $$)"
+    echo "siblings: $(pgrep -P $PPID | tr '\n' ' ')"
+fi
+echo "============ 3 passed in 0.01s ============"

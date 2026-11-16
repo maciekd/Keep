@@ -467,21 +467,30 @@ TEST_HEALTH_PROMPT = """
 Check the health of the unit test suite: it must be reliable and FAST. Find the flaky tests and the slow
 tests, and fix them.
 
-Measure:
-1. Run the unit suite {runs} times (the command is in CLAUDE.md, "Always run unit tests"), each time with
-   `--durations=0 --durations-min=0.02` added and the whole output kept in a file in your scratch directory
-   (the `grep` in that command would drop the durations), so that for every test you have its outcome and
-   its duration in each run. A test's duration is its setup + call + teardown together.
-2. Flaky: a test that failed in some runs but not in all of them. Also flaky: a test whose slowest run took
-   over a second while its fastest was under the limit below.
-3. Slow: a test whose FASTEST run took more than {slow_ms} ms. The fastest run is the measure because
+Measure — twice, because an idle machine hides what a busy one shows:
+1. Idle, for the durations: run the unit suite {runs} times (the command is in CLAUDE.md, "Always run unit
+   tests"), each time with `--durations=0 --durations-min=0.02` added and the whole output kept in a file in
+   your scratch directory (the `grep` in that command would drop the durations), so that for every test you
+   have its outcome and its duration in each run. A test's duration is its setup + call + teardown together.
+2. Under load, for the outcomes: `scripts/test_under_load.sh {runs} <a directory in your scratch directory>`
+   runs the suite {runs} times beside one busy loop per core and keeps each run's whole output in
+   `run_N.txt` there. A loaded run takes several times as long as an idle one: wait for all of them.
+   Durations measured under load mean nothing, so the script does not ask for them.
+3. Flaky: a test that failed in some of all these runs but not in all of them. A test that passed every
+   idle run and failed every loaded one is flaky too — by day the suite runs on a busy machine, and that is
+   where such a test fails. Also flaky: a test whose slowest idle run took over a second while its fastest
+   was under the limit below.
+4. Slow: a test whose FASTEST idle run took more than {slow_ms} ms. The fastest run is the measure because
    machine noise and one-off costs (a first import, a shared fixture) only ever add time.
-4. A test that failed in every run is broken, not flaky: leave it alone and report it.
+5. A test that failed in every run, idle and loaded, is broken, not flaky: leave it alone and report it.
 
 Fix — change files under tests/ ONLY, never the code under test:
 - Flaky: find the cause (ordering, shared state, real time, threads, a race) and remove it. Never hide it
-  with a retry, a skip, an xfail or a wider tolerance. When the cause is a real bug in the code under test,
-  leave both the test and the code as they are and describe the bug in your report.
+  with a retry, a skip, an xfail or a wider tolerance. A test that fails only under load depends on real
+  time — an assertion on elapsed time, real sleeps racing each other, a thread expected somewhere within a
+  timeout: take the real time out of it (a clock the test drives, an event it sets or waits on without a
+  deadline that decides the outcome). When the cause is a real bug in the code under test, leave both the
+  test and the code as they are and describe the bug in your report.
 - Slow: remove the cost at its source (a real sleep or timeout, real I/O, an expensive fixture or import that
   can be faked or made cheaper). When a test cannot get under {slow_ms} ms and what it checks is not worth
   that time, delete it. No test over {slow_ms} ms stays.
@@ -489,13 +498,14 @@ Fix — change files under tests/ ONLY, never the code under test:
 - A test marked `@pytest.mark.wontfix` documents a bug the maintainer has decided to leave; it runs as a
   non-strict xfail. When one passed in every run, the bug it documents is gone: remove the marker so the test
   runs as an ordinary one, and list it in the report. Never add that marker yourself.
-- Verify: measure every test you touched {runs} more times, then run the whole suite once.
+- Verify: measure every test you touched {runs} more times idle and {runs} more times under load (the
+  script takes the test files as arguments after the directory), then run the whole suite once.
 
 If you changed anything, create a branch, commit (check rules for commits in the /commit skill), push it and
 create ONE pull request with all of it. If nothing was flaky or slow, change nothing and say so.
 
 Final report:
-- Flaky tests: name, cause, fix
+- Flaky tests: name, whether it failed idle or only under load, cause, fix
 - Slow tests made faster: name, before -> after
 - wontfix markers removed: every test by name
 - Tests REMOVED: every one by name, with why it was not worth keeping
@@ -1325,7 +1335,7 @@ class CodeQualityMaintainer:
         branch = CodeQualityMaintainer._job_home()
         try:
             info(f"CodeQualityMaintainer: test health — flaky tests and tests over {SLOW_TEST_MS} ms "
-                 f"across {TEST_HEALTH_RUNS} runs of the unit suite...")
+                 f"across {TEST_HEALTH_RUNS} idle runs of the unit suite and {TEST_HEALTH_RUNS} under load...")
             report = CodeQualityMaintainer._run_claude(
                 TEST_HEALTH_PROMPT.format(runs=TEST_HEALTH_RUNS, slow_ms=SLOW_TEST_MS), "test-health")
             info("CodeQualityMaintainer: test health complete.")
