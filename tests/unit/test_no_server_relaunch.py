@@ -98,6 +98,18 @@ def test_this_machines_desktop_cannot_be_reached(command, what):
         subprocess.run(command, capture_output=True, timeout=10)
 
 
+# Guarded since a Linux server is the systemd user unit keep.service. Should the guard let one
+# through, the unit is nobody's and the user does not exist.
+@pytest.mark.unit
+@pytest.mark.parametrize("command", [["systemctl", "--user", "restart", "keep-no-such.service"],
+                                     ["systemd-run", "--user", "--scope", "--", "true"],
+                                     ["loginctl", "enable-linger", "no-such-user-keep"]],
+                         ids=["systemctl", "systemd-run", "loginctl"])
+def test_this_machines_systemd_cannot_be_reached(command):
+    with pytest.raises(RuntimeError, match="systemd"):
+        subprocess.run(command, capture_output=True, timeout=10)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("verb", ["bootstrap", "bootout", "print"])
 def test_this_macs_launchd_agents_cannot_be_loaded_unloaded_or_asked_about(verb):

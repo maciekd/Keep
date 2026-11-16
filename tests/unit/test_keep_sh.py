@@ -7,7 +7,11 @@ for `open` (installed apps per a canned list, every launch recorded), `lsof`, `p
 `seq` and `python3`. The stubs are checked in under `tests/unit/data/keep_sh/` and steered by
 environment variables rather than written per test: macOS assesses an executable file the first
 time it runs (~130 ms per new file, free once it is known), so a tree of fresh stubs cost every
-test a quarter of a second or more."""
+test a quarter of a second or more.
+
+Each system's branch runs on either system (`KEEP_OS`): on the Linux one the doubles are `ss` and
+GNU `stat` beside `pgrep`, and where the real /usr/bin/stat is not BSD's, the Mac branch's call of
+it is answered by process_table's shim (a function, through $BASH_ENV)."""
 import os
 import shutil
 import subprocess
@@ -15,15 +19,30 @@ from pathlib import Path
 
 import pytest
 
+from .process_table import BSD_STAT
+
 KEEP_SH = Path(__file__).resolve().parents[2] / 'keep.sh'
 ROLE_SH = KEEP_SH.parent / 'scripts' / 'role.sh'
 SATELLITE_PORT = 8901
 STUBS = Path(__file__).parent / 'data' / 'keep_sh'
 BASH = shutil.which('bash')
+MAC, LINUX = 'Darwin', 'Linux'
+
+
+def script_env(tmp_path: Path, system: str, settings: dict) -> dict:
+    """The environment a script of the tree runs in under these doubles, as `system`."""
+    env = dict(os.environ, PATH=f"{STUBS / 'bin'}:{os.environ['PATH']}", KEEP_OS=system,
+               **{key: value for key, value in settings.items() if value is not None})
+    if BSD_STAT:
+        (tmp_path / 'bsd_stat.bash').write_text(BSD_STAT)
+        env['BASH_ENV'] = str(tmp_path / 'bsd_stat.bash')
+    return env
 
 
 class Harness:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, system=MAC):
+        self.tmp = tmp_path
+        self.system = system
         self.root = tmp_path / 'Keep'
         self.root.mkdir()
         (self.root / 'keep.sh').write_text(KEEP_SH.read_text())
@@ -66,8 +85,7 @@ class Harness:
         self.env['KEEP_TEST_POLLS'] = str(count)
 
     def run(self, with_tty):
-        env = dict(os.environ, PATH=f"{STUBS / 'bin'}:{os.environ['PATH']}",
-                   **{key: value for key, value in self.env.items() if value is not None})
+        env = script_env(self.tmp, self.system, self.env)
         command = [BASH, str(self.root / 'keep.sh')]
         if with_tty:
             master, slave = os.openpty()
@@ -88,7 +106,14 @@ class Harness:
 
 @pytest.fixture
 def harness(tmp_path):
+    """The Mac's branch."""
     return Harness(tmp_path)
+
+
+@pytest.fixture(params=[MAC, LINUX])
+def either(request, tmp_path):
+    """With a terminal the script does the same on both systems."""
+    return Harness(tmp_path, request.param)
 
 
 class TestOpeningATerminal:
@@ -114,33 +139,51 @@ class TestOpeningATerminal:
         assert not any(c.startswith('python3') for c in harness.recorded())
 
 
+class TestWithoutATerminalOnLinux:
+    """No Desktop shortcut runs it there, and there is no window to open."""
+
+    def test_it_says_so_and_opens_nothing(self, tmp_path):
+        harness = Harness(tmp_path, LINUX)
+        harness.installed(['Ghostty', 'iTerm', 'Terminal'])
+        harness.server(listening=True, process=True)
+        result = harness.run(with_tty=False)
+        assert result.returncode != 0
+        assert 'terminal' in result.stderr
+        assert harness.recorded() == [] and 'start.sh ran' not in result.stdout
+
+
 class TestInsideTheTerminal:
-    def test_a_listening_server_gets_the_console(self, harness):
+    def test_a_listening_server_gets_the_console(self, either):
+        harness = either
         harness.server(listening=True, process=False)
         result = harness.run(with_tty=True)
         assert harness.recorded() == ['python3 tui.py localhost']
         assert 'start.sh ran' not in result.stdout
 
-    def test_a_booting_server_is_waited_for_and_then_gets_the_console(self, harness):
+    def test_a_booting_server_is_waited_for_and_then_gets_the_console(self, either):
+        harness = either
         harness.booting_server(listens_at_call=4)
         result = harness.run(with_tty=True)
         assert 'waiting' in result.stdout
         assert harness.recorded() == ['sleep 1'] * 3 + ['python3 tui.py localhost']
 
-    def test_a_server_shutting_down_is_waited_out_and_a_new_one_started(self, harness):
+    def test_a_server_shutting_down_is_waited_out_and_a_new_one_started(self, either):
+        harness = either
         harness.dying_server(gone_at_call=3)
         result = harness.run(with_tty=True)
         assert 'start.sh ran' in result.stdout
         assert 'python3 tui.py localhost' not in harness.recorded()
         assert harness.recorded().count('sleep 1') == 2
 
-    def test_a_process_that_never_listens_gets_the_console_in_the_end(self, harness):
+    def test_a_process_that_never_listens_gets_the_console_in_the_end(self, either):
+        harness = either
         harness.server(listening=False, process=True)
         harness.polls(1)
         harness.run(with_tty=True)
         assert harness.recorded() == ['sleep 1', 'python3 tui.py localhost']
 
-    def test_no_server_starts_one(self, harness):
+    def test_no_server_starts_one(self, either):
+        harness = either
         result = harness.run(with_tty=True)
         assert 'start.sh ran' in result.stdout
         assert harness.recorded() == []
@@ -165,8 +208,9 @@ class TestSatellite:
 
 
 class TestOnlyThisUsersServer:
-    def test_the_console_is_not_attached_to_the_other_users_server(self, harness):
+    def test_the_console_is_not_attached_to_the_other_users_server(self, either):
         """The Mac's other user runs a Keep on the same port; this user's is not running."""
+        harness = either
         harness.env['KEEP_TEST_FOREIGN_PROCESS'] = '1'
         harness.env['KEEP_TEST_FOREIGN_PORT'] = '8888'
         result = harness.run(with_tty=True)

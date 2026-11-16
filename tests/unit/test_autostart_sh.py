@@ -6,13 +6,18 @@ Run like keep.sh's tests: the script is copied into a tmp tree beside the stub `
 the checked-in fake bin under `tests/unit/data/keep_sh/` answers for `lsof` and `pgrep`.
 
 An install is a Keep server unless its config.yaml says `role: imessage_satellite`; "running" is
-then the satellite's own port, and either way only this user's processes of this checkout count."""
+then the satellite's own port, and either way only this user's processes of this checkout count.
+
+The script is the Mac's alone: every case runs its branch (`KEEP_OS`), whatever system the suite
+is on, and on Linux it starts nothing."""
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from .test_keep_sh import LINUX, MAC, script_env
 
 AUTOSTART_SH = Path(__file__).resolve().parents[2] / 'autostart.sh'
 ROLE_SH = AUTOSTART_SH.parent / 'scripts' / 'role.sh'
@@ -24,7 +29,9 @@ BASH = shutil.which('bash')
 
 
 class Harness:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, system=MAC):
+        self.tmp = tmp_path
+        self.system = system
         self.root = tmp_path / 'Keep'
         self.root.mkdir()
         (self.root / 'autostart.sh').write_text(AUTOSTART_SH.read_text())
@@ -52,8 +59,7 @@ class Harness:
         self.env['KEEP_TEST_FOREIGN_PORT'] = str(port)
 
     def run(self):
-        env = dict(os.environ, PATH=f"{STUBS / 'bin'}:{os.environ['PATH']}",
-                   **{key: value for key, value in self.env.items() if value is not None})
+        env = script_env(self.tmp, self.system, self.env)
         return subprocess.run([BASH, str(self.root / 'autostart.sh')], stdin=subprocess.DEVNULL, env=env,
                               capture_output=True, text=True, close_fds=False, timeout=10)
 
@@ -111,8 +117,7 @@ class TestAutostart:
         elsewhere = tmp_path / 'elsewhere'
         elsewhere.mkdir()
         harness.server(listening=True, process=True)
-        env = dict(os.environ, PATH=f"{STUBS / 'bin'}:{os.environ['PATH']}",
-                   **{key: value for key, value in harness.env.items() if value is not None})
+        env = script_env(tmp_path, MAC, harness.env)
         subprocess.run([BASH, str(harness.root / 'autostart.sh')], cwd=elsewhere, stdin=subprocess.DEVNULL, env=env,
                        capture_output=True, text=True, close_fds=False, timeout=10)
         assert (harness.root / 'log' / 'restart.log').exists()
@@ -172,3 +177,15 @@ class TestOnlyThisInstallsProcesses:
         harness.env['KEEP_TEST_CWD'] = OTHER_CHECKOUT
         result = harness.run()
         assert 'start.sh ran' in result.stdout
+
+
+@pytest.mark.unit
+class TestOnLinux:
+    def test_it_starts_nothing_and_fails_saying_it_is_the_macs(self, tmp_path):
+        """systemd starts the server there (scripts/service.sh); nothing registers this script."""
+        harness = Harness(tmp_path, LINUX)
+        harness.server(listening=False, process=False)
+        result = harness.run()
+        assert result.returncode != 0
+        assert 'start.sh ran' not in result.stdout
+        assert 'macOS' in result.stderr

@@ -6,12 +6,19 @@
 # console to the running server, or starts the server first: start.sh shows the startup log
 # and hands the terminal to the console once the server is up. The server itself is launched
 # the way it always is, by start.sh through Terminal, so the Mac's grants keep applying to it.
+# On Linux there is no shortcut and no window to open: run from a terminal it does the same as
+# on the Mac, and without one it only says so.
 cd "$(dirname "$0")"
 
 RLOG=log/restart.log
 rlog() { mkdir -p log; echo "[$(date '+%Y-%m-%d %H:%M:%S')] keep.sh: $*" >> "$RLOG"; }
 
 if [ ! -t 0 ]; then
+    if [ "${KEEP_OS:-$(uname -s)}" = Linux ]; then      # as scripts/role.sh tells the system
+        rlog "run without a terminal on Linux — nothing to open the console in"
+        echo "keep.sh needs a terminal: run $PWD/keep.sh from one (over ssh: ssh -t <server> $PWD/keep.sh)." >&2
+        exit 1
+    fi
     script="$PWD/keep.sh"
     # `open -Ra <app>` answers whether the app is installed without launching it.
     if open -Ra Ghostty 2>/dev/null; then

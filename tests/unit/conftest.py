@@ -84,6 +84,11 @@ class _NoRelaunchPopen(subprocess.Popen):
             raise RuntimeError(f"a unit test tried to open a real browser: {words}")
         if words[:1] in (["wl-paste"], ["xclip"]):
             raise RuntimeError(f"a unit test tried to read this machine's clipboard: {words}")
+        # A Linux server is the systemd user unit keep.service (scripts/service.sh): unstubbed, a
+        # start or a stop would restart or end the developer's own server, and linger outlives
+        # the suite. The script tests run the scripts over bash functions of these names.
+        if words[:1] in (["systemctl"], ["systemd-run"], ["loginctl"]):
+            raise RuntimeError(f"a unit test tried to reach this machine's systemd: {words}")
         super().__init__(args, *rest, **kwargs)
 
 

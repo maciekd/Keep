@@ -136,8 +136,13 @@ RestartSec=10
 WantedBy=default.target
 ```
 
-`ensure_unit` rewrites it when the text differs, runs `daemon-reload` and `enable`. A unit that
-already points at another checkout is refused with both paths named — one Keep per user.
+`ensure_unit` rewrites it when the text differs and then runs `daemon-reload`; `enable` runs at
+every start. A unit that already points at another checkout is refused with both paths named —
+one Keep per user (told by device and inode, as `role.sh` tells every folder; a unit whose folder
+is gone is taken over, a file of that name without a `WorkingDirectory` is left alone). The path
+goes into the unit as it is, so a checkout whose path has a space, a quote, a backslash, `$` or
+`%` is refused: each means something else in `ExecStart` than in the two path settings, and no
+quoting of it could be tried from a Mac.
 `loginctl enable-linger` (allowed for one's own user without sudo) makes it start at boot, before
 anyone logs in; the installer runs it once.
 
@@ -150,16 +155,28 @@ handing the terminal to `tui.py`); the middle — kill the old pids, open Termin
 becomes on Linux:
 
 1. Refuse when a process that is not the unit's holds a listen port (a server started by hand).
-2. `ensure_unit`, then `systemctl --user restart keep.service`.
+   "The unit's" is asked of `/proc/<pid>/cgroup`, not of the unit's main pid.
+2. `ensure_unit`, `systemctl --user reset-failed` (a unit that used up its start limit refuses a
+   start by hand too), then `systemctl --user restart keep.service`.
+
+Each system's launch is a file of its own, sourced by `start.sh` between its head and its tail:
+`scripts/launch_mac.sh` is the Mac's middle moved as it was, `scripts/launch_linux.sh` the steps
+above. It also refuses to go on without `ss` — with no listener ever seen, every start would pass
+for one that never came up.
 
 One trap: `Updater.relaunch` spawns `start.sh` from inside the server, so the script is in the
 unit's cgroup and the restart it asks for would kill it — losing the PR-trial watch. `start.sh`
-therefore re-executes itself through `systemd-run --user --scope` when it has no terminal.
-`Updater`, `PullRequestTrial` and `restart_server` stay unchanged: they still hand a pid and a
-fallback branch to `start.sh`.
+therefore runs itself again through `systemd-run --user --scope` when it finds itself in the
+unit's cgroup (`/proc/self/cgroup` — the condition itself, where "no terminal" was a guess at
+it). It asks for a scope with `true` first, so a systemd that gives none costs only the watch and
+not the restart; the copy left in the unit waits for the scoped one and ends with the unit, and
+`KEEP_START_SCOPED` keeps it from trying twice. The pid `Updater` hands over is not killed on
+Linux: the restart stops it. `Updater`, `PullRequestTrial` and `restart_server` stay unchanged:
+they still hand a pid and a fallback branch to `start.sh`.
 
-**`stop.sh`**: `systemctl --user stop keep.service`, then the existing kill of this checkout's
-remaining `floxy_ai_server` processes (the test suite's instances). The watchdog note is Mac-only.
+**`stop.sh`**: `systemctl --user stop keep.service` — when the unit is this checkout's — then the
+existing kill of this checkout's remaining `floxy_ai_server` processes (the test suite's
+instances, a server started by hand). The unit stays enabled. The watchdog note is Mac-only.
 
 **`autostart.sh`**, `Autostart.py`, `Applet.py`, `DesktopShortcut.py`, `Watchdog.py`: Mac-only.
 Each public entry (`Autostart.enable`, `DesktopShortcut.ensure`, `Watchdog.sync`) returns early on
@@ -167,7 +184,7 @@ Linux with one log line; `floxy_ai_server.build` and `FirstRun` call them as bef
 
 **`keep.sh`**: with a terminal, as today (attach the console or run `start.sh`). Without one it
 exits with a message on Linux — there is no shortcut that would run it that way.
-`scripts/cli_start.sh` is Mac-only and untouched.
+`autostart.sh` and `scripts/cli_start.sh` are Mac-only: on Linux each says so and exits non-zero.
 
 **`scripts/role.sh`** — the "this user's processes of this checkout" lookups are BSD today:
 
@@ -175,16 +192,18 @@ exits with a message on Linux — there is no shortcut that would run it that wa
 |---|---|---|
 | `here` | `/usr/bin/stat -f '0x%Xd %i' .` | `stat -c '%d %i' .` |
 | `cwd_of <pid>` | `lsof -p … -d cwd -FDi` | `stat -L -c '%d %i' /proc/<pid>/cwd` |
-| `own_listeners` | `lsof -a -u … -iTCP:… -sTCP:LISTEN` | `ss -Hltnp` filtered to the ports, pids owned by `$me` |
+| `own_listeners` | `lsof -a -u … -iTCP:… -sTCP:LISTEN` | `ss -Hltnp` filtered to the ports, pids owned by `$me` (`stat -c %u /proc/<pid>`) |
 | `own_processes` | `pgrep -u … -f` | the same (procps) |
 
 The config reader (awk) and the role logic are portable as they are. A satellite role on Linux is
 a `role_problem`: nothing is stopped, nothing started.
 
 **Tests**: `tests/unit/process_table.py` gains `ss`, `stat` and `systemctl` / `systemd-run` /
-`loginctl` stubs beside `lsof` and `pgrep`, and its own `stat -f` calls become portable. The
-script tests (`test_start_sh`, `test_stop_sh`, `test_role_sh`, `test_keep_sh`, `test_autostart_sh`)
-run each branch under `KEEP_OS`, on both OSes. The unit conftest's `Popen` guard refuses
+`loginctl` stubs beside `lsof` and `pgrep`. The Mac branch asks `/usr/bin/stat` by its path, so
+where that file is GNU's the table brings a bash function of that name answering in BSD's words.
+The script tests (`test_start_sh`, `test_stop_sh`, `test_role_sh`, `test_keep_sh`, `test_autostart_sh`)
+run each branch under `KEEP_OS`, on both OSes — but for `test_role_sh`'s own-process cases, which
+ask the real tools of the system the suite is on (on Ubuntu: `pgrep` and `/proc`). The unit conftest's `Popen` guard refuses
 `systemctl`, `systemd-run` and `loginctl`, with a case each in `test_no_server_relaunch.py`.
 
 ## 3. `install.sh`
@@ -330,7 +349,9 @@ A read cannot settle these; each has a place in the order below.
 2. Ubuntu's snap Chromium under a user service (§3).
 3. `ss -p` shows the pid of the user's own listener without root on both distributions (§2).
 4. `systemd-run --user --scope` from inside the unit survives the unit's restart (§2) — the
-   PR-trial fallback depends on it.
+   PR-trial fallback depends on it. With it: that the copy of `start.sh` left in the unit ends
+   at once on the stop's SIGTERM and does not hold the stop up, and what `restart_server` does
+   to a server started by hand (its `start.sh` refuses: the port is held outside the unit).
 5. Discovery by multicast (Sonos, HEOS, Hue) with `ufw` on; Plejd over BlueZ needs the `bluez`
    package and the user in the `bluetooth` group. Both become notes in the integrations' config
    comments once seen.

@@ -6,9 +6,13 @@ same keys, since a script that took for a server what floxy_ai_server.py starts 
 Each case writes a config.yaml into a tmp tree, sources the script there and prints its verdict;
 the Python verdict comes from a real ConfigManager on the same file.
 
-Which processes are this checkout's is asked of the Mac's real `lsof` and `pgrep` here, about
-`sleep` processes the test starts: the staged process table of the start and stop tests cannot
-show how lsof spells a folder."""
+The reading is the same on both systems but for what a Linux server leaves out, so each case
+names the system it reads as (`KEEP_OS`) and runs on either.
+
+Which processes are this checkout's is asked of the machine's real tools here — `lsof` and `pgrep`
+on a Mac, /proc, `stat` and `pgrep` on Linux, whichever the suite runs on — about `sleep`
+processes the test starts: the staged process table of the start and stop tests cannot show how
+lsof spells a folder, or what /proc says of a process."""
 import itertools
 import os
 import re
@@ -30,7 +34,11 @@ BASH = shutil.which('bash')
 SHOW = 'cd "$0" && . scripts/role.sh; printf "%s|%s|%s|%s|%s" "$role" "$listen_ports" "$up_port" "$console_port" "$role_problem"'
 
 
-def script_reading(tmp_path: Path, config: str | None, **env) -> dict:
+MAC, LINUX = 'Darwin', 'Linux'      # as `uname -s` names them, and KEEP_OS
+
+
+def script_reading(tmp_path: Path, config: str | None, system: str = MAC, **env) -> dict:
+    env['KEEP_OS'] = system
     (tmp_path / 'scripts').mkdir(exist_ok=True)
     (tmp_path / 'scripts' / 'role.sh').write_text(ROLE_SH.read_text())
     if config is not None:
@@ -108,9 +116,10 @@ UNREADABLE_CONFIGS = {
 
 @pytest.mark.unit
 class TestTheScriptsReadTheRoleAsPythonDoes:
+    @pytest.mark.parametrize('system', [MAC, LINUX])
     @pytest.mark.parametrize('config', SERVER_CONFIGS.values(), ids=SERVER_CONFIGS.keys())
-    def test_a_server(self, tmp_path, config):
-        read = script_reading(tmp_path, config)
+    def test_a_server(self, tmp_path, config, system):
+        read = script_reading(tmp_path, config, system)
         role, _ = python_reading(tmp_path, config)
         assert (read['role'], read['problem']) == (role, '') and role == Role.SERVER
         assert read['up_port'] in read['listen_ports'] and read['console_port']
@@ -123,17 +132,19 @@ class TestTheScriptsReadTheRoleAsPythonDoes:
         assert read['listen_ports'] == [str(port)] and read['up_port'] == str(port)
         assert read['console_port'] == '', "a satellite has no console port to wait for"
 
+    @pytest.mark.parametrize('system', [MAC, LINUX])
     @pytest.mark.parametrize('config', REFUSED_CONFIGS.values(), ids=REFUSED_CONFIGS.keys())
-    def test_what_python_refuses_to_start_on_is_a_problem_for_the_scripts_too(self, tmp_path, config):
-        read = script_reading(tmp_path, config)
+    def test_what_python_refuses_to_start_on_is_a_problem_for_the_scripts_too(self, tmp_path, config, system):
+        read = script_reading(tmp_path, config, system)
         role, port = python_reading(tmp_path, config)
         assert role not in Role.ROLES or port is None, "the case is not one Python refuses"
         assert read['problem']
         assert read['listen_ports'] == [], "no port is named for a role nobody can tell"
 
+    @pytest.mark.parametrize('system', [MAC, LINUX])
     @pytest.mark.parametrize('config', UNREADABLE_CONFIGS.values(), ids=UNREADABLE_CONFIGS.keys())
-    def test_a_spelling_the_scripts_cannot_read_is_a_problem_and_never_a_guess(self, tmp_path, config):
-        read = script_reading(tmp_path, config)
+    def test_a_spelling_the_scripts_cannot_read_is_a_problem_and_never_a_guess(self, tmp_path, config, system):
+        read = script_reading(tmp_path, config, system)
         role, port = python_reading(tmp_path, config)
         assert role == Role.IMESSAGE_SATELLITE and port is not None, "the case is not one Python starts a satellite on"
         assert read['problem'], f"read as {read['role']} on port {read['up_port'] or 'none'}"
@@ -144,7 +155,7 @@ class TestTheScriptsReadTheRoleAsPythonDoes:
         """An editor's mark in front of the first key: yaml skips it, and awk compares it away
         only where there is a locale — the login applet and launchd have none."""
         config = '\ufeffrole: imessage_satellite\nimessage_satellite:\n  port: 8901\n'
-        read = script_reading(tmp_path, config, LC_ALL=locale)
+        read = script_reading(tmp_path, config, MAC, LC_ALL=locale)
         role, port = python_reading(tmp_path, config)
         assert (read['role'], read['up_port'], read['problem']) == (role, str(port), '')
         assert role == Role.IMESSAGE_SATELLITE
@@ -166,6 +177,22 @@ class TestTheScriptsReadTheRoleAsPythonDoes:
         satellite = script_reading(tmp_path, SATELLITE_CONFIGS['no port key'])
         every_server_port = {*server['listen_ports'], server['console_port']}
         assert every_server_port.isdisjoint(satellite['listen_ports'])
+
+
+@pytest.mark.unit
+class TestOnLinux:
+    @pytest.mark.parametrize('config', SATELLITE_CONFIGS.values(), ids=SATELLITE_CONFIGS.keys())
+    def test_a_satellite_is_a_problem_as_it_is_to_the_process(self, tmp_path, config):
+        """floxy_ai_server._launch refuses the role on Linux: a satellite is a Mac."""
+        read = script_reading(tmp_path, config, LINUX)
+        assert read['problem']
+        assert read['listen_ports'] == [] and read['up_port'] == '', "no port to stop anything on"
+
+    def test_a_server_waits_for_fewer_ports_than_on_a_mac_and_for_no_other(self, tmp_path):
+        """The Outpost TCP server is not started on Linux: a port nothing binds is never waited for."""
+        mac, linux = script_reading(tmp_path, 'role: server\n', MAC), script_reading(tmp_path, 'role: server\n', LINUX)
+        assert set(linux['listen_ports']) < set(mac['listen_ports'])
+        assert (linux['up_port'], linux['console_port']) == (mac['up_port'], mac['console_port'])
 
 
 _marker = itertools.count(1)
@@ -190,7 +217,9 @@ def own_processes(checkout: Path, pattern: str, **env) -> list[int]:
 class TestWhichProcessesAreThisCheckouts:
     """The login applet and launchd's watchdog run the scripts without a locale, and lsof then
     spells a folder otherwise than the shell does. A process not recognised as this checkout's
-    is a second server started beside the first, or a stop.sh that stops nothing."""
+    is a second server started beside the first, or a stop.sh that stops nothing.
+
+    No KEEP_OS here: the branch is the one of the system the suite runs on, with its real tools."""
 
     WITHOUT_A_LOCALE = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LC_ALL': 'C'}
 

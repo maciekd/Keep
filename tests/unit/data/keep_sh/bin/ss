@@ -1,0 +1,13 @@
+#!/bin/bash
+# keep.sh's test double for `ss -Hltnp`, on the Linux branch what `lsof` is on the Mac's: this
+# user's Keep (pid 4242) listens on KEEP_TEST_PORT (8888 unset) from the KEEP_TEST_LISTENS_AT-th
+# call on, never when unset; the count is the one `lsof` keeps (KEEP_TEST_COUNTERS/lsof). Another
+# user's Keep (pid 4343) listens on KEEP_TEST_FOREIGN_PORT when that is set — with its pid named,
+# as ss names it for root: the script is the one to check whose the pid is (`stat`).
+n=0; [ -f "$KEEP_TEST_COUNTERS/lsof" ] && read -r n < "$KEEP_TEST_COUNTERS/lsof"
+n=$((n+1)); echo $n > "$KEEP_TEST_COUNTERS/lsof"
+line='LISTEN 0      128          0.0.0.0:%s       0.0.0.0:*    users:(("python",pid=%s,fd=7))\n'
+echo 'LISTEN 0      4096   127.0.0.53%lo:53         0.0.0.0:*'
+[ -z "$KEEP_TEST_FOREIGN_PORT" ] || printf "$line" "$KEEP_TEST_FOREIGN_PORT" 4343
+[ "$n" -lt "${KEEP_TEST_LISTENS_AT:-1000000}" ] || printf "$line" "${KEEP_TEST_PORT:-8888}" 4242
+exit 0

@@ -15,6 +15,12 @@ launchd reaps them and the script's `kill -0` liveness checks never see a zombie
 
 The role (the Keep server, or an iMessage satellite) is read from a config.yaml
 beside the script; without one the install is a server, as on the Python side.
+
+Each system's branch runs on either system: the harness names it in `KEEP_OS`. The
+Mac's is the launch through Terminal; Linux's (scripts/launch_linux.sh, service.sh)
+is the systemd user unit, with `systemctl`, `systemd-run`, `ss` and GNU `stat` as
+functions of the same staged table — no test reaches the machine's real systemd,
+and the unit file lands under a tmp `XDG_CONFIG_HOME`, never in the real ~/.config.
 """
 import os
 import select
@@ -30,6 +36,8 @@ from .process_table import OTHER_CHECKOUT, OTHER_USER, ProcessTable, stubs
 
 START_SH = Path(__file__).resolve().parents[2] / 'start.sh'
 ROLE_SH = START_SH.parent / 'scripts' / 'role.sh'
+SOURCED = ['role.sh', 'launch_mac.sh', 'launch_linux.sh', 'service.sh']     # what start.sh and stop.sh source
+MAC, LINUX = 'Darwin', 'Linux'      # as `uname -s` names them, and KEEP_OS
 PYTHON_STUB = Path(__file__).parent / 'data' / 'keep_sh' / 'bin' / 'python3'   # records its launch in KEEP_TEST_CALLS
 SATELLITE_PORT = 8901
 SATELLITE_CONFIG = (f'role: imessage_satellite\nimessage_satellite:\n  port: {SATELLITE_PORT}\n'
@@ -126,13 +134,17 @@ class StartShHarness:
     each), which made every test cost ~1 s. Functions shadow the real commands and
     are never exec'd."""
 
-    def __init__(self, tmp_path: Path):
+    def __init__(self, tmp_path: Path, system: str = MAC):
         self.dir = tmp_path
-        (tmp_path / 'log').mkdir()
+        self.system = system
+        (tmp_path / 'log').mkdir(parents=True)
         self.script = tmp_path / 'start.sh'
         self.script.write_text(START_SH.read_text())
         (tmp_path / 'scripts').mkdir()
-        (tmp_path / 'scripts' / 'role.sh').write_text(ROLE_SH.read_text())
+        for name in SOURCED:
+            (tmp_path / 'scripts' / name).write_text((ROLE_SH.parent / name).read_text())
+        self.config_home = tmp_path / 'xdg'
+        self.unit = self.config_home / 'systemd' / 'user' / 'keep.service'
         self.table = ProcessTable(tmp_path)
         self.tui_calls = tmp_path / 'tui_calls'
         self.open_calls = tmp_path / 'open_calls'
@@ -155,7 +167,11 @@ class StartShHarness:
         (self.dir / 'config.yaml').write_text(text)
 
     def comes_up_on(self, port: int):
-        """The launched process listens on `port` from the moment the launch window opens."""
+        """The launched process listens on `port` from the moment the launch window opens — on
+        Linux, from the unit's restart."""
+        if self.system == LINUX:
+            self.table.on_restart(f'echo "{port} 4242 {os.getuid()}" >> "{self.dir}/listeners"')
+            return
         with self.env_file.open('a') as env:
             env.write(f'open() {{ echo "$@" >> "{self.open_calls}"; echo "{port} 4242 {os.getuid()}" >> "{self.dir}/listeners"; }}\n')
 
@@ -177,8 +193,11 @@ class StartShHarness:
             return []
         return [line.split()[-1] for line in self.osascript_calls.read_text().splitlines()]
 
-    def run(self, *args, terminal: bool = False) -> subprocess.CompletedProcess:
-        env = dict(os.environ, BASH_ENV=str(self.env_file), KEEP_TEST_CALLS=str(self.tui_calls))
+    def run(self, *args, terminal: bool = False, **more_env) -> subprocess.CompletedProcess:
+        env = dict(os.environ, BASH_ENV=str(self.env_file), KEEP_TEST_CALLS=str(self.tui_calls), KEEP_OS=self.system,
+                   HOME=str(self.dir / 'home'), XDG_CONFIG_HOME=str(self.config_home))
+        env.update(more_env)
+        env = {key: value for key, value in env.items() if value is not None}
         command = [BASH, str(self.script), *map(str, args)]
         if terminal:
             return run_on_a_terminal(command, env)
@@ -192,13 +211,32 @@ class StartShHarness:
         return path.read_text() if path.exists() else ''
 
     @property
+    def launches(self) -> int:
+        """How often a process was launched: a Terminal window opened, or the unit restarted."""
+        if self.system == LINUX:
+            return sum(' restart ' in f' {call} ' for call in self.table.systemctl_calls)
+        return len(self.open_calls.read_text().splitlines()) if self.open_calls.exists() else 0
+
+    @property
     def launched(self) -> bool:
-        return self.open_calls.exists()
+        return self.launches > 0
 
 
 @pytest.fixture
 def harness(tmp_path):
+    """The Mac's branch."""
     return StartShHarness(tmp_path)
+
+
+@pytest.fixture
+def linux(tmp_path):
+    return StartShHarness(tmp_path, LINUX)
+
+
+@pytest.fixture(params=[MAC, LINUX])
+def either(request, tmp_path):
+    """What the two systems' branches share is asked of both."""
+    return StartShHarness(tmp_path, request.param)
 
 
 class TestStartSh:
@@ -303,7 +341,8 @@ class TestCliStartSh:
         script = tmp_path / 'scripts' / 'cli_start.sh'
         script.parent.mkdir()
         script.write_text(CLI_START_SH.read_text())
-        subprocess.run(['bash', str(script)], capture_output=True, text=True, timeout=30, check=True)
+        subprocess.run(['bash', str(script)], env=dict(os.environ, KEEP_OS=MAC), capture_output=True, text=True,
+                       timeout=30, check=True)
         deadline = time.time() + 5.0
         while not report.exists() and time.time() < deadline:
             time.sleep(0.02)
@@ -314,12 +353,23 @@ class TestCliStartSh:
         assert tty_seen_at_start == 'True', "the tty was reported after the server started"
         assert (tmp_path / 'log' / 'cli_start.tty').read_text().strip()
 
+    def test_on_linux_it_starts_nothing_and_fails(self, tmp_path):
+        (tmp_path / 'log').mkdir()
+        (tmp_path / 'floxy_ai_server.py').write_text('import pathlib\npathlib.Path("log/ran").write_text("")\n')
+        script = tmp_path / 'scripts' / 'cli_start.sh'
+        script.parent.mkdir()
+        script.write_text(CLI_START_SH.read_text())
+        result = subprocess.run([BASH, str(script)], env=dict(os.environ, KEEP_OS=LINUX), capture_output=True, text=True,
+                                close_fds=False, timeout=30)
+        assert result.returncode != 0 and 'macOS' in result.stderr
+        assert not (tmp_path / 'log' / 'cli_start.tty').exists() and not (tmp_path / 'log' / 'ran').exists()
+
 
 class TestTrialFallback:
     """start.sh <pid> <branch> guards a PR trial (PullRequestTrial): the branch is checked out
     again and the server relaunched when the trial's server never listens, and left alone when it
-    does. `git` is a recording stub; the launch window's `open` marks the server as up when the
-    test says the PR boots."""
+    does. `git` is a recording stub; the launch — the window's `open`, the unit's restart — marks
+    the server as up when the test says the PR boots. The watch is the same on both systems."""
 
     def _arm(self, harness, boots: bool):
         # Each second of the wait is a subshell for lsof; three are enough to see the
@@ -334,35 +384,39 @@ class TestTrialFallback:
         path = harness.dir / 'git_calls'
         return path.read_text().splitlines() if path.exists() else []
 
-    def test_a_pr_whose_server_never_comes_up_is_rolled_back_and_the_branch_relaunched(self, harness):
+    def test_a_pr_whose_server_never_comes_up_is_rolled_back_and_the_branch_relaunched(self, either):
+        harness = either
         self._arm(harness, boots=False)
         result = harness.run(DEAD_PID, 'release')
         assert result.returncode == 0, result.stderr
         assert self._git_calls(harness) == ['checkout release']
-        assert len(harness.open_calls.read_text().splitlines()) == 2, "the previous branch is launched again"
+        assert harness.launches == 2, "the previous branch is launched again"
         note = (harness.dir / 'log' / 'trial_rollback.txt').read_text()
         assert 'back on release' in note
         assert 'going back to release' in harness.restart_log
 
-    def test_a_pr_whose_server_listens_is_left_running(self, harness):
+    def test_a_pr_whose_server_listens_is_left_running(self, either):
+        harness = either
         self._arm(harness, boots=True)
         result = harness.run(DEAD_PID, 'release')
         assert result.returncode == 0, result.stderr
         assert self._git_calls(harness) == []
-        assert len(harness.open_calls.read_text().splitlines()) == 1
+        assert harness.launches == 1
         assert not (harness.dir / 'log' / 'trial_rollback.txt').exists()
         assert 'the server is up' in harness.restart_log
 
-    def test_a_failed_checkout_leaves_the_server_down_and_says_so(self, harness):
+    def test_a_failed_checkout_leaves_the_server_down_and_says_so(self, either):
+        harness = either
         self._arm(harness, boots=False)
         with harness.env_file.open('a') as env:
             env.write('git() { echo "error: pathspec did not match" >&2; return 1; }\n')
         result = harness.run(DEAD_PID, 'release')
         assert result.returncode == 1
-        assert len(harness.open_calls.read_text().splitlines()) == 1
+        assert harness.launches == 1
         assert 'git checkout release failed' in harness.restart_log
 
-    def test_an_ordinary_restart_waits_for_nothing(self, harness):
+    def test_an_ordinary_restart_waits_for_nothing(self, either):
+        harness = either
         self._arm(harness, boots=False)
         result = harness.run(DEAD_PID)
         assert result.returncode == 0
@@ -523,7 +577,9 @@ class TestSatellite:
         assert 'process is gone' not in harness.restart_log
         assert harness.console_launches == []
 
-    def test_the_server_still_gets_its_console(self, harness):
+    @pytest.mark.parametrize('system', [MAC, LINUX])
+    def test_the_server_still_gets_its_console(self, tmp_path, system):
+        harness = StartShHarness(tmp_path, system)
         harness.with_a_console_to_launch()
         harness.comes_up_on(5151)
         harness.run(terminal=True)
@@ -541,7 +597,8 @@ class TestARoleThePythonSideRefuses:
         'role: imessage_satellite\nimessage_satellite:\n  port: eighty\n',
         'role: imessage_satellite\nimessage_satellite:\n  port: 70000\n',
     ], ids=['a misspelt role', 'half a role', 'a port that is a word', 'a port out of range'])
-    def test_nothing_is_stopped_and_nothing_is_started(self, harness, bystander, config):
+    def test_nothing_is_stopped_and_nothing_is_started(self, either, bystander, config):
+        harness = either
         running = bystander()
         harness.config(config)
         harness.table.process(running)
@@ -551,3 +608,220 @@ class TestARoleThePythonSideRefuses:
         assert alive(running), "the running process was stopped on a config the new one cannot start on"
         assert not harness.launched
         assert 'config.yaml' in harness.restart_log
+
+    def test_a_satellite_role_on_linux_is_refused_the_same_way(self, linux, bystander):
+        """floxy_ai_server._launch refuses the role there: a satellite is a Mac."""
+        running = bystander()
+        linux.config(SATELLITE_CONFIG)
+        linux.table.listener(SATELLITE_PORT, running)
+        linux.table.process(running)
+        result = linux.run(running)
+        assert result.returncode == 1
+        assert alive(running) and not linux.launched
+        assert linux.table.systemctl_calls == [] and not linux.unit.exists()
+        assert 'macOS' in linux.restart_log
+
+
+def unit_settings(unit: Path) -> dict:
+    return dict(line.split('=', 1) for line in unit.read_text().splitlines() if '=' in line and not line.startswith('#'))
+
+
+class TestTheSystemdUnit:
+    """On Linux a start is the user unit keep.service: written by scripts/service.sh, enabled and
+    restarted — systemd is what stops the old server and starts the new one."""
+
+    def test_a_first_start_writes_the_unit_enables_it_and_restarts_it(self, linux):
+        result = linux.run()
+        assert result.returncode == 0, linux.restart_log
+        verbs = [call.split()[1] for call in linux.table.systemctl_calls]
+        assert verbs == ['daemon-reload', 'enable', 'reset-failed', 'restart']
+        assert all(call.startswith('--user ') for call in linux.table.systemctl_calls), "the system's manager was asked"
+
+    def test_the_unit_runs_this_checkouts_server_a_contract_with_systemd(self, linux):
+        linux.run()
+        checkout = str(linux.dir.resolve())
+        unit = unit_settings(linux.unit)
+        assert unit['WorkingDirectory'] == checkout
+        assert unit['ExecStart'] == f'{checkout}/.venv/bin/python floxy_ai_server.py'
+        assert unit['StandardOutput'] == f'append:{checkout}/log/raw-floxy.log', "where start.sh's rollback note reads the output"
+        assert unit['Restart'] == 'on-failure', "an explicit stop must stay stopped"
+        assert unit['WantedBy'] == 'default.target'
+
+    def test_without_xdg_config_home_the_unit_lands_under_the_homes_config(self, linux):
+        linux.run(XDG_CONFIG_HOME=None)
+        assert (linux.dir / 'home' / '.config' / 'systemd' / 'user' / 'keep.service').exists()
+        assert not linux.unit.exists()
+
+    def test_a_second_start_leaves_the_unit_alone_and_only_restarts(self, linux):
+        linux.run()
+        written = linux.unit.stat().st_mtime_ns
+        linux.run()
+        verbs = [call.split()[1] for call in linux.table.systemctl_calls]
+        assert verbs.count('daemon-reload') == 1 and verbs.count('restart') == 2
+        assert linux.unit.stat().st_mtime_ns == written
+
+    def test_a_unit_of_this_checkout_with_another_text_is_rewritten_and_reloaded(self, linux):
+        linux.unit.parent.mkdir(parents=True)
+        linux.unit.write_text(f'[Service]\nWorkingDirectory={linux.dir}\nExecStart=/usr/bin/true\n')
+        result = linux.run()
+        assert result.returncode == 0, linux.restart_log
+        assert unit_settings(linux.unit)['ExecStart'].endswith('floxy_ai_server.py')
+        assert '--user daemon-reload' in linux.table.systemctl_calls
+
+    def test_a_unit_of_another_checkout_is_refused_with_both_folders_named(self, linux, tmp_path_factory):
+        other = tmp_path_factory.mktemp('KeepElsewhere')
+        linux.unit.parent.mkdir(parents=True)
+        theirs = f'[Service]\nWorkingDirectory={other}\nExecStart={other}/.venv/bin/python floxy_ai_server.py\n'
+        linux.unit.write_text(theirs)
+        result = linux.run()
+        assert result.returncode == 1
+        assert linux.unit.read_text() == theirs, "the other checkout's unit was replaced"
+        assert linux.table.systemctl_calls == [], "one Keep per user: the other one's unit was touched"
+        assert str(other) in linux.restart_log and str(linux.dir.resolve()) in linux.restart_log
+
+    def test_a_unit_whose_checkout_is_gone_is_taken_over(self, linux):
+        linux.unit.parent.mkdir(parents=True)
+        linux.unit.write_text(f'[Service]\nWorkingDirectory={linux.dir}/moved-away\n')
+        result = linux.run()
+        assert result.returncode == 0, linux.restart_log
+        assert unit_settings(linux.unit)['WorkingDirectory'] == str(linux.dir.resolve())
+        assert linux.launched
+
+    def test_a_file_of_that_name_keep_did_not_write_is_not_replaced(self, linux):
+        linux.unit.parent.mkdir(parents=True)
+        linux.unit.write_text('[Service]\nExecStart=/usr/bin/true\n')
+        result = linux.run()
+        assert result.returncode == 1
+        assert linux.unit.read_text() == '[Service]\nExecStart=/usr/bin/true\n' and not linux.launched
+
+    @pytest.mark.parametrize('name', ['My Keep', 'Keep 100%', "Marcus' Keep"])
+    def test_a_folder_systemd_would_read_otherwise_is_refused_and_no_unit_written(self, tmp_path, name):
+        """A space splits ExecStart in two and % is expanded: the unit would run something else.
+        (No case with a $: bash expands it in $BASH_ENV, and the run would be one without its stubs.)"""
+        linux = StartShHarness(tmp_path / name, LINUX)
+        result = linux.run()
+        assert result.returncode == 1
+        assert not linux.unit.exists() and linux.table.systemctl_calls == []
+        assert name in linux.restart_log
+
+    def test_a_folder_with_letters_outside_ascii_is_fine(self, tmp_path):
+        linux = StartShHarness(tmp_path / 'Kęp-ö', LINUX)
+        result = linux.run(LC_ALL='C')
+        assert result.returncode == 0, linux.restart_log
+        assert unit_settings(linux.unit)['WorkingDirectory'] == str(linux.dir.resolve())
+
+    @pytest.mark.parametrize('verb', ['enable', 'daemon-reload', 'restart'])
+    def test_a_systemd_that_does_not_answer_fails_the_start_and_says_so(self, linux, verb):
+        """No user session — a container, a shell reached through su."""
+        linux.table.systemctl_fails(verb)
+        result = linux.run()
+        assert result.returncode == 1
+        assert 'ERROR' in linux.restart_log and verb in linux.restart_log
+        assert linux.launches == (1 if verb == 'restart' else 0)
+
+    def test_the_handed_over_pid_is_left_to_systemd(self, linux, bystander):
+        """Updater.relaunch hands the server's pid over; on Linux the unit's restart is what ends it."""
+        old = bystander()
+        linux.table.process(old)
+        linux.table.in_unit(old)
+        result = linux.run(old)
+        assert result.returncode == 0, linux.restart_log
+        assert alive(old), "start.sh killed a process on Linux"
+        assert linux.launched
+
+
+class TestAListenerTheUnitDoesNotRun:
+    """A server started by hand holds the port: the unit's server would die on it, five times."""
+
+    def test_the_start_is_refused_and_nothing_is_touched(self, linux, bystander):
+        by_hand = bystander()
+        linux.table.process(by_hand)
+        linux.table.listener(8888, by_hand)
+        result = linux.run()
+        assert result.returncode == 1
+        assert alive(by_hand)
+        assert linux.table.systemctl_calls == [] and not linux.unit.exists()
+        assert str(by_hand) in linux.restart_log
+
+    def test_the_units_own_server_on_the_port_is_what_a_restart_is_for(self, linux, bystander):
+        server = bystander()
+        linux.table.process(server)
+        linux.table.listener(8888, server)
+        linux.table.in_unit(server)
+        result = linux.run()
+        assert result.returncode == 0, linux.restart_log
+        assert linux.launched
+
+    def test_the_other_users_server_on_the_same_port_is_not_this_installs_to_judge(self, linux, bystander):
+        """ss names the pid here, as it does for root: whose it is must be checked."""
+        theirs = bystander()
+        linux.table.process(theirs, user=OTHER_USER, checkout=OTHER_CHECKOUT)
+        linux.table.listener(8888, theirs, user=OTHER_USER)
+        result = linux.run()
+        assert result.returncode == 0, linux.restart_log
+        assert linux.launched and alive(theirs)
+
+    def test_the_outpost_port_is_not_a_linux_servers(self, linux, bystander):
+        """A Linux server binds 8888 alone (VoiceInterface starts no Outpost TCP server there)."""
+        other = bystander()
+        linux.table.process(other)
+        linux.table.listener(43523, other)
+        result = linux.run()
+        assert result.returncode == 0, linux.restart_log
+        assert linux.launched
+
+
+class TestStartedFromInsideTheUnit:
+    """The server restarts itself by spawning start.sh, which is then in the unit's control group:
+    the restart would end the script with the server, and the PR-trial watch with it."""
+
+    def _trial(self, linux):
+        with linux.env_file.open('a') as env:
+            env.write(f'TRIAL_TIMEOUT=3\ngit() {{ echo "$@" >> "{linux.dir}/git_calls"; }}\n')
+
+    def test_it_runs_again_in_a_scope_with_its_arguments_and_restarts_once(self, linux):
+        self._trial(linux)
+        linux.table.in_unit()
+        linux.comes_up_on(8888)
+        result = linux.run(DEAD_PID, 'release')
+        assert result.returncode == 0, linux.restart_log
+        scoped = [call for call in linux.table.systemd_run_calls if 'start.sh' in call]
+        assert len(scoped) == 1, linux.table.systemd_run_calls
+        assert scoped[0].startswith('--user --scope ') and scoped[0].endswith(f'start.sh {DEAD_PID} release')
+        assert linux.launches == 1, "the copy left in the unit restarted it as well"
+
+    def test_the_trial_watch_runs_in_the_scope(self, linux):
+        self._trial(linux)
+        linux.table.in_unit()
+        linux.comes_up_on(8888)
+        result = linux.run(DEAD_PID, 'release')
+        assert result.returncode == 0, linux.restart_log
+        assert 'the server is up' in linux.restart_log
+
+    def test_a_trial_that_never_boots_is_rolled_back_from_the_scope(self, linux):
+        self._trial(linux)
+        linux.table.in_unit()
+        result = linux.run(DEAD_PID, 'release')
+        assert result.returncode == 0, linux.restart_log
+        assert (linux.dir / 'git_calls').read_text().splitlines() == ['checkout release']
+        assert linux.launches == 2 and len([c for c in linux.table.systemd_run_calls if 'start.sh' in c]) == 1
+
+    def test_a_start_outside_the_unit_asks_for_no_scope(self, linux):
+        linux.run()
+        assert linux.table.systemd_run_calls == []
+
+    def test_a_scope_that_does_not_leave_the_unit_is_not_tried_twice(self, linux):
+        (linux.dir / 'scope_stays_in_unit').write_text('')
+        linux.table.in_unit()
+        result = linux.run(DEAD_PID)
+        assert result.returncode == 0, linux.restart_log
+        assert len([c for c in linux.table.systemd_run_calls if 'start.sh' in c]) == 1, "start.sh ran itself in a loop"
+        assert linux.launches == 1
+
+    def test_without_a_scope_to_be_had_the_restart_still_happens(self, linux):
+        (linux.dir / 'no_scope').write_text('')
+        linux.table.in_unit()
+        result = linux.run(DEAD_PID)
+        assert result.returncode == 0, linux.restart_log
+        assert linux.launches == 1
+        assert 'WARNING' in linux.restart_log
