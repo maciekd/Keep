@@ -15,7 +15,7 @@ Self-hosted digital assistant
 <td>
 
 ### Keep
-Keep knows you. It has analyzed your messages and every photo you’ve taken and has excellent long-term memory: it remembers all the names, all the places, all the plans and
+Keep is your personal digital assistant. It has analyzed your messages and every photo you’ve taken and has excellent long-term memory: it remembers all the names, all the places, all the plans and
 everything you need to do, without you explaining anything.
 
 Runs on a Mac you own, talks to you by chat, terminal and voice, and integrates with your life: shopping, appointments, cameras, the lot.
@@ -24,12 +24,12 @@ By default, Keep runs in the cloud. Keep stores everything on your Mac and think
 
 The cloud version is very robust. It uses a combination of Opus and Fable (estimated Anthropic API cost is $200 / month). On a Claude Max, Ultra or Team plan you get $100–500 of free API credits.
 
-Keep can also run 100% locally, on your LLM of choice: see **[Keep on local AI](docs/local-ai.md)**.
+Keep can also run locally: **[Keep on 100% local AI](docs/local-ai.md)**.
 
 Refined over two years of daily use in real homes.
 
 ### Shopping
-We recommend using a prepaid card for your AI - Revolut works very well and needs no 3DS normally.
+We recommend using a prepaid card for your AI - Revolut works very well and needs no 3DS usually.
 
 ### Requirements
 <b>Mac</b> with 16 GB RAM is recommended, signed in to your personal iCloud, to run the Keep server. Keep also runs on <b>Debian</b> and <b>Ubuntu</b>.
