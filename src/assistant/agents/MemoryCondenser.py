@@ -13,6 +13,7 @@ from datetime import datetime
 
 from common.logging import info, trace
 from ..llm.AbstractLLM import Thinking
+from ..llm.LLMUsage import LLMUsage
 
 PROMPT = """
 You are condensing the long-term memory bank of a home automation AI system serving a family. The bank is in front
@@ -94,6 +95,7 @@ class MemoryCondenser:
         info(f"Condenser: {words} words in {len(sections)} sections, {cut} words to remove")
         start_time = time.time()
         removed, result, unprocessed = 0, [], words
+        usage = LLMUsage(cost_usd=0.0)
         self.llm.set_prompt_cache(True)
         try:
             for index, section in enumerate(sections, 1):
@@ -119,6 +121,8 @@ class MemoryCondenser:
                 response = self.llm.think(system_message=system, user_message=message, thinking=Thinking.NORMAL)
                 condensed = self._section(response)
                 heading = section.splitlines()[0][:60]
+                info(f"Condenser: section {index}/{len(sections)} call — {LLMUsage.describe_call(self.llm)}")
+                usage += LLMUsage.of(self.llm) or LLMUsage()
                 if getattr(self.llm, 'last_stop_reason', None) == 'max_tokens':
                     info(f"Condenser: section {index}/{len(sections)} {heading!r} — the reply was cut off, kept as it was")
                     condensed = section
@@ -136,9 +140,10 @@ class MemoryCondenser:
             self.llm.set_prompt_cache(False)
         new_bank = "\n".join(result).rstrip("\n") + "\n"
         outcome = {'from': words, 'cut': cut, 'to': word_count(new_bank), 'sections': len(sections),
-                   'llm_duration_seconds': time.time() - start_time}
+                   'llm_duration_seconds': time.time() - start_time, 'usage': usage.describe()}
         info(f"Condenser: {words} → {outcome['to']} words ({removed} removed of {cut} asked) in "
              f"{outcome['llm_duration_seconds']:.0f}s")
+        info(f"Condenser: the pass used {outcome['usage']}")
         if removed < cut:
             info(f"Condenser: {cut - removed} words short of the ask — no section is asked for more than "
                  f"{SHARE_CEILING} times its part of it, the next pass takes the rest")

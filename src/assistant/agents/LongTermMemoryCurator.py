@@ -16,6 +16,7 @@ from assistant.integration.calendar.CalendarAccess import CalendarAccess, EVENTS
 from assistant.integration.calendar.Event import NO_EVENTS
 from common.logging import info, error, trace
 from ..llm.AbstractLLM import LLMRefusalError, Thinking
+from ..llm.LLMUsage import LLMUsage
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
 from common.vault.Redactor import redact_for_storage
 
@@ -680,6 +681,8 @@ class LongTermMemoryCurator:
         response = self._think(full_prompt, "Please curate the memory now.")
         llm_duration = time.time() - start_time
         trace(f"Rem: woke after {llm_duration:.1f}s of dreaming")
+        llm_call = LLMUsage.describe_call(self.llm)
+        info(f"Rem: the curation call — {llm_call}")
 
         response, commands = self._split_commands(response)
         new_memory, truncated = self._accept(response, current_memory)
@@ -707,6 +710,7 @@ class LongTermMemoryCurator:
             'old_memory_size': len(current_memory),
             'new_memory_size': len(new_memory),
             'llm_duration_seconds': llm_duration,
+            'llm_call': llm_call,
             'truncated': truncated,
             'condense': condense,
             'timestamp': time.time(),
@@ -845,12 +849,16 @@ class LongTermMemoryCurator:
                 f.write(f"- Old size: {metadata.get('old_memory_size', 0)} chars\n")
                 f.write(f"- New size: {metadata.get('new_memory_size', 0)} chars\n")
                 f.write(f"- LLM duration: {metadata.get('llm_duration_seconds', 0):.1f}s\n")
+                if metadata.get('llm_call'):
+                    f.write(f"- Curation call: {metadata['llm_call']}\n")
                 if metadata.get('truncated'):
                     f.write("- Result: reply cut off at the output cap — previous bank kept\n")
                 if metadata.get('condense'):
                     c = metadata['condense']
                     f.write(f"- Condensing pass: {c['from']} → {c.get('to', '?')} words (asked to remove {c['cut']}), "
                             f"{c.get('llm_duration_seconds', 0):.1f}s\n")
+                    if c.get('usage'):
+                        f.write(f"- Condensing calls: {c['usage']}\n")
                 f.write("\n")
                 f.write("---\n\n")
 
@@ -899,6 +907,7 @@ class LongTermMemoryCurator:
     def _think_whole(self, prompt: str, what: str) -> str:
         """One LLM call whose reply must be complete: a reply cut off at the output cap raises."""
         response = self.llm.think(system_message=prompt, user_message="Please do it now.", thinking=Thinking.FULL)
+        info(f"Memory split: the call for {what} — {LLMUsage.describe_call(self.llm)}")
         if getattr(self.llm, 'last_stop_reason', None) == 'max_tokens':
             raise RuntimeError(f"the AI's reply was cut off at its output limit while {what}")
         return response

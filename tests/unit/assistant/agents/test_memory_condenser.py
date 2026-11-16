@@ -3,6 +3,7 @@ from unittest.mock import Mock, call
 
 import pytest
 
+from assistant.llm.LLMUsage import LLMUsage
 from assistant.agents.MemoryCondenser import SHARE_CEILING, MemoryCondenser, split_sections, word_count
 
 BANK = """Intro line before any heading.
@@ -118,3 +119,18 @@ def test_an_empty_bank_makes_no_call_and_counts_zero_words():
     _, outcome = MemoryCondenser(llm, 100).condense("", cut=5)
     llm.think.assert_not_called()
     assert outcome['sections'] == 0 and outcome['to'] == 0
+
+
+class TestWhatThePassUsed:
+    def test_the_outcome_carries_the_sum_of_every_section_call(self):
+        sections = split_sections(BANK)
+        llm = _llm(["<section>short</section>"] * len(sections))
+        llm.last_usage = LLMUsage(input_tokens=10, output_tokens=3, cost_usd=0.25)
+        _, outcome = MemoryCondenser(llm, word_limit=10).condense(BANK, cut=5)
+        assert f"{3 * len(sections)} output tokens" in outcome['usage']
+        assert f"${0.25 * len(sections):.2f}" in outcome['usage']
+
+    def test_a_backend_that_reports_no_usage_still_condenses(self):
+        llm = _llm(["<section>short</section>"] * len(split_sections(BANK)))
+        _, outcome = MemoryCondenser(llm, word_limit=10).condense(BANK, cut=5)
+        assert outcome['to'] < outcome['from']

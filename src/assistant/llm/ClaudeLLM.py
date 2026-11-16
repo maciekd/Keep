@@ -1,9 +1,11 @@
 import time
+from dataclasses import replace
 from typing import Generator
 
 import httpx
 
 from .AbstractLLM import AbstractLLM, LLMRefusalError, api_error_message, Thinking
+from .LLMUsage import LLMUsage
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 from common.ConfigManager import config
 from common.DevelopmentConfig import BYTE_PREFIX_TAIL, CLAUDE_STATIC_CACHE_TTL, CLAUDE_HISTORY_CACHE_TTL
@@ -153,6 +155,7 @@ class ClaudeLLM(AbstractLLM):
             self.history_cache_ttl = self.static_cache_ttl
         self.client = None
         self._last_stop_reason = None
+        self._usage = LLMUsage()
         self._cancelled = False
 
     def name(self) -> str:
@@ -501,11 +504,38 @@ class ClaudeLLM(AbstractLLM):
                 return (c5m if isinstance(c5m, int) else 0), (c1h if isinstance(c1h, int) else 0)
         return cache_created, 0
 
+    # $ per million tokens: input, output, cache read (the claude-api price list of 2026-11-03).
+    # A 5-minute cache write is 1.25x input and a 1-hour one 2x; a batch halves every token and
+    # fast mode doubles it. A model not listed here logs its tokens without a cost.
+    PRICES = {
+        'claude-fable-5-2': (8.0, 40.0, 0.20),
+        'claude-opus-5-5': (4.0, 20.0, 0.20),
+        'claude-sonnet-5-5': (2.0, 10.0, 0.10),
+    }
+
+    @property
+    def last_usage(self) -> LLMUsage:
+        usage = replace(self._usage)
+        price = self.PRICES.get(self.model)
+        if price is None:
+            return usage
+        input_price, output_price, cache_read_price = price
+        cost = (usage.input_tokens * input_price + usage.cache_write_5m * input_price * 1.25
+                + usage.cache_write_1h * input_price * 2 + usage.cache_read * cache_read_price
+                + usage.output_tokens * output_price) / 1_000_000
+        usage.cost_usd = cost * (0.5 if usage.batch else 1) * (2 if self.speed == "fast" else 1)
+        return usage
+
     def _log_cache_usage(self, usage):
         cache_created = getattr(usage, 'cache_creation_input_tokens', 0) or 0
         cache_read = getattr(usage, 'cache_read_input_tokens', 0) or 0
         input_tokens = getattr(usage, 'input_tokens', 0) or 0
         created_5m, created_1h = self._cache_creation_breakdown(usage, cache_created)
+        if all(isinstance(n, int) for n in (input_tokens, created_5m, created_1h, cache_read)):
+            self._usage.input_tokens += input_tokens
+            self._usage.cache_write_5m += created_5m
+            self._usage.cache_write_1h += created_1h
+            self._usage.cache_read += cache_read
         total = input_tokens + cache_created + cache_read
         if total > 0:
             pct = round(cache_read / total * 100)
@@ -523,6 +553,7 @@ class ClaudeLLM(AbstractLLM):
     def _log_output_tokens(self, usage):
         raw_output = getattr(usage, 'output_tokens', None)
         output_tokens = raw_output if isinstance(raw_output, int) else 0
+        self._usage.output_tokens += output_tokens
         if output_tokens > 0:
             trace(f"Claude output: {output_tokens} tokens")
 
@@ -655,6 +686,7 @@ class ClaudeLLM(AbstractLLM):
         self._ensure_initialized()
         self._cancelled = False
         self._last_stop_reason = None
+        self._usage = LLMUsage()
 
         api_params = self._build_api_params(messages, thinking, stream=True, volatile_tail=volatile_tail,
                                             follow_up=follow_up)
@@ -725,6 +757,7 @@ class ClaudeLLM(AbstractLLM):
     def create_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL, volatile_tail: int = 0,
                           follow_up: bool = False) -> str:
         self._ensure_initialized()
+        self._usage = LLMUsage()
 
         api_params = self._build_api_params(messages, thinking, stream=False, volatile_tail=volatile_tail,
                                             follow_up=follow_up)
@@ -769,6 +802,7 @@ class ClaudeLLM(AbstractLLM):
         api_params = self._build_api_params(messages, thinking, stream=False)
         del api_params['stream'], api_params['timeout']
         self._last_stop_reason = None
+        self._usage = LLMUsage(batch=True)
         t_start = time.time()
         batch = self.client.messages.batches.create(requests=[{'custom_id': 'request', 'params': api_params}])
         info(f"Claude batch {batch.id} submitted ({self.model}), waiting up to {max_wait_seconds / 60:.0f} min...")
@@ -823,6 +857,7 @@ class ClaudeLLM(AbstractLLM):
 
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         self._ensure_initialized()
+        self._usage = LLMUsage()
 
         system_message, anthropic_messages = self._convert_messages(messages)
 

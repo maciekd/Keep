@@ -157,6 +157,10 @@ class CachedLLM(AbstractLLM):
         reason is never taken for this reply's."""
         return None if self.last_response_was_cached else self.llm.last_stop_reason
 
+    @property
+    def last_usage(self):
+        return None if self.last_response_was_cached else self.llm.last_usage
+
     def output_cap(self) -> int | None:
         return self.llm.output_cap()
 

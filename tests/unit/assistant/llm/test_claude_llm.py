@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock, Mock
 from anthropic import APIStatusError
 
 from assistant.llm.AbstractLLM import LLMRefusalError, Thinking
+from assistant.llm.LLMUsage import LLMUsage
 from assistant.llm.ClaudeLLM import ClaudeLLM, WorkspaceRequiredError, WORKSPACE_CONFIG_KEY, WORKSPACE_HEADER, claude_workspace_id
 
 
@@ -345,6 +346,7 @@ def _make_llm() -> ClaudeLLM:
     llm.model = "claude-fable-5"
     llm.speed = None
     llm.prompt_cache = True
+    llm._usage = LLMUsage()
     return llm
 
 
@@ -1034,3 +1036,58 @@ class TestOutputCapHit:
         assert llm.create_completion([{"role": "user", "content": "hi"}]) == ""
         assert llm.client.messages.create.call_count == 1
         assert llm.last_stop_reason == 'max_tokens'
+
+
+def _usage_message(input_tokens=0, written_5m=0, written_1h=0, read=0, output=0):
+    message = _batch_message()
+    message.usage.input_tokens = input_tokens
+    message.usage.cache_creation_input_tokens = written_5m + written_1h
+    message.usage.cache_creation.ephemeral_5m_input_tokens = written_5m
+    message.usage.cache_creation.ephemeral_1h_input_tokens = written_1h
+    message.usage.cache_read_input_tokens = read
+    message.usage.output_tokens = output
+    return message
+
+
+@patch('assistant.llm.ClaudeLLM.time.sleep')
+class TestLastUsage:
+    def _complete(self, llm, *messages):
+        llm._ensure_initialized = Mock()
+        llm.client.messages.create = Mock(side_effect=list(messages))
+        llm.create_completion([{"role": "user", "content": "hi"}])
+        return llm.last_usage
+
+    def test_each_kind_of_token_is_priced_at_its_own_rate(self, _sleep):
+        llm = _make_llm()
+        llm.model = "claude-fable-5-2"
+        usage = self._complete(llm, _usage_message(input_tokens=1_000_000, written_5m=1_000_000,
+                                                   written_1h=1_000_000, read=1_000_000, output=1_000_000))
+        # 8 input + 10 (1.25x) + 16 (2x) + 0.20 read + 40 output
+        assert usage.cost_usd == pytest.approx(74.20)
+        assert not usage.batch
+
+    def test_a_batched_call_costs_half(self, _sleep):
+        llm = _batch_llm(["ended"], message=_usage_message(input_tokens=1_000_000, output=1_000_000))
+        llm.model = "claude-fable-5-2"
+        llm.create_batched_completion(MESSAGES, thinking=True)
+        assert llm.last_usage.batch
+        assert llm.last_usage.cost_usd == pytest.approx(24.0)
+
+    def test_a_request_sent_again_for_an_empty_reply_is_counted_with_the_first(self, _sleep):
+        empty = _usage_message(input_tokens=100, output=7)
+        empty.content = []
+        usage = self._complete(_make_llm(), empty, _usage_message(input_tokens=100, output=20))
+        assert (usage.input_tokens, usage.output_tokens) == (200, 27)
+
+    def test_the_next_call_starts_from_nothing(self, _sleep):
+        llm = _make_llm()
+        self._complete(llm, _usage_message(input_tokens=100, output=20))
+        assert self._complete(llm, _usage_message(input_tokens=3, output=4)).output_tokens == 4
+
+    def test_a_model_without_a_price_reports_its_tokens_and_no_cost(self, _sleep):
+        llm = _make_llm()
+        llm.model = "claude-of-the-future"
+        usage = self._complete(llm, _usage_message(input_tokens=100, output=20))
+        assert usage.output_tokens == 20
+        assert usage.cost_usd is None
+        assert "$" not in usage.describe()

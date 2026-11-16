@@ -124,6 +124,10 @@ class VaultLLM(AbstractLLM):
         private names — so the curator's truncation check would always see None."""
         return self.llm.last_stop_reason
 
+    @property
+    def last_usage(self):
+        return self.llm.last_usage
+
     # The same trap: the request processor names the cap in the note a cut round circles
     # back with, and a kill must stop the backend's re-sends — the defaults would answer.
     def output_cap(self) -> int | None:
