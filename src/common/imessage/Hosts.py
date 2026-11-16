@@ -7,6 +7,7 @@ config.yaml holds under `imessage_satellite.token`. This is the one place that r
 from typing import Optional
 from urllib.parse import urlsplit
 
+from common import Platform
 from common.ConfigManager import config
 from common.imessage.LocalMessagesHost import LocalMessagesHost
 from common.imessage.MessagesHost import MessagesHost
@@ -17,6 +18,7 @@ HOST_KEY = "host"
 TOKEN_KEY = "host_token"
 LOCAL = "local"
 LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
+NO_LOCAL_MESSAGES = "Messages runs on a Mac only, and the host is set to local"
 
 _local: Optional[LocalMessagesHost] = None
 
@@ -65,6 +67,10 @@ def local() -> LocalMessagesHost:
 def build(section: str) -> MessagesHost:
     """The host `<section>.host` names. A remote one is built anew at each call, so a consumer
     that is restarted picks up a changed address or token."""
+    if not is_remote(section) and not Platform.is_mac():
+        info(f"iMessage host for '{section}': {section}.{HOST_KEY} is local and this server runs on "
+             f"{Platform.label()} — no host until the key names a satellite")
+        return RemoteMessagesHost.unusable(NO_LOCAL_MESSAGES)
     if not is_remote(section):
         info(f"iMessage host for '{section}': local")
         return local()

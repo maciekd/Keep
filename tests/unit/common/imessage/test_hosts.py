@@ -26,6 +26,7 @@ def configured(**values):
                         default if key.split(".")[0] in ("imessage", "imessage_chat") else real(key, default))
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 class TestLocal:
     @pytest.mark.parametrize("value", [None, "", "local", "Local", "  LOCAL "], ids=["absent", "empty", "local", "capital", "spaced"])
@@ -99,3 +100,35 @@ class TestSameAccount:
     def test_two_satellites_are_two_accounts(self, one, other):
         with configured(imessage__host=one, imessage_chat__host=other):
             assert not Hosts.same_account("imessage", "imessage_chat")
+
+
+@pytest.mark.unit
+class TestLocalOnAServerThatIsNotAMac:
+    """Messages runs on a Mac: `host: local` on Linux is a configuration to fix, said as the
+    host's health, and nothing of this machine is opened."""
+
+    @pytest.fixture(autouse=True)
+    def linux(self, monkeypatch):
+        from common import Platform
+        monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+
+    @pytest.mark.parametrize("section", ["imessage", "imessage_chat"])
+    def test_the_host_is_not_this_machines_and_every_call_says_not_configured(self, section):
+        from common.imessage.MessagesHost import NOT_CONFIGURED
+        with configured(), patch.object(Hosts, "LocalMessagesHost", side_effect=AssertionError("a local host on Linux")):
+            host = Hosts.build(section)
+        health = host.health()
+        assert not health.ok and health.reason == NOT_CONFIGURED
+        assert host.poll(0, None, 10).error and host.send("+46701740605", "hej").error, "a read or a send went through"
+
+    def test_the_owner_is_pointed_at_the_host_key_and_a_satellite_never_at_local(self):
+        from assistant.integration import SatelliteHints
+        with configured():
+            host = Hosts.build("imessage")
+            said = SatelliteHints.problem(host.address, host.health(), "imessage", "iMessage Feed")
+        assert 'config_request("imessage.host")' in said and "satellite" in said and "Linux" in said
+        assert "or local" not in said and "Full Disk Access" not in said
+
+    def test_a_satellites_address_works_as_on_a_mac(self, satellite):
+        with configured(imessage__host=satellite.address, imessage__host_token=TOKEN), server_identity():
+            assert Hosts.build("imessage").health().ok

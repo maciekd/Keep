@@ -244,7 +244,7 @@ class DebugCommands:
                 state = "loaded " + datetime.fromtimestamp(loaded[toolkit.name]).strftime("%H:%M")
             else:
                 state = "not loaded"
-            lines.append(f"  {toolkit.name.ljust(width)}  {size}  {state:15s} {', '.join(toolkit.commands)}")
+            lines.append(f"  {toolkit.name.ljust(width)}  {size}  {state:15s} {', '.join(toolkit.offered_commands())}")
         return "\n".join(lines)
 
     def cmd_TOOLKIT(self, args: str) -> str:

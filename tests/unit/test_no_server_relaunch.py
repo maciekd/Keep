@@ -86,6 +86,18 @@ def test_the_messages_host_defaults_point_away_from_this_mac():
 # Guarded since the iMessage satellite brings the Mac to its `watchdog` key and makes itself a
 # login item at each start. Should the guard let one through, the label is nobody's and the
 # AppleScript does not compile.
+# The Linux branches of common/Browser and common/Clipboard. Refused by name whatever the system:
+# on a Mac the tools do not exist, on a developer's Linux desktop they would open a browser window
+# and read what was last copied.
+@pytest.mark.unit
+@pytest.mark.parametrize("command, what", [(["xdg-open", "https://keep.example/"], "browser"),
+                                           (["wl-paste", "--type", "text/plain"], "clipboard"),
+                                           (["xclip", "-selection", "clipboard", "-o"], "clipboard")])
+def test_this_machines_desktop_cannot_be_reached(command, what):
+    with pytest.raises(RuntimeError, match=what):
+        subprocess.run(command, capture_output=True, timeout=10)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("verb", ["bootstrap", "bootout", "print"])
 def test_this_macs_launchd_agents_cannot_be_loaded_unloaded_or_asked_about(verb):
@@ -99,6 +111,7 @@ def test_no_applet_is_built_in_the_checkout(tmp_path):
         subprocess.run(["osacompile", "-o", str(tmp_path / "No Such.app"), "-e", "return ("], capture_output=True, timeout=10)
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 @pytest.mark.parametrize("watchdog", [True, False])
 def test_an_unstubbed_satellite_start_leaves_this_macs_launch_agents_alone(watchdog, tmp_path):
@@ -122,6 +135,7 @@ def _current_applet(tmp_path):
     return app
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 def test_an_unstubbed_watchdog_writes_no_plist_where_the_applet_is_built_and_no_agent_installed(tmp_path):
     """The state of a development checkout — the applet current, `watchdog` never turned on:
@@ -134,6 +148,7 @@ def test_an_unstubbed_watchdog_writes_no_plist_where_the_applet_is_built_and_no_
     assert not plist.parent.exists()
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 def test_the_watchdogs_own_plist_is_not_this_macs_under_the_suite(tmp_path):
     """A sync that names no plist — as the server's and the satellite's do — is aimed at a

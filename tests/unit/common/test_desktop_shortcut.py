@@ -1,7 +1,12 @@
 """The Desktop shortcut: Keep.app on the Desktop running keep.sh."""
+import pytest
+
 from common import DesktopShortcut
 
 from tests.unit.common.test_applet import osacompile
+
+# The Mac's own behaviour, whatever system the suite runs on (common/Platform).
+pytestmark = pytest.mark.usefixtures("on_a_mac")
 
 
 class TestEnsure:

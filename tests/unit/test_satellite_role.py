@@ -44,6 +44,7 @@ def launch():
                "satellite_build": satellite_build}
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 class TestTheRoleDecidesWhatStarts:
     @pytest.mark.parametrize("value", [None, "server", "Server", " server "], ids=["no key", "server", "capital", "spaced"])
@@ -149,3 +150,23 @@ def test_the_satellites_serving_ends_like_the_servers():
             patch("common.imessage.Satellite.build", return_value=satellite):
         floxy_ai_server._serve_satellite()
     satellite.serve.assert_awaited_once()
+
+
+@pytest.mark.unit
+class TestTheSatelliteRoleOffTheMac:
+    def test_on_linux_the_satellite_role_refuses_to_start_and_says_a_satellite_is_a_mac(self, launch, monkeypatch):
+        import floxy_ai_server
+        from common import Platform
+        monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+        with role_is("imessage_satellite"), patch.object(floxy_ai_server, "error") as said, pytest.raises(SystemExit):
+            launch["launch"]()
+        launch["satellite_build"].assert_not_called()
+        launch["build"].assert_not_called()
+        assert any("Mac" in call.args[0] for call in said.call_args_list)
+
+    def test_on_linux_a_server_starts_as_ever(self, launch, monkeypatch):
+        from common import Platform
+        monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+        with role_is(None):
+            launch["launch"]()
+        launch["build"].assert_called_once_with(8888, False)

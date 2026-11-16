@@ -8,7 +8,7 @@ import signal
 import threading
 
 from assistant.commands.formats.CommandFormats import CommandFormats
-from common import Version
+from common import Platform, Version
 from common.ConfigManager import config
 from common.logging import info, note, trace
 from interfaces.http import CrossSiteGuard
@@ -53,7 +53,7 @@ class HttpInterface(Interface):
         from quart import Quart
         self.app = Quart("floxy_ai_server")
         CrossSiteGuard.install(self.app)
-        self.deps = HttpDeps(assistant=assistant, voice_enabled=False)
+        self.deps = HttpDeps(assistant=assistant, voice_enabled=False, server_sound=Platform.is_mac())
         register_stream_route(self.app, self.deps)
 
         @self.app.route('/health')

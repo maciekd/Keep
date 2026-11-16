@@ -71,6 +71,7 @@ class HomeClawIntegration(Integration):
     sign in, the app holds the HomeKit access. One JSON request per socket connection. Everything
     is keyed on the HomeKit UUID; the exclusion of the Hue and Plejd accessories is
     `homeclaw.exclude_bridges`, overridden per UUID by `homeclaw.include` / `homeclaw.exclude`."""
+    mac_only = True
 
     def __init__(self):
         super().__init__()

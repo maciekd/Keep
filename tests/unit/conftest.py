@@ -78,10 +78,27 @@ class _NoRelaunchPopen(subprocess.Popen):
             raise RuntimeError(f"a unit test tried to build an applet in the checkout: {words}")
         if words[:1] == ["osascript"] and any("login item" in w for w in words):
             raise RuntimeError("a unit test tried to read or change this Mac's login items")
+        # The Linux branches of common/Browser and common/Clipboard: on a developer's Linux desktop
+        # the first would open a real browser window, the others read what they last copied.
+        if words[:1] == ["xdg-open"]:
+            raise RuntimeError(f"a unit test tried to open a real browser: {words}")
+        if words[:1] in (["wl-paste"], ["xclip"]):
+            raise RuntimeError(f"a unit test tried to read this machine's clipboard: {words}")
         super().__init__(args, *rest, **kwargs)
 
 
 subprocess.Popen = _NoRelaunchPopen
+
+
+
+@pytest.fixture
+def on_a_mac(monkeypatch):
+    """The Mac's own behaviour is under test (a login item, launchd, Messages on this machine):
+    `common.Platform` answers macOS whatever system the suite runs on. A test of the Linux branch
+    patches `Platform.current` itself."""
+    from common import Platform
+    monkeypatch.setattr(Platform, "current", lambda: Platform.MAC)
+
 
 # openai is imported here, at collection, rather than by the first ChatGPTLLM test on each
 # worker: the import is ~80 ms, and the test that paid it was recorded as slow, moved to the

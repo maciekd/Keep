@@ -19,6 +19,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from common import Platform
 from common import Applet, Autostart
 from common.logging import info, trace, error
 
@@ -81,7 +82,12 @@ def sync(enabled: bool, app: Path = Autostart.APP, script: Path = Autostart.SCRI
          run=subprocess.run) -> str | None:
     """Install and load the agent, or unload and remove it, to match the config key. Returns None
     when the Mac is in the wanted state, else why not (logged as well). `plist`: `PLIST` unless
-    named — read at the call, so whoever moves the module's path moves every write."""
+    named — read at the call, so whoever moves the module's path moves every write. On a system
+    that is not a Mac there is no launchd and nothing to bring in line: the service manager
+    restarts the server there."""
+    if not Platform.is_mac():
+        info(f"Watchdog: launchd is a Mac's — nothing to do on {Platform.current()}")
+        return None
     return enable(app, script, plist, run) if enabled else disable(plist, run)
 
 

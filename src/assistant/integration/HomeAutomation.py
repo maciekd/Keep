@@ -196,7 +196,7 @@ def active() -> HomeAutomation:
         _log_state(f"Home automation: using {ready[0].name}")
         return ready[0]
     for placeholder in monitor.of_type(DisabledIntegration):
-        if issubclass(placeholder.cls, HomeAutomation):
+        if placeholder.can_enable and issubclass(placeholder.cls, HomeAutomation):
             hints.append(f'{placeholder.name} is disabled: enable_integration("{placeholder.name}").')
     for placeholder in monitor.of_type(UnavailableIntegration):
         if issubclass(placeholder.cls, HomeAutomation):

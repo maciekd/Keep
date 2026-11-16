@@ -11,16 +11,36 @@ canon cannot read are left as written rather than guessed at (a unit test forbid
 the texts). A passage between `<!-- keep -->` and `<!-- /keep -->` lines is prose only Keep's
 syntax needs: the Keep format keeps the passage and drops the markers, every other format drops
 the passage. For the Keep format the call rewrite is the identity.
+
+The same gate reads two more pairs, for what depends on the system the server runs on
+(common/Platform): a passage between `<!-- mac -->` and `<!-- /mac -->` lines stays on a Mac
+alone, one between `<!-- linux -->` and `<!-- /linux -->` on a Linux server alone — so the Mac's
+rendering of a text is what it was before the markers were put in. `gate_platform` is that part
+on its own, for a text that never passes `rewrite` (the first-run brief).
 """
 import re
 
 from .CommandFormat import CommandFormat
 from .Signatures import Declaration, calls, read_declaration, read_values
+from common import Platform
 from common.logging import trace
 
 KEEP_ONLY_OPEN = "<!-- keep -->"
 KEEP_ONLY_CLOSE = "<!-- /keep -->"
-_KEEP_ONLY_RE = re.compile(rf"^{re.escape(KEEP_ONLY_OPEN)}\n(.*?)^{re.escape(KEEP_ONLY_CLOSE)}\n?", re.S | re.M)
+PLATFORM_MARKERS = (Platform.MAC, Platform.LINUX)
+
+
+def _markers(name: str) -> tuple[str, str]:
+    return f"<!-- {name} -->", f"<!-- /{name} -->"
+
+
+def _passages(name: str) -> re.Pattern:
+    opening, closing = _markers(name)
+    return re.compile(rf"^{re.escape(opening)}\n(.*?)^{re.escape(closing)}\n?", re.S | re.M)
+
+
+_KEEP_ONLY_RE = _passages("keep")
+_PLATFORM_RES = {name: _passages(name) for name in PLATFORM_MARKERS}
 
 
 def rewrite(text: str, fmt: CommandFormat, table: dict[str, Declaration]) -> str:
@@ -63,6 +83,7 @@ def rewrite(text: str, fmt: CommandFormat, table: dict[str, Declaration]) -> str
 def _gate(text: str, fmt: CommandFormat) -> str:
     """The `<!-- keep -->` passages of `text` resolved for `fmt`. A marker without its pair is
     left as written: the text is not guessed at."""
+    text = gate_platform(text)
     if KEEP_ONLY_OPEN not in text and KEEP_ONLY_CLOSE not in text:
         return text
     keep = fmt.name == "keep"
@@ -71,3 +92,17 @@ def _gate(text: str, fmt: CommandFormat) -> str:
     trace(f"Command rewriter ({fmt.name}): {blocks} Keep-only passage(s) {'kept' if keep else 'dropped'}"
           + (f", {stray} unpaired marker(s) left as written" if stray else ""))
     return gated
+
+
+def gate_platform(text: str) -> str:
+    """The `<!-- mac -->` and `<!-- linux -->` passages of `text` resolved for the system the
+    server runs on: its own are kept without their markers, the other system's are dropped. A
+    marker without its pair is left as written."""
+    system = Platform.current()
+    for name, pattern in _PLATFORM_RES.items():
+        if not any(marker in text for marker in _markers(name)):
+            continue
+        keep = name == system
+        text, blocks = pattern.subn(lambda m: m.group(1) if keep else "", text)
+        trace(f"Command rewriter: {blocks} {name}-only passage(s) {'kept' if keep else 'dropped'} on {system}")
+    return text

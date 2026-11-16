@@ -55,6 +55,7 @@ class RemindersIntegration(Integration):
     timeout; only open reminders are ever fetched, never the completed history. Two lists of
     the same name: the shared one wins, the shopping list being the one shared with the family."""
     sensitive = True
+    mac_only = True
 
     ACCESS_TIMEOUT = 30   # seconds to wait for the user to answer macOS's access prompt
     FETCH_TIMEOUT = 10    # seconds to wait for the store to answer a fetch

@@ -1,5 +1,6 @@
 import collections
 import math
+import os
 import time
 from typing import TYPE_CHECKING, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
@@ -11,6 +12,8 @@ from interfaces.console.widgets import Board, ChartImage, Tile
 from interfaces.console.widgets.Board import MeterRow
 from interfaces.console.widgets.ChartImage import Bar, ChartPicture, Rule, Segment
 from interfaces.console.widgets.FeedStrip import SHORT_NAMES, SYMBOL_FAILED, SYMBOL_PAUSED, SYMBOL_RUNNING, format_eta
+from common import Platform
+from common.logging import info
 from common.GpuMonitor import GpuMonitor
 from common.AnthropicCostMonitor import AnthropicCostMonitor
 from common.CacheHitLogMonitor import CacheHitLogMonitor
@@ -125,12 +128,21 @@ class DashboardTab(TabView):
         self.temp_error: str = ""
         self.temp_history: collections.deque = collections.deque(maxlen=self.HISTORY_SIZE)
 
-        self._monitor = GpuMonitor(gpu_tab=self, update_interval=0.33)
+        # The GPU and temperature readings come from macOS tools (ioreg, macmon), the mic and
+        # volume rows from the server's own audio: a Mac's. Elsewhere neither monitor is built
+        # and their tiles are not drawn.
+        self._monitor = GpuMonitor(gpu_tab=self, update_interval=0.33) if self._mac else None
         self._cost_monitor = AnthropicCostMonitor(dashboard_tab=self, fetch_interval=300.0)
         self._memory_log_monitor = MemoryLogMonitor(dashboard_tab=self, fetch_interval=300.0)
-        self._temp_monitor = TempMonitor(dashboard_tab=self, update_interval=30.0)
+        self._temp_monitor = TempMonitor(dashboard_tab=self, update_interval=30.0) if self._mac else None
+        if not self._mac:
+            info(f"Dashboard: no GPU or temperature monitor on {Platform.label()} — their tiles are left out")
         self._cache_log_monitor = CacheHitLogMonitor(dashboard_tab=self)
         self._cache_log_monitor.start()
+
+    @property
+    def _mac(self) -> bool:
+        return Platform.is_mac()
 
     def draw(self, screen: TUIScreen, frame: int):
         self._frame = frame
@@ -142,7 +154,7 @@ class DashboardTab(TabView):
 
         thirds = self._columns(screen, 3)
         summary_h = self._summary_height()
-        self._draw_summary_panel(screen, thirds, y, summary_h)
+        self._draw_summary_panel(screen, thirds if self._mac else self._columns(screen, 2), y, summary_h)
         y += summary_h + 1
 
         # The status tiles below the charts grow with the integration list and the outposts,
@@ -172,17 +184,17 @@ class DashboardTab(TabView):
             found = self._chart_pictures[name] = ChartPicture(name)
         return found
 
+    def _monitors(self) -> list:
+        return [m for m in (self._monitor, self._cost_monitor, self._memory_log_monitor, self._temp_monitor)
+                if m is not None]
+
     def on_activate(self):
-        self._monitor.start()
-        self._cost_monitor.start()
-        self._memory_log_monitor.start()
-        self._temp_monitor.start()
+        for monitor in self._monitors():
+            monitor.start()
 
     def on_deactivate(self):
-        self._monitor.stop()
-        self._cost_monitor.stop()
-        self._memory_log_monitor.stop()
-        self._temp_monitor.stop()
+        for monitor in self._monitors():
+            monitor.stop()
 
     def _sample_cpu(self):
         now = time.monotonic()
@@ -191,12 +203,29 @@ class DashboardTab(TabView):
             self.cpu_history.append(self.console.system_cpu_percent)
 
     def _draw_bottom_charts_row(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, chart_h: int):
+        if not self._mac:
+            (ltm_x, ltm_w), (cost_x, cost_w) = self._columns(screen, 2)
+            self._draw_long_term_memory_chart(screen, ltm_x, y, ltm_w, chart_h)
+            self._draw_cost_chart(screen, cost_x, y, cost_w, chart_h + Tile.CARD_CHROME)
+            return
         (ltm_x, ltm_w), (temp_x, temp_w), (cost_x, cost_w) = columns
         self._draw_long_term_memory_chart(screen, ltm_x, y, ltm_w, chart_h)
         self._draw_temp_chart(screen, temp_x, y, temp_w, chart_h)
         self._draw_cost_chart(screen, cost_x, y, cost_w, chart_h + Tile.CARD_CHROME)
 
     def _draw_header(self, screen: TUIScreen, x: int, y: int) -> int:
+        if not self._mac:
+            screen.set_color(Theme.COLOR_CYAN)
+            screen.write_at(x, y, "\u25cf")
+            screen.set_color(Theme.COLOR_BRIGHT)
+            screen.bold()
+            screen.write_at(x + 2, y, Platform.label())
+            screen.reset_color()
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(x + 2 + display_width(Platform.label()) + 3, y,
+                            f"{os.cpu_count() or 0}-core CPU \u00b7 {self.console.system_total_memory_gb:.0f}GB Memory")
+            screen.reset_color()
+            return y + 1
         if not self.model:
             screen.set_color(Theme.COLOR_DIM)
             screen.write_at(x, y, "Loading GPU data...")
@@ -221,11 +250,18 @@ class DashboardTab(TabView):
         """Height of the summary tiles: one row per running feed (plus the total) and per local mic,
         never fewer than the utilization meters, plus the tile's own rows — the chart rows below shrink to fit it."""
         feeds = len(self._feed_statuses())
-        rows = max(self.SUMMARY_ROWS, feeds + 1 if feeds else 0, len(self._mic_noise_floors()))
+        mics = len(self._mic_noise_floors()) if self._mac else 0
+        rows = max(self.SUMMARY_ROWS, feeds + 1 if feeds else 0, mics)
         return rows + Tile.CARD_CHROME
 
     def _draw_summary_panel(self, screen: TUIScreen, columns: List[Tuple[int, int]], y: int, panel_h: int):
-        """Three tiles on the chart grid: utilization, mic noise floor, feeds."""
+        """Three tiles on the chart grid: utilization, mic noise floor, feeds — two where the
+        server has no microphones of its own."""
+        if len(columns) == 2:
+            (util_x, util_w), (feeds_x, feeds_w) = columns
+            self._draw_utilization_panel(screen, util_x, y, util_w, panel_h)
+            self._draw_feeds_panel(screen, feeds_x, y, feeds_w, panel_h)
+            return
         (util_x, util_w), (noise_x, noise_w), (feeds_x, feeds_w) = columns
         self._draw_utilization_panel(screen, util_x, y, util_w, panel_h)
         self._draw_noise_floor_panel(screen, noise_x, y, noise_w, panel_h)
@@ -234,6 +270,13 @@ class DashboardTab(TabView):
     def _draw_utilization_panel(self, screen: TUIScreen, x: int, y: int, panel_w: int, panel_h: int):
         Tile.draw_card(screen, self._cards, x, y, panel_w, panel_h, "Utilization")
         cpu = int(self.console.system_cpu_percent)
+        if not self._mac:
+            keep = int(self.console.process_cpu_percent)
+            Board.draw_meter_rows(screen, x, y, panel_w, panel_h, [
+                MeterRow("CPU", f"{cpu:>3}%", cpu / 100.0, Theme.COLOR_PINK),
+                MeterRow("Keep", f"{keep:>3}%", keep / 100.0, Theme.COLOR_CYAN),
+            ])
+            return
         Board.draw_meter_rows(screen, x, y, panel_w, panel_h, [
             MeterRow("Device", f"{self.device_util:>3}%", self.device_util / 100.0, Theme.COLOR_CYAN),
             MeterRow("Tiler", f"{self.tiler_util:>3}%", self.tiler_util / 100.0, Theme.COLOR_GREEN),
@@ -425,9 +468,14 @@ class DashboardTab(TabView):
         """GPU usage, GPU memory and CPU usage as filled lines over the whole history, the
         newest reading at the right edge; the two usage charts, which jump from one reading
         to the next, carry a ten-second rolling average."""
-        (gpu_x, gpu_w), (mem_x, mem_w), (cpu_x, cpu_w) = columns
         usage = dict(slots=self.HISTORY_SIZE, window=self.USAGE_AVERAGE_SAMPLES,
                      window_label=f"{self.USAGE_AVERAGE_SAMPLES}s avg")
+        if not self._mac:
+            (cpu_x, cpu_w), = self._columns(screen, 1)
+            self._draw_area_chart(screen, cpu_x, y, cpu_w, chart_h, self.cpu_history, Theme.COLOR_YELLOW,
+                                  "CPU Usage", f"{self.console.system_cpu_percent:.0f}%", **usage)
+            return
+        (gpu_x, gpu_w), (mem_x, mem_w), (cpu_x, cpu_w) = columns
         self._draw_area_chart(screen, gpu_x, y, gpu_w, chart_h, self.device_history, Theme.COLOR_GREEN,
                               "GPU Usage", f"{self.device_util}%", **usage)
         self._draw_area_chart(screen, mem_x, y, mem_w, chart_h, self.memory_history, Theme.COLOR_BLUE,
@@ -926,6 +974,9 @@ class DashboardTab(TabView):
             row("Background noise", f"{console.current_noise_db:.0f} dB", console.current_noise_db / 80.0),
             row("KV-Cache", kv_value, kv_frac, not kv_ready),
         ]
+        if not self._mac:
+            mac_rows = ("Processed photos", "Volume", "Background noise")
+            rows = [r for r in rows if r.label not in mac_rows]
         for addr, (latency_ms, _) in list(console.outpost_latencies.items()):
             ip_only = addr.split(',')[0] if ',' in addr else addr
             ip_only = ip_only.replace("'", "").replace("(", "").replace(")", "")

@@ -2,7 +2,12 @@
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
 from common import FullDiskAccess
+
+# The Mac's own behaviour, whatever system the suite runs on (common/Platform).
+pytestmark = pytest.mark.usefixtures("on_a_mac")
 
 
 class TestProbe:

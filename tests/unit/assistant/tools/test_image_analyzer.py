@@ -24,6 +24,7 @@ def _analyzer_with_reply(*replies) -> tuple[ImageAnalyzer, Mock]:
     return ImageAnalyzer(llm=llm), llm
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 class TestResizeToJpeg:
     def test_resize_small_image(self):

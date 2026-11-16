@@ -68,6 +68,7 @@ def failure(integration) -> Exception:
     return raised.value
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 class TestWhichHostTheConfigNames:
     def test_without_an_address_nothing_needs_configuring(self):

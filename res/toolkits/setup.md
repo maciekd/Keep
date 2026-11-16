@@ -15,7 +15,12 @@ One key per turn, and stop after emitting it.
 iCloud device id from `icloud_devices`. Credentials (an API key, a password, a token) go through `config_request`
 when possible — don't ask the user to paste secrets into the chat. A list item is addressed by index — a field of a
 list of sections, `icloud.devices[0].display_name`, or one value of a list of plain values,
+<!-- mac -->
 `local_outposts.exclude_mics[0]`; the index equal to the list's length adds an item, and a refusal names the index to use.
+<!-- /mac -->
+<!-- linux -->
+`telegram_bot.allowed_chat_ids[0]`; the index equal to the list's length adds an item, and a refusal names the index to use.
+<!-- /linux -->
 
 `config_delete(key: str)` — takes a setting out of config.yaml: a single value or a list of plain values is unset
 (its default applies); one list item — `telegram_bot.allowed_chat_ids[2]`, or a whole entry, `imap.accounts[1]` —
@@ -28,11 +33,19 @@ with the "[Sent with the help of AI 🤖]" footer; `config_set("ai_message_foote
 The interfaces the server starts — `interfaces.voice.enabled`, `interfaces.telegram.enabled`,
 `interfaces.console.enabled` (`config_help("interfaces")`) — are set the same way. Telegram and the console are on
 by default, voice off. They are read at startup only: after flipping one offer `restart_server` (developer toolkit;
+<!-- mac -->
 the user approves it in the chat). `interfaces.lan_access` (false: the server answers this Mac only) is what the
 phone app needs. Warn before turning it on: no password, anyone on the Wi-Fi is then the owner.
 The server's microphones are on with it (`local_outposts.enabled`; a phone-only install
 sets it false); `local_outposts.location` names their room, the destination the speakers answer to in `post_message`
 (read at voice start; set it and restart). The voice speaks through the
+<!-- /mac -->
+<!-- linux -->
+the user approves it in the chat). `interfaces.lan_access` (false: the server answers this machine only) is what the
+phone app needs. Warn before turning it on: no password, anyone on the Wi-Fi is then the owner.
+Voice on this server is the phone app's: a Linux server has no microphones or speakers of its own, the
+`local_outposts` settings need a Mac, and a reply is spoken on the phone. The voice speaks through the
+<!-- /linux -->
 first enabled and configured TTS engine: "ElevenLabs TTS" is on by default and needs only `api_keys.elevenlabs`;
 Swedish prefers "Gemini TTS" (`enable_integration("Gemini TTS")`, needs `google_service_account`). Cartesia Sonic, Fish
 Audio, Grok, Supertonic and Chirp 3 HD are opt-in: enable one and disable ElevenLabs TTS. Without an engine that can
@@ -47,6 +60,7 @@ restart. Its switch is `interfaces.telegram.enabled` (`config_set`), not `enable
 there on your own. When the user presses Start in the bot their chat id reaches you as a turn of its own:
 `config_set("telegram_bot.allowed_chat_ids[0]", "<the id>")` makes them the owner, read live — do it and go on.
 
+<!-- mac -->
 `show_full_disk_access_setting()` — opens System Settings on Privacy & Security > Full Disk Access, on the Mac's own
 screen (the user must be at it), and reports whether the grant is in force for the running server. macOS
 keeps the Messages database behind this grant and gives it to Terminal, the app the server is launched through. The
@@ -54,6 +68,12 @@ user turns Terminal on there; macOS then offers to quit Terminal — they should
 close; the server and Telegram keep running). The grant reaches a new process only, so `restart_server`
 (developer toolkit) comes next, from Telegram.
 
+<!-- /mac -->
+<!-- linux -->
+This server runs on Linux. An integration `list_integrations` shows as "needs macOS" cannot be enabled here, and
+there is no Full Disk Access to grant. iMessage works through a satellite on a Mac: `config_help("imessage")`.
+
+<!-- /linux -->
 `enable_integration(name: str)` / `disable_integration(name: str)` — switches an integration on or off by the name
 `list_integrations` shows, restarts it and reports its state. Enabling one not yet configured comes back
 "not configured" naming the keys it needs.
@@ -115,4 +135,9 @@ with — if it failed, say why and offer to re-enter the value. Never ask for a 
 guess a key that config_help does not list.
 
 ### Stop-and-wait
+<!-- mac -->
 `list_integrations()`, `config_help`, `config_request`, `config_set`, `config_delete`, `restart_integration`, `enable_integration`, `disable_integration`, `show_full_disk_access_setting`, `telegram_login`, `microsoft_login`, `google_login`, `google_login_code`, `icloud_login_code`, `volvo_login`, `volvo_login_code`, `spotify_login`, `spotify_login_code` return data: emit them and stop generating; the result arrives in the next round.
+<!-- /mac -->
+<!-- linux -->
+`list_integrations()`, `config_help`, `config_request`, `config_set`, `config_delete`, `restart_integration`, `enable_integration`, `disable_integration`, `telegram_login`, `microsoft_login`, `google_login`, `google_login_code`, `icloud_login_code`, `volvo_login`, `volvo_login_code`, `spotify_login`, `spotify_login_code` return data: emit them and stop generating; the result arrives in the next round.
+<!-- /linux -->

@@ -274,6 +274,7 @@ class TestDrawFeedsPanel:
         assert row_text(screen, 5) == "", "the tile's closing row stays empty"
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 class TestSummaryHeight:
     """The summary row grows with the feeds and the mics so no row is clipped."""

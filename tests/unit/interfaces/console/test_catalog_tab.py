@@ -234,3 +234,17 @@ def test_no_blank_row_when_every_integration_is_on_the_same_side(monitor):
 
     kettle = next(i for i, line in enumerate(lines) if "● Kettle" in line)
     assert "● Lamp" in lines[kettle + 1]
+
+
+def test_an_integration_that_needs_macos_says_so_and_offers_no_way_to_turn_it_on(monitor, monkeypatch):
+    """On a server that is not a Mac: disabled like any other in the counts, but not "ask Keep"."""
+    from assistant.integration.IntegrationMonitor import MacOnlyIntegration
+    from common import Platform
+    monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+    monitor.register(MacOnlyIntegration(KettleIntegration))
+
+    lines = rows(CatalogTab(), height=40)
+
+    assert module.NEEDS_MAC.label in row_of(lines, "Kettle") and DISABLED not in row_of(lines, "Kettle")
+    shown = "\n".join(lines)
+    assert "only on a Mac" in shown and "enable Kettle" not in shown

@@ -9,6 +9,7 @@ from typing import Optional
 
 from PIL import Image, ImageOps
 
+from common import Platform
 from common.logging import info, error, trace, fine
 from ..llm.AbstractLLM import LLMPreempted
 
@@ -31,14 +32,14 @@ def resize_to_jpeg(raw_bytes: bytes, max_dim: int = MAX_DIMENSION) -> Optional[b
     try:
         img = Image.open(io.BytesIO(raw_bytes))
     except Exception:
-        trace("ImageAnalyzer: Pillow can't open image, falling back to sips")
-        raw_bytes = convert_via_sips(raw_bytes)
+        trace("ImageAnalyzer: Pillow can't open image, falling back to the system's converter")
+        raw_bytes = convert_to_jpeg(raw_bytes)
         if not raw_bytes:
             return None
         try:
             img = Image.open(io.BytesIO(raw_bytes))
         except Exception as e:
-            error(f"ImageAnalyzer: resize failed after sips conversion: {e}")
+            error(f"ImageAnalyzer: resize failed after the conversion: {e}")
             return None
 
     try:
@@ -71,6 +72,28 @@ def _flattened(img: Image.Image) -> Image.Image:
     flat = Image.new("RGB", img.size, TRANSPARENCY_BACKGROUND)
     flat.paste(img, mask=img.getchannel("A"))
     return flat
+
+
+def convert_to_jpeg(raw_bytes: bytes) -> Optional[bytes]:
+    """An image Pillow cannot open by itself (a phone's HEIC) as JPEG bytes, None when it cannot
+    be converted: through macOS's `sips` on a Mac, through pillow-heif elsewhere."""
+    if Platform.is_mac():
+        return convert_via_sips(raw_bytes)
+    return convert_via_pillow_heif(raw_bytes)
+
+
+def convert_via_pillow_heif(raw_bytes: bytes) -> Optional[bytes]:
+    """Convert HEIC / HEIF bytes to JPEG with pillow-heif — the pin a Linux install carries."""
+    try:
+        import pillow_heif
+        heif = pillow_heif.open_heif(io.BytesIO(raw_bytes))
+        buf = io.BytesIO()
+        heif.to_pillow().convert("RGB").save(buf, format="JPEG", quality=95)
+    except Exception as e:
+        error(f"ImageAnalyzer: pillow-heif conversion failed: {type(e).__name__}: {e}")
+        return None
+    info(f"ImageAnalyzer: pillow-heif conversion succeeded ({len(raw_bytes)} -> {buf.tell()} bytes)")
+    return buf.getvalue()
 
 
 def convert_via_sips(raw_bytes: bytes) -> Optional[bytes]:

@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from common import Version
+from common import Platform, Version
 from common.Paths import AISERVER_DIR
 from common.imessage import Hosts, Satellite, Wire
 from common.imessage.MessagesHost import (BAD_ANSWER, HostHealth, NO_ACCESS, NO_DATABASE, NOT_CONFIGURED, REFUSED,
@@ -110,6 +110,12 @@ def problem(address: str, health: HostHealth, section: str, integration: str) ->
     """Why the consumer of `<section>.host` cannot use its satellite, the fix first."""
     host_key, token_key = f"{section}.host", f"{section}.host_token"
     retry = f'restart_integration("{integration}")'
+    if health.reason == NOT_CONFIGURED and not Platform.is_mac():
+        return (f"needs an iMessage satellite: this server runs on {Platform.label()}, and Messages is read through "
+                f'a Mac that stays on. Once Keep is installed there as a satellite (config_help("{section}") has '
+                f'the install), config_request("{host_key}") lets the user type its address, '
+                f'http://<its address>:{Satellite.DEFAULT_PORT}, and config_request("{token_key}") its token '
+                f"({Satellite.TOKEN_KEY} in the satellite's config.yaml); then {retry} ({health.detail})")
     if health.reason == NOT_CONFIGURED:
         return (f'needs {token_key} and a usable {host_key}: config_request("{token_key}") lets the user type the '
                 f"token ({Satellite.TOKEN_KEY} in the satellite's config.yaml), and {host_key} is the satellite's "

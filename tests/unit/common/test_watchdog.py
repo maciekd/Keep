@@ -8,6 +8,9 @@ import pytest
 
 from common import Applet, Watchdog
 
+# The Mac's own behaviour, whatever system the suite runs on (common/Platform).
+pytestmark = pytest.mark.usefixtures("on_a_mac")
+
 
 class FakeLaunchd:
     """subprocess.run for launchctl (a set of loaded labels), osacompile (laying out a current

@@ -32,7 +32,7 @@ from colorama import init
 import common.DevelopmentConfig as DevelopmentConfig
 from common.DevelopmentConfig import PREPEND_USER_QUERY_OVERRIDE
 from common.logging import error, info, trace, note
-from common import ConfigMigrations, Migrations, Role, Version
+from common import ConfigMigrations, Migrations, Platform, Role, Version
 from common.ConfigManager import config, REQUIRED_KEYS
 from common.RequirementsChecker import RequirementsChecker
 from common.StderrLogger import StderrLogger
@@ -352,7 +352,8 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
 
     info(f"Version {Version.detail()}")
     _trace_prepend_setting()
-    TempMonitor.check_installed()
+    if Platform.is_mac():
+        TempMonitor.check_installed()   # macmon reads the Mac's sensors
     if running_as_testsuite:
         _isolate_database(port)
     FloxyDatabase.get_instance()
@@ -590,6 +591,9 @@ def _launch():
     RequirementsChecker.verify_or_exit()
     Migrations.run()
     role = Role.current()
+    if role == Role.IMESSAGE_SATELLITE and not Platform.is_mac():
+        _refuse_to_start("satellite", [Platform.mac_only("An iMessage satellite"),
+                                       f"Remove {Role.KEY} from {config.config_path()} for a Keep server."])
     if role == Role.IMESSAGE_SATELLITE:
         _serve_satellite()
         return

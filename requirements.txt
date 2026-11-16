@@ -25,6 +25,7 @@ google-cloud-speech==2.41.0
 # the Google clients above and in requirements-voice.txt are the releases that accept protobuf 7.
 protobuf==7.36.2
 pillow==11.2.1
+pillow-heif==0.22.0 ; sys_platform == "linux"   # HEIC → JPEG where there is no sips
 pdfplumber==0.11.9
 pytest==9.0.1
 pytest-asyncio==1.3.0

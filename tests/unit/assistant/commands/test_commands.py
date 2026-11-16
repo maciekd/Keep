@@ -1584,6 +1584,7 @@ class TestShortUrl:
         assert len(out) <= 20
 
 
+@pytest.mark.usefixtures("on_a_mac")
 @pytest.mark.unit
 class TestDescribeDispatcher:
     def test_describe_dim_with_brightness(self, commands_instance):

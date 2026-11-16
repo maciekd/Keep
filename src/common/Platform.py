@@ -22,6 +22,12 @@ def is_mac() -> bool:
     return current() == MAC
 
 
+def label() -> str:
+    """The system's name as a user reads it: "macOS", "Linux"."""
+    system = current()
+    return _LABELS.get(system, system)
+
+
 def sys_platform() -> str:
     """`current()` in the spelling of `sys.platform` — what a requirement's environment marker
     (`; sys_platform == "darwin"`) is written against."""
@@ -36,5 +42,4 @@ def machine() -> str:
 
 def mac_only(what: str) -> str:
     """The one wording of every "this needs macOS" answer; `what` names the feature."""
-    system = current()
-    return f"{what}: only on a Mac — this server runs on {_LABELS.get(system, system)}."
+    return f"{what}: only on a Mac — this server runs on {label()}."

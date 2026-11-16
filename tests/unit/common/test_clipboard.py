@@ -102,5 +102,7 @@ class TestReadImage:
 
 def test_other_platforms_read_nothing(monkeypatch):
     monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+    for display in ("DISPLAY", "WAYLAND_DISPLAY"):      # a server: no desktop session
+        monkeypatch.delenv(display, raising=False)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no tool is run off macOS"))
     assert Clipboard.read_image() is None and Clipboard.read_text() == ""

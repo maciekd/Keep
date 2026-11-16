@@ -225,13 +225,17 @@ outpost manager. What changes in `VoiceInterface`, behind one `Platform` check
 
 - The module-level imports of `server_audio` (`ServerPlayback`, `PlaySound`,
   `DynamicServerVolumeController` — each imports `sounddevice` at load) and of `local_outposts`
-  move into the branch that uses them; on Linux none of the three packages is imported.
+  move into the branch that uses them; on Linux nothing of `server_audio` is imported, and of
+  `local_outposts` only `constants` and `scribe_status`, which the reply-timing gate
+  (`VoiceTurnGate`) reads on every voice server — the package's `__init__` no longer imports the
+  outposts' machinery.
 - `start`: no `start_local_outposts`, no volume controller; `MicrophoneDeps.play_sound` and
   `.volume_controller` become optional, and the routes that use them (`/end`, the settings a
   remote Outpost asks for) skip the sound and answer without the volume.
 - `handler_kwargs` leaves `playback_factory` out, so a handler has no `ServerPlayback`: a request
   with `server_sound` (the local outposts, and the app in its server-sound mode) is answered
-  as text, logged once.
+  as text, logged once — in the `/stream` route (`HttpDeps.server_sound`), beside the existing
+  downgrade of an audio client on a voice-less server, and whether voice is enabled or not.
 - `stop` has nothing of the audio teardown to do.
 - Unchanged: speaker id, voice discovery, the TTS engines' registration, `/stream_text`, the
   vote. The Outpost TCP server (43523) pushed mute commands to the local microphones and the
@@ -253,31 +257,43 @@ CI or marked Mac-only; ElevenLabs and Google are network clients.
 **Integrations.** `Integration` gains a class attribute `mac_only = False`; Photos, Reminders and
 HomeClaw set it. On Linux `bootstrap` never constructs such a class, even when
 `enabled_integrations` lists it (a config copied from a Mac): the monitor holds a
-`DisabledIntegration`-like stand-in whose state reads "needs macOS". `list_integrations` and the
-Catalog tab show that, `enable_integration` refuses with the same sentence, and the existing
-gates then keep its toolkit, commands and prompt section away from the LLM.
+`MacOnlyIntegration`, a `DisabledIntegration` whose state is DISABLED — so every existing gate
+reads it as off without knowing about it — with the reason as its error and `needs_mac` in its
+status. `list_integrations` and the Catalog tab show "needs macOS", `enable_integration` refuses
+with the same sentence (`disable_integration` still takes it off the list), the contracts' "enable
+it" hints leave it out, and the gates keep its toolkit, commands and prompt section away from the LLM.
 
-**iMessage.** `Hosts.build` refuses `local` on Linux with a `HealthWarning`-style answer pointing
-at `imessage.host` and the satellite install (`SatelliteHints` gets the Linux wording). The
-integration and the chat interface are otherwise untouched. `_launch` refuses
+**iMessage.** `Hosts.build` answers `local` on Linux with a host that sends nothing and reports
+NOT_CONFIGURED (`RemoteMessagesHost.unusable`), so both consumers show it as the health problem
+they already have a path for; `SatelliteHints.problem` words it for Linux, pointing at
+`<section>.host` and the satellite install. The integration and the chat interface are untouched. `_launch` refuses
 `role: imessage_satellite` on Linux through `_refuse_to_start`.
 
 **First run.** `FirstRun`'s shortcut step stamps `desktop_shortcut_at` at once on Linux — no
-Full Disk Access probe, no "the grant arrived" turn, no shortcut. The pipeline needs no change:
-an install without Photos stays in SETUP and curates nightly, which is already a supported state.
+Full Disk Access probe, no "the grant arrived" turn, no shortcut. The pipeline needed one change:
+its SETUP stage read `enabled_integrations` for Photos, so a config copied from a Mac would have
+sent it to INDEXING to wait for a feed that is never built. On Linux it stays in SETUP and curates
+nightly, which is already a supported state.
 
 **Setup texts.** The LLM must not send a Linux user to System Settings:
-- `show_full_disk_access_setting` joins a new `Commands.MAC_ONLY_COMMANDS`: left out of the
-  toolkit's command list on Linux, refused by `Commands.run`.
+- `show_full_disk_access_setting` joins a new `Commands.MAC_ONLY_COMMANDS`
+  (`Toolkits.MAC_ONLY_COMMANDS`): left out of `Toolkit.offered_commands()` on Linux, refused by
+  `Commands.run`.
 - `res/toolkits/setup.md` and the first-run brief put their Mac-only prose between
   `<!-- mac -->` / `<!-- /mac -->` lines, dropped on Linux by the same code that handles
-  `<!-- keep -->`. "this Mac" elsewhere becomes `Platform.machine()` or a neutral noun.
+  `<!-- keep -->` (`Rewriter.gate_platform`). The markers are whole lines, so where a sentence
+  must read differently — a list of commands, "this Mac" in the middle of a paragraph — the Linux
+  wording stands beside it between `<!-- linux -->` / `<!-- /linux -->` lines, dropped on a Mac.
+  That keeps the Mac's rendering byte for byte; `Platform.machine()` could not, since the texts
+  say "this Mac". Still saying "this Mac" on Linux: the iCloud integration's 2FA hints.
 - `IntegrationsSectionGenerator` drops the Full Disk Access line on Linux and states the platform
   once ("The server runs on Linux; Photos, Reminders, HomeClaw and the server's own microphones and speakers need a Mac").
 - `watchdog`: `config_set` answers that systemd already restarts the server.
 
 **Console.** `DashboardTab` builds no `GpuMonitor` / `TempMonitor` on Linux and draws neither
-card; the CPU sample (psutil) stays.
+card; the CPU sample (psutil) stays. The tiles that are left share the row (two summary tiles,
+one usage chart, two bottom charts), the mic noise floor tile goes with the microphones, and the
+resource rows lose the three that read the Mac (processed photos, volume, background noise).
 
 ## 5. Config and docs
 

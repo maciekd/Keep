@@ -65,6 +65,9 @@ class Integration(SingletonMixin, ABC):
     # whole — the first betas enabled Photos next to iMessage, before iCloud was signed in.
     setup_after: str = ""
     setup_after_reason: str = ""
+    # It reads something only a Mac has (the Photos library, Reminders, HomeKit): on any other
+    # system the monitor never constructs it and lists a `MacOnlyIntegration` in its place.
+    mac_only: bool = False
 
     def current_login_hint(self) -> str:
         """The login hint for the state the integration is in now; the class attribute unless
