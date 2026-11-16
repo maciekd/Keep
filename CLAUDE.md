@@ -34,6 +34,11 @@ maintainer's 1Password) and an install moves to a release only when the tag on t
 against `res/release_signers` as the running code has it (`common/SignedRelease.py`); a new signing key is
 added by a release signed with the old one. The readme's install command fetches `install.sh` from `release`;
 with `KEEP_ROLE=imessage_satellite` in front of `bash` the same installer makes an iMessage satellite instead.
+The same command installs a Linux server (Ubuntu, Debian — `docs/plans/LINUX_PLAN.md`; new, not yet proven on a
+real machine): each Linux step stands beside the Mac's behind `linux` (`KEEP_OS` overrides `uname -s` for the
+tests alone), the missing apt packages are the one thing installed with sudo, and `start.sh` runs the server as
+the systemd user unit `keep.service` (`scripts/service.sh`) where the Mac has Terminal, the login applet and the
+watchdog. A satellite is a Mac: the role is refused on Linux.
 
 `restart_server` checks out the branch the `developer_release` config key names (false → `release`, true →
 `master`, as on the development machine) and pulls it; `RequirementsChecker.sync` then runs pip when the
@@ -84,7 +89,7 @@ helps with this!
 ## Development Commands
 
 **Working directory**: the repository root — the server runs from it and cwd-relative names (`log/…`, `res/…`) assume it
-**Python venv**: `.venv` in the repository root (`python3.12 -m venv .venv && pip install -r requirements.txt -r requirements-voice.txt`)
+**Python venv**: `.venv` in the repository root (`python3.12 -m venv .venv && pip install -r requirements.txt -r requirements-voice.txt`; on Linux the voice file goes in with `--extra-index-url https://download.pytorch.org/whl/cpu`, as `install.sh` and `RequirementsChecker.install` pass it, or pip brings torch's CUDA build)
 **Config example**: `config.example.yaml`, plus `src/integrations/<folder>/config.example.yaml` for the section an integration owns — **always update the one that holds the key when adding/changing config keys**. `ConfigSchema` reads them as one text: a `# >> section: path` line in the root stands where the fragment's section belongs (a new fragment needs that pointer line — `tests/unit/common/test_config_schema_fragments.py` fails without it), and a fragment holds nothing but the section and the comments above it, since `config_help` shows it verbatim.
 
 ## Architecture
@@ -233,3 +238,4 @@ only the tree. The Pages site is keep-ai.dev; it holds the Keep Atlas alone and 
 - **IMPORTANT**: Always activate venv before running Python: `source .venv/bin/activate`
 - A script importing `assistant`, `common` or `interfaces` needs a config: `ConfigManager` resolves `$FLOXY_CONFIG` if set, else `config.yaml` in the root
 - System: Python 3.12; brew `mpv`, `portaudio`; Porcupine wake word models; Spacy model `en_core_web_sm`
+- System, Linux: Python 3.12 (the distribution's with `python3.12-venv`, else uv's); apt `git curl ca-certificates ffmpeg iproute2 procps libsndfile1 libmagic1` — `APT_PACKAGES` in `install.sh`; no PortAudio or `mpv`, since a Linux server opens no audio device

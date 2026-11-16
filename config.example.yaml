@@ -93,6 +93,7 @@ mail:
 
 # >> icloud: src/integrations/icloud/config.example.yaml
 
+# macOS only: the integration reads the Photos app's library on the server's Mac. A Linux server lists it as "needs macOS".
 # Photos library indexing: the "Photos" integration reads the Mac's Photos.app library and describes
 # every photo (and video) into the history; its horizon is feeds.photos.
 # It depends on the icloud section above: photos that only live in iCloud ("Optimise Mac Storage"
@@ -175,6 +176,9 @@ telegram_bot:
 #    - The server's own macOS user, on a Mac that is the assistant's alone: host stays local and there is
 #      no satellite. The user's own Messages is then elsewhere, so the iMessage Feed integration is off or
 #      reads another Mac through a satellite of its own.
+#    A Linux server has no Messages of its own, so there it is always the second: a Mac that stays on,
+#    with a Keep satellite in the macOS user that holds the assistant's Apple ID. host: local does not
+#    work there, and list_integrations says so until host names the satellite.
 #    config_help("imessage_satellite") has the satellite's install: one command in Terminal at that Mac,
 #    which ends by printing the two values for host and host_token below.
 # 3. The grants, on the Mac and in the macOS user that hold the assistant's Messages, given at that
@@ -309,10 +313,14 @@ interfaces:
   lan_access: false
   http:     { enabled: true }               # always on (the others register routes on it); port from argv
   voice:    { enabled: false }              # VoiceToVoice, off unless set to true; needs mics and speakers on the server, an ElevenLabs API key and api_keys.gemini (the ai.fast tier).
+                                            # On a Linux server voice is the phone app's alone: the Keep app sends what it
+                                            # heard and plays the spoken reply itself. The server opens no microphone and
+                                            # no speaker there (those need a Mac), so it needs none.
   telegram: { enabled: true }               # the bot + Notifier; also needs telegram_bot.bot_token
   imessage: { enabled: false }              # Keep as an iMessage contact of its own; needs the imessage_chat section
   console:  { enabled: true, port: 5151 }   # TUI dashboard (tui.py connects to this port)
 
+# macOS only: a Linux server has no microphones or speakers of its own and does not read this section.
 # Server-internal microphone outposts: one virtual outpost per connected mic,
 # transcribed locally with Whisper (MLX, Apple Silicon only). They push text to
 # /stream exactly like remote Android/iOS outposts and join the same voting.
@@ -385,6 +393,7 @@ is_developer: false
 # changes on a restart_server. Read at each fire, no restart needed.
 nightly_update: true
 
+# macOS only: on Linux systemd restarts a dead server by itself (the keep.service user unit) and the key is not read.
 # Relaunch the server when it dies. true: a launchd agent of your account opens "Keep Autostart.app"
 # (the login item) every 5 minutes, and its script starts the server through start.sh unless one is
 # up or starting — the same thing that happens at login, between logins too. false: a dead server
@@ -406,6 +415,8 @@ watchdog: false
 # these two values for a mistake and start nothing.
 role: server
 
+# macOS only: a satellite is installed on a Mac. A Linux server is not one, it calls one: in step 2 below
+# the answer is then 2 (the server is another machine), and step 5 is done on the Linux server.
 # An iMessage satellite: what an install runs under `role: imessage_satellite` — the service that lends
 # the Messages account of one Mac user to a Keep server. One is needed whenever the account is not that
 # of the macOS user the server runs as: the user's own Messages on another Mac (section imessage), or the

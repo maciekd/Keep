@@ -125,3 +125,36 @@ def test_every_fragment_of_this_repository_is_pointed_at_from_the_root_under_its
         assert len(pointers) == len(fragments), "a pointer names a fragment that is not there"
     finally:
         ConfigSchema.reset()
+
+
+@pytest.fixture
+def real_schema():
+    ConfigSchema.reset()
+    yield
+    ConfigSchema.reset()
+
+
+@pytest.mark.parametrize("section", ["local_outposts", "watchdog", "imessage_satellite", "photos", "reminders", "homeclaw"])
+def test_what_only_a_mac_runs_says_so_at_the_top_of_its_help(real_schema, section):
+    """config_help shows the section verbatim: on a Linux server the first thing the assistant
+    reads of it must be that it is not for this machine."""
+    first = ConfigSchema.section_text(section).lstrip().splitlines()[0]
+    assert "macOS only" in first, first
+
+
+@pytest.mark.parametrize("section", ["imessage", "imessage_chat"])
+def test_the_imessage_help_tells_a_linux_server_it_needs_a_satellite(real_schema, section):
+    """The Linux first-run brief and the setup toolkit send the assistant here for exactly that."""
+    text = ConfigSchema.section_text(section)
+    linux = next(line for line in text.splitlines() if "Linux server" in line)
+    assert "local" in text[text.index(linux):] and "satellite" in text[text.index(linux):]
+
+
+def test_the_imessage_help_carries_the_satellites_install_command(real_schema):
+    """Contract with install.sh's KEEP_ROLE switch and the readme's install line: the command
+    the assistant reads out is the one that installs a satellite."""
+    from common import Role
+    text = ConfigSchema.section_text("imessage")
+    install = (AISERVER_DIR / "readme.md").read_text()
+    command = re.search(r"^curl -fsSL \S+/install\.sh \| bash$", install, re.M).group(0)
+    assert command.replace("| bash", f"| KEEP_ROLE={Role.IMESSAGE_SATELLITE} bash") in text

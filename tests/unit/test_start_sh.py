@@ -647,6 +647,18 @@ class TestTheSystemdUnit:
         assert unit['Restart'] == 'on-failure', "an explicit stop must stay stopped"
         assert unit['WantedBy'] == 'default.target'
 
+    def test_the_unit_finds_what_the_user_installed_under_their_home_before_the_systems(self, linux):
+        """A unit gets the user manager's PATH, which has no ~/.local/bin: the nightly run's
+        `claude` lives there. The line replaces that PATH, so the system's folders — and Ubuntu's
+        /snap/bin, where its Chromium is — must be on it too. %h is systemd's word for the home."""
+        linux.run()
+        (line,) = [line for line in linux.unit.read_text().splitlines() if 'PATH=' in line]
+        assert line.startswith('Environment="PATH=') and line.endswith('"'), "unquoted, a home with a space splits it"
+        path = line[len('Environment="PATH='):-1].split(':')
+        assert path[0] == '%h/.local/bin'
+        assert {'/usr/local/bin', '/usr/bin', '/bin', '/snap/bin'} <= set(path)
+        assert all(folder.startswith(('/', '%h/')) for folder in path)
+
     def test_without_xdg_config_home_the_unit_lands_under_the_homes_config(self, linux):
         linux.run(XDG_CONFIG_HOME=None)
         assert (linux.dir / 'home' / '.config' / 'systemd' / 'user' / 'keep.service').exists()

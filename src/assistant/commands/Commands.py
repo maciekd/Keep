@@ -1853,7 +1853,7 @@ class Commands:
         if key == "is_developer":
             return cls.IS_DEVELOPER_HINT
         if key == Watchdog.KEY:
-            return cls.WATCHDOG_HINT
+            return cls.WATCHDOG_HINT if Platform.is_mac() else cls.WATCHDOG_ON_LINUX
         if key == PREPEND_USER_QUERY_KEY:
             return cls.PREPEND_HINT
         if key == cls.AI_FOOTER_KEY:

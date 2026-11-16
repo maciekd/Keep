@@ -2372,6 +2372,18 @@ class TestChallengeNote:
         assert "by itself" in live and "Ctrl-E" not in live
         assert "icloud_login_code" in alone and "Ctrl-E" in alone and "by itself" not in alone
 
+    def test_on_a_linux_server_the_hint_follows_the_reader_and_names_no_mac_of_the_servers(self, monkeypatch):
+        from common import Platform
+        monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+        api = iCloudAPI(config=VALID_CONFIG)
+        with patch(LIVE_PATH, return_value=["iMessage"]):
+            live = api.current_login_hint()
+        with patch(LIVE_PATH, return_value=[]):
+            alone = api.current_login_hint()
+        assert "by itself" in live and "Ctrl-E" not in live
+        assert "icloud_login_code" in alone and "Ctrl-E" in alone and "by itself" not in alone
+        assert "this Mac" not in live + alone
+
     @pytest.mark.parametrize("in_ftue, pushed", [(True, False), (False, True)])
     def test_during_the_setup_the_note_is_a_history_row_only(self, in_ftue, pushed):
         """The assistant's reply to the setup command that raised the challenge tells the user;

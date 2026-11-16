@@ -1,3 +1,4 @@
+# macOS only: HomeClaw is a Mac app. A Linux server lists the integration as "needs macOS".
 # HomeKit through the HomeClaw app (github.com/omarshahine/HomeClaw), running on the server's Mac as
 # the same user as Keep. Enable with "HomeClaw" in enabled_integrations; nothing to sign in — the app
 # holds the HomeKit access, Keep talks to its local socket. When list_integrations says "HomeClaw is

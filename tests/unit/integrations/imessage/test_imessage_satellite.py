@@ -207,6 +207,29 @@ class TestASatelliteOnTheServersOwnMac:
         assert "127.0.0.1" not in SatelliteHints.problem("http://keep-mini.local:8901", refused, "imessage", "iMessage")
 
 
+class TestASatelliteOfALinuxServer:
+    """A Linux server has no Mac of its own: the satellite is always another machine, and
+    nothing the owner is told may send them to "this Mac"."""
+
+    AWAY = HostHealth(False, UNREACHABLE, "no connection (Connection refused)")
+
+    @pytest.fixture(autouse=True)
+    def linux(self, monkeypatch):
+        from common import Platform
+        monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
+
+    def test_an_unreachable_satellite_is_never_looked_for_on_the_servers_own_loopback(self):
+        said = SatelliteHints.problem("http://keep-mini.local:8901", self.AWAY, "imessage", "iMessage Feed")
+        assert "127.0.0.1" not in said and "this same Mac" not in said
+        assert "lan_access" in said and "imessage.host" in said and "start.sh" in said
+
+    def test_the_grant_is_asked_for_on_the_satellites_mac_with_no_command_that_is_not_offered_here(self):
+        """Contract with Commands.MAC_ONLY_COMMANDS: show_full_disk_access_setting is refused on Linux."""
+        said = SatelliteHints.full_disk_access(ADDRESS)
+        assert ADDRESS in said and "Full Disk Access" in said and "start.sh" in said
+        assert "show_full_disk_access_setting" not in said and "this one" not in said and "server's Mac" not in said
+
+
 class TestASatelliteThatWorksAndIsOutOfStep:
     def test_one_on_the_servers_commit_and_wire_is_simply_healthy(self, integration):
         assert integration.check_health() is True

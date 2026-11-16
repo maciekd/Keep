@@ -7,7 +7,9 @@ config keys of the consumer's section. Every text leads with the action: the pro
 the first 80 characters of an integration's error. The Mac is the satellite's when the host has
 an address and this one when it has none; `show_full_disk_access_setting` and `restart_server`
 are never offered for a satellite's grants — they act on the server's Mac, and the grant is
-needed on the other one. `restart_server` is offered where the server is the one behind."""
+needed on the other one. `restart_server` is offered where the server is the one behind.
+A Linux server has no Mac of its own: there the satellite's is the only one, and the texts say
+"the server" where a Mac's say "this Mac" (`_elsewhere`, `_same_mac`)."""
 import os
 import re
 from pathlib import Path
@@ -54,6 +56,12 @@ def full_disk_access(address: str = "") -> str:
                 "Full Disk Access — turn on Terminal; 2) macOS offers to quit Terminal: accept (the console closes, "
                 "the server keeps running, Telegram stays up); 3) restart_server() from Telegram — or, without "
                 f"Telegram, open Terminal again and type {_start_command()}")
+    if not Platform.is_mac():
+        return (f"needs Full Disk Access for Terminal on the satellite's Mac ({address}). Tell the user, "
+                "who must be at that Mac: open System Settings > Privacy & Security > Full Disk Access there, turn "
+                "on Terminal, accept macOS's offer to quit Terminal, then open Terminal again and run start.sh in "
+                "the Keep folder (~/Keep/start.sh on a default install). restart_server() acts on this server "
+                "and does not help here")
     return (f"needs Full Disk Access for Terminal on the satellite's Mac ({address}), not on this one. Tell the user, "
             "who must be at that Mac: open System Settings > Privacy & Security > Full Disk Access there, turn on "
             "Terminal, accept macOS's offer to quit Terminal, then open Terminal again and run start.sh in the Keep "
@@ -64,7 +72,9 @@ def full_disk_access(address: str = "") -> str:
 def _same_mac(address: str, host_key: str) -> str:
     """What to try when the satellite may be another user of the server's own Mac: such a satellite
     answers the loopback alone, so the Mac's name or network address reaches nothing. Empty for an
-    address that already is the loopback."""
+    address that already is the loopback, and on a server that is no Mac."""
+    if not Platform.is_mac():
+        return ""
     try:
         parts = urlsplit(address)
         host, port = (parts.hostname or "").lower(), parts.port
@@ -75,6 +85,14 @@ def _same_mac(address: str, host_key: str) -> str:
     return (f". A satellite under another user of this same Mac is reached at http://127.0.0.1:"
             f"{port or Satellite.DEFAULT_PORT}, not by the Mac's name: the user types that with "
             f'config_request("{host_key}")')
+
+
+def _elsewhere() -> str:
+    """What must hold of a satellite's `lan_access` for this server to reach it: on when the
+    satellite is another machine — which, for a server that is no Mac, it always is."""
+    if Platform.is_mac():
+        return f"{Satellite.LAN_ACCESS_KEY} is true when it is another Mac than the server's"
+    return f"{Satellite.LAN_ACCESS_KEY} is true in its config.yaml (this server is another machine)"
 
 
 def automation(address: str) -> str:
@@ -147,7 +165,7 @@ def problem(address: str, health: HostHealth, section: str, integration: str) ->
                 f"Mac updates it")
     return (f"the iMessage satellite at {address} does not answer ({health.detail}). Ask the user to check that Mac: "
             f"it is on and its user is logged in, Keep runs there (start.sh in its Keep folder), "
-            f"{Satellite.LAN_ACCESS_KEY} is true when it is another Mac than the server's, and {host_key} "
+            f"{_elsewhere()}, and {host_key} "
             f"is its address{_same_mac(address, host_key)}")
 
 

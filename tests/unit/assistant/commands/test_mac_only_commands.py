@@ -104,6 +104,13 @@ class TestMacOnlyConfig:
         write.assert_not_called()
         assert "systemd" in answer
 
+    def test_a_watchdog_key_taken_out_on_linux_is_not_answered_with_the_macs_launchd_agent(self, linux):
+        """config_delete takes the key out of a config copied from a Mac, and its answer ends
+        with the key's hint."""
+        from assistant.commands.Commands import Commands
+        hint = Commands._restart_hint(Watchdog.KEY)
+        assert "systemd" in hint and "launchd agent" not in hint.split("systemd")[1]
+
     @pytest.mark.parametrize("key", ["local_outposts.location", Watchdog.KEY, "owner_name"])
     def test_on_a_mac_the_same_keys_are_written(self, commands, mac, key):
         with patch.object(commands, "background_command") as write:

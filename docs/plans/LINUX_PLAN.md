@@ -2,8 +2,10 @@
 
 Keep runs on Apple Silicon Macs only. This plan adds Ubuntu and Debian as a second home for the
 **server**: chat (Telegram, console, iMessage through a satellite), HTTP, every network integration,
-the nightly update and the code-quality run. It is written from a read of the tree on a Mac —
-nothing here has been run on Linux yet, and step 1 exists to find what the read missed.
+the nightly update and the code-quality run. Steps 1–4 of the order of work are built; they were
+written and tested on a Mac, with the unit suite also run on Ubuntu in CI. No install, no start
+and no systemd unit has been run on a Linux machine yet: the checklist at the end is what stands
+between this and a release.
 
 ## Scope
 
@@ -41,7 +43,8 @@ order, the prompt and the toolkit texts render byte for byte as before, and no c
 meaning. Every Linux behaviour is a branch beside the Mac one, never a replacement of it — where
 one shared implementation would be simpler (HEIC through `pillow-heif`, video rotation through
 `ffmpeg`), the Mac still keeps its own. The only Mac-visible changes are two unused pins leaving
-`requirements.txt` (`whisper-openai`, `playsound`). The existing tests are the proof for the code
+`requirements.txt` (`whisper-openai`, `playsound`) and the installer's temp file for a log outside
+the install folder, which `mktemp` now makes from a full template (§3). The existing tests are the proof for the code
 that is moved rather than added (`start.sh`'s launch, `VoiceInterface`'s imports), and step 5's
 real install is repeated on a Mac before the release.
 
@@ -130,11 +133,18 @@ ExecStart=<checkout>/.venv/bin/python floxy_ai_server.py
 StandardOutput=append:<checkout>/log/raw-floxy.log
 StandardError=inherit
 Environment=PYTHONUTF8=1
+Environment="PATH=%h/.local/bin:%h/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
 Restart=on-failure
 RestartSec=10
 [Install]
 WantedBy=default.target
 ```
+
+The `PATH` line is there because a unit gets the user manager's `PATH`, which has no
+`~/.local/bin` — where the Claude CLI of the nightly code-quality run, `uv` and whatever else the
+user installed live. A unit cannot add to that `PATH`, only replace it, so the line names all of
+it: the user's two folders first, systemd's default folders, and `/snap/bin`, which Ubuntu adds
+for a login and where its Chromium is.
 
 `ensure_unit` rewrites it when the text differs and then runs `daemon-reload`; `enable` runs at
 every start. A unit that already points at another checkout is refused with both paths named —
@@ -208,31 +218,59 @@ ask the real tools of the system the suite is on (on Ubuntu: `pgrep` and `/proc`
 
 ## 3. `install.sh`
 
-The same one-line install, branching where the Mac is assumed:
+The same one-line install. Every Linux step stands beside the Mac's behind `linux` (the script's
+`OS`, `KEEP_OS` for the tests); `check_mac`, `ensure_clt` and the Mac's summary and launch are
+untouched.
 
-- `check_mac` → `check_system`. Linux: `/etc/os-release` (`ID` ubuntu/debian, else `ID_LIKE`
-  debian with a warning, else stop), `uname -m` x86_64/aarch64, a working `systemctl --user`
-  (stop with the reason otherwise — a container or WSL1), disk space through `df -Pk`, the same
-  reachability checks. The terminal advice is skipped.
-- `ensure_clt` → on Linux `ensure_packages`: one `sudo apt-get install` of what is missing among
-  `git curl ca-certificates ffmpeg iproute2 procps libmagic1 libsndfile1` (§1), plus `python3.12 python3.12-venv` where the
-  distribution has them. The command is printed before sudo asks; without sudo the list is shown
-  and the install stops.
-- `ensure_python`: Ubuntu 24.04 has 3.12; Debian 12 (3.11) and 13 (3.13) do not, so the existing
-  **uv** branch is the Linux fallback. `find_python`'s uv glob loses its `macos-aarch64`;
-  `python_ok`'s `arm64` assertion becomes "the architecture `check_system` accepted".
-- **Chrome** for `WebAccess` (nodriver, already headless, Linux paths already listed): Google
-  Chrome's `.deb` on x86_64, the `chromium` package on Debian/arm64. Ubuntu's Chromium is a snap —
-  whether nodriver can drive it from a systemd user service is **unverified**; if not, the
-  installer says the browse commands need Chrome and goes on.
+- **Refused before a folder or a log is made**: `KEEP_ROLE=imessage_satellite` (a satellite is a
+  Mac — and an existing config.yaml that names the role, after it is read), and a `KEEP_DIR` whose
+  path `start.sh` would refuse for the unit (a space, a quote, a backslash, `$`, `%`, a control
+  character).
+- `check_linux`: `/etc/os-release` read with `sed`, never sourced (`ID` ubuntu/debian, else
+  `ID_LIKE` naming debian or ubuntu with a warning, else stop; a release older than 24.04 / 12 is
+  warned about, not refused), `uname -m` x86_64/aarch64, `systemctl --user show-environment` as
+  the proof of a user session (stop with systemd's own words otherwise — a container, WSL without
+  systemd, a shell reached through `su`), disk space through `df -Pk`, the same reachability
+  checks. Not as root. The terminal advice is skipped. A machine without `curl` (the script came
+  through `wget`) has its network tested after the apt step instead.
+- `ensure_packages` where the Mac has the Command Line Tools: one
+  `sudo apt-get install -y --no-install-recommends` of what `dpkg-query` does not have among
+  `git curl ca-certificates ffmpeg iproute2 procps libsndfile1 libmagic1` (§1) — a library counts
+  under its `t64` name too, which is what Ubuntu 24.04 calls `libmagic1` — plus `python3.12` and
+  `python3.12-venv` where no usable 3.12 was found and `apt-cache policy` has a candidate. The
+  command is printed before sudo asks and runs with its stdin taken away. Without sudo, or with a
+  sudo that needs a password and no terminal, the command is shown and the install stops.
+  **No `apt-get update` is run**: the installer runs one command as root and no more; an apt that
+  cannot find a package is answered with the hint to update the lists and re-run.
+- `ensure_python`: the system's 3.12 when it passes `python_ok` — which on Linux asks for
+  `ensurepip` as well, since Debian and Ubuntu ship it apart and a `python3.12` without it imports
+  `venv` and then fails to make one — else **uv**, never Homebrew. `find_python`'s uv glob names
+  the build for this machine (`linux-<arch>-gnu`); `python_ok` asserts `uname -m` on Linux where
+  the Mac asserts arm64.
+- **Chrome** for `WebAccess`: the installer looks for the four names `WebAccess` looks for and
+  installs nothing. Without one the summary says what to install — Google Chrome's `.deb` on
+  x86_64, the `chromium` package on Debian; on Ubuntu/ARM only the snap exists, and the summary
+  says it is untried.
 - `install_requirements`: both files as on the Mac, the voice file with the CPU torch index (§1).
   No PortAudio and no `mpv` from apt: nothing on Linux opens an audio device.
-- `KEEP_ROLE=imessage_satellite` on Linux stops: a satellite is a Mac.
-- `launch` / `summary`: `enable-linger`, `./start.sh`; the texts lose Terminal, Full Disk Access
-  and the microphone prompt on Linux and gain the three `systemctl --user` lines worth knowing.
-- Telemetry's chip string comes from `sysctl` — on Linux `uname -m` and the CPU model of
-  `/proc/cpuinfo`.
-- `tests/unit/test_install_sh.py` covers the Linux branch through `KEEP_OS` and stubbed `apt-get`.
+- `enable_linger` (`loginctl --no-ask-password enable-linger <user>`) before the summary; a
+  refusal is a warning in the summary with the sudo command, since without lingering the server
+  stops when the installing session ends.
+- `summary` / `launch`: no Terminal, no Full Disk Access, no microphone prompt. The summary names
+  `systemctl --user status keep`, `journalctl --user -u keep`, `log/raw-floxy.log`,
+  `systemctl --user disable keep.service` (what `stop.sh` leaves on), and `ssh -t … keep.sh` as
+  the way to the console and the setup conversation on a machine without a screen. A start needs
+  no terminal on Linux, so an install over plain ssh (`ANTHROPIC_API_KEY` in the environment) ends
+  with `start.sh` run and the unit up, where the Mac says "start Keep with: start.sh".
+- Telemetry: `os=Linux`, the distribution's name and `uname -m` with the CPU model of
+  `/proc/cpuinfo` as the chip; the install id falls back to the kernel's uuid where there is no
+  `uuidgen` (Debian has it in `uuid-runtime`).
+- BSD and GNU: `mktemp -t <prefix>` became a full template (`$TMPDIR/keep-install.XXXXXX`), which
+  both take — the one line that changed for the Mac too; `df` and `mktemp` are called by their
+  absolute path where it exists; `sysctl`, `sw_vers`, `xcode-select` and `scutil` stay inside
+  the Mac's functions.
+- `tests/unit/test_install_sh.py` covers the Linux branch through `KEEP_OS`, with `sudo`,
+  `apt-get`, `dpkg-query`, `apt-cache`, `systemctl` and `loginctl` as functions of the harness.
 
 ## 4. The server on Linux: what switches off, and how it is said
 
@@ -304,7 +342,8 @@ nightly, which is already a supported state.
   must read differently — a list of commands, "this Mac" in the middle of a paragraph — the Linux
   wording stands beside it between `<!-- linux -->` / `<!-- /linux -->` lines, dropped on a Mac.
   That keeps the Mac's rendering byte for byte; `Platform.machine()` could not, since the texts
-  say "this Mac". Still saying "this Mac" on Linux: the iCloud integration's 2FA hints.
+  say "this Mac". The iCloud toolkit's 2FA paragraph is written the same way; the integration's
+  own hints, `SatelliteHints` and the watchdog key's hint pick their wording by `Platform`.
 - `IntegrationsSectionGenerator` drops the Full Disk Access line on Linux and states the platform
   once ("The server runs on Linux; Photos, Reminders, HomeClaw and the server's own microphones and speakers need a Mac").
 - `watchdog`: `config_set` answers that systemd already restarts the server.
@@ -317,13 +356,15 @@ resource rows lose the three that read the Mac (processed photos, volume, backgr
 ## 5. Config and docs
 
 - `config.example.yaml` and the fragments of the Mac-only folders: one "macOS only" line at the
-  top of `local_outposts`, `watchdog`, `imessage_satellite`, Photos, Reminders and HomeClaw; the
-  voice key under `interfaces` says what a Linux server does with it (the phones, not its own
-  microphones and speakers); `imessage` / `imessage_chat` say
-  that a Linux server needs `host:` to name a satellite. `config_help` shows them verbatim.
-- README: requirements, the install line and what is Mac-only. `CLAUDE.md`: `Platform.py`,
-  `scripts/service.sh`, the conftest's new refusals, and the rule "no `sys.platform` outside
-  `common/Platform.py`".
+  top of `local_outposts`, `watchdog`, `imessage_satellite`, Photos (in the root, above the
+  comment that already stands over its pointer), Reminders and HomeClaw; the voice key under
+  `interfaces` says what a Linux server does with it (the phones, not its own microphones and
+  speakers); `imessage` says that a Linux server needs `host:` to name a satellite and carries
+  the satellite's install command, `imessage_chat` that the account then always lives on a Mac
+  with a satellite. `config_help` shows them verbatim, and the Linux first-run brief and
+  `setup.md` send the assistant to `config_help("imessage")`.
+- README: Linux named as new and in testing, with what stays on the Mac. `CLAUDE.md`: the Linux
+  install under Releases, the CPU torch index and the apt packages.
 - Atlas: `Platform.py` needs its docstring sentence; no new package.
 
 ## 6. Small helpers
@@ -343,23 +384,117 @@ a Mac-only switch.
 
 ## Things to verify on a real machine
 
-A read cannot settle these; each has a place in the order below.
+Nothing below has been seen to work: the code was written from documentation, on a Mac. Work
+through it in this order on **an Ubuntu 24.04 machine** (U), **a Debian 12 machine** (D) — one of
+the two x86_64 and one aarch64 if possible — and, last, **a Mac** (M). A line without a letter is
+for both Linux machines. Each failed line is a bug to fix before the release, or a sentence to
+correct in the installer, the config comments or this plan.
 
-1. The base requirements install cleanly on x86_64 and aarch64 (§1), neonize above all.
-2. Ubuntu's snap Chromium under a user service (§3).
-3. `ss -p` shows the pid of the user's own listener without root on both distributions (§2).
-4. `systemd-run --user --scope` from inside the unit survives the unit's restart (§2) — the
-   PR-trial fallback depends on it. With it: that the copy of `start.sh` left in the unit ends
-   at once on the stop's SIGTERM and does not hold the stop up, and what `restart_server` does
-   to a server started by hand (its `start.sh` refuses: the port is held outside the unit).
-5. Discovery by multicast (Sonos, HEOS, Hue) with `ufw` on; Plejd over BlueZ needs the `bluez`
-   package and the user in the `bluetooth` group. Both become notes in the integrations' config
-   comments once seen.
-6. A nightly update end to end: pull, pip, restart through the unit, HEAD moved.
-7. A voice turn from the iOS app against a Linux server: the spoken reply, the `/stream_text`
-   overlay, the speaker's name, a barge-in — and what the app shows when its server-sound mode
-   is switched on against a server without speakers.
-8. Speaker id's first model load and its speed on CPU-only torch, on x86_64 and aarch64.
+**A. The install**
+
+1. Fresh machine, logged in over ssh as a normal user with sudo: the readme's line. `check_linux`
+   names the distribution and the CPU, finds the user session (`systemctl --user
+   show-environment`), and the network.
+2. The apt step lists only what is missing, shows the command, and sudo's password prompt is
+   readable under it; apt's output is in `log/install.log`. U: `libmagic1` installs as
+   `libmagic1t64` and a re-run asks for no sudo. D: stale apt lists — does the install fail with
+   the "apt-get update" hint, and is that hint enough?
+3. Python. U: `python3.12` + `python3.12-venv` from apt, `PY_SOURCE=found`. D: no 3.12 in apt, uv
+   installs one, `find_python`'s glob finds it on a re-run (`cpython-3.12.*-linux-<arch>-gnu`),
+   and `truststore` / `SystemTrust` verify TLS with uv's Python (its OpenSSL looks in /etc/ssl).
+4. `pip install` with the CPU index: no `nvidia-*` wheel in the log, `torch.version.cuda is None`;
+   every pin installs on both architectures — `neonize` above all, `bleak`, `curl_cffi`,
+   `nodriver`, `uvloop`, `pillow-heif`, and `soundfile` against the system's libsndfile on aarch64.
+   The progress bar is scaled for the Mac's package count (`PIP_EXPECTED_PACKAGES`): note how far
+   off it is.
+5. `loginctl enable-linger` succeeds without sudo and without a polkit prompt over ssh
+   (`loginctl show-user $USER -p Linger`). If it is refused, the summary's warning shows.
+6. The summary reads right on a real terminal, and its `ssh -t user@host ~/Keep/keep.sh` line
+   works from another machine with the printed host name.
+7. The refusals, each on a throwaway run: as root; `KEEP_ROLE=imessage_satellite`;
+   `KEEP_DIR="$HOME/My Keep"`; inside a Docker container (no systemd); through `sudo -u other -i`
+   (no user session).
+8. `ssh host 'curl … | ANTHROPIC_API_KEY=… bash'` (no terminal): the install ends with the unit
+   running. With `NOPASSWD` sudo it gets through the apt step; without, it stops with the command.
+9. A re-run on the finished install: every step is skipped or fast, config.yaml kept, the server
+   restarted.
+
+**B. The unit and the scripts**
+
+10. `systemctl --user status keep` shows the unit active; `log/raw-floxy.log` receives the
+    output (`StandardOutput=append:`); `systemctl --user show keep -p Environment` has the PATH
+    with the home folder expanded from `%h`, and `which claude` from inside the server (a
+    `self_analysis` run) finds `~/.local/bin/claude`.
+11. Reboot with nobody logged in: the server is up (lingering, `WantedBy=default.target`,
+    `network-online.target` for a user unit).
+12. `ss -Hltnp` shows the pid of the user's own listener without root, in the format
+    `own_listeners` parses (`users:(("python",pid=…`), with IPv4 and IPv6 sockets.
+13. `./stop.sh` stops the unit and it stays down; `./start.sh` brings it back; `kill -9` of the
+    server is followed by a restart after 10 s (`Restart=on-failure`).
+14. A config the server refuses (delete `vault.key`): five starts, then the unit is failed —
+    and `./start.sh` after fixing it starts again (`reset-failed` clears the start limit).
+15. `restart_server` from the chat: `start.sh` finds itself in the unit's cgroup
+    (`/proc/self/cgroup`), `systemd-run --user --scope` takes it out, the restart happens, and
+    the copy left in the unit ends on the stop's SIGTERM without holding it up.
+16. A server started by hand (`.venv/bin/python floxy_ai_server.py` in a terminal, unit
+    stopped): `./start.sh` refuses, naming the pid; `restart_server` from that server's chat —
+    what does the user see? `./stop.sh` stops it.
+17. `./keep.sh` with a terminal attaches the console; without one (`ssh host ~/Keep/keep.sh`) it
+    says so; `autostart.sh` and `scripts/cli_start.sh` refuse.
+18. A checkout path with a letter outside ASCII (`~/Kęp`) starts.
+
+**C. The server**
+
+19. The first-run conversation from an empty config, in the console over `ssh -t`: the Linux
+    brief (no System Settings, no Photos), Telegram set up, the pipeline staying in SETUP.
+20. `list_integrations`: Photos, Reminders and HomeClaw read "needs macOS"; `enable_integration`
+    refuses them; `config_set("watchdog", …)` and `local_outposts.*` answer as §4 says.
+21. The console's Dashboard without the GPU, temperature and microphone cards.
+22. Browsing. D: `chromium` from apt, driven headless by nodriver from the unit. U x86_64: Google
+    Chrome's `.deb`. U: the snap Chromium (`/snap/bin` is on the unit's PATH) — does nodriver
+    start it from a systemd user service? If not, say so in the installer's advice.
+23. A HEIC photo sent over Telegram is described (`pillow-heif`); a rotated phone clip arrives
+    upright (`VideoRotation._bake_with_ffmpeg`: the `-vf` scale filter, the codec flags, the
+    rotation applied and no display matrix left); a Telegram voice message is transcribed.
+24. On a desktop session only: `Clipboard` through `wl-paste --no-newline --type …` (Wayland) and
+    `xclip -selection clipboard -o -t …` (X11); `Browser` through `xdg-open`. Headless: both do
+    nothing, quietly.
+25. Discovery by multicast (Sonos, HEOS, Hue) with `ufw` on; Plejd over BlueZ (the `bluez`
+    package, the user in the `bluetooth` group). What is found becomes a note in the
+    integrations' config comments.
+26. WhatsApp links (neonize's native library, `libmagic1`).
+27. iMessage: `host: local` shows as the configuration problem with the Linux wording; with a
+    satellite on a Mac (`lan_access: true`) the feed reads, sends, and a satellite that is down
+    gives the hints of `SatelliteHints` without "this Mac". An iCloud sign-in's 2FA hint likewise.
+
+**D. Voice**
+
+28. `interfaces.voice.enabled: true`: the server starts without opening an audio device, speaker
+    id loads its model on CPU-only torch (time the first load and one identification, x86_64 and
+    aarch64), `supertonic` synthesizes — or is to be marked Mac-only.
+29. The iOS app against the Linux server: the spoken reply, the `/stream_text` overlay, the
+    speaker's name, a barge-in — and what the app shows with its server-sound mode on against a
+    server without speakers (answered as text).
+
+**E. Updates**
+
+30. A nightly update end to end (or `restart_server` after a push to the followed branch): pull,
+    `RequirementsChecker.sync` with the CPU index (torch stays `+cpu` and compares equal to the
+    pin), restart through the unit, HEAD moved.
+31. A PR trial: `try_pull_request` restarts on `trial/pr-<N>`, the scoped `start.sh` watches the
+    port; then a trial of a PR that cannot boot — the rollback to the previous branch, the note
+    in `log/trial_rollback.txt` read from `log/raw-floxy.log`, the server back up.
+32. The nightly code-quality run finds `claude`, `gh` and `git` from the unit.
+
+**F. The Mac (M), before the release**
+
+33. A fresh install with the readme's line: the same steps and texts as before this plan; the
+    one changed command is the temp file of the log (`mktemp` with a full template) — install
+    into a non-empty folder once to see the "Log:" line name a file that exists.
+34. `KEEP_ROLE=imessage_satellite` installs a satellite as before.
+35. `start.sh`, `stop.sh`, a `restart_server`, a nightly update, the watchdog and the Desktop
+    shortcut on an existing install; the prompt and the setup toolkit render as before
+    (`<!-- mac -->` passages kept, `<!-- linux -->` dropped).
 
 ## Order of work
 
@@ -371,7 +506,8 @@ Each step leaves `master` releasable for Macs.
    Mac — the voice split included: a test imports `VoiceInterface` with `sounddevice` refused and
    starts it as Linux.
 3. **Scripts and the unit** (§2), tested through `KEEP_OS` and the staged process table.
-4. **install.sh** (§3) and the texts (§5).
-5. **A real install** on an Ubuntu 24.04 machine and a Debian 12 one: the verification list, the
-   first-run conversation from an empty config, a restart, a nightly update, a PR trial.
-6. Release; the readme names Linux only after step 5.
+4. **install.sh** (§3) and the texts (§5). The readme names Linux from here on, as new and in
+   testing.
+5. **A real install** on an Ubuntu 24.04 machine and a Debian 12 one, and a Mac: the checklist
+   above. Steps 1–4 are done; this one is not.
+6. Release; the readme drops "in testing" only after step 5.

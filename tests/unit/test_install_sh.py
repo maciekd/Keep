@@ -7,11 +7,19 @@ one at a time. Stdout is a pipe, so the spinner (a background subshell) is off a
 the output is plain text. `curl` and the terminal prompt `ask` are bash functions
 sourced before the call (see test_start_sh.py for why functions, not executables);
 the repository tests run real git against a throwaway origin in tmp_path.
+
+Either system's branch runs on either system: `KEEP_OS` names it, and the harness pins the Mac's
+unless a test asks for Linux. Whatever the Linux branch would do to the machine — `sudo`,
+`apt-get`, `dpkg-query`, `apt-cache`, `systemctl`, `loginctl` — is a function of the harness
+answering from files in tmp_path, sourced before every call whichever system is asked for: no
+test reaches the real one.
 """
 import json
+import os
 import re
 import stat
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +41,47 @@ CREDIT_TOO_LOW_BODY = (
     '"message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing '
     'to upgrade or purchase credits."}}')
 BAR_RE = re.compile(r'^\[(.*)\] (.*)$')
+MAC, LINUX = 'Darwin', 'Linux'      # as `uname -s` names them, and KEEP_OS
+UBUNTU = 'PRETTY_NAME="Ubuntu 24.04.1 LTS"\nNAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\nID_LIKE=debian\n'
+DEBIAN = 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"\nVERSION_ID="12"\nID=debian\n'
+MINT = 'PRETTY_NAME="Linux Mint 22"\nVERSION_ID="22"\nID=linuxmint\nID_LIKE="ubuntu debian"\n'
+FEDORA = 'PRETTY_NAME="Fedora Linux 41 (Server Edition)"\nVERSION_ID=41\nID=fedora\n'
+BROWSERS = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']
+
+
+def machine_stubs(d: Path) -> str:
+    """The Linux machine as bash functions. `installed` lists the packages dpkg has; `sudo` runs
+    nothing: an `apt-get install` handed to it adds the named packages to that list. A command
+    named in `absent` is not found by `command -v`, whatever the real machine has."""
+    return f"""
+command() {{
+    if [ "$1" = -v ] && grep -qx -- "$2" "{d}/absent" 2>/dev/null; then return 1; fi
+    builtin command "$@"
+}}
+sudo() {{
+    echo "$*" >> "{d}/sudo_calls"
+    case " $* " in *" -v "*) [ ! -f "{d}/sudo_needs_password" ]; return ;; esac
+    if [ -f "{d}/apt_fails" ]; then echo "E: Unable to locate package"; return 100; fi
+    local a installing=""
+    for a in "$@"; do
+        if [ -n "$installing" ]; then case "$a" in -*) ;; *) echo "$a" >> "{d}/installed" ;; esac; fi
+        [ "$a" != install ] || installing=1
+    done
+}}
+apt-get() {{ echo "$*" >> "{d}/apt_get_calls"; return 1; }}
+dpkg-query() {{
+    local name; for name in "$@"; do :; done
+    grep -qx -- "$name" "{d}/installed" 2>/dev/null && printf installed
+}}
+apt-cache() {{
+    if [ -f "{d}/apt_offers_python" ]; then echo "  Candidate: 3.12.3-1ubuntu0.5"; else echo "  Candidate: (none)"; fi
+}}
+systemctl() {{
+    echo "$*" >> "{d}/systemctl_calls"
+    [ ! -f "{d}/no_user_systemd" ] || {{ echo "Failed to connect to bus: No medium found" >&2; return 1; }}
+}}
+loginctl() {{ echo "$*" >> "{d}/loginctl_calls"; [ ! -f "{d}/linger_refused" ]; }}
+"""
 
 
 class InstallShHarness:
@@ -47,7 +96,30 @@ class InstallShHarness:
         self.curl_calls = tmp_path / 'curl_calls'
         self.asked = tmp_path / 'asked'
         self.answers = None
+        self.os_release = tmp_path / 'os-release'
+        self.os_release.write_text(UBUNTU)
         self.set_curl(('200', ''))
+
+    def flag(self, name: str):
+        """One of the files the machine's stubs answer by: `no_user_systemd`, `apt_fails`, …"""
+        (self.dir / name).write_text('')
+
+    def installed(self, *packages: str):
+        (self.dir / 'installed').write_text(''.join(f'{name}\n' for name in packages))
+
+    def absent(self, *commands: str):
+        """Commands `command -v` does not find."""
+        with (self.dir / 'absent').open('a') as f:
+            f.write(''.join(f'{name}\n' for name in commands))
+
+    def calls(self, tool: str) -> list[str]:
+        path = self.dir / f'{tool}_calls'
+        return path.read_text().splitlines() if path.exists() else []
+
+    @property
+    def apt_installs(self) -> list[list[str]]:
+        """The packages of every `apt-get install` handed to sudo."""
+        return [call.split('--no-install-recommends ', 1)[1].split() for call in self.calls('sudo') if ' install ' in call]
 
     def set_curl(self, *responses: tuple[str, str]):
         """What successive curl calls answer, as (status, body) pairs; the last one repeats."""
@@ -73,6 +145,8 @@ class InstallShHarness:
             'STEP_NAME=test; API_KEY=""; WORKSPACE_ID=""; VERIFY_CODE=""; ANTHROPIC_SAID=""\n'
             'PY=""; CHILD_PID=""; SPINNER_PID=""; SPINNER_STATUS=""\n'
             'init_ui; TTY=""\n'
+            f'OS_RELEASE="{self.os_release}"; CPUINFO="{self.dir}/cpuinfo"\n'
+            + machine_stubs(self.dir) +
             # The n-th call answers with curl_<n>.code and, for its -o target, curl_<n>.body.
             f'curl() {{ echo "$*" >> "{self.curl_calls}"; local n prev="" a\n'
             f'  n=$(( $(cat "{self.dir}/curl_n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "{self.dir}/curl_n"\n'
@@ -84,6 +158,7 @@ class InstallShHarness:
                 f'exec 7< "{self.answers}"\n'
                 f'ask() {{ echo "$1" >> "{self.asked}"; IFS= read -r "$2" <&7 || eval "$2=\'\'"; }}\n')
         run_env = {k: v for k, v in git_env().items() if k != 'ANTHROPIC_API_KEY'}
+        run_env['KEEP_OS'] = MAC
         run_env.update(env)
         return spawn(['bash', '-c', prelude + script], env=run_env, timeout=30, start_new_session=no_terminal)
 
@@ -321,11 +396,12 @@ class TestWhetherThereIsATerminal:
         assert result.stdout.endswith('TTY=[]')
 
     def test_a_terminal_that_can_be_opened_is_the_one_to_ask_on(self, harness):
-        """`script` gives the installer a pseudo-terminal of its own as the controlling one."""
+        """`pty.spawn` gives the installer a pseudo-terminal of its own as the controlling one —
+        from a Python of its own, so that the worker, which has threads, does not fork."""
         command = f'source "{harness.fns}"; {self.SHOW}'
-        result = subprocess.run(['/usr/bin/script', '-q', '/dev/null', '/bin/bash', '-c', command], capture_output=True,
-                                text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=30)
-        assert result.stdout.endswith('TTY=[/dev/tty]'), result.stdout
+        result = subprocess.run([sys.executable, '-c', 'import pty, sys; pty.spawn(sys.argv[1:])', '/bin/bash', '-c', command],
+                                capture_output=True, text=True, stdin=subprocess.DEVNULL, start_new_session=True, timeout=30)
+        assert result.stdout.endswith('TTY=[/dev/tty]'), result.stdout + result.stderr
 
     def test_a_satellite_installs_without_a_terminal_and_answers_this_mac_only(self, harness):
         main_on_the_real_terminal_check = MAIN.replace('init_ui() { real_init_ui; TTY=""; }\n', '')
@@ -853,3 +929,377 @@ class TestSatelliteInstall:
         assert satellite['role'] == SATELLITE
         assert {**satellite, 'role': None, 'default_dir': None} == {**server, 'role': None, 'default_dir': None}
         assert 'role' not in server
+
+
+# main() on Linux, with the steps that touch the machine or the network replaced as in MAIN. The
+# Mac's two steps are named too: on Linux neither may run.
+LINUX_MAIN = MAIN.replace('for step in ', 'for step in check_linux ensure_packages find_browser ')
+ARCH = os.uname().machine
+CHECK = 'uname() { echo x86_64; }; MIN_FREE_GB=0; check_linux'
+NO_PYTHON = 'find_python() { return 1; }\n'
+A_PYTHON = 'find_python() { return 0; }\n'
+EVERY_PACKAGE = ['git', 'curl', 'ca-certificates', 'ffmpeg', 'iproute2', 'procps', 'libsndfile1', 'libmagic1']
+
+
+def on_linux(harness, script: str, **env):
+    return harness.run(script, KEEP_OS=LINUX, **env)
+
+
+class TestTheLinuxMachineCheck:
+    """Ubuntu and Debian on x86_64 or aarch64 with a systemd user session; anything else stops
+    before a package is asked for."""
+
+    @pytest.mark.parametrize('release', [UBUNTU, DEBIAN], ids=['Ubuntu', 'Debian'])
+    def test_ubuntu_and_debian_pass_without_a_warning(self, harness, release):
+        harness.os_release.write_text(release)
+        result = on_linux(harness, CHECK)
+        assert result.returncode == 0, result.stdout
+        assert 'warn:' not in harness.log.read_text()
+        assert 'api.anthropic.com' in harness.calls('curl')[-1]
+
+    def test_a_distribution_built_on_debian_installs_with_a_warning(self, harness):
+        harness.os_release.write_text(MINT)
+        result = on_linux(harness, CHECK)
+        assert result.returncode == 0, result.stdout
+        assert 'warn:' in harness.log.read_text() and 'Linux Mint 22' in result.stdout
+
+    def test_an_older_release_than_the_ones_tried_is_warned_about(self, harness):
+        harness.os_release.write_text(UBUNTU.replace('24.04', '22.04'))
+        result = on_linux(harness, CHECK)
+        assert result.returncode == 0, result.stdout
+        assert 'warn:' in harness.log.read_text()
+
+    @pytest.mark.parametrize('release', [FEDORA, None], ids=['Fedora', 'no os-release'])
+    def test_another_distribution_stops_the_install(self, harness, release):
+        if release is None:
+            harness.os_release.unlink()
+        else:
+            harness.os_release.write_text(release)
+        result = on_linux(harness, CHECK + '; ensure_packages')
+        assert result.returncode == 1
+        assert harness.calls('sudo') == [] and harness.calls('systemctl') == []
+        assert 'Ubuntu and Debian' in result.stdout and 'Unexpected error' not in result.stdout
+        assert release is None or 'Fedora' in result.stdout
+
+    def test_os_release_is_read_and_never_run(self, harness):
+        harness.os_release.write_text(UBUNTU + f'KEEP_DIR=/srv/elsewhere\ntouch "{harness.dir}/ran"\n')
+        result = on_linux(harness, CHECK + '; printf "%s" "$KEEP_DIR"')
+        assert result.stdout.endswith(str(harness.keep_dir))
+        assert not (harness.dir / 'ran').exists()
+
+    @pytest.mark.parametrize('arch', ['armv7l', 'i686', 'riscv64'])
+    def test_an_architecture_without_wheels_stops_the_install(self, harness, arch):
+        result = on_linux(harness, CHECK.replace('x86_64', arch))
+        assert result.returncode == 1
+        assert arch in result.stdout
+
+    @pytest.mark.parametrize('arch', ['x86_64', 'aarch64'])
+    def test_both_supported_architectures_pass(self, harness, arch):
+        result = on_linux(harness, CHECK.replace('x86_64', arch))
+        assert result.returncode == 0, result.stdout
+
+    def test_no_systemd_user_session_stops_with_systemds_own_reason(self, harness):
+        """A container, WSL without systemd, a shell reached through su: start.sh could never
+        start the unit, so the install must not get as far as apt."""
+        harness.flag('no_user_systemd')
+        result = on_linux(harness, CHECK + '; ensure_packages')
+        assert result.returncode == 1
+        assert 'Failed to connect to bus' in result.stdout
+        assert all(call.startswith('--user ') for call in harness.calls('systemctl'))
+        assert harness.calls('sudo') == []
+
+    def test_a_machine_without_systemctl_stops(self, harness):
+        harness.absent('systemctl')
+        result = on_linux(harness, CHECK)
+        assert result.returncode == 1 and 'systemd' in result.stdout
+
+    def test_without_curl_the_network_is_tested_once_apt_has_brought_it(self, harness):
+        """wget -qO- ... | bash on a Debian without curl: "cannot reach github.com" would be a lie."""
+        harness.absent('curl')
+        harness.installed(*(set(EVERY_PACKAGE) - {'curl'}))
+        result = on_linux(harness, A_PYTHON + CHECK + '; echo "asked=$(cat "' + str(harness.curl_calls) + '" 2>/dev/null | wc -l)"; ensure_packages')
+        assert result.returncode == 0, result.stdout
+        assert re.search(r'asked=\s*0', result.stdout), "the network was tested with a curl that is not there"
+        assert harness.apt_installs == [['curl']]
+        assert 'github.com' in harness.curl_calls.read_text()
+
+
+class TestTheAptStep:
+    """One `sudo apt-get install` of what is missing — shown before sudo asks — and no sudo at
+    all when nothing is."""
+
+    def test_only_what_is_missing_is_installed_in_one_command_that_was_shown(self, harness):
+        harness.installed('git', 'curl', 'ca-certificates', 'procps', 'libmagic1')
+        result = on_linux(harness, A_PYTHON + 'ensure_packages')
+        assert result.returncode == 0, result.stdout
+        assert harness.apt_installs == [['ffmpeg', 'iproute2', 'libsndfile1']]
+        assert 'sudo apt-get install -y --no-install-recommends ffmpeg iproute2 libsndfile1' in result.stdout
+        assert harness.calls('apt_get') == [], "apt-get ran outside the one sudo command"
+
+    def test_nothing_missing_asks_for_no_sudo(self, harness):
+        harness.installed(*EVERY_PACKAGE)
+        result = on_linux(harness, A_PYTHON + 'ensure_packages')
+        assert result.returncode == 0, result.stdout
+        assert harness.calls('sudo') == []
+
+    def test_a_library_installed_under_its_64_bit_time_name_is_not_asked_for_again(self, harness):
+        """Ubuntu 24.04 has libmagic1 as libmagic1t64: a re-run must not ask for sudo forever."""
+        harness.installed(*(set(EVERY_PACKAGE) - {'libmagic1'}), 'libmagic1t64')
+        result = on_linux(harness, A_PYTHON + 'ensure_packages')
+        assert result.returncode == 0, result.stdout
+        assert harness.calls('sudo') == []
+
+    @pytest.mark.parametrize('python, offered, expected', [
+        (NO_PYTHON, True, ['python3.12', 'python3.12-venv']),
+        (NO_PYTHON, False, []),
+        (A_PYTHON, True, []),
+    ], ids=['Ubuntu without a usable 3.12', 'Debian, which has none to offer', 'a 3.12 that can make a venv'])
+    def test_the_distributions_python_is_added_only_where_there_is_one_and_it_is_needed(self, harness, python, offered, expected):
+        harness.installed(*(set(EVERY_PACKAGE) - {'ffmpeg'}))
+        if offered:
+            harness.flag('apt_offers_python')
+        result = on_linux(harness, python + 'ensure_packages')
+        assert result.returncode == 0, result.stdout
+        assert harness.apt_installs == [['ffmpeg', *expected]]
+
+    def test_a_python_without_venv_gets_only_the_missing_half(self, harness):
+        """Ubuntu 24.04 as it comes: python3.12 is there, python3.12-venv is not."""
+        harness.installed(*EVERY_PACKAGE, 'python3.12')
+        harness.flag('apt_offers_python')
+        result = on_linux(harness, NO_PYTHON + 'ensure_packages')
+        assert result.returncode == 0, result.stdout
+        assert harness.apt_installs == [['python3.12-venv']]
+
+    def test_without_sudo_the_list_is_shown_and_the_install_stops(self, harness):
+        harness.absent('sudo')
+        harness.installed('git', 'curl')
+        result = on_linux(harness, A_PYTHON + 'ensure_packages')
+        assert result.returncode == 1
+        assert harness.calls('sudo') == []
+        assert 'ca-certificates ffmpeg iproute2 procps libsndfile1 libmagic1' in result.stdout
+
+    def test_a_sudo_that_needs_a_password_with_no_terminal_installs_nothing(self, harness):
+        harness.flag('sudo_needs_password')
+        harness.installed(*(set(EVERY_PACKAGE) - {'ffmpeg'}))
+        result = on_linux(harness, A_PYTHON + 'ensure_packages')
+        assert result.returncode == 1
+        assert harness.apt_installs == []
+        assert 'apt-get install -y --no-install-recommends ffmpeg' in result.stdout
+
+    def test_a_failed_apt_stops_the_install(self, harness):
+        harness.flag('apt_fails')
+        harness.installed('git')
+        result = on_linux(harness, A_PYTHON + 'ensure_packages; echo went-on')
+        assert result.returncode == 1 and 'went-on' not in result.stdout
+        assert 'Unable to locate package' in result.stdout, "apt's own words are not shown"
+
+    def test_the_packages_are_the_ones_ci_and_the_plan_name(self):
+        """Contract with the system: what start.sh needs (ss, pgrep), what the Python packages
+        load (libsndfile, libmagic) and what the install itself runs."""
+        packages = re.search(r'^APT_PACKAGES="(.*)"$', INSTALL_SH.read_text(), re.M).group(1).split()
+        assert set(packages) == set(EVERY_PACKAGE)
+        workflow = (INSTALL_SH.parent / '.github' / 'workflows' / 'linux.yml').read_text()
+        ci = re.search(r'apt-get install .*', workflow).group(0).split()
+        assert {'libmagic1', 'libsndfile1'} <= set(ci) and {'libmagic1', 'libsndfile1'} <= set(packages)
+
+
+class TestPythonOnLinux:
+    def test_uvs_python_is_found_under_the_name_uv_gives_this_machines_build(self, harness):
+        """Contract with uv's folder names (cpython-<version>-<os>-<arch>-<libc>): the Mac's build
+        beside it is not this machine's."""
+        home = harness.dir / 'home'
+        ours = home / '.local/share/uv/python' / f'cpython-3.12.7-linux-{ARCH}-gnu' / 'bin' / 'python3.12'
+        macs = home / '.local/share/uv/python' / 'cpython-3.12.7-macos-aarch64-none' / 'bin' / 'python3.12'
+        for python in (ours, macs):
+            python.parent.mkdir(parents=True)
+            python.write_text('')
+        harness.absent('python3.12')
+        accept_under_home = 'python_ok() { case "$1" in "$HOME"/*) return 0 ;; esac; return 1; }\n'
+        linux = on_linux(harness, accept_under_home + 'find_python; printf "%s" "$PY"', HOME=str(home))
+        assert linux.stdout.endswith(str(ours))
+        mac = harness.run(accept_under_home + 'find_python; printf "%s" "$PY"', HOME=str(home))
+        assert mac.stdout.endswith(str(macs))
+
+    def test_a_python_that_cannot_make_a_venv_is_not_usable_on_linux(self, harness):
+        """Debian and Ubuntu ship ensurepip apart: python_ok asks the candidate for it there, and
+        for the machine's own architecture rather than the Mac's arm64."""
+        asked = harness.dir / 'python_asked'
+        python = harness.dir / 'python3.12'
+        python.write_text(f'#!/bin/bash\necho "$*" > "{asked}"\n')
+        python.chmod(0o755)
+        on_linux(harness, f'python_ok "{python}"')
+        assert asked.read_text().split() == ['-', ARCH, 'ensurepip']
+        harness.run(f'python_ok "{python}"')
+        assert asked.read_text().split() == ['-', 'arm64']
+
+    def test_homebrew_is_not_the_way_to_a_python_on_linux(self, harness):
+        script = ('find_python() { return 1; }; brew() { echo "ran:brew $*"; }; uv() { :; }; run() { echo "ran:$*"; }\n'
+                  'python_ok() { return 0; }; python_version() { echo 3.12.7; }\n'
+                  'ensure_python')
+        result = on_linux(harness, script, HOME=str(harness.dir / 'home'))
+        assert 'ran:brew' not in result.stdout and 'uv python install 3.12' in result.stdout
+
+    def test_the_voice_requirements_come_with_pytorchs_cpu_index_on_linux_only(self, harness):
+        """Contract with common/RequirementsChecker.TORCH_CPU_INDEX: an update must not swap the
+        build the install chose — and on x86_64 the default build is the multi-GB CUDA one."""
+        from common.RequirementsChecker import TORCH_CPU_INDEX
+        harness.log.write_text('')
+        script = 'PIP_EXPECTED_PACKAGES=1; run() { echo "run:$*"; }; install_requirements'
+        linux = next(line for line in on_linux(harness, script).stdout.splitlines() if 'requirements-voice.txt' in line)
+        assert f'--extra-index-url {TORCH_CPU_INDEX} ' in linux
+        mac = next(line for line in harness.run(script).stdout.splitlines() if 'requirements-voice.txt' in line)
+        assert 'index-url' not in mac
+
+
+class TestWhereALinuxInstallIsRefused:
+    def test_a_satellite_is_a_mac(self, harness):
+        result = on_linux(harness, LINUX_MAIN, KEEP_ROLE=SATELLITE, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 1
+        assert ran(result) == [] and 'Mac' in result.stdout
+        assert not harness.keep_dir.exists(), "a folder was made for an install that is refused"
+
+    def test_an_existing_satellite_config_is_refused_and_left_as_it_is(self, harness):
+        """A folder copied over from a Mac."""
+        existing_install(harness, EXISTING_SATELLITE)
+        result = on_linux(harness, LINUX_MAIN)
+        assert result.returncode == 1
+        assert ran(result) == []
+        assert (harness.keep_dir / 'config.yaml').read_text() == EXISTING_SATELLITE
+
+    @pytest.mark.parametrize('name', ['My Keep', 'Keep 100%', "Marcus' Keep", 'Keep\\backup'])
+    def test_a_folder_start_sh_would_refuse_is_refused_before_anything_is_made(self, harness, name):
+        """The names test_start_sh.py has scripts/service.sh refuse: an install there would be
+        cloned, built and then never start."""
+        harness.keep_dir = harness.dir / name
+        result = on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 1
+        assert ran(result) == [] and not harness.keep_dir.exists()
+        assert 'KEEP_DIR=' in result.stdout
+
+    def test_such_a_folder_is_fine_on_a_mac_and_letters_outside_ascii_on_linux(self, harness):
+        harness.keep_dir = harness.dir / 'My Keep'
+        assert ran(harness.run(MAIN, KEEP_NO_TELEMETRY='1'))
+        harness.keep_dir = harness.dir / 'Kęp-ö'
+        assert ran(on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1', LC_ALL='C'))
+
+
+class TestTheLinuxInstallEndToEnd:
+    def test_the_linux_steps_run_in_order_and_the_macs_two_do_not(self, harness):
+        result = on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 0, result.stdout
+        assert ran(result) == ['check_linux', 'ensure_packages', 'ensure_python', 'ensure_repo', 'ensure_venv',
+                               'install_requirements', 'obtain_api_key', 'find_browser', 'launch']
+        counted = steps(result)
+        assert counted == [(n, len(counted)) for n in range(1, len(counted) + 1)]
+        assert yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())['vault']['key']
+
+    def test_lingering_is_asked_for_the_installing_user_without_sudo(self, harness):
+        import pwd
+        on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1')
+        (call,) = harness.calls('loginctl')
+        assert call.split()[-2:] == ['enable-linger', pwd.getpwuid(os.getuid()).pw_name]
+        assert harness.calls('sudo') == []
+
+    def test_a_mac_install_asks_neither_systemd_nor_apt_anything(self, harness):
+        result = harness.run(MAIN, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 0, result.stdout
+        assert not any(harness.calls(tool) for tool in ('sudo', 'apt_get', 'systemctl', 'loginctl'))
+
+    SUMMARY = 'BROWSER=/usr/bin/chromium; LINGER=on; summary'
+
+    def test_the_summary_says_how_to_look_at_stop_and_reach_the_service(self, harness):
+        said = on_linux(harness, self.SUMMARY).stdout
+        for fact in ('systemctl --user status keep', 'journalctl --user -u keep', f'{harness.keep_dir}/log/raw-floxy.log',
+                     'systemctl --user disable keep.service', f'{harness.keep_dir}/stop.sh', 'ssh -t',
+                     f'{harness.keep_dir}/keep.sh'):
+            assert fact in said, fact
+        for mac_only in ('Terminal', 'Full Disk Access', 'microphone', 'macOS'):
+            assert mac_only not in said, mac_only
+        assert 'enable-linger' not in said and 'apt-get' not in said
+
+    def test_the_macs_summary_names_no_systemd(self, harness):
+        said = harness.run(self.SUMMARY).stdout
+        assert 'systemctl' not in said and 'ssh' not in said and f'{harness.keep_dir}/start.sh' in said
+
+    def test_a_refused_linger_is_said_with_the_command_that_turns_it_on(self, harness):
+        """Without it the server stops when the ssh session that installed it ends."""
+        harness.flag('linger_refused')
+        said = on_linux(harness, 'enable_linger; summary').stdout
+        assert 'sudo loginctl enable-linger' in said
+
+    @pytest.mark.parametrize('release, arch, advice, unwanted', [
+        (UBUNTU, 'x86_64', 'google-chrome-stable_current_amd64.deb', 'snap'),
+        (DEBIAN, 'aarch64', 'apt-get install -y chromium', 'google-chrome'),
+        (UBUNTU, 'aarch64', 'snap', 'amd64'),
+    ], ids=['x86_64', 'Debian on ARM', 'Ubuntu on ARM'])
+    def test_without_a_browser_the_summary_says_what_to_install_and_installs_nothing(self, harness, release, arch, advice, unwanted):
+        harness.os_release.write_text(release)
+        harness.absent(*BROWSERS)
+        result = on_linux(harness, f'uname() {{ echo {arch}; }}; find_browser; summary')
+        assert result.returncode == 0, result.stdout
+        assert advice in result.stdout and unwanted not in result.stdout
+        assert harness.calls('sudo') == [] and harness.calls('apt_get') == []
+
+    def test_a_browser_webaccess_would_find_is_found(self, harness):
+        """Contract with WebAccess, which looks for Chrome under the same names."""
+        from assistant.tools.WebAccess import WebAccess
+        assert list(WebAccess._CHROME_PATH_NAMES) == BROWSERS
+        harness.absent(*BROWSERS[:-1])
+        result = on_linux(harness, f'{BROWSERS[-1]}() {{ :; }}; find_browser; summary')
+        assert 'apt-get' not in result.stdout and BROWSERS[-1] in result.stdout
+
+    def start_script(self, harness) -> Path:
+        """A start.sh that only says it ran, and whether it was given a terminal."""
+        harness.keep_dir.mkdir()
+        started = harness.dir / 'started'
+        script = harness.keep_dir / 'start.sh'
+        script.write_text(f'#!/bin/bash\nif [ -t 0 ]; then echo terminal > "{started}"; else echo none > "{started}"; fi\n')
+        script.chmod(0o755)
+        return started
+
+    def test_without_a_terminal_a_linux_install_still_starts_the_service(self, harness):
+        """ssh box 'curl ... | ANTHROPIC_API_KEY=... bash': the unit needs no window, unlike the Mac's Terminal launch."""
+        started = self.start_script(harness)
+        result = on_linux(harness, 'launch')
+        assert result.returncode == 0, result.stdout
+        assert started.read_text().strip() == 'none'
+        assert f'{harness.keep_dir}/keep.sh' in result.stdout
+
+    def test_without_a_terminal_a_mac_install_does_not_start(self, harness):
+        started = self.start_script(harness)
+        assert harness.run('launch').returncode == 0
+        assert not started.exists()
+
+    def test_keep_no_start_starts_nothing_on_linux_either(self, harness):
+        started = self.start_script(harness)
+        assert on_linux(harness, 'launch', KEEP_NO_START='1').returncode == 0
+        assert not started.exists()
+
+
+class TestLinuxTelemetry:
+    EVENT = 'TELEMETRY_ID=11111111-2222-4333-8444-555555555555; telemetry_started'
+
+    def properties(self, harness) -> dict:
+        (line,) = harness.curl_calls.read_text().splitlines()
+        return json.loads(re.search(r'-d (\{.*\}) https://', line).group(1))['properties']
+
+    def test_the_chip_is_the_architecture_and_the_cpu_model(self, harness):
+        (harness.dir / 'cpuinfo').write_text('processor\t: 0\nvendor_id\t: GenuineIntel\n'
+                                             'model name\t: Fictional Core 47L @ 2.40GHz\nflags\t\t: fpu vme\n')
+        on_linux(harness, self.EVENT)
+        properties = self.properties(harness)
+        assert properties['chip'] == f'{ARCH} Fictional Core 47L @ 2.40GHz'
+        assert properties['os'] == 'Linux' and properties['distribution'] == 'Ubuntu 24.04.1 LTS'
+        assert 'macos' not in properties
+
+    def test_a_board_whose_cpuinfo_names_no_model_reports_the_architecture(self, harness):
+        (harness.dir / 'cpuinfo').write_text('processor\t: 0\nBogoMIPS\t: 50.00\nFeatures\t: fp asimd\n')
+        on_linux(harness, self.EVENT)
+        assert self.properties(harness)['chip'] == ARCH
+
+    def test_an_install_id_is_minted_where_there_is_no_uuidgen(self, harness):
+        """Debian has uuidgen in a package of its own; the id must not come out empty, or the
+        install is never heard of."""
+        (harness.dir / 'uuid').write_text('11111111-2222-4333-8444-555555555555\n')
+        result = on_linux(harness, f'uuidgen() {{ return 127; }}; KERNEL_UUID="{harness.dir}/uuid"; init_telemetry; echo "id=$TELEMETRY_ID"')
+        assert 'id=11111111-2222-4333-8444-555555555555' in result.stdout

@@ -16,6 +16,10 @@ unit_path="$unit_dir/$UNIT"
 unit_problem=""
 
 # unit_text <checkout>: the unit, for the checkout at that path.
+# PATH: a unit gets the user manager's, which has no ~/.local/bin — where the Claude CLI the nightly
+# code-quality run calls is installed, and uv, and whatever else the user put there — so the line
+# names the whole of it: the user's two folders, the system's as systemd has them by default, and
+# /snap/bin, which Ubuntu adds for a login and where its Chromium lives. %h is the home folder.
 unit_text() {
     cat <<UNIT_TEXT
 # Written by $1/scripts/service.sh at every start — edits are overwritten.
@@ -31,6 +35,7 @@ ExecStart=$1/.venv/bin/python floxy_ai_server.py
 StandardOutput=append:$1/log/raw-floxy.log
 StandardError=inherit
 Environment=PYTHONUTF8=1
+Environment="PATH=%h/.local/bin:%h/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
 Restart=on-failure
 RestartSec=10
 
