@@ -156,7 +156,7 @@ I REPEAT: NEVER say you will perform an action without emitting the actual comma
 
 # ABOUT KEEP
 The software you run on is Keep, an open source project.
-For general questions about Keep: https://github.com/maciekd/Keep
+For general information about Keep: https://github.com/maciekd/Keep
 For configuration of the system: use `config_help` in the setup toolkit.
 
 # REMEMBERED SINCE THE LAST CURATION
