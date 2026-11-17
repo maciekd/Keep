@@ -23,13 +23,14 @@ SCOPE_CGROUP = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r
 
 _BSD = os.uname().sysname == 'Darwin'
 # The device, the inode and the size of a file from the system's real stat, whichever it is.
-_REAL_STAT = "command /usr/bin/stat -f '%d %i %z'" if _BSD else "command /usr/bin/stat -c '%d %i %s'"
+# ($follow is GNU stat's -L where the caller passed it: a folder named through a symlink is the folder.)
+_REAL_STAT = "command /usr/bin/stat $follow -f '%d %i %z'" if _BSD else "command /usr/bin/stat $follow -c '%d %i %s'"
 # role.sh's Mac branch asks /usr/bin/stat by its path, in BSD's words (`-f <format> <file>`).
 # Where that file is GNU's, a function of that name answers for it — bash looks a function up
 # before the path, slashes or not — in the formats the scripts and the lsof doubles use.
 _BSD_STAT_SHIM = f"""
 /usr/bin/stat() {{
-    local device inode size
+    local device inode size follow=""
     read -r device inode size <<< "$({_REAL_STAT} "$3" 2>/dev/null)"
     [ -n "$device" ] || return 1
     case "$2" in
@@ -104,8 +105,8 @@ ss() {{
 # which only the process's own user can follow —, `-c %u` of /proc/<pid>, `-c %s` of a file.
 stat() {{
     echo "$*" >> "{table}/stat_calls"
-    local format="" target="" prev="" a pid owner dir device inode size
-    for a in "$@"; do [ "$prev" = -c ] && format=$a; target=$a; prev=$a; done
+    local format="" target="" prev="" follow="" a pid owner dir device inode size
+    for a in "$@"; do [ "$prev" = -c ] && format=$a; [ "$a" != -L ] || follow=-L; target=$a; prev=$a; done
     case "$target" in
         /proc/*)
             pid=${{target#/proc/}}; pid=${{pid%%/*}}

@@ -310,6 +310,20 @@ def test_wipe_installs_the_dummy_config_when_there_is_one(wipe_env):
         assert zf.read("external/" + str(root / "config.yaml").lstrip("/")) == b"api_keys:\n  openai: sk-real\n"
 
 
+def test_the_wipe_backup_is_the_owners_alone_whatever_the_umask(wipe_env):
+    """The zip holds config.yaml and the vault: under Ubuntu's umask it would be readable by
+    the group and everybody else, long after the files it copied are gone."""
+    root, stops = wipe_env
+    old = os.umask(0o002)
+    try:
+        DebugCommands().handle("//wipe confirm")
+    finally:
+        os.umask(old)
+    _wait_for_stop(stops)
+    [backup] = (root / "cache" / "wipe-backups").glob("floxy-wipe-*.zip")
+    assert backup.stat().st_mode & 0o077 == 0
+
+
 def test_wipe_carries_on_past_an_item_it_cannot_delete(wipe_env, monkeypatch):
     root, stops = wipe_env
     real_rmtree = dc_mod.shutil.rmtree

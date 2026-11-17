@@ -195,6 +195,59 @@ class TestOnLinux:
         assert (linux['up_port'], linux['console_port']) == (mac['up_port'], mac['console_port'])
 
 
+# `ss -Hltnp` as a machine with more on it than one Keep prints it. Pids 4201 and 4202 are the
+# caller's, every other one somebody else's.
+SS_LINES = """\
+LISTEN 0      128          0.0.0.0:8888       0.0.0.0:*    users:(("python",pid=4201,fd=7))
+LISTEN 0      128             [::]:8888          [::]:*    users:(("python",pid=4201,fd=8))
+LISTEN 0      128                *:5151             *:*    users:(("python",pid=4201,fd=9),("python",pid=4202,fd=9))
+LISTEN 0      128        192.0.2.7:8888       0.0.0.0:*    users:(("python",pid=4400,fd=7))
+LISTEN 0      128        127.0.0.1:18888      0.0.0.0:*    users:(("python",pid=4202,fd=11))
+LISTEN 0      128        127.0.0.1:88880      0.0.0.0:*    users:(("python",pid=4202,fd=12))
+LISTEN 0      4096   127.0.0.53%lo:53         0.0.0.0:*
+LISTEN 0      128             [::]:22            [::]:*    users:(("sshd",pid=4500,fd=3))
+"""
+# ss and GNU stat as functions, so the Linux branch runs on a Mac too: /proc/<pid> belongs to the
+# caller for 4201 and 4202, to the machine's other account for any other pid.
+OWN_LISTENERS = """
+ss() { cat "$0/ss_out"; }
+stat() {
+    case "$*" in
+        "-c %u /proc/4201"|"-c %u /proc/4202") id -u ;;
+        "-c %u /proc/"*) echo $(( $(id -u) + 1 )) ;;
+        *) return 1 ;;
+    esac
+}
+cd "$0" && . scripts/role.sh
+own_listeners "$@"
+"""
+
+
+@pytest.mark.unit
+class TestWhoListensOnLinux:
+    """own_listeners over `ss`: the Mac's lsof is handed the user and the ports, ss prints the
+    whole machine, so the narrowing to both is the script's own."""
+
+    @pytest.mark.parametrize('ports, expected', [
+        (['8888'], [4201]),
+        (['5151'], [4201, 4202]),
+        (['8888', '5151'], [4201, 4202]),
+        (['53'], []),
+        (['22'], []),
+        ([], []),
+    ], ids=['one process on both address families and no port that only contains the digits',
+            'two processes on one socket', 'several ports', 'a socket ss names no pid for',
+            'the listener of another user', 'no port asked'])
+    def test_the_pids_are_this_users_listeners_on_exactly_the_ports_asked(self, tmp_path, ports, expected):
+        (tmp_path / 'scripts').mkdir()
+        (tmp_path / 'scripts' / 'role.sh').write_text(ROLE_SH.read_text())
+        (tmp_path / 'ss_out').write_text(SS_LINES)
+        out = subprocess.run([BASH, '-c', OWN_LISTENERS, str(tmp_path), *ports], env=dict(os.environ, KEEP_OS=LINUX),
+                             capture_output=True, text=True, close_fds=False, timeout=10)
+        assert out.returncode == 0, out.stderr
+        assert [int(pid) for pid in out.stdout.split()] == expected
+
+
 _marker = itertools.count(1)
 
 
