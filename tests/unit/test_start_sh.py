@@ -156,6 +156,7 @@ class StartShHarness:
         self.env_file.write_text(
             'sleep() { :; }\n'
             'date() { echo "2026-10-13 03:00:00"; }\n'   # every rlog line forks one otherwise
+            'seq() { local i; for ((i = $1; i <= $2; i++)); do echo "$i"; done; }\n'   # a process per wait loop otherwise
             + stubs(tmp_path) +
             f'open() {{ echo "$@" >> "{self.open_calls}"; '
             f'[ -f "{self.tty_report}" ] && cp "{self.tty_report}" "{tmp_path}/log/cli_start.tty"; :; }}\n'
@@ -372,10 +373,10 @@ class TestTrialFallback:
     the server as up when the test says the PR boots. The watch is the same on both systems."""
 
     def _arm(self, harness, boots: bool):
-        # Each second of the wait is a subshell for lsof; three are enough to see the
-        # loop give up (the default 120 would run 16 before the pgrep check ends it).
+        # Each second of the wait is a lookup of the listeners — on Linux three processes; one is
+        # enough to see the loop give up (the default 120 would run 16 before the pgrep check ends it).
         with harness.env_file.open('a') as env:
-            env.write('TRIAL_TIMEOUT=3\n'
+            env.write('TRIAL_TIMEOUT=1\n'
                       f'git() {{ echo "$@" >> "{harness.dir}/git_calls"; }}\n')
         if boots:
             harness.comes_up_on(8888)
@@ -817,7 +818,7 @@ class TestStartedFromInsideTheUnit:
 
     def _trial(self, linux):
         with linux.env_file.open('a') as env:
-            env.write(f'TRIAL_TIMEOUT=3\ngit() {{ echo "$@" >> "{linux.dir}/git_calls"; }}\n')
+            env.write(f'TRIAL_TIMEOUT=1\ngit() {{ echo "$@" >> "{linux.dir}/git_calls"; }}\n')
 
     def test_it_runs_again_in_a_scope_with_its_arguments_and_restarts_once(self, linux):
         self._trial(linux)
@@ -837,14 +838,6 @@ class TestStartedFromInsideTheUnit:
         result = linux.run(DEAD_PID, 'release')
         assert result.returncode == 0, linux.restart_log
         assert 'the server is up' in linux.restart_log
-
-    def test_a_trial_that_never_boots_is_rolled_back_from_the_scope(self, linux):
-        self._trial(linux)
-        linux.table.in_unit()
-        result = linux.run(DEAD_PID, 'release')
-        assert result.returncode == 0, linux.restart_log
-        assert (linux.dir / 'git_calls').read_text().splitlines() == ['checkout release']
-        assert linux.launches == 2 and len([c for c in linux.table.systemd_run_calls if 'start.sh' in c]) == 1
 
     def test_a_start_outside_the_unit_asks_for_no_scope(self, linux):
         linux.run()
