@@ -2,7 +2,9 @@
 
 Keep can do all its thinking on a model running on your own hardware, so all private information stays on your machine. 
 
-The default install uses the cloud (Anthropic); but one line of `config.yaml` switches to local. It's recommended to start with Anthropic and have Keep help you configure local AI. The first thing you'll do with keep is change to local AI, so nothing sensitive will leave your machine. 
+The default install uses the cloud (Anthropic), but one line of `config.yaml` switches to local.
+
+It's recommended to start with default settings (Anthropic) and have Keep help you configure local AI. The first thing you'll do with Keep is change to local AI, so nothing sensitive will leave your machine. 
 
 ## Supported setups
 | Model | Server | Local Backend | Min RAM |
@@ -16,9 +18,16 @@ Ollama (`ollama`) and any OpenAI-compatible server such as llama.cpp (`openai`) 
 
 ## Setting it up
 
-Easiest: ask Keep to move you to local — it flips the switch and walks you through the rest. By hand:
+Easiest: ask Keep to move you to local — it flips the switch and walks you through the rest. 
+
+By hand:
 
 1. **Start the model server** — oMLX per its readme (`localhost:8000`), `scripts/local_ds4_start.sh` for DwarfStar (see its comments), or `scripts/local_ollama_start.sh`.
 2. **Set `local_backend`** in `config.yaml` (`openai`, `ds4` or `ollama`), plus `base_url` in the matching section
-   if the server is elsewhere (see [config.example.yaml](https://github.com/maciekd/Keep/blob/master/config.example.yaml)).
+   if the server is elsewhere (see [config.example.yaml](../config.example.yaml)).
 3. **Restart Keep.** `local_backend: none` goes back to the cloud.
+
+## Telemetry
+Note that **Telemetry** is on by default and sends usage stats to our servers (see [Privacy](../readme.md#privacy)), set `telemetry.enabled: false` to disable.
+
+Voice follows the switch: on local AI replies are spoken by [Supertonic](https://huggingface.co/Supertone/supertonic) on your CPU instead of ElevenLabs, so nothing spoken leaves the machine either. Enabling ElevenLabs TTS by name brings it back.
