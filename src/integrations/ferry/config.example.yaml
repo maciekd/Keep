@@ -1,0 +1,8 @@
+# The next departures of a Trafikverket car ferry (Färjerederiet), from Trafikverket's open data API.
+# Enable with "Ferry" in enabled_integrations.
+# SETUP: the API key is free — register at https://data.trafikverket.se/, then create a key under
+# "Mina sidor" / "Nycklar". Let the user type it with config_request (ferry.api_key), never in the chat.
+ferry:
+  api_key: ""        # empty until the user has typed it; the integration counts as not configured till then
+  route: Hönöleden   # the route's name as Trafikverket writes it (Hönöleden, Björköleden, Gullmarsleden …)
+  count: 4           # departures shown per direction

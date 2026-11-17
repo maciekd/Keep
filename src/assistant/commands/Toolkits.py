@@ -279,7 +279,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "whatsapp", "telegram", "music", "photos", "dropbox", "google_drive", "location", "calendar",
-               "reminders", "weather", "timers", "watch", "cars", "husdata", "history", "vault", "setup", "developer",
+               "reminders", "weather", "timers", "watch", "cars", "husdata", "ferry", "history", "vault", "setup", "developer",
                "homeclaw", "home_assistant",
                "local_integrations", "self_improvement", "voice")
 

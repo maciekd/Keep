@@ -92,6 +92,8 @@ mail:
 
 # >> husdata: src/integrations/husdata/config.example.yaml
 
+# >> ferry: src/integrations/ferry/config.example.yaml
+
 # >> icloud: src/integrations/icloud/config.example.yaml
 
 # macOS only: the integration reads the Photos app's library on the server's Mac. A Linux server lists it as "needs macOS".
