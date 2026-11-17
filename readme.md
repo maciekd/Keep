@@ -3,10 +3,6 @@
 <p align="center">
 Self-hosted digital assistant
 </p>
-<p align="center">
-<a href="https://github.com/maciekd/Keep/actions/workflows/linux.yml"><img src="https://github.com/maciekd/Keep/actions/workflows/linux.yml/badge.svg?branch=master" alt="Linux tests"></a>
-<a href="https://github.com/maciekd/Keep/actions/workflows/mac.yml"><img src="https://github.com/maciekd/Keep/actions/workflows/mac.yml/badge.svg?branch=master" alt="Mac tests"></a>
-</p>
 <br>
 
 <table>
@@ -17,6 +13,11 @@ Self-hosted digital assistant
 </tr>
 <tr>
 <td>
+<br>
+<p align="center">
+<a href="https://github.com/maciekd/Keep/actions/workflows/linux.yml"><img src="https://github.com/maciekd/Keep/actions/workflows/linux.yml/badge.svg?branch=master" alt="Linux tests"></a>
+<a href="https://github.com/maciekd/Keep/actions/workflows/mac.yml"><img src="https://github.com/maciekd/Keep/actions/workflows/mac.yml/badge.svg?branch=master" alt="Mac tests"></a>
+</p>
 
 ### Keep
 Keep is your personal <b>digital assistant</b>. 
@@ -28,22 +29,17 @@ Talks to you by chat, terminal and voice, and integrates with your life: shoppin
 <b>Refined over two years of daily use in real homes.</b>
 
 ### Claude
-By default, Keep runs on an <b>Opus + Fable hybrid</b>. Keep stores everything on your machine but thinks on Anthropic’s servers. Passwords and card numbers go in the Keep Vault, encrypted on your machine: the model never sees them. Read the privacy section before you install.
+By default, Keep runs on an <b>Opus + Fable hybrid</b>. Keep stores everything on your machine but thinks on Anthropic’s servers. Passwords and card numbers go in the Keep Vault, encrypted on your machine: the model never sees them. Read the [privacy section](#privacy) before you install.
 
-Estimated Anthropic API <b>cost</b> is $80-200 / month. On a Claude Max, Ultra or Team plan you get $100–500 of free API credits.
+Estimated Anthropic API <b>cost</b> is $80-200 / month. On a Claude Max, Ultra or Team plan you get <b>$100–500 of free</b> API credits.
 
 ### 100% local AI
 **[Keep also works great with local AI](docs/local-ai.md)**
 
-### Shopping
-We recommend using a prepaid card for your AI - Revolut works very well and needs no 3DS usually.
-
 ### Requirements
-<b>16 GB RAM</b> is recommended. 
+<b>8 GB RAM</b> and a <b>Mac or Linux</b> (Ubuntu/Debian). 
 
-Mac and Linux (Ubuntu/Debian) is supported. 
-
-If you have your life in iCloud a Mac signed in to your personal iCloud is recommended. This can be server machine or a separate satellite machine. 
+If you have your life in iCloud a Mac signed in to your personal iCloud is recommended. This can be the server machine or a separate satellite machine. 
 
 Everything else — email, smart home, cameras, cars — is optional, and Keep walks you through setting it up.
 
@@ -59,12 +55,7 @@ You can have Keep running in minutes:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/release/install.sh | bash
 ```
-The installer is self-contained, it won't touch anything else on your Mac.
-
-The same line installs a Linux server (new, in testing). There Keep runs as a systemd service of your own account,
-and the installer asks for sudo once, for a handful of apt packages — it shows the command first. A few things stay
-on the Mac: Photos, Reminders, HomeKit, and the server's own microphones and speakers — voice on a Linux server is
-the phone app's. iMessage works through a Mac that stays on, which lends its Messages to the server.
+The installer is self-contained, it won't touch anything else on your machine.
 
 <br>
 
@@ -265,9 +256,9 @@ Curious how it fits together? The **[Keep Atlas](https://keep-ai.dev/atlas/)** i
 
 Let's be honest: an assistant that reads your mail, sees your photos and messages is a privacy minefield. Here is where Keep stands today.
 
-When running [100% local AI](docs/local-ai.md) you are safe (see the note about telemetry below, though).
+When running [100% local AI](docs/local-ai.md) everything stays on your private machine (but see the note about telemetry below).
 
-The default cloud setup:
+On the  default cloud setup:
 
 - 💾 **Your data lives on your Mac.** The database, photo index, logs and voice profiles never leave it, and there is no Keep cloud.
 - ☁️ **The thinking happens on Anthropic's servers.** Anthropic does not train on API data by default; but you need to be ok with this.
