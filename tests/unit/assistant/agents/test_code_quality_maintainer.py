@@ -2083,8 +2083,9 @@ class TestImproveIntegration:
     REPORT = "Done: https://github.com/example/keep/pull/31\n\nTesla: close the trunk once"
 
     @staticmethod
-    def _run(folder, files, report=None, pr=JOB_PR, existing=("tesla", "music", "microsoft")):
+    def _run(folder, files, report=None, pr=JOB_PR, existing=("tesla", "music", "microsoft"), unfinished=False):
         with patch.object(CodeQualityMaintainer, "_github_access", return_value=(PUSHER, None)), \
+                patch.object(CodeQualityMaintainer, "_is_unfinished_folder", return_value=unfinished), \
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
                 patch.object(CodeQualityMaintainer, "_pr_job",
                              return_value=(report or TestImproveIntegration.REPORT, pr)) as job, \
@@ -2145,6 +2146,7 @@ class TestImproveIntegration:
 
     def test_a_pr_whose_files_cannot_be_read_is_closed_too(self):
         with patch.object(CodeQualityMaintainer, "_github_access", return_value=(PUSHER, None)), \
+                patch.object(CodeQualityMaintainer, "_is_unfinished_folder", return_value=False), \
                 patch.object(CodeQualityMaintainer, "_pr_job", return_value=(self.REPORT, JOB_PR)), \
                 patch.object(CodeQualityMaintainer, "_pr_files", side_effect=RuntimeError("gh: rate limited")), \
                 patch.object(CodeQualityMaintainer, "_close_pr") as close:
@@ -2175,6 +2177,50 @@ class TestImproveIntegration:
         _, job, _, _ = self._run(None, [_file("src/integrations/ring/RingIntegration.py", "added")], existing=())
         prompt = job.call_args.args[0]
         assert "Adding an integration" in prompt and "docs/atlas/descriptions.py" in prompt
+
+    def test_a_folder_a_cut_short_job_left_behind_is_still_a_new_integration(self):
+        """2026-11-17: the server came back on the work branch of a job the OOM killer ended,
+        the half-built folder was registered, and the retry — scoped to that folder alone —
+        could not add the registry lines the suite demands of a new folder."""
+        files = [_file("src/integrations/ring/RingIntegration.py", "added"),
+                 _file("docs/atlas/descriptions.py"), _file("config.example.yaml")]
+        result, job, close, left_open = self._run("ring", files, existing=("tesla", "ring"), unfinished=True)
+        prompt = job.call_args.args[0]
+        assert "Adding an integration" in prompt and "docs/atlas/descriptions.py" in prompt
+        assert "src/integrations/ring/" in prompt, "the job is told which folder is already begun"
+        close.assert_not_called()
+        assert left_open == JOB_PR
+
+    def test_the_same_pr_on_a_released_folder_is_closed(self):
+        files = [_file("src/integrations/ring/RingIntegration.py"), _file("docs/atlas/descriptions.py")]
+        _, _, close, _ = self._run("ring", files, existing=("tesla", "ring"))
+        close.assert_called_once()
+
+    @pytest.mark.parametrize("ref_known, folder_there, unfinished", [
+        (True, True, False),    # released: an existing integration
+        (True, False, True),    # only in this checkout
+        (False, False, False),  # no such ref (a shallow clone): nothing to conclude
+    ])
+    def test_a_folder_is_unfinished_only_when_the_followed_branch_is_known_to_lack_it(
+            self, ref_known, folder_there, unfinished):
+        def git(cmd, label, timeout):
+            return Mock(returncode=0 if (ref_known if "rev-parse" in cmd else folder_there) else 1)
+        with patch.object(CodeQualityMaintainer, "_run_subprocess", side_effect=git) as run, \
+                patch.object(CodeQualityMaintainer, "target_branch", return_value="release"), \
+                patch("assistant.agents.PullRequestTrial.PullRequestTrial.current", return_value=None):
+            assert CodeQualityMaintainer._is_unfinished_folder("ring") is unfinished
+        assert all("origin/release" in " ".join(call.args[0]) for call in run.call_args_list)
+
+    def test_during_a_trial_or_when_git_fails_a_folder_is_an_existing_integration(self):
+        from assistant.agents.PullRequestTrial import Trial
+        trial = Trial(number=31, title="ring", head_ref="feat/ring", since="14:02", return_branch="release")
+        with patch.object(CodeQualityMaintainer, "_run_subprocess", return_value=Mock(returncode=1)) as run, \
+                patch("assistant.agents.PullRequestTrial.PullRequestTrial.current", return_value=trial):
+            assert not CodeQualityMaintainer._is_unfinished_folder("ring")
+        run.assert_not_called()
+        with patch.object(CodeQualityMaintainer, "_run_subprocess", side_effect=OSError("no git")), \
+                patch("assistant.agents.PullRequestTrial.PullRequestTrial.current", return_value=None):
+            assert not CodeQualityMaintainer._is_unfinished_folder("ring")
 
     def test_without_gh_nothing_runs(self):
         with patch.object(CodeQualityMaintainer, "_github_access", return_value=(None, "gh is out")), \
