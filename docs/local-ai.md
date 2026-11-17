@@ -39,5 +39,3 @@ By hand:
 
 ## Telemetry
 Note that **Telemetry** is on by default and sends usage stats to our servers (see [Privacy](../readme.md#privacy)), set `telemetry.enabled: false` to disable.
-
-Voice follows the switch: on local AI replies are spoken by [Supertonic](https://huggingface.co/Supertone/supertonic) on your CPU instead of ElevenLabs, so nothing spoken leaves the machine either. Enabling ElevenLabs TTS by name brings it back.
