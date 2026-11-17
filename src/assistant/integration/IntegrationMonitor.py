@@ -478,11 +478,17 @@ class IntegrationMonitor:
             return
         integration._consecutive_failures += 1
         integration._last_error = error_msg
-        error(f"Integration '{integration.name}' health check failed: {error_msg}")
+        failures = integration._consecutive_failures
 
-        if integration._consecutive_failures >= self.FAILURE_THRESHOLD:
+        if failures >= self.FAILURE_THRESHOLD:
+            # Only a failure that lasts is an error (and an issue in the error tracking): a
+            # service that resets one connection in a hundred passes the next check.
+            error(f"Integration '{integration.name}' health check failed {failures} times in a row: {error_msg}")
             integration.state = IntegrationState.ERROR
-        elif integration.state in (IntegrationState.OK, IntegrationState.UNKNOWN):
+            return
+        info(f"Integration '{integration.name}' health check failed ({failures} of {self.FAILURE_THRESHOLD} "
+             f"in a row before it counts as an error): {error_msg}")
+        if integration.state in (IntegrationState.OK, IntegrationState.UNKNOWN):
             integration.state = IntegrationState.WARNING
 
     @staticmethod

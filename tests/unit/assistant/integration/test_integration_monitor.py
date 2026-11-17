@@ -190,6 +190,49 @@ class TestStateTransitions:
         assert integration.consecutive_failures == 2
 
 
+class TestWhichFailuresAreLoggedAsErrors:
+    """An `error()` is an issue in the error tracking: a check that fails once and passes the
+    next time (a reset connection, a timeout) must not open one."""
+
+    @pytest.fixture
+    def errors(self):
+        with patch("assistant.integration.IntegrationMonitor.error") as error, \
+                patch("assistant.integration.IntegrationMonitor.info") as info:
+            yield error, info
+
+    @pytest.fixture
+    def integration(self, mock_config):
+        integration = FailingIntegration()
+        mock_config._config_manager.get.return_value = "value"
+        mock_config.register(integration)
+        return integration
+
+    def test_a_failure_short_of_the_threshold_is_logged_but_is_no_error(self, mock_config, integration, errors):
+        error, info = errors
+        for _ in range(IntegrationMonitor.FAILURE_THRESHOLD - 1):
+            mock_config._check_integration(integration)
+        error.assert_not_called()
+        assert sum("Connection refused" in call.args[0] for call in info.call_args_list) \
+            == IntegrationMonitor.FAILURE_THRESHOLD - 1
+
+    def test_the_failure_that_reaches_the_threshold_is_an_error_and_so_is_each_one_after_it(
+            self, mock_config, integration, errors):
+        error, _ = errors
+        for _ in range(IntegrationMonitor.FAILURE_THRESHOLD + 1):
+            mock_config._check_integration(integration)
+        assert error.call_count == 2
+        assert all("Connection refused" in call.args[0] for call in error.call_args_list)
+
+    def test_a_passing_check_in_between_starts_the_count_again(self, mock_config, integration, errors):
+        error, _ = errors
+        failed = ConnectionError("Connection refused")
+        short = [failed] * (IntegrationMonitor.FAILURE_THRESHOLD - 1)
+        integration.check_health = Mock(side_effect=[*short, True, *short])
+        for _ in range(2 * len(short) + 1):
+            mock_config._check_integration(integration)
+        error.assert_not_called()
+
+
 class TestAWarningFromAWorkingIntegration:
     """`HealthWarning`: the integration works and has something for the owner — shown, never an error."""
 
