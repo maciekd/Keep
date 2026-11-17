@@ -57,6 +57,37 @@ class TestGate:
         text = "Before.\n<!-- mac -->\nNo closer.\n"
         assert Rewriter.gate_platform(text) == text
 
+    def test_a_marker_inside_a_line_is_prose_and_not_a_gate(self, monkeypatch):
+        """The texts document the markers themselves (CLAUDE.md does): only a marker that is a
+        line of its own opens or closes a passage."""
+        _on(monkeypatch, Platform.LINUX)
+        text = "Write `<!-- mac -->` over it\nand `<!-- /mac -->` under it.\n"
+        assert Rewriter.gate_platform(text) == text
+
+    @pytest.mark.parametrize("system, kept", [(Platform.MAC, ["one", "three"]), (Platform.LINUX, ["two"])])
+    def test_each_passage_ends_at_its_own_closer_whatever_stands_between_two_of_a_kind(self, monkeypatch, system, kept):
+        _on(monkeypatch, system)
+        text = ("<!-- mac -->\none\n<!-- /mac -->\n<!-- linux -->\ntwo\n<!-- /linux -->\nshared\n"
+                "<!-- mac -->\nthree\n<!-- /mac -->\n")
+        lines = Rewriter.gate_platform(text).splitlines()
+        assert [line for line in lines if line != "shared"] == kept and "shared" in lines
+
+    @pytest.mark.parametrize("system, fmt_name, expected", [
+        (Platform.LINUX, "keep", "Both.\nRun systemctl.\nTyped the Keep way.\nEnd.\n"),
+        (Platform.LINUX, "qwen", "Both.\nRun systemctl.\nEnd.\n"),
+        (Platform.MAC, "keep", "Both.\nEnd.\n"),
+    ])
+    def test_the_rewriter_resolves_the_system_and_the_format_in_one_text(self, monkeypatch, system, fmt_name, expected):
+        """A prompt text that passes `rewrite` (res/prompt.md) is gated there: a Keep-only
+        passage inside another system's passage goes with it, markers and all."""
+        from assistant.commands.formats.KeepFormat import KeepFormat
+        from assistant.commands.formats.QwenFormat import QwenFormat
+        _on(monkeypatch, system)
+        fmt = {"keep": KeepFormat, "qwen": QwenFormat}[fmt_name]([])
+        text = ("Both.\n<!-- linux -->\nRun systemctl.\n<!-- keep -->\nTyped the Keep way.\n<!-- /keep -->\n"
+                "<!-- /linux -->\nEnd.\n")
+        assert Rewriter.rewrite(text, fmt, {}) == expected
+
 
 @pytest.mark.unit
 class TestTheSetupToolkit:

@@ -66,6 +66,20 @@ def test_version_changes_on_every_change_the_prompt_would_show(tmp_path, store):
     assert len(seen) == 3
 
 
+def test_version_changes_with_the_facts_even_when_the_files_time_does_not(tmp_path, store):
+    """Linux stamps a file with the clock of the last timer tick: two writes a few milliseconds
+    apart carry one mtime, and the prompt would keep the list it had."""
+    import os
+    c = _file(tmp_path, store)
+    facts = c.folder / VoiceCandidates.FACTS_FILE
+    stamp = facts.stat()
+    before = VoiceCandidates.version(store["directory"])
+    VoiceCandidates.update(c, 200, 5, "2026-10-07", "2026-10-12", "", [])
+    os.utime(facts, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert facts.stat().st_mtime_ns == stamp.st_mtime_ns
+    assert VoiceCandidates.version(store["directory"]) != before
+
+
 def test_naming_moves_the_samples_into_the_persons_enrollment_folder(tmp_path, store):
     c = _file(tmp_path, store)
     assert VoiceCandidates.name(c.id, "Charlotte", **store) == ""

@@ -1091,3 +1091,29 @@ class TestLastUsage:
         assert usage.output_tokens == 20
         assert usage.cost_usd is None
         assert "$" not in usage.describe()
+
+    def test_a_streamed_reply_is_counted_from_its_two_usage_events(self, _sleep):
+        """A stream says its input on `message_start` and its output on `message_delta`; the
+        chat's calls are streamed, so a cost read after one must hold both."""
+        llm = _make_llm()
+        llm.model = "claude-opus-5-5"
+        llm._ensure_initialized = Mock()
+        start, delta = _empty_stream_events()
+        start.message.usage.input_tokens = 1_000_000
+        start.message.usage.cache_read_input_tokens = 1_000_000
+        delta.usage.output_tokens = 1_000_000
+        llm.client.messages.create = Mock(return_value=iter([start, *_text_stream_events("done"), delta]))
+        with patch("assistant.llm.ClaudeLLM.config"):
+            list(llm.create_streaming_completion([{"role": "user", "content": "hi"}]))
+        # 4 input + 0.20 read + 20 output
+        assert llm.last_usage.cost_usd == pytest.approx(24.20)
+
+    def test_fast_mode_costs_double(self, _sleep):
+        llm = _make_llm()
+        llm.model = "claude-opus-5-5"
+        llm.speed = "fast"
+        llm._ensure_initialized = Mock()
+        llm.client.beta.messages.create = Mock(
+            return_value=_usage_message(input_tokens=1_000_000, output=1_000_000))
+        llm.create_completion([{"role": "user", "content": "hi"}])
+        assert llm.last_usage.cost_usd == pytest.approx(48.0)

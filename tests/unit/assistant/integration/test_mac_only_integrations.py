@@ -4,11 +4,17 @@ from typing import List
 
 import pytest
 
+from assistant.integration import CameraProvider as cameras
 from assistant.integration import HomeAutomation as home
+from assistant.integration import VehicleProvider as cars
+from assistant.integration.CameraProvider import CameraProvider
 from assistant.integration.HomeAutomation import HomeAutomation
 from assistant.integration.Integration import Integration, IntegrationState
 from assistant.integration.IntegrationMonitor import IntegrationMonitor, MacOnlyIntegration
+from assistant.integration.VehicleProvider import VehicleProvider
 from assistant.integration.bootstrap import integration_classes
+from assistant.integration.music import MusicSystem as music
+from assistant.integration.music.MusicSystem import MusicSystem
 from common import Platform
 
 
@@ -50,6 +56,42 @@ class GardenCoversIntegration(GardenLightsIntegration, HomeAutomation):
         return "Garden Covers"
 
 
+class GardenCamerasIntegration(GardenLightsIntegration, CameraProvider):
+    """Fictional cameras behind the camera contract, Mac-only.
+
+    Shows them.
+
+    Never constructed in these tests."""
+
+    @property
+    def name(self) -> str:
+        return "Garden Cameras"
+
+
+class GardenCartIntegration(GardenLightsIntegration, VehicleProvider):
+    """A fictional cart behind the car contract, Mac-only.
+
+    Finds it.
+
+    Never constructed in these tests."""
+
+    @property
+    def name(self) -> str:
+        return "Garden Cart"
+
+
+class GardenRadioIntegration(GardenLightsIntegration, MusicSystem):
+    """Fictional speakers behind the music contract, Mac-only.
+
+    Plays on them.
+
+    Never constructed in these tests."""
+
+    @property
+    def name(self) -> str:
+        return "Garden Radio"
+
+
 @pytest.fixture
 def monitor(monkeypatch):
     GardenLightsIntegration.built = 0
@@ -89,6 +131,21 @@ class TestOnLinux:
     def test_the_house_does_not_tell_the_llm_to_enable_it(self, monitor):
         monitor.register_class(GardenCoversIntegration)
         assert "enable_integration" not in home.active().hint
+
+    @pytest.mark.parametrize("cls, hint", [(GardenCamerasIntegration, cameras.no_provider_hint),
+                                           (GardenCartIntegration, cars.no_provider_hint),
+                                           (GardenRadioIntegration, music.no_system_hint)])
+    def test_no_other_contract_tells_the_llm_to_enable_it_either(self, monitor, cls, hint):
+        monitor.register_class(cls)
+        assert "enable_integration" not in hint()
+
+    def test_one_the_config_does_not_list_needs_a_mac_all_the_same_and_is_not_merely_disabled(self, monitor, monkeypatch):
+        """A plainly disabled integration is listed with the enable_integration line."""
+        monkeypatch.setattr(GardenLightsIntegration, "enabled", classmethod(lambda cls, config: False))
+        registered = monitor.register_class(GardenLightsIntegration)
+        status, = monitor.get_all_statuses()
+        assert status["needs_mac"] and "Linux" in status["last_error"]
+        assert not registered.can_enable
 
 
 @pytest.mark.unit

@@ -58,6 +58,20 @@ class TestBrowser:
         monkeypatch.setattr(subprocess, "run", NO_TOOL)
         assert Browser.open_url(URL) is False
 
+    @pytest.mark.parametrize("failure", [
+        FileNotFoundError("xdg-open"),
+        subprocess.CalledProcessError(3, "xdg-open"),
+        subprocess.TimeoutExpired("xdg-open", 5),
+    ], ids=["not installed", "no browser to hand it to", "hangs"])
+    def test_a_desktop_whose_xdg_open_cannot_is_a_link_not_opened_rather_than_a_crash(self, monkeypatch, failure):
+        monkeypatch.setenv("DISPLAY", ":0")
+
+        def run(command, **kwargs):
+            assert kwargs.get("check"), "a non-zero exit of xdg-open would be read as an opened link"
+            raise failure
+        monkeypatch.setattr(subprocess, "run", run)
+        assert Browser.open_url(URL) is False
+
 
 @pytest.mark.unit
 class TestClipboard:
@@ -98,6 +112,48 @@ class TestClipboard:
         self._installed(monkeypatch, "xclip")
         _runs(monkeypatch, returncode=1)
         assert Clipboard.read_image() is None
+
+    def test_a_wayland_session_without_wl_paste_reads_through_xwaylands_xclip(self, monkeypatch):
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        monkeypatch.setenv("DISPLAY", ":0")
+        self._installed(monkeypatch, "xclip")
+        commands = _runs(monkeypatch, stdout=b"plain words")
+        assert Clipboard.read_text() == "plain words"
+        assert commands[0][0] == "xclip"
+
+    def test_xclip_is_asked_for_the_picture_as_png_and_for_the_text_as_unicode(self, monkeypatch):
+        """X11 has no `text/plain` target every application offers: asked for it, xclip answers
+        an å in Latin-1 or not at all."""
+        monkeypatch.setenv("DISPLAY", ":0")
+        self._installed(monkeypatch, "xclip")
+        commands = _runs(monkeypatch, stdout=_png())
+        Clipboard.read_image()
+        Clipboard.read_text()
+        targets = [command[command.index("-t") + 1] for command in commands]
+        assert targets == ["image/png", "UTF8_STRING"]
+
+    def test_what_a_declining_tool_wrote_is_not_the_clipboards_text(self, monkeypatch):
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        self._installed(monkeypatch, "wl-paste")
+        _runs(monkeypatch, stdout=b"Nothing is copied", returncode=1)
+        assert Clipboard.read_text() == ""
+
+    @pytest.mark.parametrize("failure", [PermissionError("wl-paste"), subprocess.TimeoutExpired("wl-paste", 5)],
+                             ids=["cannot be run", "hangs"])
+    def test_a_tool_that_cannot_answer_is_an_empty_clipboard_rather_than_a_crash(self, monkeypatch, failure):
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        self._installed(monkeypatch, "wl-paste")
+
+        def run(command, **kwargs):
+            raise failure
+        monkeypatch.setattr(subprocess, "run", run)
+        assert Clipboard.read_text() == "" and Clipboard.read_image() is None
+
+    def test_text_that_is_not_utf8_is_still_pasted(self, monkeypatch):
+        monkeypatch.setenv("DISPLAY", ":0")
+        self._installed(monkeypatch, "xclip")
+        _runs(monkeypatch, stdout=b"caf\xe9 Charlotte")
+        assert Clipboard.read_text().endswith(" Charlotte")
 
 
 @pytest.mark.unit

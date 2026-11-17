@@ -488,6 +488,110 @@ class TestErrorReports:
         telemetry.stop()
         assert logging_module._error_sink is None
 
+    def test_message_only_errors_logged_from_two_places_are_two_events_each_placed_by_its_caller(
+            self, telemetry, sent):
+        """Through `error()` the frames of the logger and of the telemetry lie between the
+        caller and the report: were they not left out, every such error of the install would
+        be one place — and one event an hour."""
+        from common.logging import error
+
+        def the_feed_notices():
+            error("Feed: the cursor went backwards")
+
+        def the_garage_notices():
+            error("Garage: the door reports two states")
+        the_feed_notices()
+        the_garage_notices()
+        telemetry.stop()
+        last = [e["properties"]["$exception_list"][0]["stacktrace"]["frames"][-1]
+                for e in _by_name(sent, "$exception")]
+        assert [f["function"] for f in last] == ["the_feed_notices", "the_garage_notices"]
+
+    def test_the_text_of_the_exception_behind_goes_out_scrubbed_too(self, telemetry, sent):
+        def wrapped():
+            try:
+                raise ValueError("no such recipient: alice@example.com")
+            except ValueError as e:
+                raise RuntimeError("the mail was not sent") from e
+        self._report(telemetry, message="Mail: could not send", raiser=wrapped)
+        telemetry.stop()
+        entries = _by_name(sent, "$exception")[0]["properties"]["$exception_list"]
+        assert entries[1]["type"] == "ValueError"
+        assert "alice@example.com" not in entries[1]["value"] and "no such recipient" in entries[1]["value"]
+
+    def test_a_vault_value_in_an_error_leaves_as_its_placeholder(self, telemetry, sent, monkeypatch):
+        monkeypatch.setattr(telemetry_module, "redact_for_storage",
+                            lambda text: text.replace("Gate#Frances", "{{secret:gate-code}}"))
+
+        def wrapped():
+            try:
+                raise ValueError("the lock refused Gate#Frances")
+            except ValueError as e:
+                raise RuntimeError("gate closed") from e
+        self._report(telemetry, message="Gate: Gate#Frances was refused", raiser=wrapped)
+        telemetry.stop()
+        entries = _by_name(sent, "$exception")[0]["properties"]["$exception_list"]
+        assert not any("Gate#Frances" in e["value"] for e in entries)
+        assert all("gate-code" in e["value"] for e in entries)
+
+    def test_an_exception_raised_from_none_does_not_bring_the_one_it_hid(self, telemetry, sent):
+        def hides_its_cause():
+            try:
+                _fail_at_the_garage()
+            except ValueError:
+                raise RuntimeError("the evening scene failed") from None
+        self._report(telemetry, raiser=hides_its_cause)
+        telemetry.stop()
+        entries = _by_name(sent, "$exception")[0]["properties"]["$exception_list"]
+        assert [e["type"] for e in entries] == ["RuntimeError"]
+
+    def test_a_long_chain_is_cut_and_a_chain_in_a_circle_ends(self, telemetry, sent):
+        def twelve_deep():
+            error = None
+            for depth in range(12):
+                try:
+                    raise ValueError(f"layer {depth}") from error
+                except ValueError as e:
+                    error = e
+            raise error
+
+        def in_a_circle():
+            first, second = KeyError("zones"), LookupError("rooms")
+            first.__cause__, second.__cause__ = second, first
+            raise first
+        self._report(telemetry, raiser=twelve_deep)
+        self._report(telemetry, raiser=in_a_circle)
+        telemetry.stop()
+        long, circle = [e["properties"]["$exception_list"] for e in _by_name(sent, "$exception")]
+        assert len(long) == 1 + telemetry_module.ERROR_CHAIN_LIMIT
+        assert "layer 11" not in long[1]["value"] and "layer 10" in long[1]["value"]   # newest first
+        assert [e["type"] for e in circle] == ["KeyError", "LookupError"]
+
+    @pytest.mark.xfail(strict=True, reason="UncaughtExceptions._log puts the formatted traceback into the "
+                       "message error() hands the sink, so the event's value carries the source lines and "
+                       "the checkout's path — what the stack frames were cut down to leave out")
+    def test_an_uncaught_exception_goes_out_without_source_lines_or_the_checkouts_path(
+            self, telemetry, sent, monkeypatch):
+        import sys
+        import threading
+        from pathlib import Path
+        from common import UncaughtExceptions
+        from common.Paths import AISERVER_DIR
+        monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+        monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+        UncaughtExceptions.install()
+
+        def work():
+            where_the_spare_key_is = "under the third flowerpot"; raise ValueError("the feed fell over")  # noqa: E702
+        thread = threading.Thread(target=work, name="photo-feed")
+        thread.start()
+        thread.join()
+        telemetry.stop()
+        value = _by_name(sent, "$exception")[0]["properties"]["$exception_list"][0]["value"]
+        assert "photo-feed" in value and "the feed fell over" in value
+        assert "flowerpot" not in value
+        assert str(AISERVER_DIR).replace(str(Path.home()), "~") not in value
+
     def test_a_failed_post_is_not_reported_as_an_error_of_its_own(self, settings):
         posts = []
 

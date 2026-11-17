@@ -29,6 +29,7 @@ import yaml
 from common.ConfigManager import REQUIRED_KEYS
 
 from .git_sandbox import History, empty_repo, git, git_env, spawn
+from .test_start_sh import UNIT_SAFE_NAMES, UNIT_UNSAFE_NAMES
 from .test_role_sh import REFUSED_CONFIGS, ROLE_SH, SATELLITE_CONFIGS, SERVER_CONFIGS, UNREADABLE_CONFIGS, python_reading
 
 INSTALL_SH = Path(__file__).resolve().parents[2] / 'install.sh'
@@ -1145,6 +1146,16 @@ class TestTheAptStep:
         assert not any(' update' in call for call in harness.calls('sudo'))
         assert 'dpkg was interrupted' in result.stdout, "apt's own words are not shown"
 
+    def test_an_apt_that_reports_success_and_installed_nothing_stops_the_install(self, harness):
+        """What dpkg has is asked again afterwards: the venv and the server are not built on
+        packages apt only said it installed."""
+        harness.installed(*(set(EVERY_PACKAGE) - {'ffmpeg', 'libsndfile1'}))
+        result = on_linux(harness, A_PYTHON + 'sudo() { return 0; }\nensure_packages; echo went-on')
+        assert result.returncode == 1 and 'went-on' not in result.stdout
+        assert 'Unexpected error' not in result.stdout
+        still = result.stdout.rsplit('still not installed', 1)[1]
+        assert 'ffmpeg' in still and 'libsndfile1' in still and 'git' not in still
+
     def test_the_packages_are_the_ones_ci_and_the_plan_name(self):
         """Contract with the system: what start.sh needs (ss, pgrep), what the Python packages
         load (libsndfile, libmagic) and what the install itself runs."""
@@ -1234,6 +1245,25 @@ class TestWhereALinuxInstallIsRefused:
         assert result.returncode == 1
         assert ran(result) == [] and not harness.keep_dir.exists()
         assert 'KEEP_DIR=' in result.stdout
+
+    def test_a_plain_name_that_is_a_symlink_to_such_a_folder_is_refused_too(self, harness):
+        """start.sh writes the unit for the folder it is really in (`pwd -P`)."""
+        (harness.dir / 'My Keep').mkdir()
+        harness.keep_dir.symlink_to(harness.dir / 'My Keep')
+        result = on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 1
+        assert ran(result) == [] and list((harness.dir / 'My Keep').iterdir()) == []
+        assert 'systemd' in result.stdout and 'KEEP_DIR=' in result.stdout
+
+    @pytest.mark.parametrize('name, unsafe', [*((name, True) for name in UNIT_UNSAFE_NAMES),
+                                              *((name, False) for name in UNIT_SAFE_NAMES)],
+                             ids=[repr(name) for name in UNIT_UNSAFE_NAMES + UNIT_SAFE_NAMES])
+    def test_the_installer_refuses_exactly_the_folders_service_sh_refuses(self, harness, name, unsafe):
+        """The two scripts carry the set apart (the installer runs before a checkout exists):
+        test_start_sh.py asks scripts/service.sh about the same names."""
+        result = on_linux(harness, 'if unit_unsafe "$FOLDER"; then printf refused; else printf fine; fi',
+                          FOLDER=f'/home/marcus/{name}')
+        assert result.stdout.endswith('refused' if unsafe else 'fine')
 
     def test_such_a_folder_is_fine_on_a_mac_and_letters_outside_ascii_on_linux(self, harness):
         harness.keep_dir = harness.dir / 'My Keep'
