@@ -206,6 +206,40 @@ class TestCurationPeriod:
         assert "the recent interactions below" in prompt
 
 
+class TestThePromptSaysWhatTheAiAlreadyHas:
+    """The curator sees the bank and nothing else of the AI's prompt, so it is told what stands
+    there live — or the bank repeats the integrations, the vault's labels and the like."""
+
+    def _prompt(self, monitor) -> str:
+        llm = Mock()
+        llm.think.return_value = "# Memory\nA bank long enough to pass the size check for sure"
+        curator = LongTermMemoryCurator(llm=llm, test_mode=True)
+        with patch('assistant.integration.IntegrationMonitor.IntegrationMonitor.get_instance', return_value=monitor):
+            curator.curate_memory_with_data("history", "", "# Memory\nA bank long enough")
+        return llm.think.call_args_list[0].kwargs['system_message']
+
+    def test_the_sections_and_toolkits_of_the_integrations_that_are_on_are_named(self):
+        from assistant.integration.calendar.CalendarSource import CalendarSource
+        from assistant.prompt.sections.CalendarSectionGenerator import CalendarSectionGenerator
+        monitor = Mock()
+        monitor.folder_enabled.side_effect = lambda folder: folder == "photos"
+        monitor.contract_enabled.side_effect = lambda contract: contract is CalendarSource
+        block = self._prompt(monitor).split("## Already in the AI's prompt")[1].split("## Your task")[0]
+        assert CalendarSectionGenerator.heading.lstrip("# ") in block
+        assert "CAR INFO" not in block, "no car integration is on"
+        toolkits = next(line for line in block.splitlines() if line.startswith("- toolkits"))
+        assert "photos" in toolkits and "calendar" in toolkits and "vault" in toolkits
+        assert "dropbox" not in toolkits and "cars" not in toolkits
+
+    def test_no_placeholder_of_the_block_is_left_when_nothing_is_on(self):
+        monitor = Mock()
+        monitor.folder_enabled.return_value = False
+        monitor.contract_enabled.return_value = False
+        prompt = self._prompt(monitor)
+        assert "{IN_PROMPT}" not in prompt
+        assert "- sections:" not in prompt, "no data section runs, so the line is left out"
+
+
 class TestThePromptNamesNoSize:
     """The bank's size is kept by code (the condensing pass). Given a count and a limit the
     model tried to meet it by counting words and thought through its whole output cap

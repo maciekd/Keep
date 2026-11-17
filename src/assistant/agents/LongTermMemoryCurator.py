@@ -101,6 +101,8 @@ The long-term memory has three parts:
 ## Procedures (index only):
 {PROCEDURES}
 
+{IN_PROMPT}
+
 ## Your task:
 Update the memory bank based on new information. You may add, modify, remove and restructure information as needed.
 Keep the memory bank concise: a fact the period supersedes is replaced, not kept beside the new one, and what is outdated goes. Its size is not yours to manage - do not count words.
@@ -112,6 +114,9 @@ Rules:
 - The bank does NOT include command syntax or how to interpret commands (the AI already understands natural language and has extensive knowledge of available commands). A procedure is different: there the exact commands and code that worked are the point
 - Do NOT include song/playlist/favorite IDs
 - Focus on personal preferences, patterns, and facts about the family that help personalization
+- The bank is about the family and their world, never about the Keep software. Leave out how the system works, what it
+  can and cannot do, its bugs and workarounds, etc. All of that changes with every release, and the AI has its own
+  documentation for it
 - When a user corrects a misheard command (e.g. by saying "No, I said X" right after), the original action was based on a MISHEARD phrase. Record the STT correction, but do NOT add anything from the misinterpreted action as a genuine preference
 - Be very mindful of making assumptions - errors sneak easily into the memory bank and can propagate over time - so only enter things you are sure of in the memory
 - Remove a fact only when it of extremely low value or recent interactions give positive evidence against it: contradicted, superseded, explicitly retracted, or expired. Not being mentioned in this period's logs is not necessarily staleness
@@ -721,7 +726,8 @@ class LongTermMemoryCurator:
             .replace("{WATCH_WORD_LIMIT}", str(WatchList.NOTE_WORD_LIMIT)) \
             .replace("{PERIOD}", period_text) \
             .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "") \
-            .replace("{TIPS}", self._tips_prompt())
+            .replace("{TIPS}", self._tips_prompt()) \
+            .replace("{IN_PROMPT}", self._in_prompt())
         full_prompt = prompt.replace("{CURRENT_MEMORY}", current_memory)
 
         # Send to LLM with thinking enabled for complex reasoning
@@ -1074,6 +1080,28 @@ class LongTermMemoryCurator:
     def tips_destination() -> str:
         """The group the run posts tips to (`ai.memory_curator.tips_destination`), '' when off."""
         return str(ConfigManager.get_instance().get(TIPS_KEY, '') or '').strip()
+
+    @staticmethod
+    def _in_prompt() -> str:
+        """What the AI's prompt holds live, for the curator to keep out of the bank: the data
+        sections of the integrations that are on, the vault's list and the toolkits on offer.
+        The curator sees none of that prompt, so without the list it cannot know what the
+        bank repeats."""
+        from ..commands import Toolkits
+        from ..integration.IntegrationMonitor import IntegrationMonitor
+        from ..prompt.PromptManager import PromptManager
+        monitor = IntegrationMonitor.get_instance()
+        sections, toolkits = PromptManager.data_headings(monitor), Toolkits.names(monitor)
+        trace(f"Rem: the prompt is told what the AI already has: sections {', '.join(sections) or 'none'}; "
+              f"{len(toolkits)} toolkit(s)")
+        lines = ["## Already in the AI's prompt (FYI):",
+                 "The AI has all of this live in every conversation. Do not repeat it in the bank:"]
+        if sections:
+            lines.append(f"- sections: {', '.join(sections)}")
+        lines.append("- the vault: every `{{secret:…}}` placeholder the bank does not use is listed there with its description")
+        if toolkits:
+            lines.append("- toolkits it loads when needed, each with its commands and live data: " + ", ".join(toolkits))
+        return "\n".join(lines)
 
     def _tips_prompt(self) -> str:
         destination = self.tips_destination()

@@ -239,3 +239,15 @@ def test_a_gated_generator_that_fails_to_build_costs_only_itself_until_it_builds
             assert "# THE TOASTER\nToaster: idle\n" in pm.prompt
         finally:
             pm.stop()
+
+
+@pytest.mark.unit
+def test_the_headings_of_the_data_sections_are_those_whose_integration_is_on():
+    """What a text written without a running manager (the memory curator's) says the prompt
+    already shows: read from the classes and the monitor alone."""
+    monitor = FakeMonitor()
+    monitor.folders.update(kettle=True, garage=True, toaster=False)
+    with patch("assistant.prompt.PromptSectionGenerator.discover",
+               return_value=(KettleSectionGenerator, CarSectionGenerator, BrokenSectionGenerator)):
+        headings = PromptManager.data_headings(monitor)
+    assert headings == ["THE CAR", "THE KETTLE"], "the prompt's order, hashes off, the toaster's integration is off"

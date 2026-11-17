@@ -172,6 +172,19 @@ class PromptManager:
                      "precipitation", "home", "web", "calendar", "music", "music_zones", "car_info", "pool", "heat_pump", "phones")
     # The placeholder the data sections of the integrations fill, each under its own heading.
     DATA_BLOCK = "{INTEGRATION_DATA}"
+    # The core's generators that run only while an integration (or a config key) is behind them.
+    CORE_GATED: dict[str, type] = {'home': HomeSectionGenerator, 'calendar': CalendarSectionGenerator,
+                                   'car_info': CarSectionGenerator, 'voices': VoicesSectionGenerator,
+                                   'music': MusicLibrarySectionGenerator, 'music_zones': MusicZonesSectionGenerator}
+
+    @classmethod
+    def data_headings(cls, monitor) -> list[str]:
+        """The headings of the data sections the prompt shows while the integrations are as
+        *monitor* has them, hashes off, in the prompt's order. Read from the generator classes,
+        so a text written without a running manager (the memory curator's) can say what the
+        prompt already holds."""
+        classes = cls.CORE_GATED | {c.key: c for c in SectionGenerators.discover() if c.key}
+        return [c.heading.lstrip("# ") for c in cls._ordered(classes).values() if c.heading and c.enabled_by(monitor)]
 
     def _build_sections(self, generator_classes) -> dict:
         """The core's generators, plus one of each integration folder's under the key the
@@ -190,9 +203,7 @@ class PromptManager:
             'vault': VaultSectionGenerator(self),
             'web': WebSectionGenerator(self),
         }
-        gated: dict[str, type] = {'home': HomeSectionGenerator, 'calendar': CalendarSectionGenerator,
-                                  'car_info': CarSectionGenerator, 'voices': VoicesSectionGenerator,
-                                  'music': MusicLibrarySectionGenerator, 'music_zones': MusicZonesSectionGenerator}
+        gated: dict[str, type] = dict(self.CORE_GATED)
         for cls in generator_classes:
             if not cls.key:
                 error(f"Section generator {cls.__module__}.{cls.__name__} declares no key, left out")
