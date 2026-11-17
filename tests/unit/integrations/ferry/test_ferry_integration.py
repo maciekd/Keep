@@ -6,7 +6,8 @@ import pytest
 import requests
 
 from integrations.ferry import FerryIntegration as module
-from integrations.ferry.FerryIntegration import FerryError, FerryIntegration, matches, parse, render, request_body
+from integrations.ferry.FerryIntegration import (FerryError, FerryIntegration, closest, matches, parse, parse_routes,
+                                                 render, request_body, resolve)
 
 CET = timezone(timedelta(hours=1))
 ROUTE = "Ekeleden"
@@ -20,6 +21,22 @@ def announcement(clock: str, origin: str, destination: str, **extra) -> dict:
 
 def answer(*items) -> dict:
     return {"RESPONSE": {"RESULT": [{"FerryAnnouncement": list(items)}]}}
+
+
+def route_list(*names, deleted=()) -> dict:
+    return {"RESPONSE": {"RESULT": [{"FerryRoute": [{"Name": n, "Deleted": False} for n in names]
+                                     + [{"Name": n, "Deleted": True} for n in deleted]}]}}
+
+
+ROUTES = route_list("Ekeleden", "Norrleden", "Strömsleden", "Älvleden", "Bodaleden")
+
+
+def api(departures: dict, routes: dict = ROUTES):
+    """A fake `requests.post` answering the route list and the departures by the query's object type."""
+    def post(url, data, **kwargs):
+        payload = routes if b'objecttype="FerryRoute"' in data else departures
+        return Mock(status_code=200, json=Mock(return_value=payload))
+    return post
 
 
 TIMETABLE = answer(
@@ -99,6 +116,26 @@ def configured(route):
                         {"ferry.api_key": "key", "ferry.route": route}.get(key, default))
 
 
+class TestRoutes:
+    def test_deleted_routes_are_left_out(self):
+        assert parse_routes(route_list("Ekeleden", deleted=("Gamlaleden",))) == ["Ekeleden"]
+
+    @pytest.mark.parametrize("asked", ["Älvleden", "älvleden", "ALVLEDEN", " alvleden "])
+    def test_a_route_resolves_in_any_case_with_or_without_the_dots(self, asked):
+        assert resolve(asked, parse_routes(ROUTES)) == "Älvleden"
+
+    def test_a_part_of_a_name_is_not_a_route(self):
+        assert resolve("Älv", parse_routes(ROUTES)) is None
+
+    @pytest.mark.parametrize("asked, meant", [("Älv", "Älvleden"), ("Strömsfärjan", "Strömsleden"),
+                                              ("norleden", "Norrleden")])
+    def test_the_closest_routes_lead_with_the_meant_one(self, asked, meant):
+        assert closest(asked, parse_routes(ROUTES))[0] == meant
+
+    def test_nothing_alike_suggests_nothing(self):
+        assert closest("Xyzzy", parse_routes(ROUTES)) == []
+
+
 class TestFetch:
     @pytest.fixture
     def post(self):
@@ -116,24 +153,34 @@ class TestFetch:
             FerryIntegration().fetch()
 
     def test_the_key_travels_in_the_body_not_the_url(self, post):
-        post.return_value = Mock(status_code=200, json=Mock(return_value=TIMETABLE))
+        post.side_effect = api(TIMETABLE)
         FerryIntegration().fetch()
-        url = post.call_args.args[0]
-        assert "key" not in url.split("/")[-1] and b'authenticationkey="key"' in post.call_args.kwargs["data"]
+        for call in post.call_args_list:
+            assert "key" not in call.args[0].split("/")[-1] and b'authenticationkey="key"' in call.kwargs["data"]
 
-    def test_health_fails_when_the_route_has_no_departures(self, post):
-        post.return_value = Mock(status_code=200, json=Mock(return_value=answer()))
-        with pytest.raises(FerryError, match="ferry.route"):
-            FerryIntegration().check_health()
+    def test_the_route_list_is_asked_once_for_many_questions(self, post):
+        post.side_effect = api(TIMETABLE)
+        ferry = FerryIntegration()
+        ferry.fetch()
+        ferry.fetch()
+        assert sum(b"FerryRoute" in c.kwargs["data"] for c in post.call_args_list) == 1
+
+
+def departures_query(post) -> str:
+    bodies = [c.kwargs["data"].decode() for c in post.call_args_list if b"FerryAnnouncement" in c.kwargs["data"]]
+    return ElementTree.fromstring(bodies[-1]).find(".//EQ[@name='Route.Name']").get("value")
 
 
 class TestConfiguredRoute:
     def test_the_query_names_the_route_from_config(self):
-        with configured("Norrleden"), patch.object(module.requests, "post") as post:
-            post.return_value = Mock(status_code=200, json=Mock(return_value=answer()))
+        with configured("Norrleden"), patch.object(module.requests, "post", side_effect=api(answer())) as post:
             FerryIntegration().fetch()
-        root = ElementTree.fromstring(post.call_args.kwargs["data"].decode())
-        assert root.find(".//EQ[@name='Route.Name']").get("value") == "Norrleden"
+        assert departures_query(post) == "Norrleden"
+
+    def test_a_loosely_written_route_is_asked_under_trafikverkets_name(self):
+        with configured("alvleden"), patch.object(module.requests, "post", side_effect=api(TIMETABLE)) as post:
+            text = FerryIntegration().departures(now=NOW)
+        assert departures_query(post) == "Älvleden" and text.startswith("Älvleden")
 
     @pytest.mark.parametrize("route", ["", "  ", None])
     def test_no_route_is_a_ferry_error_and_no_request(self, route):
@@ -146,3 +193,40 @@ class TestConfiguredRoute:
         with patch("common.ConfigManager.config.get", side_effect=lambda key, default=None:
                    {"ferry.api_key": "key", "ferry.route": ""}.get(key, default)):
             assert FerryIntegration().missing_config_keys() == ["ferry.route"]
+
+    def test_an_empty_route_list_lets_the_name_through_as_written(self):
+        with configured("Norrleden"), patch.object(module.requests, "post",
+                                                   side_effect=api(answer(), routes=route_list())) as post:
+            FerryIntegration().fetch()
+        assert departures_query(post) == "Norrleden"
+
+
+class TestHealth:
+    def check(self, route, departures=TIMETABLE, routes=ROUTES):
+        with configured(route), patch.object(module.requests, "post", side_effect=api(departures, routes)) as post:
+            try:
+                return FerryIntegration().check_health(), post
+            except FerryError as e:
+                return e, post
+
+    def test_a_known_route_with_nothing_ahead_is_healthy(self):
+        assert self.check("Ekeleden", departures=answer())[0] is True
+
+    def test_an_unknown_route_names_the_closest_and_asks_for_no_departures(self):
+        error, post = self.check("Strömsfärjan")
+        assert isinstance(error, FerryError)
+        assert "Strömsleden?" in str(error) and "ferry.route" in str(error)
+        assert not any(b"FerryAnnouncement" in c.kwargs["data"] for c in post.call_args_list)
+
+    def test_a_partial_name_is_unknown_too(self):
+        error, _ = self.check("Älv")
+        assert isinstance(error, FerryError) and "Älvleden?" in str(error)
+
+    def test_a_short_route_list_is_given_whole(self):
+        error, _ = self.check("Xyzzy")
+        assert all(name in str(error) for name in parse_routes(ROUTES))
+
+    def test_a_long_route_list_is_not(self):
+        many = route_list(*(f"Ö{n}leden" for n in range(module.LIST_ALL_LIMIT + 1)), "Ekeleden")
+        error, _ = self.check("Ekelden", routes=many)
+        assert "did you mean Ekeleden" in str(error) and "Ö7leden" not in str(error)

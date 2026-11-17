@@ -4,10 +4,15 @@ Trafikverket's open data API (https://data.trafikverket.se/).
 One POST to `/v2/data.json` per question: a `FerryAnnouncement` query for the route the user
 configures (`ferry.route`, required — no route is built in) whose departure is still ahead, ordered
 by departure time; both directions come from the harbors the answer names, none is hard-coded.
+The configured name is first looked up, leniently (`fold`), in Trafikverket's own list of routes
+(a `FerryRoute` query, kept for `ROUTES_TTL`): an unknown name is a misconfiguration named with the
+closest real ones, while a known route with nothing ahead (at night) is healthy.
 Each announcement carries `DepartureTime` (Swedish local time with its offset), `FromHarbor` and
 `ToHarbor` (`{"Name": ...}`), `Deleted` and an optional `Info` (the deviation notices). The API key
 (`ferry.api_key`) goes in the request body's `LOGIN` element, never in a URL or log line."""
 from dataclasses import dataclass
+import difflib
+import time
 from datetime import datetime
 from typing import Iterable, List, Optional
 from xml.sax.saxutils import quoteattr
@@ -24,6 +29,10 @@ TIMEOUT = 15
 # Enough announcements for a busy route's next hour or two in both directions.
 QUERY_LIMIT = 60
 DEFAULT_COUNT = 4
+ROUTES_TTL = 6 * 3600
+# Trafikverket has some forty routes: an unknown name's warning lists them all up to this many.
+LIST_ALL_LIMIT = 50
+SUGGESTIONS = 3
 _FOLD = str.maketrans("åäöéü", "aaoeu")
 
 
@@ -58,14 +67,55 @@ def request_body(api_key: str, route: str, limit: int = QUERY_LIMIT) -> str:
             f"<EQ name=\"Deleted\" value=\"false\"/></AND></FILTER></QUERY></REQUEST>")
 
 
-def parse(payload: dict) -> List[Departure]:
-    """The departures in a `data.json` answer, sorted; raises FerryError for the API's own error."""
+def routes_body(api_key: str) -> str:
+    return (f"<REQUEST><LOGIN authenticationkey={quoteattr(api_key)}/>"
+            f"<QUERY objecttype=\"FerryRoute\" schemaversion=\"{SCHEMA_VERSION}\">"
+            f"<INCLUDE>Name</INCLUDE><INCLUDE>Deleted</INCLUDE></QUERY></REQUEST>")
+
+
+def _result(payload: dict) -> dict:
     try:
         result = payload["RESPONSE"]["RESULT"][0]
     except (KeyError, IndexError, TypeError):
         raise FerryError("Trafikverket answered with something that is not a ferry result")
     if "ERROR" in result:
         raise FerryError(f"Trafikverket refused the query: {result['ERROR'].get('MESSAGE', 'no reason given')}")
+    return result
+
+
+def parse_routes(payload: dict) -> List[str]:
+    """The names of Trafikverket's ferry routes in a `FerryRoute` answer, sorted."""
+    return sorted({item["Name"] for item in _result(payload).get("FerryRoute", [])
+                   if isinstance(item, dict) and item.get("Name") and not item.get("Deleted")})
+
+
+def resolve(asked: str, routes: Iterable[str]) -> Optional[str]:
+    """The route whose name is `asked` in any case, with or without å/ä/ö; None when no route is."""
+    return next((r for r in routes if fold(r) == fold(asked)), None)
+
+
+def closest(asked: str, routes: Iterable[str], n: int = SUGGESTIONS) -> List[str]:
+    """The routes most like `asked`: those holding it (or held by it) first, then by similarity."""
+    by_fold = {fold(r): r for r in routes}
+    key = fold(asked)
+    hits = [r for f, r in by_fold.items() if key and (key in f or f in key)]
+    hits += [by_fold[f] for f in difflib.get_close_matches(key, by_fold, n=n, cutoff=0.5)]
+    return list(dict.fromkeys(hits))[:n]
+
+
+def unknown_route(asked: str, routes: List[str]) -> str:
+    text = f"Unknown ferry route {asked!r} (ferry.route): Trafikverket has no route by that name"
+    near = closest(asked, routes)
+    if near:
+        text += " — did you mean " + " or ".join(near) + "?"
+    if len(routes) <= LIST_ALL_LIMIT:
+        text += f" Its routes: {', '.join(routes)}"
+    return text
+
+
+def parse(payload: dict) -> List[Departure]:
+    """The departures in a `data.json` answer, sorted; raises FerryError for the API's own error."""
+    result = _result(payload)
     departures = []
     for item in result.get("FerryAnnouncement", []):
         if item.get("Deleted"):
@@ -136,12 +186,12 @@ class FerryIntegration(Integration):
     def route() -> str:
         return str(config.get("ferry.route", "") or "").strip()
 
-    def fetch(self, limit: int = QUERY_LIMIT) -> List[Departure]:
-        route = self.route()
-        if not route:
-            raise FerryError("No ferry route is configured: ferry.route in config.yaml names it, "
-                             "as Trafikverket writes it")
-        body = request_body(config.get("ferry.api_key"), route, limit)
+    def __init__(self):
+        super().__init__()
+        self._routes: List[str] = []
+        self._routes_at = 0.0
+
+    def _post(self, body: str) -> dict:
         try:
             response = requests.post(API_URL, data=body.encode("utf-8"),
                                      headers={"Content-Type": "text/xml; charset=utf-8"}, timeout=TIMEOUT)
@@ -152,21 +202,50 @@ class FerryIntegration(Integration):
         if response.status_code in (401, 403):
             raise FerryError("Trafikverket refused the API key (ferry.api_key in config.yaml)")
         try:
-            payload = response.json()
+            return response.json()
         except ValueError:
             raise FerryError(f"Trafikverket answered HTTP {response.status_code} with something that is not JSON")
-        departures = parse(payload)
+
+    def routes(self) -> List[str]:
+        """Trafikverket's ferry routes, asked again after `ROUTES_TTL`."""
+        if not self._routes or time.monotonic() - self._routes_at > ROUTES_TTL:
+            self._routes = parse_routes(self._post(routes_body(config.get("ferry.api_key"))))
+            self._routes_at = time.monotonic()
+            info(f"Ferry: Trafikverket lists {len(self._routes)} routes")
+        return self._routes
+
+    def resolved_route(self) -> str:
+        """The configured route under Trafikverket's own name for it; FerryError when unset or unknown."""
+        asked = self.route()
+        if not asked:
+            raise FerryError("No ferry route is configured: ferry.route in config.yaml names it, "
+                             "as Trafikverket writes it")
+        routes = self.routes()
+        if not routes:
+            trace(f"Ferry: Trafikverket listed no routes, {asked!r} is used as written")
+            return asked
+        route = resolve(asked, routes)
+        if route is None:
+            info(f"Ferry: {asked!r} is none of Trafikverket's {len(routes)} routes")
+            raise FerryError(unknown_route(asked, routes))
+        if route != asked:
+            trace(f"Ferry: ferry.route {asked!r} is Trafikverket's {route!r}")
+        return route
+
+    def fetch(self, limit: int = QUERY_LIMIT, route: Optional[str] = None) -> List[Departure]:
+        route = route or self.resolved_route()
+        departures = parse(self._post(request_body(config.get("ferry.api_key"), route, limit)))
         trace(f"Ferry: {len(departures)} upcoming departures on {route}")
         return departures
 
     def check_health(self) -> bool:
-        if not self.fetch(limit=1):
-            raise FerryError(f"Trafikverket lists no upcoming departures for the route {self.route()!r} "
-                             f"— is ferry.route spelled as Trafikverket names it?")
+        route = self.resolved_route()
+        if not self.fetch(limit=1, route=route):
+            info(f"Ferry: {route} is a known route with no departures ahead right now")
         return True
 
     def departures(self, origin: str = "", now: Optional[datetime] = None) -> str:
-        route = self.route()
+        route = self.resolved_route()
         info(f"Ferry: next departures on {route}" + (f" from {origin!r}" if origin else ""))
         now = now or datetime.now().astimezone()
-        return render(route, self.fetch(), now, origin, int(config.get("ferry.count", DEFAULT_COUNT)))
+        return render(route, self.fetch(route=route), now, origin, int(config.get("ferry.count", DEFAULT_COUNT)))
