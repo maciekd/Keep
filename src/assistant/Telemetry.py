@@ -187,10 +187,11 @@ class Telemetry:
             return
         self._id = self._ensure_id()
         self._thread = threading.Thread(target=self._run, name="Telemetry", daemon=True)
+        # Queued before the worker runs, so no beat of the worker's own can come ahead of it.
+        self._enqueue("heartbeat", self._vitals(startup=True))
         self._thread.start()
         info(f"Telemetry: on, install {self._id}, transcript {'on' if self.content_allowed() else 'off'}.")
         set_error_sink(self.error_report)
-        self.heartbeat(startup=True)
 
     def stop(self):
         if not self.active:
@@ -369,19 +370,22 @@ class Telemetry:
               + (", ".join(f"{name} {count}" for name, count in feeds.items()) or "no running feed") + prompt)
         self._enqueue("status", snapshot)
 
-    def heartbeat(self, startup: bool = False):
-        """Once a day and at start: the install is alive, and what it is — so churn can be told
-        from an uninstall, and features from the integrations people turn on."""
+    def heartbeat(self):
+        """Once a day, after the one `start` sends: the install is alive, and what it is — so
+        churn can be told from an uninstall, and features from the integrations people turn on."""
         if not self._on():
             return
-        self._enqueue("heartbeat", {
+        self._enqueue("heartbeat", self._vitals(startup=False))
+
+    def _vitals(self, startup: bool) -> dict:
+        return {
             "startup": startup,
             "os": platform.system(),
             "os_version": platform.mac_ver()[0] or platform.release(),
             "machine": platform.machine(),
             "integrations": sorted(config.enabled_integrations()),
             "content": self.content_allowed(),
-        })
+        }
 
     def _enqueue(self, event: str, properties: dict):
         item = {
