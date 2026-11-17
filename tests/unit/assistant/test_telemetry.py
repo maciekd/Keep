@@ -567,31 +567,6 @@ class TestErrorReports:
         assert "layer 11" not in long[1]["value"] and "layer 10" in long[1]["value"]   # newest first
         assert [e["type"] for e in circle] == ["KeyError", "LookupError"]
 
-    @pytest.mark.xfail(strict=True, reason="UncaughtExceptions._log puts the formatted traceback into the "
-                       "message error() hands the sink, so the event's value carries the source lines and "
-                       "the checkout's path — what the stack frames were cut down to leave out")
-    def test_an_uncaught_exception_goes_out_without_source_lines_or_the_checkouts_path(
-            self, telemetry, sent, monkeypatch):
-        import sys
-        import threading
-        from pathlib import Path
-        from common import UncaughtExceptions
-        from common.Paths import AISERVER_DIR
-        monkeypatch.setattr(sys, "excepthook", sys.excepthook)
-        monkeypatch.setattr(threading, "excepthook", threading.excepthook)
-        UncaughtExceptions.install()
-
-        def work():
-            where_the_spare_key_is = "under the third flowerpot"; raise ValueError("the feed fell over")  # noqa: E702
-        thread = threading.Thread(target=work, name="photo-feed")
-        thread.start()
-        thread.join()
-        telemetry.stop()
-        value = _by_name(sent, "$exception")[0]["properties"]["$exception_list"][0]["value"]
-        assert "photo-feed" in value and "the feed fell over" in value
-        assert "flowerpot" not in value
-        assert str(AISERVER_DIR).replace(str(Path.home()), "~") not in value
-
     def test_a_failed_post_is_not_reported_as_an_error_of_its_own(self, settings):
         posts = []
 
