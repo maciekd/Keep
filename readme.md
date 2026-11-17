@@ -17,7 +17,7 @@ Self-hosted digital assistant
 <p align="center">
 <a href="https://github.com/maciekd/Keep/actions/workflows/linux.yml"><img src="https://github.com/maciekd/Keep/actions/workflows/linux.yml/badge.svg?branch=master" alt="Linux tests"></a>
 <a href="https://github.com/maciekd/Keep/actions/workflows/mac.yml"><img src="https://github.com/maciekd/Keep/actions/workflows/mac.yml/badge.svg?branch=master" alt="Mac tests"></a>
-<a href="LICENSE"><img src="https://img.shields.io/github/license/maciekd/Keep?color=blue" alt="License: AGPL-3.0"></a>
+<a href="LICENSE"><img src="https://img.shields.io/github/license/maciekd/Keep?color=blue&label=License" alt="License: AGPL-3.0"></a>
 </p>
 
 ### Keep
