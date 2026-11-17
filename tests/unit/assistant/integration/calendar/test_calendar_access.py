@@ -10,7 +10,8 @@ import pytz
 
 from assistant.integration.Integration import Integration, IntegrationState
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
-from assistant.integration.calendar.CalendarAccess import CalendarAccess, EVENTS_UNAVAILABLE, NOT_CONFIGURED, NO_ACCOUNT_HINT
+from assistant.integration.calendar.CalendarAccess import (CalendarAccess, CalendarUnavailable, EVENTS_UNAVAILABLE,
+                                                           NOT_CONFIGURED, NO_ACCOUNT_HINT)
 from assistant.integration.calendar.CalendarAccount import CalendarAccount, CalendarInfo, split_names
 from assistant.integration.calendar.CalendarSource import CalendarSource
 from assistant.integration.calendar.Event import Event, NO_EVENTS
@@ -199,10 +200,30 @@ class TestFetch:
 
     def test_the_coming_week_starts_today_and_covers_eight_days(self):
         account = _Account()
-        with patch.object(CalendarAccess, "fetch", return_value="") as fetch:
+        with patch.object(CalendarAccess, "_read", return_value="") as read:
             CalendarAccess([account]).coming_week()
-        start, end = fetch.call_args.args
+        start, end = read.call_args.args
         assert start == date.today() and (end - start).days == 8
+
+    def test_the_coming_week_raises_when_no_account_could_be_read(self):
+        """The prompt section must see the failure, so that it retries and keeps the week it has."""
+        with pytest.raises(CalendarUnavailable) as raised:
+            CalendarAccess([_Account("Family", failing=True), _Account("Work", failing=True)]).coming_week()
+        assert "Family" in str(raised.value) and "Work" in str(raised.value)
+        assert raised.value.__cause__ is not None
+
+    def test_the_coming_week_still_shows_the_accounts_that_could_be_read(self):
+        text = CalendarAccess([_household(), _Account("Broken", failing=True)]).coming_week()
+        assert "(Broken: calendar could not be loaded)" in text
+
+    def test_an_outage_of_every_account_is_one_error_and_only_for_the_reader_that_gets_the_placeholder(self):
+        accounts = [_Account("Family", failing=True), _Account("Work", failing=True)]
+        with patch("assistant.integration.calendar.CalendarAccess.error") as logged:
+            with pytest.raises(CalendarUnavailable):
+                CalendarAccess(accounts).coming_week()
+            assert logged.call_count == 0
+            CalendarAccess(accounts).fetch(*WEEK)
+            assert logged.call_count == 1
 
 
 @pytest.mark.unit

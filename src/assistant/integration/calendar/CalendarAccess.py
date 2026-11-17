@@ -6,7 +6,9 @@ calendars it shows and the ones left out, then one chronological list of the sho
 events across accounts, each line tagged with its calendar when more than one is shown; an
 account that fails is named as such while the others still show, and the whole week is
 EVENTS_UNAVAILABLE only when none could be read (never NO_EVENTS, which would read as an empty
-week). `load` is the `load_calendar` command, `create` the `create_event` one, `delete` and
+week). `coming_week` is the same for the prompt section, except that it raises
+CalendarUnavailable then: the section retries and keeps the week it has rather than trading it
+for a placeholder over an outage that passes. `load` is the `load_calendar` command, `create` the `create_event` one, `delete` and
 `move` the `delete_event` / `move_event` ones; all name a calendar across accounts,
 `Account/Name` when two accounts have one by that name. An existing event is named the way the
 user names it, by title and date — `_find` reads that day and insists on one match — and goes
@@ -29,6 +31,10 @@ EVENTS_UNAVAILABLE = "(Calendar events could not be loaded)"
 NOT_CONFIGURED = "(Calendar not configured)"
 NO_ACCOUNT_HINT = ("No calendar account is configured. Add one under caldav.accounts (name, preset icloud or a url, "
                    "username, password) — see Setting things up: list_integrations, config_help(\"caldav\"), config_request.")
+
+
+class CalendarUnavailable(Exception):
+    """None of the calendar accounts could be read."""
 
 
 class CalendarAccess:
@@ -67,16 +73,24 @@ class CalendarAccess:
         return list(self._accounts)
 
     def coming_week(self) -> str:
+        """The prompt section's week. Raises CalendarUnavailable when no account could be read."""
         start = date.today()
-        return self.fetch(start, start + timedelta(days=CALENDAR_DAYS_AHEAD))
+        return self._read(start, start + timedelta(days=CALENDAR_DAYS_AHEAD))
 
     def fetch(self, start_date: date, end_date: date) -> str:
         """One header line per account — the calendars shown and the ones left out — then the
         events of the shown ones in one list."""
+        try:
+            return self._read(start_date, end_date)
+        except CalendarUnavailable as e:
+            error(f"Calendar: {e}, the reader gets '{EVENTS_UNAVAILABLE}'")
+            return EVENTS_UNAVAILABLE
+
+    def _read(self, start_date: date, end_date: date) -> str:
         if not self._accounts:
             info(f"Calendar: no account configured, the prompt gets '{NOT_CONFIGURED}'")
             return NOT_CONFIGURED
-        headers, events, failed, shown_total = [], [], 0, 0
+        headers, events, failures, shown_total = [], [], [], 0
         for account in self._accounts:
             try:
                 header, shown = self._header(account)
@@ -84,13 +98,15 @@ class CalendarAccess:
                 headers.append(header)
                 shown_total += sum(1 for c in shown if c.holds_events)
             except Exception as e:
-                error(f"Error fetching calendar events of {account.name}: {type(e).__name__}: {e}")
-                failed += 1
+                failures.append((account, e))
                 headers.append(f"({account.name}: calendar could not be loaded)")
-        if failed == len(self._accounts):
-            error(f"No calendar account could be read, the prompt gets '{EVENTS_UNAVAILABLE}'")
-            return EVENTS_UNAVAILABLE
-        trace(f"Calendar: {len(events)} event(s) from {len(self._accounts) - failed} account(s), {shown_total} calendar(s) shown")
+        described = "; ".join(f"{account.name}: {type(e).__name__}: {e}" for account, e in failures)
+        if len(failures) == len(self._accounts):
+            # Not logged here: whoever catches it knows whether this is an attempt or the outcome.
+            raise CalendarUnavailable(f"no calendar account could be read ({described})") from failures[-1][1]
+        if failures:
+            error(f"Calendar: {len(failures)} of {len(self._accounts)} account(s) could not be read ({described})")
+        trace(f"Calendar: {len(events)} event(s) from {len(self._accounts) - len(failures)} account(s), {shown_total} calendar(s) shown")
         return "\n".join(headers) + "\n\n" + render(events, start_date, end_date, tag_calendars=shown_total > 1)
 
     @staticmethod
