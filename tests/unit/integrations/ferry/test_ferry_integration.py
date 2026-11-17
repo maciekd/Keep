@@ -9,6 +9,7 @@ from integrations.ferry import FerryIntegration as module
 from integrations.ferry.FerryIntegration import FerryError, FerryIntegration, matches, parse, render, request_body
 
 CET = timezone(timedelta(hours=1))
+ROUTE = "Ekeleden"
 NOW = datetime(2026, 11, 17, 14, 2, tzinfo=CET)
 
 
@@ -22,22 +23,22 @@ def answer(*items) -> dict:
 
 
 TIMETABLE = answer(
-    announcement("14:25", "Lilla Varholmen", "Hönö"),
-    announcement("14:10", "Hönö", "Lilla Varholmen"),
-    announcement("14:40", "Hönö", "Lilla Varholmen", Info=["Reduced capacity: one vessel in service"]),
-    announcement("15:30", "Hönö", "Lilla Varholmen"),
-    announcement("14:55", "Lilla Varholmen", "Hönö", Deleted=True),
+    announcement("14:25", "Strandvik", "Ekö"),
+    announcement("14:10", "Ekö", "Strandvik"),
+    announcement("14:40", "Ekö", "Strandvik", Info=["Reduced capacity: one vessel in service"]),
+    announcement("15:30", "Ekö", "Strandvik"),
+    announcement("14:55", "Strandvik", "Ekö", Deleted=True),
 )
 
 
 class TestRequest:
     def test_the_key_and_route_are_escaped_into_the_xml(self):
-        root = ElementTree.fromstring(request_body('k"<ey', 'Hö"nö'))
+        root = ElementTree.fromstring(request_body('k"<ey', 'Ek"ö'))
         assert root.find("LOGIN").get("authenticationkey") == 'k"<ey'
-        assert root.find(".//EQ[@name='Route.Name']").get("value") == 'Hö"nö'
+        assert root.find(".//EQ[@name='Route.Name']").get("value") == 'Ek"ö'
 
     def test_the_query_asks_for_departures_still_ahead_in_order(self):
-        body = request_body("key", "Hönöleden")
+        body = request_body("key", ROUTE)
         assert '<GT name="DepartureTime" value="$now"/>' in body
         assert 'orderby="DepartureTime"' in body
 
@@ -52,53 +53,56 @@ class TestParse:
             parse({"RESPONSE": {"RESULT": [{"ERROR": {"MESSAGE": "Invalid authentication key"}}]}})
 
     def test_an_announcement_without_harbors_is_skipped(self):
-        departures = parse(answer({"DepartureTime": "2026-11-17T14:10:00+01:00"}, announcement("14:20", "Hönö", "Lilla Varholmen")))
+        departures = parse(answer({"DepartureTime": "2026-11-17T14:10:00+01:00"}, announcement("14:20", "Ekö", "Strandvik")))
         assert len(departures) == 1
 
 
 class TestMatching:
-    @pytest.mark.parametrize("asked", ["Hönö", "hono", "HÖNÖ PINAN"])
+    @pytest.mark.parametrize("asked", ["Ekö", "eko", "EKÖ FÄRJELÄGE"])
     def test_a_loosely_named_harbor_matches(self, asked):
-        assert matches("Hönö Pinan", asked)
+        assert matches("Ekö Färjeläge", asked)
 
     def test_another_harbor_does_not(self):
-        assert not matches("Lilla Varholmen", "Hönö")
+        assert not matches("Strandvik", "Ekö")
 
 
 class TestRender:
     def test_both_directions_by_default_with_minutes_for_the_near_ones(self):
-        text = render("Hönöleden", parse(TIMETABLE), NOW)
-        hono = next(line for line in text.splitlines() if line.startswith("From Hönö"))
-        varholmen = next(line for line in text.splitlines() if line.startswith("From Lilla Varholmen"))
-        assert "14:10 (in 8 min)" in hono and "15:30" in hono and "(in 88" not in hono
-        assert "14:25 (in 23 min)" in varholmen
+        text = render(ROUTE, parse(TIMETABLE), NOW)
+        outward = next(line for line in text.splitlines() if line.startswith("From Ekö"))
+        back = next(line for line in text.splitlines() if line.startswith("From Strandvik"))
+        assert "14:10 (in 8 min)" in outward and "15:30" in outward and "(in 88" not in outward
+        assert "14:25 (in 23 min)" in back
 
     def test_one_side_only_when_an_origin_is_named(self):
-        text = render("Hönöleden", parse(TIMETABLE), NOW, origin="varholmen")
-        assert "From Lilla Varholmen" in text and "From Hönö" not in text
+        text = render(ROUTE, parse(TIMETABLE), NOW, origin="strandvik")
+        assert "From Strandvik" in text and "From Ekö" not in text
 
     def test_notices_of_shown_departures_are_listed(self):
-        assert "Reduced capacity" in render("Hönöleden", parse(TIMETABLE), NOW)
+        assert "Reduced capacity" in render(ROUTE, parse(TIMETABLE), NOW)
 
     def test_the_count_limits_each_direction(self):
-        text = render("Hönöleden", parse(TIMETABLE), NOW, origin="Hönö", count=1)
+        text = render(ROUTE, parse(TIMETABLE), NOW, origin="Ekö", count=1)
         assert "14:10" in text and "14:40" not in text
 
     def test_an_unknown_harbor_lists_the_known_ones(self):
-        text = render("Hönöleden", parse(TIMETABLE), NOW, origin="Göteborg")
-        assert "Lilla Varholmen" in text and "From" not in text
+        text = render(ROUTE, parse(TIMETABLE), NOW, origin="Göteborg")
+        assert "Strandvik" in text and "From" not in text
 
     def test_a_departure_tomorrow_carries_its_day(self):
-        late = answer({**announcement("00:00", "Hönö", "Lilla Varholmen"), "DepartureTime": "2026-11-18T06:00:00+01:00"})
-        assert "Wed 06:00" in render("Hönöleden", parse(late), NOW)
+        late = answer({**announcement("00:00", "Ekö", "Strandvik"), "DepartureTime": "2026-11-18T06:00:00+01:00"})
+        assert "Wed 06:00" in render(ROUTE, parse(late), NOW)
+
+
+def configured(route):
+    return patch.object(module.config, "get", side_effect=lambda key, default=None:
+                        {"ferry.api_key": "key", "ferry.route": route}.get(key, default))
 
 
 class TestFetch:
     @pytest.fixture
     def post(self):
-        with patch.object(module.config, "get", side_effect=lambda key, default=None:
-                          {"ferry.api_key": "key", "ferry.route": "Hönöleden"}.get(key, default)), \
-             patch.object(module.requests, "post") as post:
+        with configured(ROUTE), patch.object(module.requests, "post") as post:
             yield post
 
     def test_a_refused_key_says_which_config_key(self, post):
@@ -121,3 +125,24 @@ class TestFetch:
         post.return_value = Mock(status_code=200, json=Mock(return_value=answer()))
         with pytest.raises(FerryError, match="ferry.route"):
             FerryIntegration().check_health()
+
+
+class TestConfiguredRoute:
+    def test_the_query_names_the_route_from_config(self):
+        with configured("Norrleden"), patch.object(module.requests, "post") as post:
+            post.return_value = Mock(status_code=200, json=Mock(return_value=answer()))
+            FerryIntegration().fetch()
+        root = ElementTree.fromstring(post.call_args.kwargs["data"].decode())
+        assert root.find(".//EQ[@name='Route.Name']").get("value") == "Norrleden"
+
+    @pytest.mark.parametrize("route", ["", "  ", None])
+    def test_no_route_is_a_ferry_error_and_no_request(self, route):
+        with configured(route), patch.object(module.requests, "post") as post:
+            with pytest.raises(FerryError, match="ferry.route"):
+                FerryIntegration().fetch()
+        post.assert_not_called()
+
+    def test_an_unset_route_leaves_the_integration_not_configured(self):
+        with patch("common.ConfigManager.config.get", side_effect=lambda key, default=None:
+                   {"ferry.api_key": "key", "ferry.route": ""}.get(key, default)):
+            assert FerryIntegration().missing_config_keys() == ["ferry.route"]

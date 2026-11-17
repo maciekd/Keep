@@ -1,8 +1,9 @@
 """The next departures of a Trafikverket car ferry (Färjerederiet), both directions, from
 Trafikverket's open data API (https://data.trafikverket.se/).
 
-One POST to `/v2/data.json` per question: a `FerryAnnouncement` query for the configured route
-(`ferry.route`, "Hönöleden" by default) whose departure is still ahead, ordered by departure time.
+One POST to `/v2/data.json` per question: a `FerryAnnouncement` query for the route the user
+configures (`ferry.route`, required — no route is built in) whose departure is still ahead, ordered
+by departure time; both directions come from the harbors the answer names, none is hard-coded.
 Each announcement carries `DepartureTime` (Swedish local time with its offset), `FromHarbor` and
 `ToHarbor` (`{"Name": ...}`), `Deleted` and an optional `Info` (the deviation notices). The API key
 (`ferry.api_key`) goes in the request body's `LOGIN` element, never in a URL or log line."""
@@ -20,7 +21,6 @@ from common.logging import info, trace
 API_URL = "https://api.trafikinfo.trafikverket.se/v2/data.json"
 SCHEMA_VERSION = "1.2"
 TIMEOUT = 15
-DEFAULT_ROUTE = "Hönöleden"
 # Enough announcements for a busy route's next hour or two in both directions.
 QUERY_LIMIT = 60
 DEFAULT_COUNT = 4
@@ -44,7 +44,7 @@ def fold(name: str) -> str:
 
 
 def matches(harbor: str, asked: str) -> bool:
-    """A harbor the user named loosely: "Hönö" is "Hönö Pinan", "varholmen" is "Lilla Varholmen"."""
+    """A harbor the user named loosely: part of its name, any case, with or without å/ä/ö."""
     harbor, asked = fold(harbor), fold(asked)
     return bool(asked) and (asked in harbor or harbor in asked)
 
@@ -116,7 +116,7 @@ def render(route: str, departures: Iterable[Departure], now: datetime, origin: s
 
 
 class FerryIntegration(Integration):
-    """The next departures of a Trafikverket car ferry, such as Hönöleden.
+    """The next departures of the user's chosen Trafikverket car ferry route.
 
     Answers when the ferry leaves next from either side of its route, with Trafikverket's
     notices about delays and changes.
@@ -130,14 +130,17 @@ class FerryIntegration(Integration):
 
     @property
     def config_keys(self) -> List[str]:
-        return ["ferry.api_key"]
+        return ["ferry.api_key", "ferry.route"]
 
     @staticmethod
     def route() -> str:
-        return config.get("ferry.route", DEFAULT_ROUTE) or DEFAULT_ROUTE
+        return str(config.get("ferry.route", "") or "").strip()
 
     def fetch(self, limit: int = QUERY_LIMIT) -> List[Departure]:
         route = self.route()
+        if not route:
+            raise FerryError("No ferry route is configured: ferry.route in config.yaml names it, "
+                             "as Trafikverket writes it")
         body = request_body(config.get("ferry.api_key"), route, limit)
         try:
             response = requests.post(API_URL, data=body.encode("utf-8"),

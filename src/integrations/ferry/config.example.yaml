@@ -2,7 +2,9 @@
 # Enable with "Ferry" in enabled_integrations.
 # SETUP: the API key is free — register at https://data.trafikverket.se/, then create a key under
 # "Mina sidor" / "Nycklar". Let the user type it with config_request (ferry.api_key), never in the chat.
+# Ask the user which route they take and set ferry.route to its name as Trafikverket writes it; both
+# directions of that route are answered.
 ferry:
   api_key: ""        # empty until the user has typed it; the integration counts as not configured till then
-  route: Hönöleden   # the route's name as Trafikverket writes it (Hönöleden, Björköleden, Gullmarsleden …)
+  route: ""          # the route's name as Trafikverket writes it, e.g. Hönöleden; required, none is built in
   count: 4           # departures shown per direction
