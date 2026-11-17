@@ -15,24 +15,31 @@ Self-hosted digital assistant
 <td>
 
 ### Keep
-Keep is your personal digital assistant. It has analyzed your messages and every photo you’ve taken and has excellent long-term memory: it remembers all the names, all the places, all the plans and
-everything you need to do, without you explaining anything.
+Keep is your personal <b>digital assistant</b>. 
 
-Runs on a Mac you own, talks to you by chat, terminal and voice, and integrates with your life: shopping, appointments, cameras, the lot.
+It has analyzed your messages and every photo you’ve taken and has excellent long-term memory: it remembers all the names, all the places, all the plans and everything you need to do, without you explaining anything.
 
-By default, Keep runs in the cloud. Keep stores everything on your Mac and thinks on Anthropic’s servers. Passwords and card numbers go in the Keep Vault, encrypted on your Mac: the model never sees them. Read the privacy section before you install.
+Talks to you by chat, terminal and voice, and integrates with your life: shopping, appointments, cameras, the lot.
 
-The cloud version is very robust. It uses a combination of Opus and Fable (estimated Anthropic API cost is $200 / month). On a Claude Max, Ultra or Team plan you get $100–500 of free API credits.
+<b>Refined over two years of daily use in real homes.</b>
 
-Keep can also run locally: **[Keep on 100% local AI](docs/local-ai.md)**.
+### Claude
+By default, Keep runs on an <b>Opus + Fable hybrid</b>. Keep stores everything on your machine but thinks on Anthropic’s servers. Passwords and card numbers go in the Keep Vault, encrypted on your machine: the model never sees them. Read the privacy section before you install.
 
-Refined over two years of daily use in real homes.
+Estimated Anthropic API <b>cost</b> is $80-200 / month. On a Claude Max, Ultra or Team plan you get $100–500 of free API credits.
+
+### 100% local AI
+**[Keep also works great with local AI](docs/local-ai.md)**
 
 ### Shopping
 We recommend using a prepaid card for your AI - Revolut works very well and needs no 3DS usually.
 
 ### Requirements
-<b>Mac</b> with 16 GB RAM is recommended, signed in to your personal iCloud, to run the Keep server. Keep also runs on <b>Debian</b> and <b>Ubuntu</b>.
+<b>16 GB RAM</b> is recommended. 
+
+Mac and Linux (Ubuntu/Debian) is supported. 
+
+If you have your life in iCloud a Mac signed in to your personal iCloud is recommended. This can be server machine or a separate satellite machine. 
 
 Everything else — email, smart home, cameras, cars — is optional, and Keep walks you through setting it up.
 
