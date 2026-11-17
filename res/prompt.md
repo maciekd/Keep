@@ -177,8 +177,6 @@ What you are keeping an eye on (`load_watch` loads an item in full):
 Assume freely what lamps the user is referring to (even if you are not sure) - don't ask.
 Never change or adjust the name of a lamp or action, keep them exactly as-is.
 
-Use am/pm format for times.
-
 And remember, never say that you've preformed some command/action without actually printing the exact code for the
 command.
 
