@@ -258,14 +258,14 @@ Let's be honest: an assistant that reads your mail, sees your photos and message
 
 When running [100% local AI](docs/local-ai.md) everything stays on your private machine (but see the note about telemetry below).
 
-On the  default cloud setup:
+On the default cloud setup:
 
 - 💾 **Your data lives on your Mac.** The database, photo index, logs and voice profiles never leave it, and there is no Keep cloud.
 - ☁️ **The thinking happens on Anthropic's servers.** Anthropic does not train on API data by default; but you need to be ok with this.
 - 🔐 **Secrets stay out of it.** The Keep Vault keeps passwords, card numbers and the like encrypted on your Mac, and the AI only ever sees placeholders. It is a system for hiding secrets from the cloud, not for anonymizing everything you say.
 
 > [!IMPORTANT]
-> **Telemetry.** Keep sends usage events to the cloud: a random install id, whether the install succeeded (or the step it failed in), the Keep version, which interface and integrations are in use, the names of the commands a turn ran — never their arguments —, prompt size, etc. For the first 7 days after install the events also carry your queries and Keep's replies, so we can see where the first steps trip people up; after that they never do. Vault secrets are placeholders in the transcript. Turn it all off with `telemetry.enabled: false` in `config.yaml`. To have your data deleted, send us the `telemetry.id` from your `config.yaml`.
+> **Telemetry.** Keep sends usage events to the cloud: a random install id, whether the install succeeded (or the step it failed in), the Keep version, which interface and integrations are in use, the names of the commands a turn ran — never their arguments, prompt size, etc. For the first 7 days after install the events also carry your queries and Keep's replies, so we can see where the first steps trip people up; after that they never do. Vault secrets are placeholders in the transcript. Turn it all off with `telemetry.enabled: false` in `config.yaml`. To have your data deleted, send us the `telemetry.id` from your `config.yaml`.
 <br>
 
 ## License
