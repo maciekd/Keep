@@ -9,7 +9,7 @@ It's recommended to start with default settings (Anthropic) and have Keep help y
 ## Supported setups
 | Model | Server | Local Backend | Min RAM |
 |---|---|---------------|---------|
-| Qwen 3.8 27B, with vision | [oMLX](https://github.com/jundot/omlx) with Splash | `openai`      | 48 GB   |
+| Qwen 3.8 27B, with vision | [oMLX](https://github.com/jundot/omlx) with [Splash](https://github.com/incoai/splash) | `openai`      | 48 GB   |
 | DeepSeek V4.1 Flash 1017, with vision | [DwarfStar](https://github.com/antirez/ds4) | `ds4`         | 128 GB  |
 
 These two are tested and supported. 
