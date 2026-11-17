@@ -6,7 +6,7 @@ import pytest
 
 from assistant import MemoryFile
 from assistant import Procedures
-from assistant.agents.LongTermMemoryCurator import (CONDENSE_CUT, CONDENSE_TRIGGER, HISTORY_SOURCE,
+from assistant.agents.LongTermMemoryCurator import (CONDENSE_PASSES, CONDENSE_TRIGGER, HISTORY_SOURCE,
                                                     MEMORY_WORD_LIMIT, LongTermMemoryCurator)
 from assistant.commands.Commands import is_reference_result
 from common.FloxyDatabase import NO_INTERACTIONS
@@ -206,6 +206,40 @@ class TestCurationPeriod:
         assert "the recent interactions below" in prompt
 
 
+class TestThePromptSaysWhatTheAiAlreadyHas:
+    """The curator sees the bank and nothing else of the AI's prompt, so it is told what stands
+    there live — or the bank repeats the integrations, the vault's labels and the like."""
+
+    def _prompt(self, monitor) -> str:
+        llm = Mock()
+        llm.think.return_value = "# Memory\nA bank long enough to pass the size check for sure"
+        curator = LongTermMemoryCurator(llm=llm, test_mode=True)
+        with patch('assistant.integration.IntegrationMonitor.IntegrationMonitor.get_instance', return_value=monitor):
+            curator.curate_memory_with_data("history", "", "# Memory\nA bank long enough")
+        return llm.think.call_args_list[0].kwargs['system_message']
+
+    def test_the_sections_and_toolkits_of_the_integrations_that_are_on_are_named(self):
+        from assistant.integration.calendar.CalendarSource import CalendarSource
+        from assistant.prompt.sections.CalendarSectionGenerator import CalendarSectionGenerator
+        monitor = Mock()
+        monitor.folder_enabled.side_effect = lambda folder: folder == "photos"
+        monitor.contract_enabled.side_effect = lambda contract: contract is CalendarSource
+        block = self._prompt(monitor).split("## Already in the AI's prompt")[1].split("## Your task")[0]
+        assert CalendarSectionGenerator.heading.lstrip("# ") in block
+        assert "CAR INFO" not in block, "no car integration is on"
+        toolkits = next(line for line in block.splitlines() if line.startswith("- toolkits"))
+        assert "photos" in toolkits and "calendar" in toolkits and "vault" in toolkits
+        assert "dropbox" not in toolkits and "cars" not in toolkits
+
+    def test_no_placeholder_of_the_block_is_left_when_nothing_is_on(self):
+        monitor = Mock()
+        monitor.folder_enabled.return_value = False
+        monitor.contract_enabled.return_value = False
+        prompt = self._prompt(monitor)
+        assert "{IN_PROMPT}" not in prompt
+        assert "- sections:" not in prompt, "no data section runs, so the line is left out"
+
+
 class TestThePromptNamesNoSize:
     """The bank's size is kept by code (the condensing pass). Given a count and a limit the
     model tried to meet it by counting words and thought through its whole output cap
@@ -243,9 +277,14 @@ class TestCondensingPass:
         llm.think.side_effect = replies
         return LongTermMemoryCurator(llm=llm, test_mode=True)
 
-    def test_cut_is_the_excess_or_a_fifth_of_the_limit_whichever_is_more(self):
-        assert LongTermMemoryCurator.condense_cut(MEMORY_WORD_LIMIT + 10) == int(MEMORY_WORD_LIMIT * CONDENSE_CUT)
-        assert LongTermMemoryCurator.condense_cut(MEMORY_WORD_LIMIT * 2) == MEMORY_WORD_LIMIT
+    def test_a_pass_is_asked_for_more_than_the_excess_and_down_to_one_size(self):
+        # The model delivers a part of its ask, so the ask aims under the limit — at the same
+        # size whatever the bank holds
+        small, large = MEMORY_WORD_LIMIT + 500, MEMORY_WORD_LIMIT * 2
+        cut = LongTermMemoryCurator.condense_cut
+        assert cut(small) > small - MEMORY_WORD_LIMIT
+        assert small - cut(small) == large - cut(large)
+        assert cut(10) == 0
 
     def test_trigger_is_above_the_limit(self):
         assert not LongTermMemoryCurator.needs_condensing(MEMORY_WORD_LIMIT + 1)
@@ -296,6 +335,48 @@ class TestCondensingPass:
         assert memory == curated and not metadata['truncated']
         assert metadata['condense']['to'] == metadata['condense']['from']
 
+    def test_a_bank_still_over_the_trigger_gets_another_pass(self):
+        curated, once, twice = _bank(MEMORY_WORD_LIMIT + 2000), _bank(MEMORY_WORD_LIMIT + 1000), _bank(MEMORY_WORD_LIMIT)
+        curator = self._curator([f"<memory>{curated}</memory>", f"<section>{once}</section>",
+                                 f"<section>{twice}</section>", "<section>never asked for</section>"])
+        memory, metadata = curator.curate_memory_with_data("history", "", _bank(3000))
+        assert memory.rstrip("\n") == twice and curator.llm.think.call_count == 3
+        assert once in curator.llm.think.call_args_list[2].kwargs['system_message']   # the second pass reads the first's bank
+        assert metadata['condense']['from'] == curator.word_count(curated)
+        assert metadata['condense']['to'] == curator.word_count(twice)
+        assert len(metadata['condense']['passes']) == 2
+
+    def test_a_pass_that_delivers_next_to_nothing_ends_the_condensing_with_an_error(self):
+        curated, barely = _bank(MEMORY_WORD_LIMIT + 2000), _bank(MEMORY_WORD_LIMIT + 1990)
+        curator = self._curator([f"<memory>{curated}</memory>", f"<section>{barely}</section>",
+                                 f"<section>{_bank(MEMORY_WORD_LIMIT)}</section>"])
+        with patch("assistant.agents.LongTermMemoryCurator.error") as error:
+            memory, _ = curator.curate_memory_with_data("history", "", _bank(3000))
+        assert memory.rstrip("\n") == barely and curator.llm.think.call_count == 2
+        error.assert_called_once()
+
+    def test_the_passes_stop_at_their_limit_with_an_error_while_the_bank_is_still_over(self):
+        # Every pass removes a good part of its ask and the bank is over the trigger all the same
+        sizes = [MEMORY_WORD_LIMIT + 3000 - 700 * n for n in range(CONDENSE_PASSES + 2)]
+        assert sizes[CONDENSE_PASSES] > MEMORY_WORD_LIMIT * (1 + CONDENSE_TRIGGER)
+        curator = self._curator([f"<memory>{_bank(sizes[0])}</memory>"]
+                                + [f"<section>{_bank(size)}</section>" for size in sizes[1:]])
+        with patch("assistant.agents.LongTermMemoryCurator.error") as error:
+            memory, metadata = curator.curate_memory_with_data("history", "", _bank(3000))
+        assert curator.llm.think.call_count == 1 + CONDENSE_PASSES
+        assert memory.rstrip("\n") == _bank(sizes[CONDENSE_PASSES])
+        error.assert_called_once()
+
+    def test_the_bank_each_pass_got_is_kept_in_the_memory_log(self, tmp_path, monkeypatch):
+        import assistant.agents.LongTermMemoryCurator as curator_mod
+        monkeypatch.setattr(curator_mod, "MEMORY_LOG_DIR", tmp_path / "log")
+        curated, once = _bank(MEMORY_WORD_LIMIT + 2000), _bank(MEMORY_WORD_LIMIT + 1000)
+        curator = self._curator([f"<memory>{curated}</memory>", f"<section>{once}</section>",
+                                 f"<section>{_bank(MEMORY_WORD_LIMIT)}</section>"])
+        curator.curate_memory_with_data("history", "", _bank(3000))
+        kept = sorted(path.read_text() for path in (tmp_path / "log").glob("*before_condense*"))
+        assert kept == sorted([curated, once + "\n"])
+
     def test_the_condensing_pass_never_waits_for_a_batch(self):
         curator = self._curator([f"<section>{_bank(3000)}</section>"])
         curator.batch = True
@@ -335,6 +416,12 @@ class TestRunCondense:
         curator, _ = self._curator(tmp_path, f"<section>{_bank(100)}</section>", _bank(500))
         LongTermMemoryCurator.run_condense(cut=123, curator=curator)
         assert "123" in curator.llm.think.call_args.kwargs['user_message']
+
+    def test_a_given_cut_is_one_pass_however_large_the_bank_stays(self, tmp_path):
+        left = _bank(MEMORY_WORD_LIMIT + 1500)
+        curator, path = self._curator(tmp_path, f"<section>{left}</section>", _bank(MEMORY_WORD_LIMIT + 2000))
+        LongTermMemoryCurator.run_condense(cut=500, curator=curator)
+        assert curator.llm.think.call_count == 1 and path.read_text().rstrip("\n") == left
 
     def test_a_pass_that_removed_nothing_leaves_the_bank_alone(self, tmp_path):
         bank = _bank(MEMORY_WORD_LIMIT + 300)

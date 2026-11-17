@@ -30,19 +30,26 @@ CURATION_CHUNK_DAYS = 4
 # prompt names no size at all: a model given a count and a limit tries to meet it by counting
 # words — 64000 output tokens of thinking twice in one night (2026-11-13), no bank written.
 MEMORY_WORD_LIMIT = 4000
-# A curated bank more than CONDENSE_TRIGGER over the limit gets a condensing pass after the
-# curation (`MemoryCondenser`, section by section), asked to cut CONDENSE_CUT of the limit or the
-# whole excess, whichever is more (`condense_cut`). The curation prompt cannot do it: with the
+# A curated bank more than CONDENSE_TRIGGER over the limit is condensed after the curation
+# (`MemoryCondenser`, section by section) and asked down to CONDENSE_AIM under the limit (`condense_cut`) —
+# under it, because the model gives a part of what it is asked for and never all of it
+# (2026-11-17: a 5283-word bank asked for 1783 lost 744). While the bank is still over the
+# trigger the pass runs again, CONDENSE_PASSES times at most: each pass gets about half of the
+# one before (468, 196, 103 that day), so a fourth buys little. A pass that removes less than
+# CONDENSE_MIN_DELIVERY of its ask ends the loop with an error — the next would do no better.
+# The curation prompt cannot do the cutting: with the
 # period's interactions and the "never drop a fact" rules in front of it the model rewords an
 # oversize bank at the same length however plainly it is told to cut — three nights
 # at ~5000 words, and a test pass with the full prompt cut 8 words of 992 asked. After, not
 # before: a pass before the curation lands the bank on the limit and the curation then adds the
 # period's facts on top of it (a 5269-word bank condensed to 4020 came back at 4357), so the bank
 # saved was over the limit every night; condensed last, what is saved is the condensed bank.
-# Trigger above the cut: a hysteresis, so a bank hovers under the trigger instead of being
-# condensed every night.
+# Trigger above the limit, aim below it, both as a share of it: a hysteresis, so a condensed
+# bank takes a few nights to grow back to the trigger instead of being condensed every night.
 CONDENSE_TRIGGER = 0.10
-CONDENSE_CUT = 0.20
+CONDENSE_AIM = 0.125
+CONDENSE_PASSES = 3
+CONDENSE_MIN_DELIVERY = 0.10
 # How long a nightly run waits for its batch before it makes the ordinary full-price call
 # (`ai.memory_curator.batch_wait_minutes`): from the 04:00 run, done before the house wakes.
 BATCH_WAIT_MINUTES = 90
@@ -94,6 +101,8 @@ The long-term memory has three parts:
 ## Procedures (index only):
 {PROCEDURES}
 
+{IN_PROMPT}
+
 ## Your task:
 Update the memory bank based on new information. You may add, modify, remove and restructure information as needed.
 Keep the memory bank concise: a fact the period supersedes is replaced, not kept beside the new one, and what is outdated goes. Its size is not yours to manage - do not count words.
@@ -105,6 +114,9 @@ Rules:
 - The bank does NOT include command syntax or how to interpret commands (the AI already understands natural language and has extensive knowledge of available commands). A procedure is different: there the exact commands and code that worked are the point
 - Do NOT include song/playlist/favorite IDs
 - Focus on personal preferences, patterns, and facts about the family that help personalization
+- The bank is about the family and their world, never about the Keep software. Leave out how the system works, what it
+  can and cannot do, its bugs and workarounds, etc. All of that changes with every release, and the AI has its own
+  documentation for it
 - When a user corrects a misheard command (e.g. by saying "No, I said X" right after), the original action was based on a MISHEARD phrase. Record the STT correction, but do NOT add anything from the misinterpreted action as a genuine preference
 - Be very mindful of making assumptions - errors sneak easily into the memory bank and can propagate over time - so only enter things you are sure of in the memory
 - Remove a fact only when it of extremely low value or recent interactions give positive evidence against it: contradicted, superseded, explicitly retracted, or expired. Not being mentioned in this period's logs is not necessarily staleness
@@ -318,11 +330,11 @@ class LongTermMemoryCurator:
 
     @classmethod
     def run_condense(cls, cut: int = None, history=None, curator: 'LongTermMemoryCurator' = None) -> dict | None:
-        """The condensing pass alone on the live bank (`//memory_condense`): `cut` words asked
-        off it, `condense_cut` when not given. The bank and a journal are saved as after a
-        curation and the completion left in `history`; under the curation lock like a run.
-        Returns the pass's outcome, None when another curation held the lock or the pass
-        removed nothing (the bank is then untouched)."""
+        """The condensing alone on the live bank (`//memory_condense`): one pass asked for `cut`
+        words, or without it the nightly rule (`_condense`). The bank and a journal are saved as
+        after a curation and the completion left in `history`; under the curation lock like a
+        run. Returns the outcome, None when another curation held the lock or nothing was
+        removed (the bank is then untouched)."""
         if not cls._curation_lock.acquire(blocking=False):
             info("Rem: already dreaming — skipping the condensing pass.")
             return None
@@ -591,24 +603,66 @@ class LongTermMemoryCurator:
 
     @staticmethod
     def condense_cut(word_count: int) -> int:
-        """The words a condensing pass is asked to remove: the whole excess, at least CONDENSE_CUT
-        of the limit — so one pass brings a bank far over the limit back to it."""
-        return max(int(MEMORY_WORD_LIMIT * CONDENSE_CUT), word_count - MEMORY_WORD_LIMIT)
+        """The words a condensing pass is asked to remove: everything over the aim, CONDENSE_AIM
+        under the limit — more than the excess, since a pass delivers a part of its ask."""
+        return max(0, word_count - int(MEMORY_WORD_LIMIT * (1 - CONDENSE_AIM)))
 
     def _condense(self, bank: str, cut: int = None) -> tuple[str, dict]:
-        """The condensing pass (`MemoryCondenser`): the bank back shorter, with what happened
-        for the journal. `cut` is the words asked off it, `condense_cut` when not given. Never
-        a batch — a handful of small calls, a few minutes of work."""
-        words = self.word_count(bank)
-        cut = self.condense_cut(words) if cut is None else cut
-        info(f"Rem: condensing pass on {words} words (limit {MEMORY_WORD_LIMIT}), asked to remove {cut} words")
-        condensed, outcome = MemoryCondenser(self.llm, MEMORY_WORD_LIMIT).condense(bank, cut)
-        if self.word_count(condensed) >= words:
-            info("Rem: the condensing pass removed nothing — the bank stays as it was")
-            return bank, outcome
-        info(f"Rem: condensed to {outcome['to']} words (was {words})"
-             + (" — still over the limit" if outcome['to'] > MEMORY_WORD_LIMIT else ""))
-        return condensed, outcome
+        """The condensing (`MemoryCondenser`): the bank back shorter, with what happened for the
+        journal. Without `cut` the nightly rule: a pass asked for `condense_cut`, and again
+        while the bank is over the trigger, CONDENSE_PASSES at most. With `cut` one pass asked
+        for that many words. The bank each pass got is copied to log/memory/. `bank` itself
+        comes back when nothing was removed. Never a batch — small calls, a few minutes a pass."""
+        start = self.word_count(bank)
+        current, passes = bank, []
+        for number in range(1, CONDENSE_PASSES + 1):
+            words = self.word_count(current)
+            asked = self.condense_cut(words) if cut is None else cut
+            info(f"Rem: condensing pass {number} on {words} words (limit {MEMORY_WORD_LIMIT}), "
+                 f"asked to remove {asked} words")
+            self._keep_before_pass(current, number)
+            condensed, outcome = MemoryCondenser(self.llm, MEMORY_WORD_LIMIT).condense(current, asked)
+            passes.append(outcome)
+            removed = words - self.word_count(condensed)
+            if removed > 0:
+                current = condensed
+            else:
+                info(f"Rem: condensing pass {number} removed nothing — the bank stays as it was")
+            left = self.word_count(current)
+            if cut is not None:
+                trace("Rem: a pass with a given cut is not repeated")
+                break
+            if not self.needs_condensing(left):
+                trace(f"Rem: {left} words, within the condense trigger — no further pass")
+                break
+            if removed < asked * CONDENSE_MIN_DELIVERY:
+                error(f"Rem: condensing pass {number} removed {max(removed, 0)} of the {asked} words asked, under "
+                      f"{CONDENSE_MIN_DELIVERY:.0%} — no further pass, the bank stays at {left} words "
+                      f"(limit {MEMORY_WORD_LIMIT})")
+                break
+            if number == CONDENSE_PASSES:
+                error(f"Rem: the bank is still {left} words after {CONDENSE_PASSES} condensing passes "
+                      f"(limit {MEMORY_WORD_LIMIT})")
+        to = self.word_count(current)
+        outcome = {'from': start, 'cut': passes[0]['cut'], 'to': to, 'passes': passes,
+                   'llm_duration_seconds': sum(p['llm_duration_seconds'] for p in passes),
+                   'usage': "; ".join(f"pass {n}: {p['usage']}" for n, p in enumerate(passes, 1))}
+        info(f"Rem: condensed to {to} words (was {start}) in {len(passes)} pass(es)"
+             + (" — still over the limit" if to > MEMORY_WORD_LIMIT else ""))
+        return current, outcome
+
+    @staticmethod
+    def _keep_before_pass(bank: str, number: int):
+        """The bank as a condensing pass got it, copied to log/memory/: the journal diffs the
+        bank as loaded against the bank as saved, so what a pass dropped shows only against
+        this copy."""
+        try:
+            MEMORY_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            path = MEMORY_LOG_DIR / f"{datetime.now():%Y%m%d_%H%M%S}_before_condense_pass{number}.md"
+            path.write_text(redact_for_storage(bank))
+            trace(f"Rem: the bank before condensing pass {number} kept in {path}")
+        except Exception as e:
+            error(f"Rem: could not keep the bank before condensing pass {number}: {e}")
 
     @staticmethod
     def _as_datetime(value: datetime | date) -> datetime:
@@ -672,7 +726,8 @@ class LongTermMemoryCurator:
             .replace("{WATCH_WORD_LIMIT}", str(WatchList.NOTE_WORD_LIMIT)) \
             .replace("{PERIOD}", period_text) \
             .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "") \
-            .replace("{TIPS}", self._tips_prompt())
+            .replace("{TIPS}", self._tips_prompt()) \
+            .replace("{IN_PROMPT}", self._in_prompt())
         full_prompt = prompt.replace("{CURRENT_MEMORY}", current_memory)
 
         # Send to LLM with thinking enabled for complex reasoning
@@ -684,7 +739,7 @@ class LongTermMemoryCurator:
         llm_call = LLMUsage.describe_call(self.llm)
         info(f"Rem: the curation call — {llm_call}")
 
-        response, commands = self._split_commands(response)
+        response, commands = self._split_commands(self._answer(response))
         new_memory, truncated = self._accept(response, current_memory)
         condense = None
         if new_memory is current_memory:
@@ -855,8 +910,11 @@ class LongTermMemoryCurator:
                     f.write("- Result: reply cut off at the output cap — previous bank kept\n")
                 if metadata.get('condense'):
                     c = metadata['condense']
-                    f.write(f"- Condensing pass: {c['from']} → {c.get('to', '?')} words (asked to remove {c['cut']}), "
-                            f"{c.get('llm_duration_seconds', 0):.1f}s\n")
+                    f.write(f"- Condensing: {c['from']} → {c.get('to', '?')} words in {len(c.get('passes', [])) or 1} "
+                            f"pass(es), {c.get('llm_duration_seconds', 0):.1f}s\n")
+                    for number, p in enumerate(c.get('passes', []), 1):
+                        f.write(f"- Condensing pass {number}: {p['from']} → {p['to']} words "
+                                f"(asked to remove {p['cut']})\n")
                     if c.get('usage'):
                         f.write(f"- Condensing calls: {c['usage']}\n")
                 f.write("\n")
@@ -896,12 +954,44 @@ class LongTermMemoryCurator:
         return MemoryFile.read(self.memory_file_path)
 
     @staticmethod
+    def _last_memory_tag(response: str) -> int | None:
+        """Where the last <memory> block of the reply opens, None without one. A tag that ends
+        its line is a block's; one inside a sentence (a bank that writes about the tag) counts
+        only when no other is there."""
+        tags = (list(re.finditer(r'<memory>(?=[ \t]*\n)', response))
+                or list(re.finditer(r'<memory>', response)))
+        return tags[-1].start() if tags else None
+
+    @classmethod
+    def _answer(cls, response: str) -> str:
+        """The reply from its last <memory> block on — the answer itself. A local model's
+        thinking can end early and arrive as the head of the reply (a bank that holds a literal
+        think-close tag, quoted while thinking: ds4 on 2026-11-17), with drafts of both blocks
+        in it; the bank and the commands are the last ones written. Commands drafted there are
+        never run: a reply whose only <commands> block stands before its bank runs none."""
+        start = cls._last_memory_tag(response)
+        if start is None:
+            trace("Rem: the reply has no <memory> block — reading it whole")
+            return response
+        head, answer = response[:start], response[start:]
+        if '<memory>' in head or '<commands>' in head:
+            info(f"Rem: {len(head)} chars before the reply's last <memory> block hold a block of their own "
+                 "— thinking that arrived as the reply, left out")
+        else:
+            trace(f"Rem: the reply's <memory> block opens at char {start}")
+        if '<commands>' in head and '<commands>' not in answer:
+            error("Rem: the reply's only <commands> block stands before its bank — a draft or a reply "
+                  "in the wrong order, its commands are NOT run")
+        return answer
+
+    @staticmethod
     def _split_commands(response: str) -> tuple[str, str]:
-        """The reply without its <commands> block, and the block's content ('' when there is
-        none). An unclosed block runs to the end of the reply."""
-        match = re.search(r'<commands>(.*?)(?:</commands>|\Z)', response, re.DOTALL)
-        if not match:
+        """The reply without its last <commands> block, and the block's content ('' when there
+        is none). An unclosed block runs to the end of the reply."""
+        start = response.rfind('<commands>')
+        if start < 0:
             return response, ""
+        match = re.compile(r'<commands>(.*?)(?:</commands>|\Z)', re.DOTALL).match(response, start)
         return response[:match.start()] + response[match.end():], match.group(1).strip()
 
     def _think_whole(self, prompt: str, what: str) -> str:
@@ -990,6 +1080,28 @@ class LongTermMemoryCurator:
     def tips_destination() -> str:
         """The group the run posts tips to (`ai.memory_curator.tips_destination`), '' when off."""
         return str(ConfigManager.get_instance().get(TIPS_KEY, '') or '').strip()
+
+    @staticmethod
+    def _in_prompt() -> str:
+        """What the AI's prompt holds live, for the curator to keep out of the bank: the data
+        sections of the integrations that are on, the vault's list and the toolkits on offer.
+        The curator sees none of that prompt, so without the list it cannot know what the
+        bank repeats."""
+        from ..commands import Toolkits
+        from ..integration.IntegrationMonitor import IntegrationMonitor
+        from ..prompt.PromptManager import PromptManager
+        monitor = IntegrationMonitor.get_instance()
+        sections, toolkits = PromptManager.data_headings(monitor), Toolkits.names(monitor)
+        trace(f"Rem: the prompt is told what the AI already has: sections {', '.join(sections) or 'none'}; "
+              f"{len(toolkits)} toolkit(s)")
+        lines = ["## Already in the AI's prompt (FYI):",
+                 "The AI has all of this live in every conversation. Do not repeat it in the bank:"]
+        if sections:
+            lines.append(f"- sections: {', '.join(sections)}")
+        lines.append("- the vault: every `{{secret:…}}` placeholder the bank does not use is listed there with its description")
+        if toolkits:
+            lines.append("- toolkits it loads when needed, each with its commands and live data: " + ", ".join(toolkits))
+        return "\n".join(lines)
 
     def _tips_prompt(self) -> str:
         destination = self.tips_destination()
@@ -1142,12 +1254,16 @@ class LongTermMemoryCurator:
              f"{sum(r.startswith('FAILED') for r in results)} failed")
         return results, unsaved
 
-    @staticmethod
-    def _extract_memory_content(response: str) -> str:
-        """Extract memory content from AI response, handling markdown code blocks."""
-        tagged = re.search(r'<memory>(.*?)(?:</memory>|\Z)', response, re.DOTALL)
-        if tagged:
-            return tagged.group(1).strip()
+    @classmethod
+    def _extract_memory_content(cls, response: str) -> str:
+        """The bank in the AI's reply: its last <memory> block, up to the last closing tag (a
+        bank may write about the tags) or, unclosed, to the end; without the tags a markdown
+        code block, else the reply as it is."""
+        start = cls._last_memory_tag(response)
+        if start is not None:
+            body = response[start + len('<memory>'):]
+            end = body.rfind('</memory>')
+            return (body if end < 0 else body[:end]).strip()
         # Try to extract from markdown code block
         match = re.search(r'```(?:markdown)?\s*(.*?)\s*```', response, re.DOTALL)
         if match:

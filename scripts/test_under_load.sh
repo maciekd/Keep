@@ -9,6 +9,9 @@
 #                           <output dir>/run_N.txt; the arguments replace `tests/unit` (the
 #                           tests a fix touched, say)
 #
+# The suite reads the config the caller's FLOXY_CONFIG names (config.yaml without it): the nightly
+# run adds one pass with config.example.yaml, the config the CI runners and a fresh clone have.
+#
 # The loops and the suite both run niced: they contend with each other as equals, and whatever
 # else the machine does (the server) keeps its normal priority and gets the CPU when it wants it.
 # LOAD_PROCESSES overrides the number of loops. A loop ends by itself once this script is gone,

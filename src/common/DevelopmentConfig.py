@@ -88,7 +88,7 @@ def command_format_env() -> str | None:
 # history cache breakpoint sits on the last message and each round reads what the previous one wrote.
 BYTE_PREFIX_TAIL = os.environ.get("FLOXY_BYTE_PREFIX_TAIL", "1") != "0"
 
-# TTL of the Anthropic prompt-cOk lache system blocks (one per <<<CACHE_BREAKPOINT>>> marker,
+# TTL of the Anthropic prompt-cache system blocks (one per <<<CACHE_BREAKPOINT>>> marker,
 # ordered stable → volatile; see ClaudeLLM._build_cached_system).
 # A cache read refreshes the TTL, so a block only expires after an idle gap longer than its TTL.
 # "1h" (write costs 2x input) survives the 5–60 min gaps between real user voice queries where a

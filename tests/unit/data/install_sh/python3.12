@@ -1,0 +1,4 @@
+#!/bin/bash
+# install.sh's test double for a `python3.12`: records what it was asked in KEEP_TEST_ASKED.
+# Checked in, not written by the test: macOS assesses a new executable file on its first run.
+echo "$*" > "$KEEP_TEST_ASKED"

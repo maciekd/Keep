@@ -137,7 +137,8 @@ class PromptSectionGenerator(ABC):
         """Wiping good content over a transient outage would blind the LLM, so keep it and mark it stale instead."""
         if self.content and not self.content.startswith("ERROR:"):
             if self._refresh_failed_at is not None:
-                error(f"Failed to update section '{self.section_name}' after {max_retries} attempts: {e}. Content already marked stale since {self._refresh_failed_at}.")
+                # The outage was an error when it began; every refresh it lasts is not a new one.
+                info(f"Failed to update section '{self.section_name}' after {max_retries} attempts: {e}. Content already marked stale since {self._refresh_failed_at}.")
                 return
             self._refresh_failed_at = time.strftime("%H:%M")
             error(f"Failed to update section '{self.section_name}' after {max_retries} attempts: {e}. Keeping last good content, marked stale.")

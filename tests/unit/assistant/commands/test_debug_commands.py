@@ -310,6 +310,20 @@ def test_wipe_installs_the_dummy_config_when_there_is_one(wipe_env):
         assert zf.read("external/" + str(root / "config.yaml").lstrip("/")) == b"api_keys:\n  openai: sk-real\n"
 
 
+def test_the_wipe_backup_is_the_owners_alone_whatever_the_umask(wipe_env):
+    """The zip holds config.yaml and the vault: under Ubuntu's umask it would be readable by
+    the group and everybody else, long after the files it copied are gone."""
+    root, stops = wipe_env
+    old = os.umask(0o002)
+    try:
+        DebugCommands().handle("//wipe confirm")
+    finally:
+        os.umask(old)
+    _wait_for_stop(stops)
+    [backup] = (root / "cache" / "wipe-backups").glob("floxy-wipe-*.zip")
+    assert backup.stat().st_mode & 0o077 == 0
+
+
 def test_wipe_carries_on_past_an_item_it_cannot_delete(wipe_env, monkeypatch):
     root, stops = wipe_env
     real_rmtree = dc_mod.shutil.rmtree
@@ -538,11 +552,11 @@ def condense(monkeypatch):
     return run
 
 
-def test_memory_condense_over_the_limit_asks_the_nightly_cut(condense):
-    from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator, MEMORY_WORD_LIMIT
+def test_memory_condense_over_the_limit_runs_the_nightly_rule(condense):
+    from assistant.agents.LongTermMemoryCurator import MEMORY_WORD_LIMIT
     history = object()
     reply = condense("//memory_condense", MEMORY_WORD_LIMIT + 300, history=history)
-    assert condense.calls == [(LongTermMemoryCurator.condense_cut(MEMORY_WORD_LIMIT + 300), history)]
+    assert condense.calls == [(None, history)]      # no cut of its own: the curator's passes decide
     assert str(MEMORY_WORD_LIMIT + 300) in reply
 
 

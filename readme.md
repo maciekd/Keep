@@ -3,6 +3,10 @@
 <p align="center">
 Self-hosted digital assistant
 </p>
+<p align="center">
+<a href="https://github.com/maciekd/Keep/actions/workflows/linux.yml"><img src="https://github.com/maciekd/Keep/actions/workflows/linux.yml/badge.svg?branch=master" alt="Linux tests"></a>
+<a href="https://github.com/maciekd/Keep/actions/workflows/mac.yml"><img src="https://github.com/maciekd/Keep/actions/workflows/mac.yml/badge.svg?branch=master" alt="Mac tests"></a>
+</p>
 <br>
 
 <table>

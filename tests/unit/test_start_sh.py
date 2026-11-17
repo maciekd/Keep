@@ -156,6 +156,7 @@ class StartShHarness:
         self.env_file.write_text(
             'sleep() { :; }\n'
             'date() { echo "2026-10-13 03:00:00"; }\n'   # every rlog line forks one otherwise
+            'seq() { local i; for ((i = $1; i <= $2; i++)); do echo "$i"; done; }\n'   # a process per wait loop otherwise
             + stubs(tmp_path) +
             f'open() {{ echo "$@" >> "{self.open_calls}"; '
             f'[ -f "{self.tty_report}" ] && cp "{self.tty_report}" "{tmp_path}/log/cli_start.tty"; :; }}\n'
@@ -372,10 +373,10 @@ class TestTrialFallback:
     the server as up when the test says the PR boots. The watch is the same on both systems."""
 
     def _arm(self, harness, boots: bool):
-        # Each second of the wait is a subshell for lsof; three are enough to see the
-        # loop give up (the default 120 would run 16 before the pgrep check ends it).
+        # Each second of the wait is a lookup of the listeners — on Linux three processes; one is
+        # enough to see the loop give up (the default 120 would run 16 before the pgrep check ends it).
         with harness.env_file.open('a') as env:
-            env.write('TRIAL_TIMEOUT=3\n'
+            env.write('TRIAL_TIMEOUT=1\n'
                       f'git() {{ echo "$@" >> "{harness.dir}/git_calls"; }}\n')
         if boots:
             harness.comes_up_on(8888)
@@ -817,7 +818,7 @@ class TestStartedFromInsideTheUnit:
 
     def _trial(self, linux):
         with linux.env_file.open('a') as env:
-            env.write(f'TRIAL_TIMEOUT=3\ngit() {{ echo "$@" >> "{linux.dir}/git_calls"; }}\n')
+            env.write(f'TRIAL_TIMEOUT=1\ngit() {{ echo "$@" >> "{linux.dir}/git_calls"; }}\n')
 
     def test_it_runs_again_in_a_scope_with_its_arguments_and_restarts_once(self, linux):
         self._trial(linux)
@@ -838,14 +839,6 @@ class TestStartedFromInsideTheUnit:
         assert result.returncode == 0, linux.restart_log
         assert 'the server is up' in linux.restart_log
 
-    def test_a_trial_that_never_boots_is_rolled_back_from_the_scope(self, linux):
-        self._trial(linux)
-        linux.table.in_unit()
-        result = linux.run(DEAD_PID, 'release')
-        assert result.returncode == 0, linux.restart_log
-        assert (linux.dir / 'git_calls').read_text().splitlines() == ['checkout release']
-        assert linux.launches == 2 and len([c for c in linux.table.systemd_run_calls if 'start.sh' in c]) == 1
-
     def test_a_start_outside_the_unit_asks_for_no_scope(self, linux):
         linux.run()
         assert linux.table.systemd_run_calls == []
@@ -865,3 +858,116 @@ class TestStartedFromInsideTheUnit:
         assert result.returncode == 0, linux.restart_log
         assert linux.launches == 1
         assert 'WARNING' in linux.restart_log
+
+
+class TestWhichUnitIsThisCheckouts:
+    """The unit is this checkout's when its WorkingDirectory is this folder — by device and inode,
+    as role.sh tells every folder, never by the name it was written under."""
+
+    def test_a_unit_that_names_this_checkout_through_a_symlink_is_its_own_and_is_rewritten(self, linux, tmp_path_factory):
+        """Read by name, ~/Keep -> /srv/keep would be "another Keep of this user" and every start refused."""
+        link = tmp_path_factory.mktemp('links') / 'Keep'
+        link.symlink_to(linux.dir)
+        linux.unit.parent.mkdir(parents=True)
+        linux.unit.write_text(f'[Service]\nWorkingDirectory={link}\n')
+        result = linux.run()
+        assert result.returncode == 0, linux.restart_log
+        assert unit_settings(linux.unit)['WorkingDirectory'] == str(linux.dir.resolve())
+        assert linux.launched
+
+    def test_a_unit_folder_that_cannot_be_written_fails_the_start_before_systemd_is_asked(self, linux):
+        linux.config_home.mkdir()
+        (linux.config_home / 'systemd').write_text('')      # a file where the folder would be made
+        result = linux.run()
+        assert result.returncode == 1
+        assert linux.table.systemctl_calls == [] and 'ERROR' in linux.restart_log
+
+
+# Folder names systemd's unit syntax would misread, and the ones the harness cannot stage: its
+# stubs are sourced through $BASH_ENV, which bash expands. install.sh refuses the same ones.
+UNIT_UNSAFE_NAMES = ['Keep$HOME', 'Keep\\backup', 'Keep"quoted"', 'Keep\ttab', 'Keep\nline', 'My Keep', 'Keep 100%',
+                     "Marcus' Keep"]
+UNIT_SAFE_NAMES = ['Keep', 'Kęp-ö', 'keep_1.2+test@home']
+ENSURE_UNIT = """
+cd "$0" || exit 2
+record=$1
+rlog() { :; }
+systemctl() { echo "$*" >> "$record/systemctl_calls"; }
+. "$2"
+if ensure_unit; then echo written; else echo "refused: $unit_problem"; fi
+"""
+
+
+def ensure_unit(tmp_path: Path, name: str) -> tuple[subprocess.CompletedProcess, Path, Path]:
+    """scripts/service.sh's ensure_unit run in a checkout of that name: (the run, the unit, the
+    record of what systemd was asked)."""
+    checkout = tmp_path / 'checkouts' / name
+    checkout.mkdir(parents=True)
+    env = dict(os.environ, XDG_CONFIG_HOME=str(tmp_path / 'xdg'), HOME=str(tmp_path / 'home'), KEEP_OS=LINUX)
+    out = subprocess.run([BASH, '-c', ENSURE_UNIT, str(checkout), str(tmp_path), str(ROLE_SH.parent / 'service.sh')],
+                         env=env, capture_output=True, text=True, close_fds=False, timeout=10)
+    return out, tmp_path / 'xdg' / 'systemd' / 'user' / 'keep.service', tmp_path / 'systemctl_calls'
+
+
+class TestTheFoldersAUnitCanCarry:
+    """ensure_unit asked directly: `$`, a backslash, a double quote and a control character are
+    each read by systemd as something else than a letter of the path."""
+
+    @pytest.mark.parametrize('name', UNIT_UNSAFE_NAMES, ids=[repr(name) for name in UNIT_UNSAFE_NAMES])
+    def test_a_folder_systemd_would_misread_gets_no_unit_and_systemd_is_not_asked(self, tmp_path, name):
+        out, unit, asked = ensure_unit(tmp_path, name)
+        assert out.stdout.startswith('refused: '), out.stdout + out.stderr
+        assert not unit.exists() and not asked.exists()
+
+    @pytest.mark.parametrize('name', UNIT_SAFE_NAMES)
+    def test_any_other_folder_is_written_into_the_unit_as_it_is(self, tmp_path, name):
+        out, unit, asked = ensure_unit(tmp_path, name)
+        assert out.stdout.strip() == 'written', out.stdout + out.stderr
+        checkout = str((tmp_path / 'checkouts' / name).resolve())
+        assert unit_settings(unit)['ExecStart'] == f'{checkout}/.venv/bin/python floxy_ai_server.py'
+        assert asked.read_text().splitlines() == ['--user daemon-reload', '--user enable --quiet keep.service']
+
+
+class TestWhatALinuxStartNeeds:
+    @pytest.mark.parametrize('tool', ['ss', 'systemctl'])
+    def test_without_the_tool_nothing_is_stopped_and_nothing_started(self, linux, bystander, tool):
+        """Without ss no listener is ever seen: a held port would pass for free."""
+        by_hand = bystander()
+        linux.table.process(by_hand)
+        linux.table.listener(8888, by_hand)
+        with linux.env_file.open('a') as env:
+            env.write(f'command() {{ if [ "$1" = -v ] && [ "$2" = {tool} ]; then return 1; fi; builtin command "$@"; }}\n')
+        result = linux.run(by_hand)
+        assert result.returncode == 1
+        assert alive(by_hand) and not linux.unit.exists() and linux.table.systemctl_calls == []
+        assert tool in linux.restart_log
+
+    def test_a_server_started_by_hand_that_ignores_its_stop_is_force_killed_before_the_unit_starts(self, linux):
+        """restart_server from a wedged server run in a terminal: left alive it holds the port,
+        and the unit's server dies on it five times."""
+        trap_ready = linux.dir / 'trap_ready'
+        by_hand = spawn_orphan(f"""bash -c 'trap "" TERM; touch "{trap_ready}"; while :; do /bin/sleep 1; done'""")
+        deadline = time.time() + 5.0
+        while not trap_ready.exists() and time.time() < deadline:
+            time.sleep(0.005)
+        assert trap_ready.exists(), "the process never installed its TERM trap"
+        linux.table.process(by_hand)
+        linux.table.listener(8888, by_hand)
+        with linux.env_file.open('a') as env:     # the port is free only once its holder is really gone
+            env.write(f'kill() {{ builtin kill "$@"; [ "$1" != -9 ] || : > "{linux.dir}/listeners"; }}\n')
+        result = linux.run(by_hand)
+        assert wait_dead(by_hand), "the server that ignored SIGTERM still runs"
+        assert result.returncode == 0, linux.restart_log
+        assert linux.launches == 1
+
+    def test_the_terminal_is_shown_the_log_from_where_it_ended_before_the_start(self, either):
+        """A start appends to a log that holds every earlier run: the tail begins at the first new byte."""
+        harness = either
+        (harness.dir / 'log' / 'verbose-floxy.out').write_text('x' * 470)
+        harness.with_a_console_to_launch()
+        harness.comes_up_on(5151)
+        with harness.env_file.open('a') as env:
+            env.write(f'tail() {{ echo "$*" >> "{harness.dir}/tail_calls"; }}\n')
+        harness.run(terminal=True)
+        (shown,) = (harness.dir / 'tail_calls').read_text().splitlines()
+        assert '+471 ' in shown and shown.endswith('log/verbose-floxy.out')

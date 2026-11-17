@@ -32,7 +32,7 @@ from colorama import init
 import common.DevelopmentConfig as DevelopmentConfig
 from common.DevelopmentConfig import PREPEND_USER_QUERY_OVERRIDE
 from common.logging import error, info, trace, note
-from common import ConfigMigrations, Migrations, Platform, Role, Version
+from common import ConfigMigrations, Migrations, Platform, Role, UncaughtExceptions, Version
 from common.ConfigManager import config, REQUIRED_KEYS
 from common.RequirementsChecker import RequirementsChecker
 from common.StderrLogger import StderrLogger
@@ -443,6 +443,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
 
 
 async def main(server: Server):
+    UncaughtExceptions.watch_loop(asyncio.get_running_loop())
     server.assistant.start()
     for iface in server.interfaces:
         await iface.start_async()
@@ -586,6 +587,7 @@ def _serve_satellite():
 
 def _launch():
     _enable_crash_traces()
+    UncaughtExceptions.install()
     info(_TLS_TRUST)
     port, testsuite = _parse_args()
     RequirementsChecker.verify_or_exit()

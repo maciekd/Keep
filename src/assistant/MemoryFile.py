@@ -14,10 +14,13 @@ The prompt shows the bank in two places (`split`): the part the curator last wro
 top, and what `remember` appended since, lower down. A `remember` then leaves the top of the
 prompt byte-identical, which keeps the LLM's prompt cache alive between curations. `write`
 records where the curated part ends in a sidecar, `<bank>.curated`.
+
+The bank never holds a literal think tag (`without_think_tags`, applied by both writers).
 """
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
 
@@ -34,7 +37,22 @@ FIRST_RUN_STUB = RES_DIR / "first_run_memory.md"
 # What the stub opens with; a bank that still starts so has never been curated.
 PLACEHOLDER_HEADING = "# Long-term memory bank (placeholder)"
 
+# The tags a local model's server marks the thinking with, in any spacing and case.
+THINK_TAG = re.compile(r'<\s*(/?)\s*think(?:ing)?\s*>', re.IGNORECASE)
+
 lock = threading.RLock()
+
+
+def without_think_tags(text: str) -> str:
+    """`text` with every literal think tag put in words. The bank is part of every prompt, and
+    a model that quotes one from it while thinking has closed its thinking as far as its server
+    is concerned: the rest of the thinking then arrives as the reply (ds4, 2026-11-17 — a note
+    about a reasoning bug cost the nightly curation four runs out of eight). The same for an
+    opening tag quoted in an answer, which swallows what follows."""
+    cleaned, count = THINK_TAG.subn(lambda tag: "think-close tag" if tag.group(1) else "think-open tag", text)
+    if count:
+        info(f"Memory bank: {count} literal think tag(s) put in words before storing")
+    return cleaned
 
 
 def _ensure_parent(path: str):
@@ -82,7 +100,7 @@ def is_placeholder(text: str) -> bool:
 
 
 def append(text: str, path: str = MEMORY_FILE):
-    text = redact_for_storage(text)
+    text = without_think_tags(redact_for_storage(text))
     with lock:
         _ensure_parent(path)
         with open(path, "a") as f:
@@ -92,7 +110,7 @@ def append(text: str, path: str = MEMORY_FILE):
 
 def write(text: str, path: str = MEMORY_FILE):
     """Replace the whole file in one step (write a sibling temp file, then rename over)."""
-    text = redact_for_storage(text)
+    text = without_think_tags(redact_for_storage(text))
     with lock:
         _ensure_parent(path)
         tmp = f"{path}.tmp"

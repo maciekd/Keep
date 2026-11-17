@@ -31,6 +31,11 @@ def stuck(request, monkeypatch):
             release.wait(5)
 
     monkeypatch.setattr(monitor, sample_method, sample)
+    if hasattr(monitor, "_lower_priority"):
+        # The log scanner's loop moves itself into macOS's background band — for real, and on a
+        # machine with every core taken such a thread is not run for seconds: the loop under
+        # test would not reach its first sample within the wait below.
+        monkeypatch.setattr(monitor, "_lower_priority", lambda: None)
     monitor.start()
     assert entered.wait(5)
     yield monitor, release, samples

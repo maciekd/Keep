@@ -53,9 +53,9 @@ class TestWaitForNetworkIdle:
 
     def test_a_page_without_captured_traffic_passes_straight_through(self):
         wa = make_wa()
-        started = time.time()
-        assert run(wa._async_wait_for_network_idle()) == "idle:no-traffic"
-        assert time.time() - started < 0.02
+        with patch("assistant.tools.WebAccess.asyncio.sleep", new=AsyncMock()) as poll:
+            assert run(wa._async_wait_for_network_idle()) == "idle:no-traffic"
+        poll.assert_not_awaited()
 
     def test_waits_for_an_in_flight_request_to_finish(self):
         wa = make_wa()

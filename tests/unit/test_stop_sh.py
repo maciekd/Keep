@@ -169,6 +169,15 @@ class TestTheSystemdUnit:
         assert result.returncode == 0
         assert linux.table.systemctl_calls == [], "stopping this install stopped the other one's service"
 
+    def test_a_unit_that_names_this_checkout_through_a_symlink_is_stopped(self, linux, tmp_path_factory):
+        """The folder is told by device and inode, not by the name the unit was written under:
+        passed over, the unit's server would only be signalled as a leftover process."""
+        link = tmp_path_factory.mktemp('links') / 'Keep'
+        link.symlink_to(linux.dir)
+        linux.unit_of(link)
+        linux.run()
+        assert linux.table.systemctl_calls == ['--user stop keep.service']
+
     def test_a_systemd_that_does_not_answer_still_stops_the_processes(self, linux):
         victim = spawn_orphan('/bin/sleep 300')
         linux.unit_of(linux.dir)

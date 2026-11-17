@@ -2235,6 +2235,107 @@ class TestChecksGiveWayToTheUser:
         assert not mgr.is_user_interaction_active(0)
 
 
+real_sleep = time.sleep   # the module's `time.sleep` is patched where a retry waits
+
+
+class TestACheckThatGaveWayRunsAgain:
+    """A check that gave way is not lost: it runs once more when the user has been quiet."""
+
+    @staticmethod
+    def manager(night=False):
+        mgr, _ = make_manager(prompt_manager=make_mock_prompt_manager(night=night))
+        mgr.test_mode = False
+        mgr.running = True
+        mgr.activity_check = Mock()
+        return mgr
+
+    @staticmethod
+    def wait_for_retries():
+        for thread in threading.enumerate():
+            if thread.name == "CheckRetry":
+                thread.join(5)
+
+    @pytest.fixture(autouse=True)
+    def no_real_waiting(self):
+        with patch('assistant.agents.AutonomousActionManager.time.sleep', side_effect=lambda _s: real_sleep(0.001)):
+            yield
+
+    def test_the_check_that_gave_way_is_asked_for_again_and_one_that_ran_is_not(self):
+        mgr, _, _ = TestChecksGiveWayToTheUser.check()
+        mgr._retry_when_quiet = Mock()
+
+        TestChecksGiveWayToTheUser.run(mgr)
+        mgr._retry_when_quiet.assert_not_called()
+
+        mgr.notify_user_interaction_started()
+        TestChecksGiveWayToTheUser.run(mgr)
+        assert mgr._retry_when_quiet.call_args.args[0] == "p"
+
+    def test_it_waits_for_the_request_to_end_and_the_quiet_period_after_it(self):
+        mgr = self.manager()
+        mgr.notify_user_interaction_started()
+        mgr._retry_when_quiet(None, None, None, quiet=60)
+        real_sleep(0.01)
+        mgr.activity_check.assert_not_called()
+
+        mgr.notify_user_interaction_ended()
+        real_sleep(0.01)
+        mgr.activity_check.assert_not_called()   # over, but only just
+
+        mgr.last_user_interaction_at -= 61
+        self.wait_for_retries()
+        mgr.activity_check.assert_called_once_with(None, wakeup=None, due=None)
+
+    def test_several_plain_checks_waiting_are_one_but_every_wake_up_keeps_its_own(self):
+        mgr = self.manager()
+        wakeups = [{"id": "w1", "reason": "the oven"}, {"id": "w2", "reason": "the laundry"}]
+        mgr.notify_user_interaction_started()
+        for _ in range(3):
+            mgr._retry_when_quiet(None, None, None, quiet=0)
+        for wakeup in wakeups:
+            mgr._retry_when_quiet(None, wakeup, None, quiet=0)
+
+        mgr.notify_user_interaction_ended()
+        self.wait_for_retries()
+
+        ran = [call.kwargs["wakeup"] for call in mgr.activity_check.call_args_list]
+        assert ran.count(None) == 1
+        assert sorted(w["id"] for w in ran if w) == ["w1", "w2"]
+
+    def test_a_plain_check_can_wait_again_after_the_one_before_it_ran(self):
+        mgr = self.manager()
+        for _ in range(2):
+            mgr._retry_when_quiet(None, None, None, quiet=0)
+            self.wait_for_retries()
+        assert mgr.activity_check.call_count == 2
+
+    def test_night_mode_drops_a_plain_retry_and_keeps_a_wake_up(self):
+        mgr = self.manager(night=True)
+        mgr._retry_when_quiet(None, None, None, quiet=0)
+        self.wait_for_retries()
+        mgr.activity_check.assert_not_called()
+
+        wakeup = {"id": "w1", "reason": "the oven"}
+        mgr._retry_when_quiet(None, wakeup, None, quiet=0)
+        self.wait_for_retries()
+        mgr.activity_check.assert_called_once_with(None, wakeup=wakeup, due=None)
+
+        # the dropped plain check no longer stands in the way of the next one
+        mgr.prompt_manager.is_night_mode_active.return_value = False
+        mgr._retry_when_quiet(None, None, None, quiet=0)
+        self.wait_for_retries()
+        assert mgr.activity_check.call_count == 2
+
+    def test_a_retry_that_fails_does_not_end_in_an_uncaught_exception(self):
+        mgr = self.manager()
+        mgr.activity_check.side_effect = RuntimeError("the model is away")
+        uncaught = []
+        with patch.object(threading, "excepthook", lambda args: uncaught.append(args)):
+            mgr._retry_when_quiet(None, None, None, quiet=0)
+            self.wait_for_retries()
+        assert mgr.activity_check.called and uncaught == []
+
+
 class TestBracketsSurviveInTheHistory:
     """2026-11-16: every `[…]` was stripped from a check's stored reply (meant for emotion
     tags), so `…allowed_chat_ids[4]` read as a delete of the whole list."""

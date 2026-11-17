@@ -87,6 +87,15 @@ class TestMacOnlyIntegrationInTheSetupCommands:
             commands._run_disable_integration("Photos")
         write.assert_called_once_with("Photos")
 
+    def test_restarting_it_says_why_it_did_not_start_and_offers_no_enable(self, commands):
+        """Its state is `disabled`, and a disabled integration's restart answer ends with the
+        enable_integration line — the one command that can never work here."""
+        monitor = Mock()
+        monitor.restart.return_value = {"restartable": True, "status": _statuses()[0]}
+        with patch.object(Commands, "_integration_monitor", return_value=monitor):
+            answer = commands._run_restart_integration("Photos")
+        assert "only on a Mac" in answer and "enable_integration" not in answer and "restarted" not in answer
+
 
 @pytest.mark.unit
 class TestMacOnlyConfig:
@@ -103,6 +112,18 @@ class TestMacOnlyConfig:
             answer = commands.cmd_config_set(Watchdog.KEY, "true")
         write.assert_not_called()
         assert "systemd" in answer
+
+    @pytest.mark.parametrize("key, said", [("local_outposts.location", "only on a Mac"), (Watchdog.KEY, "systemd")])
+    def test_the_user_is_not_asked_to_type_a_value_that_would_not_be_written(self, commands, linux, key, said):
+        with patch.object(commands, "background_command") as ask:
+            answer = commands.cmd_config_request(key)
+        ask.assert_not_called()
+        assert said in answer
+
+    def test_on_a_mac_the_user_is_asked_for_the_same_key(self, commands, mac):
+        with patch.object(commands, "background_command") as ask:
+            assert commands.cmd_config_request("local_outposts.location") is None
+        ask.assert_called_once()
 
     def test_a_watchdog_key_taken_out_on_linux_is_not_answered_with_the_macs_launchd_agent(self, linux):
         """config_delete takes the key out of a config copied from a Mac, and its answer ends

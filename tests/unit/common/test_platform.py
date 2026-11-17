@@ -15,11 +15,26 @@ _ASKS_THE_OS = re.compile(r"\bsys\.platform\b|\bos\.(?:name|uname)\b|^\s*(?:impo
                           r"|^\s*from\s+sys\s+import\b.*\bplatform\b", re.MULTILINE)
 
 
+# Every alternative of the pattern holds one of these words: the pattern, which tries each line
+# start of five megabytes of source, runs only over a file that has one.
+_WORDS = ("platform", "os.name", "os.uname")
+
+
+def _asks_the_os(text: str) -> bool:
+    return any(word in text for word in _WORDS) and bool(_ASKS_THE_OS.search(text))
+
+
 def _modules_asking_the_os() -> set[str]:
     files = [*SRC_DIR.rglob("*.py"), *AISERVER_DIR.glob("*.py")]
     assert len(files) > 100, "the glob is looking in the wrong place"
     return {str(path.relative_to(AISERVER_DIR)) for path in files
-            if path != SRC_DIR / "common" / "Platform.py" and _ASKS_THE_OS.search(path.read_text())}
+            if path != SRC_DIR / "common" / "Platform.py" and _asks_the_os(path.read_text())}
+
+
+@pytest.mark.parametrize("line", ["if sys.platform == 'darwin':", "import platform", "    from platform import machine",
+                                  "from sys import argv, platform", "if os.name == 'posix':", "os.uname().sysname"])
+def test_each_way_of_asking_the_os_is_seen(line):
+    assert _asks_the_os(f"import os\n\n{line}\n")
 
 
 def test_no_module_but_platform_asks_the_os_what_it_is():

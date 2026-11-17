@@ -35,9 +35,7 @@ condensed. Keep the heading line as it is. A section can shrink to its heading a
 its place.
 
 The words are counted for you: every section comes with what has been removed so far and what is still to go. So
-never count or tally words yourself. The numbers are a rough guide to how hard to cut, not a target to hit -
-landing well over or under on a section is fine, the following sections even it out. Decide what goes by reading
-the section once, then write it.
+never count or tally words yourself.
 
 ## Output format
 The condensed section (markdown, heading included) between <section> and </section>. Nothing else.

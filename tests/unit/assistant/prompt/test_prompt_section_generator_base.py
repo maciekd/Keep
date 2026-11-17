@@ -90,6 +90,16 @@ class TestPromptSectionGeneratorBase:
         assert pm.on_section_updated.call_count == notify_count
 
     @patch('assistant.prompt.PromptSectionGenerator.time.sleep')
+    def test_an_outage_is_an_error_when_it_begins_and_not_again_at_every_refresh_it_lasts(self, mock_sleep):
+        section = ConcreteSection(fetch_result="good content")
+        section._update_content()
+        section._fetch_error = RuntimeError("Tessie down")
+        with patch('assistant.prompt.PromptSectionGenerator.error') as logged:
+            for _ in range(4):
+                section._update_content()
+        assert logged.call_count == 1
+
+    @patch('assistant.prompt.PromptSectionGenerator.time.sleep')
     def test_recovery_after_failure_clears_stale_warning(self, mock_sleep):
         section = ConcreteSection(fetch_result="good content")
         section._update_content()

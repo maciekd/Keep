@@ -208,3 +208,54 @@ class TestOnlyTheServerProcessWritesLogFiles:
                                       ["/srv/keep.example/tui.py"], ["not_floxy_ai_server.py.bak"]])
     def test_any_other_process_importing_the_tree_does_not(self, monkeypatch, argv):
         assert self._file_logging_disabled(monkeypatch, argv)
+
+
+@pytest.mark.unit
+class TestErrorSink:
+    @pytest.fixture
+    def seen(self, monkeypatch):
+        import common.logging as logging_mod
+        seen = []
+        monkeypatch.setattr(logging_mod, "_error_sink", lambda message, exception, handled: seen.append(
+            (message, exception, handled)))
+        return seen
+
+    def test_an_error_logged_while_handling_an_exception_brings_it_along(self, seen):
+        from common.logging import error
+        try:
+            raise KeyError("zones")
+        except KeyError:
+            error("Music: no zones")
+        [(message, exception, handled)] = seen
+        assert message == "Music: no zones" and isinstance(exception, KeyError) and handled
+
+    def test_an_error_that_is_a_message_alone_has_no_exception(self, seen):
+        from common.logging import error
+        error("Music: no zones")
+        assert seen == [("Music: no zones", None, True)]
+
+    def test_only_errors_reach_the_sink(self, seen):
+        from common.logging import info, trace
+        info("Music: 4 zones")
+        trace("Music: nothing to do")
+        assert seen == []
+
+    def test_an_error_the_sink_logs_is_not_handed_to_it_again(self, monkeypatch):
+        import common.logging as logging_mod
+        calls = []
+
+        def sink(message, exception, handled):
+            calls.append(message)
+            logging_mod.error("the sink has a problem of its own")
+        monkeypatch.setattr(logging_mod, "_error_sink", sink)
+        logging_mod.error("Music: no zones")
+        assert calls == ["Music: no zones"]
+
+    def test_a_failing_sink_does_not_fail_the_caller(self, monkeypatch):
+        import common.logging as logging_mod
+
+        def sink(message, exception, handled):
+            raise RuntimeError("PostHog is away")
+        monkeypatch.setattr(logging_mod, "_error_sink", sink)
+        logging_mod.error("Music: no zones")
+        logging_mod.error("Music: still no zones")   # the guard was released

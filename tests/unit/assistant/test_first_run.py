@@ -51,6 +51,15 @@ class TestState:
 # --- arming ---------------------------------------------------------------------------------
 
 class TestBeginIfFresh:
+    @pytest.fixture(autouse=True)
+    def a_users_install(self, monkeypatch):
+        """The install's own `is_developer` decides nothing here: on the maintainer's machine it is
+        on, and arming then set FullDiskAccess's process-wide pretence for real — every later
+        probe in the same worker answered "not granted"."""
+        monkeypatch.setattr(FirstRun, "config", SimpleNamespace(get=lambda key, default=None: default))
+        monkeypatch.setattr(FirstRun.FullDiskAccess, "pretend_missing",
+                            lambda on=True: pytest.fail("a user's install pretended the grant missing"))
+
     def test_seeded_stub_arms_the_pipeline(self, tmp_path, monkeypatch):
         monkeypatch.setattr(FirstRun.MemoryFile, "read", lambda *a, **k: "# Real bank\nfacts")
         path = tmp_path / "first_run.json"

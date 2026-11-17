@@ -17,6 +17,18 @@ class TestCalendarSectionGenerator:
             section = CalendarSectionGenerator(None)
             assert section._fetch_content() == "Calendars shown below: Home\n\n(No upcoming events)"
 
+    def test_a_week_no_account_could_read_keeps_the_week_the_section_has(self):
+        from assistant.integration.calendar.CalendarAccess import CalendarUnavailable
+        section = CalendarSectionGenerator(Mock())
+        with patch('assistant.prompt.sections.CalendarSectionGenerator.CalendarAccess.current') as current, \
+                patch('assistant.prompt.PromptSectionGenerator.time.sleep'):
+            current.return_value.coming_week.return_value = "Calendars shown below: Home\n\nDentist Charlotte"
+            section._update_content()
+            current.return_value.coming_week.side_effect = CalendarUnavailable("no calendar account could be read")
+            section._update_content()
+        assert "Dentist Charlotte" in section.get_content()
+        assert current.return_value.coming_week.call_count == 4     # the read, then the three attempts
+
     def test_the_heading_is_a_contract_with_the_toolkits_that_point_the_llm_at_it(self):
         """The section has no placeholder of its own: it stands in the data block under its
         heading, which is the name the calendar and music toolkit references send the LLM to."""

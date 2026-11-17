@@ -10,7 +10,10 @@ working directory (`-p <pid> -d cwd`, told in the fields `-F` names: the device 
 for another role's port or matches a process of another checkout by name gets the wrong answer
 here exactly as it would on a Mac with two users. A pid the table does not hold has no readable
 working directory. On Linux `ss` names every listener's pid, as it does for root: a script that
-does not check whose the pid is takes the other user's. Every call is recorded."""
+does not check whose the pid is takes the other user's. Every call is recorded.
+
+The table's files are read with bash's own `read` (`row`), never awk or grep: a Linux start asks
+these doubles some thirty questions, and a process for each was most of such a test's time."""
 import os
 from pathlib import Path
 
@@ -23,13 +26,14 @@ SCOPE_CGROUP = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r
 
 _BSD = os.uname().sysname == 'Darwin'
 # The device, the inode and the size of a file from the system's real stat, whichever it is.
-_REAL_STAT = "command /usr/bin/stat -f '%d %i %z'" if _BSD else "command /usr/bin/stat -c '%d %i %s'"
+# ($follow is GNU stat's -L where the caller passed it: a folder named through a symlink is the folder.)
+_REAL_STAT = "command /usr/bin/stat $follow -f '%d %i %z'" if _BSD else "command /usr/bin/stat $follow -c '%d %i %s'"
 # role.sh's Mac branch asks /usr/bin/stat by its path, in BSD's words (`-f <format> <file>`).
 # Where that file is GNU's, a function of that name answers for it — bash looks a function up
 # before the path, slashes or not — in the formats the scripts and the lsof doubles use.
 _BSD_STAT_SHIM = f"""
 /usr/bin/stat() {{
-    local device inode size
+    local device inode size follow=""
     read -r device inode size <<< "$({_REAL_STAT} "$3" 2>/dev/null)"
     [ -n "$device" ] || return 1
     case "$2" in
@@ -48,6 +52,20 @@ BSD_STAT = '' if _BSD else _BSD_STAT_SHIM
 def stubs(table: Path) -> str:
     """The bash functions; `table` is the directory the table's files and the call records live in."""
     return BSD_STAT + f"""
+# row <file> <column> <value>: the first line of the table's file whose column (1 or 2) holds the
+# value, left in `row_1`, `row_2` and `row_3` (the rest of the line); 1 when there is none.
+row() {{
+    row_1=""; row_2=""; row_3=""
+    local a b c
+    [ -f "{table}/$1" ] || return 1
+    while read -r a b c; do
+        if {{ [ "$2" = 1 ] && [ "$a" = "$3" ]; }} || {{ [ "$2" = 2 ] && [ "$b" = "$3" ]; }}; then
+            row_1=$a; row_2=$b; row_3=$c
+            return 0
+        fi
+    done < "{table}/$1"
+    return 1
+}}
 lsof() {{
     echo "$*" >> "{table}/lsof_calls"
     local uid="" pid="" cwd="" fields="" ports=" " prev="" a
@@ -58,7 +76,7 @@ lsof() {{
     done
     if [ -n "$cwd" ]; then
         local dir
-        dir=$(awk -v p="$pid" '$1 == p {{ print $3 }}' "{table}/processes")
+        row processes 1 "$pid"; dir=$row_3
         [ -n "$dir" ] || return 1
         printf 'p%s\\nfcwd\\n' "$pid"
         [ "$dir" != - ] || dir=$(pwd -P)
@@ -104,21 +122,20 @@ ss() {{
 # which only the process's own user can follow —, `-c %u` of /proc/<pid>, `-c %s` of a file.
 stat() {{
     echo "$*" >> "{table}/stat_calls"
-    local format="" target="" prev="" a pid owner dir device inode size
-    for a in "$@"; do [ "$prev" = -c ] && format=$a; target=$a; prev=$a; done
+    local format="" target="" prev="" follow="" a pid owner dir device inode size
+    for a in "$@"; do [ "$prev" = -c ] && format=$a; [ "$a" != -L ] || follow=-L; target=$a; prev=$a; done
     case "$target" in
         /proc/*)
             pid=${{target#/proc/}}; pid=${{pid%%/*}}
-            owner=$(awk -v p="$pid" '$1 == p {{ print $2; exit }}' "{table}/processes")
-            dir=$(awk -v p="$pid" '$1 == p {{ print $3; exit }}' "{table}/processes")
+            row processes 1 "$pid"; owner=$row_2; dir=$row_3
             case "$target" in
                 */cwd)
-                    [ -n "$dir" ] && [ "$owner" = "$(id -u)" ] || return 1
+                    [ -n "$dir" ] && [ "$owner" = "$UID" ] || return 1
                     [ "$dir" != - ] || dir=.
                     [ -d "$dir" ] || {{ echo "47 47"; return 0; }}
                     target=$dir ;;
                 *)
-                    [ -n "$owner" ] || owner=$(awk -v p="$pid" '$2 == p {{ print $3; exit }}' "{table}/listeners")
+                    [ -n "$owner" ] || {{ row listeners 2 "$pid"; owner=$row_3; }}
                     [ -n "$owner" ] || return 1
                     echo "$owner"; return 0 ;;
             esac ;;
@@ -138,7 +155,7 @@ cat() {{
             local pid=${{1#/proc/}} line
             pid=${{pid%/cgroup}}
             if [ "$pid" = self ] && [ -n "$KEEP_TEST_IN_SCOPE" ]; then echo "{SCOPE_CGROUP}"; return 0; fi
-            line=$(awk -v p="$pid" '$1 == p {{ print $2 }}' "{table}/cgroups")
+            row cgroups 1 "$pid"; line=$row_2
             echo "${{line:-{SESSION_CGROUP}}}" ;;
         *) command cat "$@" ;;
     esac
@@ -149,7 +166,7 @@ systemctl() {{
     echo "$*" >> "{table}/systemctl_calls"
     local a
     for a in "$@"; do
-        if grep -qx -- "$a" "{table}/systemctl_fails" 2>/dev/null; then
+        if row systemctl_fails 1 "$a"; then
             echo "Failed to connect to bus: No medium found" >&2
             return 1
         fi

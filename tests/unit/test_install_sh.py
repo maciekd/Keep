@@ -29,9 +29,13 @@ import yaml
 from common.ConfigManager import REQUIRED_KEYS
 
 from .git_sandbox import History, empty_repo, git, git_env, spawn
+from .test_start_sh import UNIT_SAFE_NAMES, UNIT_UNSAFE_NAMES
 from .test_role_sh import REFUSED_CONFIGS, ROLE_SH, SATELLITE_CONFIGS, SERVER_CONFIGS, UNREADABLE_CONFIGS, python_reading
 
 INSTALL_SH = Path(__file__).resolve().parents[2] / 'install.sh'
+# Executables a test hands the installer are checked in and told where to record by a variable:
+# macOS assesses a freshly written one on its first run, ~130 ms a file.
+DOUBLES = Path(__file__).parent / 'data' / 'install_sh'
 WORKSPACE_REQUIRED_BODY = (
     '{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-workspace-id is required '
     'when authenticating with an identity-linked API key; send the id of the workspace this request acts in."},'
@@ -52,10 +56,20 @@ BROWSERS = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-brows
 def machine_stubs(d: Path) -> str:
     """The Linux machine as bash functions. `installed` lists the packages dpkg has; `sudo` runs
     nothing: an `apt-get install` handed to it adds the named packages to that list. A command
-    named in `absent` is not found by `command -v`, whatever the real machine has."""
+    named in `absent` is not found by `command -v`, whatever the real machine has.
+
+    The lists are read with bash's own `read`, never a grep: the installer asks dpkg about every
+    package under two names, three times over in a run that installs something, and a process for
+    each answer was most of such a test's time."""
     return f"""
+listed() {{
+    local line
+    [ -f "$2" ] || return 1
+    while IFS= read -r line; do [ "$line" != "$1" ] || return 0; done < "$2"
+    return 1
+}}
 command() {{
-    if [ "$1" = -v ] && grep -qx -- "$2" "{d}/absent" 2>/dev/null; then return 1; fi
+    if [ "$1" = -v ] && listed "$2" "{d}/absent"; then return 1; fi
     builtin command "$@"
 }}
 sudo() {{
@@ -74,7 +88,7 @@ sudo() {{
 apt-get() {{ echo "$*" >> "{d}/apt_get_calls"; return 1; }}
 dpkg-query() {{
     local name; for name in "$@"; do :; done
-    grep -qx -- "$name" "{d}/installed" 2>/dev/null && printf installed
+    listed "$name" "{d}/installed" && printf installed
 }}
 apt-cache() {{
     if [ -f "{d}/apt_offers_python" ] && [ ! -f "{d}/apt_lists_empty" ]; then echo "  Candidate: 3.12.3-1ubuntu0.5"; else echo "  Candidate: (none)"; fi
@@ -129,7 +143,7 @@ class InstallShHarness:
         for n, (code, body) in enumerate(responses, 1):
             (self.dir / f'curl_{n}.code').write_text(code)
             (self.dir / f'curl_{n}.body').write_text(body)
-        (self.dir / 'curl_count').write_text(str(len(responses)))
+        (self.dir / 'curl_count').write_text(f'{len(responses)}\n')
 
     def set_curl_code(self, code: str):
         self.set_curl((code, ''))
@@ -152,10 +166,10 @@ class InstallShHarness:
             + machine_stubs(self.dir) +
             # The n-th call answers with curl_<n>.code and, for its -o target, curl_<n>.body.
             f'curl() {{ echo "$*" >> "{self.curl_calls}"; local n prev="" a\n'
-            f'  n=$(( $(cat "{self.dir}/curl_n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "{self.dir}/curl_n"\n'
-            f'  [ "$n" -le "$(cat "{self.dir}/curl_count")" ] || n=$(cat "{self.dir}/curl_count")\n'
+            f'  n=0; [ ! -f "{self.dir}/curl_n" ] || read -r n < "{self.dir}/curl_n"; n=$((n + 1)); echo "$n" > "{self.dir}/curl_n"\n'
+            f'  local count; read -r count < "{self.dir}/curl_count"; [ "$n" -le "$count" ] || n=$count\n'
             f'  for a in "$@"; do [ "$prev" = -o ] && cat "{self.dir}/curl_$n.body" > "$a"; prev=$a; done\n'
-            f'  cat "{self.dir}/curl_$n.code"; }}\n')
+            f'  printf "%s" "$(< "{self.dir}/curl_$n.code")"; }}\n')
         if self.answers:
             prelude += (
                 f'exec 7< "{self.answers}"\n'
@@ -1145,6 +1159,16 @@ class TestTheAptStep:
         assert not any(' update' in call for call in harness.calls('sudo'))
         assert 'dpkg was interrupted' in result.stdout, "apt's own words are not shown"
 
+    def test_an_apt_that_reports_success_and_installed_nothing_stops_the_install(self, harness):
+        """What dpkg has is asked again afterwards: the venv and the server are not built on
+        packages apt only said it installed."""
+        harness.installed(*(set(EVERY_PACKAGE) - {'ffmpeg', 'libsndfile1'}))
+        result = on_linux(harness, A_PYTHON + 'sudo() { return 0; }\nensure_packages; echo went-on')
+        assert result.returncode == 1 and 'went-on' not in result.stdout
+        assert 'Unexpected error' not in result.stdout
+        still = result.stdout.rsplit('still not installed', 1)[1]
+        assert 'ffmpeg' in still and 'libsndfile1' in still and 'git' not in still
+
     def test_the_packages_are_the_ones_ci_and_the_plan_name(self):
         """Contract with the system: what start.sh needs (ss, pgrep), what the Python packages
         load (libsndfile, libmagic) and what the install itself runs."""
@@ -1176,12 +1200,10 @@ class TestPythonOnLinux:
         """Debian and Ubuntu ship ensurepip apart: python_ok asks the candidate for it there, and
         for the machine's own architecture rather than the Mac's arm64."""
         asked = harness.dir / 'python_asked'
-        python = harness.dir / 'python3.12'
-        python.write_text(f'#!/bin/bash\necho "$*" > "{asked}"\n')
-        python.chmod(0o755)
-        on_linux(harness, f'python_ok "{python}"')
+        python = DOUBLES / 'python3.12'
+        on_linux(harness, f'python_ok "{python}"', KEEP_TEST_ASKED=str(asked))
         assert asked.read_text().split() == ['-', ARCH, 'ensurepip']
-        harness.run(f'python_ok "{python}"')
+        harness.run(f'python_ok "{python}"', KEEP_TEST_ASKED=str(asked))
         assert asked.read_text().split() == ['-', 'arm64']
 
     def test_homebrew_is_not_the_way_to_a_python_on_linux(self, harness):
@@ -1235,9 +1257,30 @@ class TestWhereALinuxInstallIsRefused:
         assert ran(result) == [] and not harness.keep_dir.exists()
         assert 'KEEP_DIR=' in result.stdout
 
-    def test_such_a_folder_is_fine_on_a_mac_and_letters_outside_ascii_on_linux(self, harness):
+    def test_a_plain_name_that_is_a_symlink_to_such_a_folder_is_refused_too(self, harness):
+        """start.sh writes the unit for the folder it is really in (`pwd -P`)."""
+        (harness.dir / 'My Keep').mkdir()
+        harness.keep_dir.symlink_to(harness.dir / 'My Keep')
+        result = on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1')
+        assert result.returncode == 1
+        assert ran(result) == [] and list((harness.dir / 'My Keep').iterdir()) == []
+        assert 'systemd' in result.stdout and 'KEEP_DIR=' in result.stdout
+
+    @pytest.mark.parametrize('name, unsafe', [*((name, True) for name in UNIT_UNSAFE_NAMES),
+                                              *((name, False) for name in UNIT_SAFE_NAMES)],
+                             ids=[repr(name) for name in UNIT_UNSAFE_NAMES + UNIT_SAFE_NAMES])
+    def test_the_installer_refuses_exactly_the_folders_service_sh_refuses(self, harness, name, unsafe):
+        """The two scripts carry the set apart (the installer runs before a checkout exists):
+        test_start_sh.py asks scripts/service.sh about the same names."""
+        result = on_linux(harness, 'if unit_unsafe "$FOLDER"; then printf refused; else printf fine; fi',
+                          FOLDER=f'/home/marcus/{name}')
+        assert result.stdout.endswith('refused' if unsafe else 'fine')
+
+    def test_such_a_folder_is_fine_on_a_mac(self, harness):
         harness.keep_dir = harness.dir / 'My Keep'
         assert ran(harness.run(MAIN, KEEP_NO_TELEMETRY='1'))
+
+    def test_letters_outside_ascii_are_fine_on_linux(self, harness):
         harness.keep_dir = harness.dir / 'Kęp-ö'
         assert ran(on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1', LC_ALL='C'))
 
@@ -1324,28 +1367,25 @@ class TestTheLinuxInstallEndToEnd:
     def start_script(self, harness) -> Path:
         """A start.sh that only says it ran, and whether it was given a terminal."""
         harness.keep_dir.mkdir()
-        started = harness.dir / 'started'
-        script = harness.keep_dir / 'start.sh'
-        script.write_text(f'#!/bin/bash\nif [ -t 0 ]; then echo terminal > "{started}"; else echo none > "{started}"; fi\n')
-        script.chmod(0o755)
-        return started
+        (harness.keep_dir / 'start.sh').symlink_to(DOUBLES / 'start.sh')
+        return harness.dir / 'started'
 
     def test_without_a_terminal_a_linux_install_still_starts_the_service(self, harness):
         """ssh box 'curl ... | ANTHROPIC_API_KEY=... bash': the unit needs no window, unlike the Mac's Terminal launch."""
         started = self.start_script(harness)
-        result = on_linux(harness, 'launch')
+        result = on_linux(harness, 'launch', KEEP_TEST_STARTED=str(started))
         assert result.returncode == 0, result.stdout
         assert started.read_text().strip() == 'none'
         assert f'{harness.keep_dir}/keep.sh' in result.stdout
 
     def test_without_a_terminal_a_mac_install_does_not_start(self, harness):
         started = self.start_script(harness)
-        assert harness.run('launch').returncode == 0
+        assert harness.run('launch', KEEP_TEST_STARTED=str(started)).returncode == 0
         assert not started.exists()
 
     def test_keep_no_start_starts_nothing_on_linux_either(self, harness):
         started = self.start_script(harness)
-        assert on_linux(harness, 'launch', KEEP_NO_START='1').returncode == 0
+        assert on_linux(harness, 'launch', KEEP_NO_START='1', KEEP_TEST_STARTED=str(started)).returncode == 0
         assert not started.exists()
 
 

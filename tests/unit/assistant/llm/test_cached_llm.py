@@ -357,6 +357,24 @@ class TestCachedLLMCoreMethods:
         list(cached_llm.create_streaming_completion([{"role": "user", "content": "something new"}]))
         assert cached_llm.last_stop_reason == 'max_tokens'
 
+    def test_a_served_cached_reply_cost_nothing_whatever_the_backend_last_used(
+            self, cached_llm, mock_database, mock_llm):
+        """The wrapped backend still holds the usage of its last real call: read through after
+        a cache hit, a log line would bill that call a second time."""
+        from assistant.llm.LLMUsage import LLMUsage
+        mock_llm.last_usage = LLMUsage(input_tokens=900, output_tokens=40, cost_usd=0.01)
+        mock_database.get_response_counts_for_query.return_value = [("turn_on(kitchen)", 3)]
+        cached_llm.cache_query = "turn on kitchen"
+        list(cached_llm.create_streaming_completion([{"role": "user", "content": "turn on kitchen"}]))
+        assert LLMUsage.of(cached_llm) is None
+        assert "no usage reported" in LLMUsage.describe_call(cached_llm)
+
+        mock_database.get_response_counts_for_query.return_value = []
+        mock_llm.create_streaming_completion.return_value = iter(["a fresh reply"])
+        cached_llm.cache_query = "something new"
+        list(cached_llm.create_streaming_completion([{"role": "user", "content": "something new"}]))
+        assert LLMUsage.of(cached_llm).output_tokens == 40
+
     def test_cache_hit_records_serve_state(self, cached_llm, mock_database):
         """A hit must retain the query and ALL majority wordings so a later
         invalidate_served_response can evict every row carrying the bad command set."""
