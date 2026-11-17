@@ -28,6 +28,9 @@ CLAUDE_PATH = shutil.which("claude") or CLAUDE_FALLBACK_PATH
 RUN_HOUR = 3
 SLOW_TEST_MS = 100
 TEST_HEALTH_RUNS = 10
+# A loaded run takes about five times an idle one (scripts/test_under_load.sh), and each shows far more
+# than an idle one does: half as many, so the measuring leaves the run its time for the fixes.
+TEST_HEALTH_LOADED_RUNS = 5
 CLAUDE_TIMEOUT = 60 * 60
 AUTH_STATUS_TIMEOUT = 30
 CHECK_INTERVAL = 900
@@ -467,28 +470,39 @@ TEST_HEALTH_PROMPT = """
 Check the health of the unit test suite: it must be reliable and FAST. Find the flaky tests and the slow
 tests, and fix them.
 
-Measure — idle and under load, because an idle machine hides what a busy one shows, and under load once
-more with the example config, because this install's config.yaml hides what another config shows:
+Measure — idle and under load, because an idle machine hides what a busy one shows; under load once more
+with the example config, because this install's config.yaml hides what another config shows; and what the CI
+runners saw today, because they are machines unlike this one:
 1. Idle, for the durations: run the unit suite {runs} times (the command is in CLAUDE.md, "Always run unit
    tests"), each time with `--durations=0 --durations-min=0.02` added and the whole output kept in a file in
    your scratch directory (the `grep` in that command would drop the durations), so that for every test you
    have its outcome and its duration in each run. A test's duration is its setup + call + teardown together.
-2. Under load, for the outcomes: `scripts/test_under_load.sh {runs} <a directory in your scratch directory>`
-   runs the suite {runs} times beside one busy loop per core and keeps each run's whole output in
-   `run_N.txt` there. A loaded run takes several times as long as an idle one: wait for all of them.
-   Durations measured under load mean nothing, so the script does not ask for them.
+2. Under load, for the outcomes: `scripts/test_under_load.sh {loaded_runs} <a directory in your scratch
+   directory>` runs the suite {loaded_runs} times beside several busy loops per core — as slow as on a small CI
+   runner — and keeps each run's whole output in `run_N.txt` there. A loaded run takes about five times as
+   long as an idle one: wait for all of them. Durations measured under load mean nothing, so the script does
+   not ask for them.
 3. Under load with the example config, once: `FLOXY_CONFIG=config.example.yaml scripts/test_under_load.sh 1
    <another directory in your scratch directory>`. Every run above read this install's config.yaml; the CI
    runners and a fresh clone have only config.example.yaml, and a value the two set differently can send
    the code down a path no run here takes.
-4. Flaky: a test that failed in some of all these runs but not in all of them. A test that passed every
+4. On the CI runners: the workflows under `.github/workflows/` that run this suite do so at every push, on
+   GitHub's small machines (3 or 4 cores under the suite's 8 workers), and a test can fail there that no load
+   here brings down. `gh run list --workflow <file> --event push --status failure --created ">=<yesterday's
+   date>"` lists the failed runs of the last day for one workflow, and `gh run view <id> --log-failed` holds
+   the names and the assertion of what failed in one. When `gh` cannot list them, say so in the report and
+   go on with the runs above.
+5. Flaky: a test that failed in some of all these runs but not in all of them. A test that passed every
    idle run and failed every loaded one is flaky too — by day the suite runs on a busy machine, and that is
    where such a test fails. A test that failed in the example-config run alone is flaky too: it depends on
-   the config it is run with. Also flaky: a test whose slowest idle run took over a second while its fastest
-   was under the limit below.
-5. Slow: a test whose FASTEST idle run took more than {slow_ms} ms. The fastest run is the measure because
+   the config it is run with. So is a test that failed on a CI runner and passes here, or passed in another
+   run there of the same commit or a later one that did not touch it — unless a commit since has already
+   fixed it (`git log` on the test's file). Also flaky: a test whose slowest idle run took over a second
+   while its fastest was under the limit below.
+6. Slow: a test whose FASTEST idle run took more than {slow_ms} ms. The fastest run is the measure because
    machine noise and one-off costs (a first import, a shared fixture) only ever add time.
-6. A test that failed in every run, idle and loaded, under either config, is broken, not flaky: leave it alone and report it.
+7. A test that failed in every run, idle and loaded, under either config, is broken, not flaky: leave it
+   alone and report it.
 
 Fix — change files under tests/ ONLY, never the code under test:
 - Flaky: find the cause (ordering, shared state, real time, threads, a race) and remove it. Never hide it
@@ -500,6 +514,10 @@ Fix — change files under tests/ ONLY, never the code under test:
 - A test that fails only with the example config takes a value from the install's config: find the value
   ("a test must pass with any config.yaml" in CLAUDE.md) and patch it in the test, or pin it in the
   conftest's `CAST_CONFIG` when no test should read it from the install. Never copy a value of config.yaml.
+- A test that failed on a CI runner alone cannot be made to fail here, so its fix starts from the runner's
+  log: the assertion that failed says what the test asked of the machine — a tick within a window, a thread
+  scheduled within a timeout, a call faster than a limit, a thread that lowered its own priority and was
+  not run — and that is what to take out of it, as for a test that fails under load.
 - Slow: remove the cost at its source (a real sleep or timeout, real I/O, an expensive fixture or import that
   can be faked or made cheaper). When a test cannot get under {slow_ms} ms and what it checks is not worth
   that time, delete it. No test over {slow_ms} ms stays.
@@ -507,7 +525,7 @@ Fix — change files under tests/ ONLY, never the code under test:
 - A test marked `@pytest.mark.wontfix` documents a bug the maintainer has decided to leave; it runs as a
   non-strict xfail. When one passed in every run, the bug it documents is gone: remove the marker so the test
   runs as an ordinary one, and list it in the report. Never add that marker yourself.
-- Verify: measure every test you touched {runs} more times idle and {runs} more times under load (the
+- Verify: measure every test you touched {runs} more times idle and {loaded_runs} more times under load (the
   script takes the test files as arguments after the directory; with `FLOXY_CONFIG=config.example.yaml` in
   front for a test that failed with the example config), then run the whole suite once.
 
@@ -515,7 +533,8 @@ If you changed anything, create a branch, commit (check rules for commits in the
 create ONE pull request with all of it. If nothing was flaky or slow, change nothing and say so.
 
 Final report:
-- Flaky tests: name, whether it failed idle, only under load or only with the example config, cause, fix
+- Flaky tests: name, where it failed (idle, only under load, only with the example config, only on a CI
+  runner — the workflow and the run), cause, fix
 - Slow tests made faster: name, before -> after
 - wontfix markers removed: every test by name
 - Tests REMOVED: every one by name, with why it was not worth keeping
@@ -1345,10 +1364,11 @@ class CodeQualityMaintainer:
         branch = CodeQualityMaintainer._job_home()
         try:
             info(f"CodeQualityMaintainer: test health — flaky tests and tests over {SLOW_TEST_MS} ms "
-                 f"across {TEST_HEALTH_RUNS} idle runs of the unit suite, {TEST_HEALTH_RUNS} under load and one under load "
-                 f"with the example config...")
+                 f"across {TEST_HEALTH_RUNS} idle runs of the unit suite, {TEST_HEALTH_LOADED_RUNS} under load, one "
+                 f"under load with the example config and the day's failed CI runs...")
             report = CodeQualityMaintainer._run_claude(
-                TEST_HEALTH_PROMPT.format(runs=TEST_HEALTH_RUNS, slow_ms=SLOW_TEST_MS), "test-health")
+                TEST_HEALTH_PROMPT.format(runs=TEST_HEALTH_RUNS, loaded_runs=TEST_HEALTH_LOADED_RUNS,
+                                          slow_ms=SLOW_TEST_MS), "test-health")
             info("CodeQualityMaintainer: test health complete.")
             return report
         except ClaudeUnavailableError:

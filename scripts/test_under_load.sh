@@ -1,8 +1,15 @@
 #!/bin/bash
-# Runs the unit suite on a machine made busy: one busy loop per core beside it, so that a test
-# depending on real time (an assertion on elapsed time, two sleeps racing, a thread expected
-# somewhere within a timeout) fails here the way it fails by day beside other work — an idle
-# machine passes such a test every time. The nightly test health measures flaky tests with it.
+# Runs the unit suite on a machine made busy: busy loops beside it, LOOPS_PER_CORE for every core,
+# so that a test depending on real time (an assertion on elapsed time, two sleeps racing, a thread
+# expected somewhere within a timeout) fails here the way it fails by day beside other work and on
+# a CI runner — an idle machine passes such a test every time. The nightly test health measures
+# flaky tests with it.
+#
+# Six loops per core is the load under which the suite takes as long here as on GitHub's 3-core
+# macOS runner, which runs its 8 workers on those 3 cores (measured 2026-11-17: 128-153 s on the
+# development machine, 127-168 s on the runner). At one loop per core a test that failed on the
+# runner that day — a loop whose thread lowers its own priority — passed here every time; at
+# three per core it failed.
 #
 #   scripts/test_under_load.sh <runs> <output dir> [pytest arguments…]
 #                           <runs> runs one after another, the whole output of run N kept in
@@ -19,6 +26,7 @@
 cd "$(dirname "$0")/.."
 
 NICENESS=10
+LOOPS_PER_CORE=6
 
 if ! [[ "$1" =~ ^[1-9][0-9]*$ ]] || [ -z "$2" ]; then
     echo "usage: scripts/test_under_load.sh <runs> <output dir> [pytest arguments…]" >&2
@@ -29,7 +37,7 @@ mkdir -p "$2" || exit 1
 out=$(cd "$2" && pwd)
 shift 2
 
-loops=${LOAD_PROCESSES:-$(getconf _NPROCESSORS_ONLN)}
+loops=${LOAD_PROCESSES:-$(($(getconf _NPROCESSORS_ONLN) * LOOPS_PER_CORE))}
 pids=()
 for _ in $(seq 1 "$loops"); do
     nice -n $NICENESS bash -c 'while kill -0 "$0" 2>/dev/null; do for ((i = 0; i < 200000; i++)); do :; done; done' $$ &
