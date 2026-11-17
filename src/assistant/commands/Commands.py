@@ -2840,6 +2840,6 @@ class Commands:
                 result = f(params[0] if params else "")
             return result if isinstance(result, str) else ""
         except Exception as e:
-            error(f"Exception running command {command}({params_display}): {e}")
+            error(f"Exception running command {command}: {e}", detail=f" — called with ({params_display})")
             # An exception without a message (a bare TimeoutError()) would read as success.
             return str(e) or f"{command} failed: {type(e).__name__}"

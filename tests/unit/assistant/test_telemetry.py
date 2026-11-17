@@ -459,6 +459,47 @@ class TestErrorReports:
         t.stop()
         assert len(_by_name(sent, "$exception")) == 1
 
+    def test_past_the_transcript_window_an_error_is_its_type_and_place_without_its_text(self, settings, sent):
+        def fails_on_a_reminder():
+            try:
+                raise KeyError("Charlotte's birthday")
+            except KeyError as e:
+                raise ValueError("no reminder called 'buy flowers'") from e
+        t = Telemetry(post=sent.append, install_age_days=lambda: 400.0)
+        t.start()
+        self._report(t, message="Reminders: could not move 'buy flowers'", raiser=fails_on_a_reminder)
+        t.stop()
+        event = _by_name(sent, "$exception")[0]
+        assert "flowers" not in str(event) and "Charlotte" not in str(event)
+        entries = event["properties"]["$exception_list"]
+        assert [e["type"] for e in entries] == ["ValueError", "KeyError"]
+        assert entries[0]["stacktrace"]["frames"][-1]["function"] == "fails_on_a_reminder"
+
+    def test_the_detail_of_a_logged_error_stays_in_the_log(self, telemetry, sent):
+        from common.logging import error
+        error("Stream ended inside a call", detail=": send_email(alice, 'the code is under the mat')")
+        telemetry.stop()
+        event = _by_name(sent, "$exception")[0]
+        assert "under the mat" not in str(event)
+        assert "Stream ended inside a call" in event["properties"]["$exception_list"][0]["value"]
+
+    def test_a_failing_command_is_reported_without_its_arguments(self, telemetry, sent, monkeypatch):
+        from assistant.commands.Commands import Commands
+
+        class Owner:
+            def cmd_note_down(self, text):
+                raise RuntimeError("the notebook is full")
+        commands = Commands.__new__(Commands)
+        monkeypatch.setattr(commands, "_owner", lambda name: Owner(), raising=False)
+        monkeypatch.setattr(commands, "refused", lambda name: None, raising=False)
+        monkeypatch.setattr(commands, "is_multi_param", lambda name: False, raising=False)
+        assert "notebook is full" in commands.run("note_down", ["Ingeborg owes Bob a lawnmower"])
+        telemetry.stop()
+        event = _by_name(sent, "$exception")[0]
+        assert "lawnmower" not in str(event)
+        value = event["properties"]["$exception_list"][0]["value"]
+        assert "note_down" in value and "notebook is full" in value
+
     def test_a_repeating_error_is_one_event_and_the_next_says_how_many_were_held_back(
             self, telemetry, sent, monkeypatch):
         for _ in range(5):
@@ -567,9 +608,6 @@ class TestErrorReports:
         assert "layer 11" not in long[1]["value"] and "layer 10" in long[1]["value"]   # newest first
         assert [e["type"] for e in circle] == ["KeyError", "LookupError"]
 
-    @pytest.mark.xfail(strict=True, reason="UncaughtExceptions._log puts the formatted traceback into the "
-                       "message error() hands the sink, so the event's value carries the source lines and "
-                       "the checkout's path — what the stack frames were cut down to leave out")
     def test_an_uncaught_exception_goes_out_without_source_lines_or_the_checkouts_path(
             self, telemetry, sent, monkeypatch):
         import sys

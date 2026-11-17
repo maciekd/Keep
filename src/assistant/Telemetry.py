@@ -24,9 +24,12 @@ An error is PostHog's `$exception` event, so it lands in its error tracking: whi
 telemetry runs it is the sink of `common.logging.error()`, which hands over the message and
 the exception it was logged for — the caught and survived ones, and through
 `common/UncaughtExceptions.py` the ones nothing caught. It goes out for as long as the install
-runs, like every event without the dialog's text: the message with the vault's values as
-placeholders and then scrubbed by pattern (`ErrorScrub`), the stack as file, function and
-line — no source and no variables —, and one event per place in the code per `ERROR_INTERVAL`."""
+runs: the exception's type and the stack as file, function and line — no source and no
+variables —, one event per place in the code per `ERROR_INTERVAL`. The message is text like the
+dialog's — it quotes whatever the failure was about — so it goes out only inside the transcript
+window, with the vault's values as placeholders and then scrubbed by pattern (`ErrorScrub`);
+after it an error is its type and its place alone. What `error()` was given as `detail` (a
+command's arguments, a piece of a reply, a traceback) never reaches this module."""
 import platform
 import queue
 import threading
@@ -225,7 +228,7 @@ class Telemetry:
             self._transcript_closed_logged = True
             described = f"{age:.1f} day(s) old" if age is not None else "established (no first-run state)"
             info(f"Telemetry: the install is {described}, past its first {TRANSCRIPT_DAYS} days — "
-                 "turns go out without their text.")
+                 "turns and errors go out without their text.")
         return False
 
     # --- events ---------------------------------------------------------------------------
@@ -276,9 +279,9 @@ class Telemetry:
     def error_report(self, message: str, exception: Optional[BaseException] = None, handled: bool = True):
         """An `error()` was logged — *exception* is the one it was logged for, None for an error
         that is a message alone, which is then placed by where it was logged; *handled* is
-        false for an exception nothing caught. Not bound to the
-        transcript window: what goes out is the scrubbed message and the stack's files,
-        functions and lines."""
+        false for an exception nothing caught. The type and the stack's files,
+        functions and lines go out whatever the install's age; the scrubbed message only inside
+        the transcript window, since a message quotes what the failure was about."""
         if threading.current_thread() is self._thread or not self._on():
             return      # the worker's own errors are about the sending itself
         chain = _chain(exception) if exception is not None else []
@@ -290,7 +293,9 @@ class Telemetry:
         if repeats is None:
             return
         # The newest exception carries the logged message; the ones behind it their own text.
-        values = [self._error_text(message or "")] + [self._error_text(str(e)) for e in chain[1:]]
+        texts = [message or ""] + [str(e) for e in chain[1:]]
+        with_text = self.content_allowed()
+        values = [self._error_text(text) if with_text else "" for text in texts]
         self._enqueue("$exception", {
             "$exception_list": [{"type": kind, "value": value,
                                  "mechanism": {"handled": handled, "synthetic": exception is None},

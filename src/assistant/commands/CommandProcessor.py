@@ -919,7 +919,7 @@ class CommandProcessor:
         return f"{command_name} ({params_display})" if params_display else command_name
 
     def _report_unterminated_command(self, command_name: str, leftover: str, dialog_manager):
-        error(f"Stream ended inside an unterminated {command_name}( call — not run: {leftover!r}")
+        error(f"Stream ended inside an unterminated {command_name}( call — not run", detail=f": {leftover!r}")
         self._report_not_run(f"{command_name} was not run: the reply ended inside the call before it was "
                              f"closed, so the call could not be read.", leftover, dialog_manager)
 
@@ -929,7 +929,8 @@ class CommandProcessor:
     _MALFORMED_TAG_RE = re.compile(r"\s*<[A-Za-z/][^<>]*>.*<", re.S)
 
     def _report_malformed_tag(self, leftover: str, dialog_manager):
-        error(f"Stream ended on tag-shaped text that is no call in any syntax read here — not run: {leftover!r}")
+        error("Stream ended on tag-shaped text that is no call in any syntax read here — not run",
+              detail=f": {leftover!r}")
         self._report_not_run("Nothing was run: the reply ended in tag-shaped text that is not a call in the "
                              "syntax this prompt teaches, so no call could be read from it.", leftover, dialog_manager)
 

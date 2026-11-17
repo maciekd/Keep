@@ -13,8 +13,10 @@ from common.logging import error, trace
 
 
 def _log(what: str, exception: BaseException):
+    """The traceback is the log's alone: it quotes source lines and where the install lives."""
     lines = "".join(traceback.format_exception(type(exception), exception, exception.__traceback__))
-    error(f"Uncaught exception {what}:\n{lines.rstrip()}", exception)
+    error(f"Uncaught exception {what}: {type(exception).__name__}: {exception}", exception,
+          detail=f"\n{lines.rstrip()}")
 
 
 def install():

@@ -33,7 +33,9 @@ def test_an_exception_that_ends_a_thread_is_reported_unhandled(reported):
     assert "photo-feed" in message and "the feed fell over" in message
 
 
-def test_an_exception_on_the_main_thread_is_reported_with_its_traceback(reported):
+def test_an_exception_on_the_main_thread_is_logged_with_its_traceback_and_reported_without(reported, monkeypatch):
+    logged = []
+    monkeypatch.setattr(logging_module, "log", lambda message, *_: logged.append(message))
     UncaughtExceptions.install()
     try:
         raise RuntimeError("the launcher fell over")
@@ -41,7 +43,9 @@ def test_an_exception_on_the_main_thread_is_reported_with_its_traceback(reported
         sys.excepthook(type(e), e, e.__traceback__)
     [(message, exception, handled)] = reported
     assert isinstance(exception, RuntimeError) and handled is False
-    assert "test_uncaught_exceptions.py" in message
+    assert "RuntimeError" in message and "the launcher fell over" in message
+    assert "test_uncaught_exceptions.py" not in message
+    assert any("test_uncaught_exceptions.py" in line for line in logged)
 
 
 def test_ctrl_c_is_not_an_error(reported, monkeypatch):

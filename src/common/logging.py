@@ -208,10 +208,12 @@ def note(message):
     log(message, Style.BRIGHT + Fore.LIGHTBLUE_EX, "NOTE")
 
 
-def error(message, exception=None):
+def error(message, exception=None, detail=""):
     """*exception* is for the hooks that log an exception nothing caught. An error logged in
-    an `except` block needs no argument: the exception being handled is found by itself."""
-    log(message, Style.BRIGHT + Fore.RED, "ERROR")
+    an `except` block needs no argument: the exception being handled is found by itself.
+    *detail* continues the message in the log and stays there: the error sink never gets it.
+    It is where a command's arguments, a piece of a reply or a traceback go."""
+    log(f"{message}{detail}", Style.BRIGHT + Fore.RED, "ERROR")
     _report_error(message, exception)
 
 
