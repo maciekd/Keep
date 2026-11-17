@@ -62,6 +62,30 @@ class TestReplyParsing:
         reply = "<memory>\n# Bank\n```\nliteral block\n```\nafter\n</memory>"
         assert LongTermMemoryCurator._extract_memory_content(reply) == "# Bank\n```\nliteral block\n```\nafter"
 
+    # Thinking that arrived as the head of the reply: drafts of both blocks, then the answer
+    LEAKED = ('The format is <memory> ... </memory> then <commands> ... </commands>.\n'
+              'Draft:\n<memory>\n# Bank\n...\n\nI will write it out.\n'
+              '<commands>\ndelete_watch("stove", "maybe")\n</commands>\nFinal.</think>')
+
+    @staticmethod
+    def parse(reply):
+        rest, commands = LongTermMemoryCurator._split_commands(LongTermMemoryCurator._answer(reply))
+        return LongTermMemoryCurator._extract_memory_content(rest), commands
+
+    def test_the_last_blocks_of_a_reply_with_leaked_thinking_are_the_answer(self):
+        reply = self.LEAKED + ('<memory>\n# Bank\n* Marcus likes tea\n</memory>\n'
+                               '<commands>\ndelete_watch("parcel", "done")\n</commands>')
+        assert self.parse(reply) == ("# Bank\n* Marcus likes tea", 'delete_watch("parcel", "done")')
+
+    def test_commands_drafted_before_the_bank_are_not_run(self):
+        reply = self.LEAKED + '<memory>\n# Bank\n* Marcus likes tea\n</memory>'
+        assert self.parse(reply) == ("# Bank\n* Marcus likes tea", "")
+
+    def test_a_bank_that_writes_about_the_tags_is_kept_whole(self):
+        bank = "# Bank\n* The parser reads the last `<memory>` block, up to `</memory>`.\n* Marcus likes tea"
+        reply = f'<memory>\n{bank}\n</memory>\n<commands>\n</commands>'
+        assert self.parse(reply) == (bank, "")
+
 
 @pytest.mark.unit
 class TestRunCommands:

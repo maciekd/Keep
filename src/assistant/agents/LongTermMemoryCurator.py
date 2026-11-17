@@ -684,7 +684,7 @@ class LongTermMemoryCurator:
         llm_call = LLMUsage.describe_call(self.llm)
         info(f"Rem: the curation call — {llm_call}")
 
-        response, commands = self._split_commands(response)
+        response, commands = self._split_commands(self._answer(response))
         new_memory, truncated = self._accept(response, current_memory)
         condense = None
         if new_memory is current_memory:
@@ -896,12 +896,44 @@ class LongTermMemoryCurator:
         return MemoryFile.read(self.memory_file_path)
 
     @staticmethod
+    def _last_memory_tag(response: str) -> int | None:
+        """Where the last <memory> block of the reply opens, None without one. A tag that ends
+        its line is a block's; one inside a sentence (a bank that writes about the tag) counts
+        only when no other is there."""
+        tags = (list(re.finditer(r'<memory>(?=[ \t]*\n)', response))
+                or list(re.finditer(r'<memory>', response)))
+        return tags[-1].start() if tags else None
+
+    @classmethod
+    def _answer(cls, response: str) -> str:
+        """The reply from its last <memory> block on — the answer itself. A local model's
+        thinking can end early and arrive as the head of the reply (a bank that holds a literal
+        think-close tag, quoted while thinking: ds4 on 2026-11-17), with drafts of both blocks
+        in it; the bank and the commands are the last ones written. Commands drafted there are
+        never run: a reply whose only <commands> block stands before its bank runs none."""
+        start = cls._last_memory_tag(response)
+        if start is None:
+            trace("Rem: the reply has no <memory> block — reading it whole")
+            return response
+        head, answer = response[:start], response[start:]
+        if '<memory>' in head or '<commands>' in head:
+            info(f"Rem: {len(head)} chars before the reply's last <memory> block hold a block of their own "
+                 "— thinking that arrived as the reply, left out")
+        else:
+            trace(f"Rem: the reply's <memory> block opens at char {start}")
+        if '<commands>' in head and '<commands>' not in answer:
+            error("Rem: the reply's only <commands> block stands before its bank — a draft or a reply "
+                  "in the wrong order, its commands are NOT run")
+        return answer
+
+    @staticmethod
     def _split_commands(response: str) -> tuple[str, str]:
-        """The reply without its <commands> block, and the block's content ('' when there is
-        none). An unclosed block runs to the end of the reply."""
-        match = re.search(r'<commands>(.*?)(?:</commands>|\Z)', response, re.DOTALL)
-        if not match:
+        """The reply without its last <commands> block, and the block's content ('' when there
+        is none). An unclosed block runs to the end of the reply."""
+        start = response.rfind('<commands>')
+        if start < 0:
             return response, ""
+        match = re.compile(r'<commands>(.*?)(?:</commands>|\Z)', re.DOTALL).match(response, start)
         return response[:match.start()] + response[match.end():], match.group(1).strip()
 
     def _think_whole(self, prompt: str, what: str) -> str:
@@ -1142,12 +1174,16 @@ class LongTermMemoryCurator:
              f"{sum(r.startswith('FAILED') for r in results)} failed")
         return results, unsaved
 
-    @staticmethod
-    def _extract_memory_content(response: str) -> str:
-        """Extract memory content from AI response, handling markdown code blocks."""
-        tagged = re.search(r'<memory>(.*?)(?:</memory>|\Z)', response, re.DOTALL)
-        if tagged:
-            return tagged.group(1).strip()
+    @classmethod
+    def _extract_memory_content(cls, response: str) -> str:
+        """The bank in the AI's reply: its last <memory> block, up to the last closing tag (a
+        bank may write about the tags) or, unclosed, to the end; without the tags a markdown
+        code block, else the reply as it is."""
+        start = cls._last_memory_tag(response)
+        if start is not None:
+            body = response[start + len('<memory>'):]
+            end = body.rfind('</memory>')
+            return (body if end < 0 else body[:end]).strip()
         # Try to extract from markdown code block
         match = re.search(r'```(?:markdown)?\s*(.*?)\s*```', response, re.DOTALL)
         if match:

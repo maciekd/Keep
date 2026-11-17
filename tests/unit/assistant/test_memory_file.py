@@ -163,3 +163,40 @@ class TestCuratedLength:
     def test_a_missing_bank_has_none_and_creates_nothing(self, tmp_path):
         assert MemoryFile.curated_length(str(tmp_path / "bank.md")) is None
         assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.unit
+class TestNoThinkTags:
+    """A think tag in the bank ends a local model's thinking when it is quoted there."""
+
+    NOTE = "* The leak: a bare `</think>` outside a block, then `<think>` again. Also </ Think > and <THINKING>."
+
+    @staticmethod
+    def assert_clean(text):
+        assert not MemoryFile.THINK_TAG.search(text)
+        assert "think>" not in text.lower().replace(" ", "")
+        assert text.startswith("* The leak: a bare `") and "outside a block" in text
+
+    def test_a_written_bank_holds_no_think_tag(self, tmp_path):
+        bank = str(tmp_path / "bank.md")
+        MemoryFile.write(self.NOTE, bank)
+        self.assert_clean(MemoryFile.read(bank))
+
+    def test_a_remembered_note_holds_no_think_tag(self, tmp_path):
+        bank = str(tmp_path / "bank.md")
+        MemoryFile.append(self.NOTE, bank)
+        self.assert_clean(MemoryFile.read(bank).strip())
+
+    def test_the_cleaned_bank_still_counts_as_curated_whole(self, tmp_path):
+        bank = str(tmp_path / "bank.md")
+        MemoryFile.write(self.NOTE, bank)
+        curated, since = MemoryFile.split(bank)
+        assert since == "" and curated == MemoryFile.read(bank)
+
+    def test_the_opening_and_the_closing_tag_stay_told_apart(self):
+        opening, closing = MemoryFile.without_think_tags("<think>"), MemoryFile.without_think_tags("</think>")
+        assert opening != closing
+
+    def test_other_tags_and_plain_words_are_left_alone(self):
+        text = "The <memory> block; I think > you; <b>bold</b>; rethink it."
+        assert MemoryFile.without_think_tags(text) == text
