@@ -6,6 +6,7 @@ summarising the analytics JSON while the order arrived 0.4 s later."""
 import asyncio
 import threading
 import time
+from contextlib import contextmanager
 
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
@@ -29,6 +30,38 @@ def make_wa():
     wa._driver_ready.set()
     wa._clear_network_log()
     return wa
+
+
+class VirtualTime:
+    """The network stage's clock and sleep, driven by the sleeps themselves: a sleeper goes on once its
+    wake-up is the earliest one outstanding, and the clock then reads that moment. The order of what
+    happens is the one the scripted times give, however long the machine takes over a step."""
+
+    def __init__(self):
+        self.now = time.time()
+        self._wakes = []
+        self._yield = asyncio.sleep
+
+    def time(self):
+        return self.now
+
+    async def sleep(self, seconds):
+        wake = self.now + seconds
+        self._wakes.append(wake)
+        await self._yield(0)                # every other task first runs up to its own sleep
+        while min(self._wakes) < wake:
+            await self._yield(0)
+        self._wakes.remove(wake)
+        self.now = max(self.now, wake)
+
+
+@contextmanager
+def virtual_time():
+    """WebAccess reads the clock and polls through a VirtualTime, and so does the test's own script."""
+    clock = VirtualTime()
+    with patch("assistant.tools.WebAccess.time", Mock(wraps=time, time=clock.time)), \
+            patch("assistant.tools.WebAccess.asyncio.sleep", clock.sleep):
+        yield clock
 
 
 def pending(wa, rid, url='https://shop.example/api/order', kind='XHR', age=0.0):
@@ -67,10 +100,11 @@ class TestWaitForNetworkIdle:
                 entry['done'] = True
                 wa._network_touch()
             asyncio.ensure_future(finish_later())
-            return await wa._async_wait_for_network_idle()
+            status = await wa._async_wait_for_network_idle()
+            return status, entry['done']      # read as the wait returns: the request had finished by then
 
-        assert run(scenario()) == "idle"
-        assert entry['done']
+        with virtual_time():
+            assert run(scenario()) == ("idle", True)
 
     def test_a_request_sent_right_after_dom_quiet_is_waited_for(self):
         """The Apple case: nothing in flight when the DOM went quiet, the data fetch
@@ -95,7 +129,8 @@ class TestWaitForNetworkIdle:
             order.append('idle')
             return status
 
-        assert run(scenario()) == "idle"
+        with virtual_time():
+            assert run(scenario()) == "idle"
         assert order == ['sent', 'answered', 'idle']
 
     def test_a_request_that_never_finishes_hits_the_soft_cap(self):
