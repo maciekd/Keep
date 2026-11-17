@@ -49,6 +49,17 @@ def run_reply(session, hub, events, suppress_no=False, query="hello", sender="An
     return assistant
 
 
+def shown(transport, phase=None, times=1, draft=0):
+    """A script item for FakeStream: the stream goes on once the draft has shown *times* progress
+    lines (of *phase*, when given). The reply's own ticks pace the script: a delay that should
+    have let a tick through lets none through on a machine busy enough."""
+    def reached():
+        if len(transport.drafts) <= draft:
+            return False
+        return sum(phase in (None, p.phase) for p in transport.drafts[draft].progress) >= times
+    return reached
+
+
 def msg(kind=KIND_TEXT, text="hello", **kw):
     return IncomingMessage(conversation=CONV, sender="Anna", kind=kind, text=text, **kw)
 
@@ -114,7 +125,7 @@ class TestReplyRendering:
 class TestProgress:
     def test_idle_tick_reports_progress_then_reply_replaces_it(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
-        run_reply(session, hub, [(0.05, Token("Hello")), RoundEnd(), None])
+        run_reply(session, hub, [shown(transport), Token("Hello"), RoundEnd(), None])
         draft = transport.drafts[0]
         assert draft.calls[0][0] == "progress"
         assert draft.calls[0][1].phase == PHASE_WAITING
@@ -151,13 +162,14 @@ class TestProgress:
         session.SPINNER_TICK_SECONDS = 0.01
         with patch.object(PrefillTracker, "current_progress", return_value=43.0), \
              patch.object(PrefillTracker, "current_rate", return_value=1200.0):
-            run_reply(session, hub, [(0.05, Token("Hi")), RoundEnd(), None])
+            run_reply(session, hub, [shown(transport), Token("Hi"), RoundEnd(), None])
         first = transport.drafts[0].progress[0]
         assert first.phase == PHASE_PREFILL and first.rate == 1200.0
 
     def test_thinking_done_returns_to_waiting_on_the_next_tick(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
-        run_reply(session, hub, [Thinking("x", 5), ThinkingDone(1.0), (0.05, Token("Hi")), RoundEnd(), None])
+        run_reply(session, hub, [Thinking("x", 5), ThinkingDone(1.0), shown(transport, PHASE_WAITING), Token("Hi"),
+                                 RoundEnd(), None])
         phases = [p.phase for p in transport.drafts[0].progress]
         assert phases[0] == PHASE_THINKING
         assert PHASE_WAITING in phases[1:]
@@ -166,7 +178,7 @@ class TestProgress:
         from assistant.llm.PrefillTracker import PrefillTracker
         session.SPINNER_TICK_SECONDS = 0.01
         with patch.object(PrefillTracker, "current_progress", return_value=43.0):
-            run_reply(session, hub, [(0.05, Token("Hi")), RoundEnd(), None])
+            run_reply(session, hub, [shown(transport), Token("Hi"), RoundEnd(), None])
         first = transport.drafts[0].progress[0]
         assert first.phase == PHASE_PREFILL and first.prefill == 43.0
 
@@ -178,7 +190,7 @@ class TestProgress:
         with patch.object(PrefillTracker, "currently_queued", return_value=True), \
              patch.object(PrefillTracker, "current_progress", return_value=99.0), \
              patch("interfaces.chat.ChatSession.info") as log:
-            run_reply(session, hub, [(0.05, Token("Hi")), RoundEnd(), None])
+            run_reply(session, hub, [shown(transport, times=2), Token("Hi"), RoundEnd(), None])
         progress = transport.drafts[0].progress
         assert all(p.phase == PHASE_QUEUED for p in progress) and len(progress) >= 2
         assert progress[0].prefill == 0.0 and progress[0].rate == 0.0
@@ -189,7 +201,9 @@ class TestProgress:
         from assistant.llm.PrefillTracker import PrefillTracker
         session.SPINNER_TICK_SECONDS = 0.01
         with patch.object(PrefillTracker, "current_progress", return_value=pct):
-            run_reply(session, hub, [(0.03, Thinking("hm", 3)), (0.03, Token("Hi")), RoundEnd(), None])
+            # An idle tick before the thinking and one during it: the event's own line, then the tick's.
+            run_reply(session, hub, [shown(transport), Thinking("hm", 3), shown(transport, PHASE_THINKING, times=2),
+                                     Token("Hi"), RoundEnd(), None])
         phases = [p.phase for p in transport.drafts[0].progress]
         assert phases[0] == PHASE_WAITING and PHASE_THINKING in phases and PHASE_PREFILL not in phases
 
@@ -234,14 +248,14 @@ class TestProgress:
     def test_commands_of_another_conversation_do_not_show(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
         handle = hub.send_command_notification("Reading x", source=transport.source, conversation=CONV + 1)
-        run_reply(session, hub, [(0.03, Token("Hi")), RoundEnd(), None])
+        run_reply(session, hub, [shown(transport), Token("Hi"), RoundEnd(), None])
         assert {p.phase for p in transport.drafts[0].progress} == {PHASE_WAITING}
         hub.complete_command_notification(handle, "done")
 
     def test_progress_resets_per_round(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
         run_reply(session, hub, [Thinking("a", 100), Token("One"), RoundEnd(),
-                                 (0.05, Thinking("b", 5)), Token("Two"), RoundEnd(), None])
+                                 shown(transport, draft=1), Thinking("b", 5), Token("Two"), RoundEnd(), None])
         assert transport.drafts[0].progress[0].tick == 1
         second = transport.drafts[1].progress
         assert second[0].tick == 1

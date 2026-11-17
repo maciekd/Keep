@@ -149,8 +149,10 @@ class FakeTransport(ChatTransport):
 
 
 class FakeStream:
-    """Yields scripted events; an event may be a (delay_seconds, event) tuple, or a
-    threading.Event the stream waits on until the test sets it (a kill ends the wait)."""
+    """Yields scripted events; an event may be a (delay_seconds, event) tuple, a
+    threading.Event the stream waits on until the test sets it, or a callable the stream waits
+    on until it answers true — what the reply has shown paces the script then, not a timer
+    (a kill ends either wait)."""
 
     def __init__(self, events):
         self._events = iter(events)
@@ -168,6 +170,9 @@ class FakeStream:
                 while not item.wait(0.005):
                     if self.killed:
                         raise StopIteration
+                continue
+            if callable(item):
+                wait_until(lambda: self.killed or item(), interval=0.002)
                 continue
             if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], (int, float)):
                 delay, item = item
