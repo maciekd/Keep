@@ -760,10 +760,10 @@ class LocalOutpost:
                  f"model-load contention starves the callback; not a real recording gap). "
                  f"{supp_count} suppressed since this mic started.")
         for _, gap in drops:
-            error(f"[{self.label}] AUDIO DROP — ~{gap * 1000:.0f}ms of audio lost at capture "
-                  f"(device captured it but the callback was starved, so PortAudio never "
-                  f"delivered it; recordings around now have a gap). "
-                  f"Cumulative for this mic: {count} drops, {total_s:.1f}s lost.")
+            info(f"[{self.label}] AUDIO DROP — ~{gap * 1000:.0f}ms of audio lost at capture "
+                 f"(device captured it but the callback was starved, so PortAudio never "
+                 f"delivered it; recordings around now have a gap). "
+                 f"Cumulative for this mic: {count} drops, {total_s:.1f}s lost.")
         for s in statuses:
             trace(f"[{self.label}] PortAudio status flag: {s} (unreliable on macOS — the "
                   f"ADC-clock check above is the authoritative drop signal).")

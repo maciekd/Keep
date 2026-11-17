@@ -640,16 +640,17 @@ class TestCaptureDropDetection:
         assert any("startup grace" in f for f in fines)
         assert outpost._pending_suppressed == []   # drained
 
-    def test_drain_logs_error_and_clears_pending(self, monkeypatch):
+    def test_drain_logs_the_drop_as_info_and_clears_pending(self, monkeypatch):
         import interfaces.voice.microphones.local_outposts.LocalOutpost as mod
-        errors = []
+        errors, infos = [], []
         monkeypatch.setattr(mod, "error", lambda m: errors.append(m))
+        monkeypatch.setattr(mod, "info", lambda m: infos.append(m))
         outpost, _ = make_outpost()
         for adc in (0.0, 0.1, 0.2):
             self._feed(outpost, adc)
         self._feed(outpost, 1.5)
         outpost._drain_capture_drops()
-        assert len(errors) == 1 and "AUDIO DROP" in errors[0]
+        assert errors == [] and len([m for m in infos if "AUDIO DROP" in m]) == 1
         assert outpost._pending_drops == []        # drained
         assert outpost._drop_count == 1            # cumulative total persists
 
