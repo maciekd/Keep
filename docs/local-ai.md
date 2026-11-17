@@ -18,10 +18,7 @@ Ollama (`ollama`) and any OpenAI-compatible server such as llama.cpp (`openai`) 
 
 ## DwarfStar: our fork
 
-Run DwarfStar from the `keep` branch of [maciekd/ds4](https://github.com/maciekd/ds4/tree/keep): upstream plus
-the disk KV cache changes Keep's long prompt needs (antirez/ds4#1322, #1323, #1347). With them a request loads all but
-its last turn from disk — ~0.4 s instead of ~16 s on an M5 Ultra — and `scripts/local_ds4_start.sh` needs the fork's
-`--kv-cache-cold-anchor` flag. Clone it beside Keep, build, download the model and start it:
+Run DwarfStar from the `keep` branch of [maciekd/ds4](https://github.com/maciekd/ds4/tree/keep). This branch contains a number of performance optimizations that make normal requests go from ~16 s to  ~0.4 s on an M5 Ultra. `scripts/local_ds4_start.sh` needs this branch — upstream lacks its `--kv-cache-cold-anchor` flag. Clone it beside Keep, build, download the model and start it:
 
 ```bash
 git clone -b keep https://github.com/maciekd/ds4 ../ds4 && cd ../ds4 && make
