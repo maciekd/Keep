@@ -10,11 +10,24 @@ It's recommended to start with default settings (Anthropic) and have Keep help y
 | Model | Server | Local Backend | Min RAM |
 |---|---|---------------|---------|
 | Qwen 3.8 27B, with vision | [oMLX](https://github.com/jundot/omlx) with [Splash](https://github.com/incoai/splash) | `openai`      | 48 GB   |
-| DeepSeek V4.1 Flash 1017, with vision | [DwarfStar](https://github.com/antirez/ds4) | `ds4`         | 128 GB  |
+| DeepSeek V4.1 Flash 1017, with vision | [DwarfStar](https://github.com/antirez/ds4), [our fork](#dwarfstar-our-fork) | `ds4`         | 128 GB  |
 
 These two are tested and supported. 
 
 Ollama (`ollama`) and any OpenAI-compatible server such as llama.cpp (`openai`) work too. The model server can run on Keep's server machine or elsewhere on your network.
+
+## DwarfStar: our fork
+
+Run DwarfStar from the `keep` branch of [maciekd/ds4](https://github.com/maciekd/ds4/tree/keep): upstream plus
+the disk KV cache changes Keep's long prompt needs (antirez/ds4#1322, #1323, #1347). With them a request loads all but
+its last turn from disk — ~0.4 s instead of ~16 s on an M5 Ultra — and `scripts/local_ds4_start.sh` needs the fork's
+`--kv-cache-cold-anchor` flag. Clone it beside Keep, build, download the model and start it:
+
+```bash
+git clone -b keep https://github.com/maciekd/ds4 ../ds4 && cd ../ds4 && make
+./download_model.sh ds41f-q2 && ./download_model.sh ds41f-vision
+cd - && scripts/local_ds4_start.sh            # or: scripts/local_ds4_start.sh gguf/<another model>.gguf
+```
 
 ## Setting it up
 
@@ -22,7 +35,7 @@ Easiest: ask Keep to move you to local — it flips the switch and walks you thr
 
 By hand:
 
-1. **Start the model server** — oMLX per its readme (`localhost:8000`), `scripts/local_ds4_start.sh` for DwarfStar (see its comments), or `scripts/local_ollama_start.sh`.
+1. **Start the model server** — oMLX per its readme (`localhost:8000`), `scripts/local_ds4_start.sh` for DwarfStar ([our fork](#dwarfstar-our-fork)), or `scripts/local_ollama_start.sh`.
 2. **Set `local_backend`** in `config.yaml` (`openai`, `ds4` or `ollama`), plus `base_url` in the matching section
    if the server is elsewhere (see [config.example.yaml](../config.example.yaml)).
 3. **Restart Keep.** `local_backend: none` goes back to the cloud.

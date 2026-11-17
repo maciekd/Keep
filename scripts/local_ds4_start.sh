@@ -2,8 +2,9 @@
 # Starts the local ds4-server for Keep: DeepSeek V4.1 Flash (the IQ2_XXS/Q2_K imatrix GGUF) on
 # this machine's GPU, served OpenAI-style on port 8000 on every interface, so a Keep on another
 # machine of the local network reaches it as http://<this host>:8000/v1 (`ds4.base_url`).
-# The ds4 checkout (github.com/antirez/ds4, built with make) is expected beside this repository
-# as ../ds4; DS4_DIR points elsewhere.
+# The ds4 checkout is expected beside this repository as ../ds4 (DS4_DIR points elsewhere), cloned from
+# the keep branch of our fork — `git clone -b keep https://github.com/maciekd/ds4`, then make: upstream
+# github.com/antirez/ds4 plus the disk KV cache changes below (antirez/ds4#1322, #1323, #1347).
 #
 # The disk KV cache flags matter: ds4-server keeps one live KV context and reuses it only
 # for a prompt that extends it, so without them every switch between two prompts (another
@@ -28,13 +29,16 @@
 # routing its tiers here the encoder must be on. The script passes it when the file is present;
 # VISION= drops it, VISION=path names another one.
 #
-# Overrides: DS4_DIR, MODEL (GGUF path), VISION (encoder GGUF path), CTX (context tokens), KV_DIR, KV_MB,
+# Usage: scripts/local_ds4_start.sh [model.gguf]
+# Overrides: DS4_DIR, MODEL (GGUF path, same as the argument), VISION (encoder GGUF path), CTX (context tokens), KV_DIR, KV_MB,
 # COLD_MAX, COLD_ANCHOR, HOST, PORT.
 set -euo pipefail
 DS4_DIR="${DS4_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/ds4}"
-cd "$DS4_DIR" 2>/dev/null || { echo "no ds4 checkout at $DS4_DIR — clone github.com/antirez/ds4 beside this repository or set DS4_DIR"; exit 1; }
+cd "$DS4_DIR" 2>/dev/null || { echo "no ds4 checkout at $DS4_DIR — git clone -b keep https://github.com/maciekd/ds4 beside this repository (then make) or set DS4_DIR"; exit 1; }
 
-MODEL="${MODEL:-gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
+# The default is what ds4's ./download_model.sh ds41f-q2 fetches; another model is the first argument
+# (or MODEL=), relative to the ds4 checkout or absolute.
+MODEL="${1:-${MODEL:-gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}}"
 VISION="${VISION-gguf/DeepSeek-V4.1-Flash-Vision.gguf}"
 # 196k: the memory curator's nightly prompt reached 98k tokens on 2026-10-22 and failed at the
 # 64k window with a 400 (the first-run bootstrap chunks hit the same wall), and the test-suite
@@ -55,15 +59,22 @@ COLD_MAX="${COLD_MAX:-$CTX}"
 # before the first assistant turn), which for Keep's prompt tests is the system prompt alone
 # (11k of 40k). `last-user` cuts before the prompt's last user turn — the test's query, which
 # the test server sends as a turn of its own on ds4 (Ds4LLM.prefers_query_as_own_turn) — so a
-# test loads everything but its query from disk. Our ds4 branch kv-cold-anchor-last-user;
-# an upstream ds4 without the flag refuses to start with it, so set COLD_ANCHOR= to drop it.
+# test loads everything but its query from disk. The fork's keep branch has
+# the flag; an upstream ds4 without it refuses to start with it, so set COLD_ANCHOR= to drop it.
 COLD_ANCHOR="${COLD_ANCHOR-last-user}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 LOG=ds4-server.log
 
 [ -x ./ds4-server ] || { echo "no ds4-server binary in $DS4_DIR — run make there first"; exit 1; }
-[ -f "$MODEL" ] || { echo "model not found: $MODEL (run ./download_model.sh)"; exit 1; }
+if [ ! -f "$MODEL" ]; then
+    echo "You do not have the model $MODEL in $DS4_DIR."
+    echo "Download the default one with ./download_model.sh ds41f-q2 there, or pass the model you want to run:"
+    echo "  $0 gguf/<model>.gguf"
+    others=$(ls gguf/*.gguf 2>/dev/null | grep -v -- '-Vision\.gguf$' || true)
+    [ -n "$others" ] && echo "Models in $DS4_DIR/gguf:" && echo "$others" | sed 's/^/  /'
+    exit 1
+fi
 if [ -n "$VISION" ] && [ ! -f "$VISION" ]; then
     echo "no vision encoder at $VISION — starting without images (./download_model.sh ds41f-vision adds it)"
     VISION=
@@ -81,7 +92,7 @@ mkdir -p "$KV_DIR"
 # runs once a second by default — it loses that race every ~6 s, and a request arriving then
 # waits 2.5–11 s while 209 GB is wired again (measured 2026-11-11 on the M5 Ultra, macOS 27;
 # at 500 ms and at 250 ms: no unwiring in 60 s idle, every request at its normal latency).
-# Redundant once the ds4 build has 250 ms as its default (antirez/ds4#1347).
+# The fork's keep branch has 250 ms as its default (antirez/ds4#1347); this covers an upstream build.
 export DS4_METAL_QUEUE_KEEPALIVE_MS="${DS4_METAL_QUEUE_KEEPALIVE_MS:-250}"
 
 echo "starting ds4-server: $MODEL, ${VISION:+vision $VISION, }ctx $CTX, disk KV cache $KV_DIR ($KV_MB MB), $HOST:$PORT"
