@@ -4,7 +4,14 @@
 # process (`-c '%d %i' /proc/<pid>/cwd`: this checkout's device and inode, some other folder's
 # when KEEP_TEST_CWD is set, unreadable for another user's process) and those of a folder. The
 # real numbers come from the system's own stat, GNU's or BSD's; anything else is passed to it.
-real() { command /usr/bin/stat -c '%d %i' "$1" 2>/dev/null || command /usr/bin/stat -f '%d %i' "$1"; }
+# (Asked in the words of the system's own, told by bash's OSTYPE: trying GNU's first cost a Mac a
+# failed process for every answer.)
+real() {
+    case "$OSTYPE" in
+        darwin*) command /usr/bin/stat -f '%d %i' "$1" ;;
+        *) command /usr/bin/stat -c '%d %i' "$1" 2>/dev/null || command /usr/bin/stat -f '%d %i' "$1" ;;
+    esac
+}
 target=${!#}
 case " $* " in *" -c %u "*)
     case "$target" in /proc/4242) echo "$UID"; exit 0;; /proc/4343) echo $((UID + 1)); exit 0;; esac
