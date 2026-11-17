@@ -130,6 +130,11 @@ CAST_CONFIG = {
     "wake_word_aliases": ["michel"],
     "wake_word_near_misses": ["mission", "missions", "we shall"],
     "ai_message_footer": True,
+    # Without it a config that has the home's coordinates (the example one) has the zone looked up
+    # from them: timezonefinder's load, a second on a fast machine and over five on a hosted CI
+    # runner, paid once per worker inside whichever test asks first — and outliving that test's
+    # timeout, it starved the timing of the tests after it (the first Mac run, 2026-11-17).
+    "location.home.timezone": "Europe/Stockholm",
     # The install's local integration folders are not the repository's: no test sees them.
     "extra_integration_dirs": [],
     # An install whose iMessage account is on a satellite names its address here: no test may build

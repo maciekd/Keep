@@ -160,7 +160,8 @@ exercises the same code path. Use the standing cast and nothing from the real ho
   `*rendered.md` with the real renderer, never by hand)
 - a test must pass with any `config.yaml`, the example one included (`FLOXY_CONFIG=config.example.yaml`): the
   conftest's `CAST_CONFIG` pins `owner_name`, the wake word keys and `ai_message_footer` to the cast's values,
-  `extra_integration_dirs` to `[]`, `imessage.host` and `imessage_chat.host` to `local` (no test reaches an
+  `location.home.timezone` to `Europe/Stockholm` (unpinned, a config with coordinates has the zone looked up from
+  them — seconds on a CI runner, inside whichever test asks first), `extra_integration_dirs` to `[]`, `imessage.host` and `imessage_chat.host` to `local` (no test reaches an
   install's real satellite) and `interfaces.imessage.enabled` to false; patch any other config value a test
   depends on
 
