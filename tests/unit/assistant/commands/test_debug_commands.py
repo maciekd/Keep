@@ -552,11 +552,11 @@ def condense(monkeypatch):
     return run
 
 
-def test_memory_condense_over_the_limit_asks_the_nightly_cut(condense):
-    from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator, MEMORY_WORD_LIMIT
+def test_memory_condense_over_the_limit_runs_the_nightly_rule(condense):
+    from assistant.agents.LongTermMemoryCurator import MEMORY_WORD_LIMIT
     history = object()
     reply = condense("//memory_condense", MEMORY_WORD_LIMIT + 300, history=history)
-    assert condense.calls == [(LongTermMemoryCurator.condense_cut(MEMORY_WORD_LIMIT + 300), history)]
+    assert condense.calls == [(None, history)]      # no cut of its own: the curator's passes decide
     assert str(MEMORY_WORD_LIMIT + 300) in reply
 
 

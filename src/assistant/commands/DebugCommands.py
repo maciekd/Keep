@@ -385,11 +385,11 @@ class DebugCommands:
     # --- //memory_condense ----------------------------------------------------------------
 
     def cmd_MEMORY_CONDENSE(self, args: str) -> str:
-        """//memory_condense [words]: the condensing pass alone on the memory bank — the nightly cut when the bank is over the limit, or the given number of words; runs in the background, the bank and its diff land in log/memory/."""
+        """//memory_condense [words]: the condensing alone on the memory bank — the nightly rule (up to three passes) when the bank is over the limit, or one pass asked for the given number of words; runs in the background, the bank and its diff land in log/memory/."""
         from assistant import MemoryFile
         from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator, MEMORY_WORD_LIMIT
-        usage = ("Usage: //memory_condense [words] — the words to remove; without a number the nightly cut, "
-                 "which needs the bank over the limit")
+        usage = ("Usage: //memory_condense [words] — the words to remove in one pass; without a number the "
+                 "nightly rule, which needs the bank over the limit")
         parts = args.split()
         if len(parts) > 1 or (parts and not parts[0].isdigit()) or (parts and int(parts[0]) == 0):
             return usage
@@ -401,15 +401,16 @@ class DebugCommands:
             return (f"The memory bank is {words} words, within the {MEMORY_WORD_LIMIT}-word limit — nothing to "
                     f"condense. Give a number of words to cut anyway.")
         else:
-            cut = LongTermMemoryCurator.condense_cut(words)
-        info(f"//memory_condense: starting a condensing pass on {words} words, {cut} to remove, in the background")
+            cut = None
+        asked = f"{cut} words in one pass" if cut else f"the nightly rule, {LongTermMemoryCurator.condense_cut(words)} words asked first"
+        info(f"//memory_condense: starting the condensing of {words} words in the background — {asked}")
         threading.Thread(target=self._condense_memory, args=(cut, self.history), daemon=True).start()
-        return (f"Condensing the memory bank ({words} words, limit {MEMORY_WORD_LIMIT}) by {cut} words in the "
-                f"background. It takes a few minutes; the bank and its diff land in log/memory/, progress is in the log.")
+        return (f"Condensing the memory bank ({words} words, limit {MEMORY_WORD_LIMIT}) in the background — {asked}. "
+                f"It takes a few minutes a pass; the bank and its diff land in log/memory/, progress is in the log.")
 
     @staticmethod
-    def _condense_memory(cut: int, history):
-        """The condensing pass itself, on its own thread; the completion lands in `history` as a system row."""
+    def _condense_memory(cut: int | None, history):
+        """The condensing itself, on its own thread; the completion lands in `history` as a system row."""
         from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator
         try:
             outcome = LongTermMemoryCurator.run_condense(cut, history=history)

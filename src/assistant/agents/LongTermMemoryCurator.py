@@ -30,19 +30,26 @@ CURATION_CHUNK_DAYS = 4
 # prompt names no size at all: a model given a count and a limit tries to meet it by counting
 # words — 64000 output tokens of thinking twice in one night (2026-11-13), no bank written.
 MEMORY_WORD_LIMIT = 4000
-# A curated bank more than CONDENSE_TRIGGER over the limit gets a condensing pass after the
-# curation (`MemoryCondenser`, section by section), asked to cut CONDENSE_CUT of the limit or the
-# whole excess, whichever is more (`condense_cut`). The curation prompt cannot do it: with the
+# A curated bank more than CONDENSE_TRIGGER over the limit is condensed after the curation
+# (`MemoryCondenser`, section by section) and asked down to CONDENSE_AIM under the limit (`condense_cut`) —
+# under it, because the model gives a part of what it is asked for and never all of it
+# (2026-11-17: a 5283-word bank asked for 1783 lost 744). While the bank is still over the
+# trigger the pass runs again, CONDENSE_PASSES times at most: each pass gets about half of the
+# one before (468, 196, 103 that day), so a fourth buys little. A pass that removes less than
+# CONDENSE_MIN_DELIVERY of its ask ends the loop with an error — the next would do no better.
+# The curation prompt cannot do the cutting: with the
 # period's interactions and the "never drop a fact" rules in front of it the model rewords an
 # oversize bank at the same length however plainly it is told to cut — three nights
 # at ~5000 words, and a test pass with the full prompt cut 8 words of 992 asked. After, not
 # before: a pass before the curation lands the bank on the limit and the curation then adds the
 # period's facts on top of it (a 5269-word bank condensed to 4020 came back at 4357), so the bank
 # saved was over the limit every night; condensed last, what is saved is the condensed bank.
-# Trigger above the cut: a hysteresis, so a bank hovers under the trigger instead of being
-# condensed every night.
+# Trigger above the limit, aim below it, both as a share of it: a hysteresis, so a condensed
+# bank takes a few nights to grow back to the trigger instead of being condensed every night.
 CONDENSE_TRIGGER = 0.10
-CONDENSE_CUT = 0.20
+CONDENSE_AIM = 0.125
+CONDENSE_PASSES = 3
+CONDENSE_MIN_DELIVERY = 0.10
 # How long a nightly run waits for its batch before it makes the ordinary full-price call
 # (`ai.memory_curator.batch_wait_minutes`): from the 04:00 run, done before the house wakes.
 BATCH_WAIT_MINUTES = 90
@@ -318,11 +325,11 @@ class LongTermMemoryCurator:
 
     @classmethod
     def run_condense(cls, cut: int = None, history=None, curator: 'LongTermMemoryCurator' = None) -> dict | None:
-        """The condensing pass alone on the live bank (`//memory_condense`): `cut` words asked
-        off it, `condense_cut` when not given. The bank and a journal are saved as after a
-        curation and the completion left in `history`; under the curation lock like a run.
-        Returns the pass's outcome, None when another curation held the lock or the pass
-        removed nothing (the bank is then untouched)."""
+        """The condensing alone on the live bank (`//memory_condense`): one pass asked for `cut`
+        words, or without it the nightly rule (`_condense`). The bank and a journal are saved as
+        after a curation and the completion left in `history`; under the curation lock like a
+        run. Returns the outcome, None when another curation held the lock or nothing was
+        removed (the bank is then untouched)."""
         if not cls._curation_lock.acquire(blocking=False):
             info("Rem: already dreaming — skipping the condensing pass.")
             return None
@@ -591,24 +598,66 @@ class LongTermMemoryCurator:
 
     @staticmethod
     def condense_cut(word_count: int) -> int:
-        """The words a condensing pass is asked to remove: the whole excess, at least CONDENSE_CUT
-        of the limit — so one pass brings a bank far over the limit back to it."""
-        return max(int(MEMORY_WORD_LIMIT * CONDENSE_CUT), word_count - MEMORY_WORD_LIMIT)
+        """The words a condensing pass is asked to remove: everything over the aim, CONDENSE_AIM
+        under the limit — more than the excess, since a pass delivers a part of its ask."""
+        return max(0, word_count - int(MEMORY_WORD_LIMIT * (1 - CONDENSE_AIM)))
 
     def _condense(self, bank: str, cut: int = None) -> tuple[str, dict]:
-        """The condensing pass (`MemoryCondenser`): the bank back shorter, with what happened
-        for the journal. `cut` is the words asked off it, `condense_cut` when not given. Never
-        a batch — a handful of small calls, a few minutes of work."""
-        words = self.word_count(bank)
-        cut = self.condense_cut(words) if cut is None else cut
-        info(f"Rem: condensing pass on {words} words (limit {MEMORY_WORD_LIMIT}), asked to remove {cut} words")
-        condensed, outcome = MemoryCondenser(self.llm, MEMORY_WORD_LIMIT).condense(bank, cut)
-        if self.word_count(condensed) >= words:
-            info("Rem: the condensing pass removed nothing — the bank stays as it was")
-            return bank, outcome
-        info(f"Rem: condensed to {outcome['to']} words (was {words})"
-             + (" — still over the limit" if outcome['to'] > MEMORY_WORD_LIMIT else ""))
-        return condensed, outcome
+        """The condensing (`MemoryCondenser`): the bank back shorter, with what happened for the
+        journal. Without `cut` the nightly rule: a pass asked for `condense_cut`, and again
+        while the bank is over the trigger, CONDENSE_PASSES at most. With `cut` one pass asked
+        for that many words. The bank each pass got is copied to log/memory/. `bank` itself
+        comes back when nothing was removed. Never a batch — small calls, a few minutes a pass."""
+        start = self.word_count(bank)
+        current, passes = bank, []
+        for number in range(1, CONDENSE_PASSES + 1):
+            words = self.word_count(current)
+            asked = self.condense_cut(words) if cut is None else cut
+            info(f"Rem: condensing pass {number} on {words} words (limit {MEMORY_WORD_LIMIT}), "
+                 f"asked to remove {asked} words")
+            self._keep_before_pass(current, number)
+            condensed, outcome = MemoryCondenser(self.llm, MEMORY_WORD_LIMIT).condense(current, asked)
+            passes.append(outcome)
+            removed = words - self.word_count(condensed)
+            if removed > 0:
+                current = condensed
+            else:
+                info(f"Rem: condensing pass {number} removed nothing — the bank stays as it was")
+            left = self.word_count(current)
+            if cut is not None:
+                trace("Rem: a pass with a given cut is not repeated")
+                break
+            if not self.needs_condensing(left):
+                trace(f"Rem: {left} words, within the condense trigger — no further pass")
+                break
+            if removed < asked * CONDENSE_MIN_DELIVERY:
+                error(f"Rem: condensing pass {number} removed {max(removed, 0)} of the {asked} words asked, under "
+                      f"{CONDENSE_MIN_DELIVERY:.0%} — no further pass, the bank stays at {left} words "
+                      f"(limit {MEMORY_WORD_LIMIT})")
+                break
+            if number == CONDENSE_PASSES:
+                error(f"Rem: the bank is still {left} words after {CONDENSE_PASSES} condensing passes "
+                      f"(limit {MEMORY_WORD_LIMIT})")
+        to = self.word_count(current)
+        outcome = {'from': start, 'cut': passes[0]['cut'], 'to': to, 'passes': passes,
+                   'llm_duration_seconds': sum(p['llm_duration_seconds'] for p in passes),
+                   'usage': "; ".join(f"pass {n}: {p['usage']}" for n, p in enumerate(passes, 1))}
+        info(f"Rem: condensed to {to} words (was {start}) in {len(passes)} pass(es)"
+             + (" — still over the limit" if to > MEMORY_WORD_LIMIT else ""))
+        return current, outcome
+
+    @staticmethod
+    def _keep_before_pass(bank: str, number: int):
+        """The bank as a condensing pass got it, copied to log/memory/: the journal diffs the
+        bank as loaded against the bank as saved, so what a pass dropped shows only against
+        this copy."""
+        try:
+            MEMORY_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            path = MEMORY_LOG_DIR / f"{datetime.now():%Y%m%d_%H%M%S}_before_condense_pass{number}.md"
+            path.write_text(redact_for_storage(bank))
+            trace(f"Rem: the bank before condensing pass {number} kept in {path}")
+        except Exception as e:
+            error(f"Rem: could not keep the bank before condensing pass {number}: {e}")
 
     @staticmethod
     def _as_datetime(value: datetime | date) -> datetime:
@@ -855,8 +904,11 @@ class LongTermMemoryCurator:
                     f.write("- Result: reply cut off at the output cap — previous bank kept\n")
                 if metadata.get('condense'):
                     c = metadata['condense']
-                    f.write(f"- Condensing pass: {c['from']} → {c.get('to', '?')} words (asked to remove {c['cut']}), "
-                            f"{c.get('llm_duration_seconds', 0):.1f}s\n")
+                    f.write(f"- Condensing: {c['from']} → {c.get('to', '?')} words in {len(c.get('passes', [])) or 1} "
+                            f"pass(es), {c.get('llm_duration_seconds', 0):.1f}s\n")
+                    for number, p in enumerate(c.get('passes', []), 1):
+                        f.write(f"- Condensing pass {number}: {p['from']} → {p['to']} words "
+                                f"(asked to remove {p['cut']})\n")
                     if c.get('usage'):
                         f.write(f"- Condensing calls: {c['usage']}\n")
                 f.write("\n")
