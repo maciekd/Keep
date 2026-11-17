@@ -44,8 +44,8 @@ class Integration(SingletonMixin, ABC):
     """
 
     # Off unless config.yaml lists the integration in `enabled_integrations`. The exceptions
-    # are Web Access, which needs no credentials and the assistant leans on constantly, and
-    # ElevenLabs TTS, the engine voice speaks through unless another one is enabled.
+    # are Web Access, which needs no credentials and the assistant leans on constantly, and the
+    # default TTS engine (`default_enabled`): ElevenLabs on cloud AI, Supertonic on local AI.
     enabled_by_default: bool = False
     # The names it was listed under before a rename: `IntegrationMonitor.find` still answers to
     # them, so a procedure or a memory written with the old name keeps working.
@@ -120,8 +120,14 @@ class Integration(SingletonMixin, ABC):
         return next(iter(cls._paragraphs()[1:]), "")
 
     @classmethod
+    def default_enabled(cls) -> bool:
+        """Whether it is on while `enabled_integrations` does not list it: `enabled_by_default`,
+        unless the integration's default depends on the install (a TTS engine on cloud or local AI)."""
+        return cls.enabled_by_default
+
+    @classmethod
     def enabled(cls, config) -> bool:
-        return config.integration_enabled(cls.config_name(), cls.enabled_by_default)
+        return config.integration_enabled(cls.config_name(), cls.default_enabled())
 
     def __init__(self):
         self._state: IntegrationState = IntegrationState.UNKNOWN

@@ -156,7 +156,7 @@ class VoiceInterface(Interface):
     @staticmethod
     def _register_tts_integrations():
         """Every TTS engine goes through the monitor like any other integration: by class,
-        so `enabled_integrations` decides which are built (ElevenLabs is on by default),
+        so `enabled_integrations` decides which are built (ElevenLabs by default on cloud AI, Supertonic on local AI),
         `list_integrations` shows the rest as disabled and `restart_integration` can rebuild
         one. The singleton is the health probe; VoiceFactory builds its own instances."""
         from assistant.integration.IntegrationMonitor import IntegrationMonitor

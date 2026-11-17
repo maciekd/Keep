@@ -29,9 +29,13 @@ class ElevenLabsVoiceSynthesizer(WebSocketVoiceSynthesizer, Integration):
     DEFAULT_MODEL = "eleven_v4_turbo"
     DIALOGUE_MODEL_PREFIXES = ("eleven_v3", "eleven_v4")
 
-    # The engine every non-Swedish reply speaks through, so a voice install needs only its
-    # key: on without an enabled_integrations entry, listed as "not configured" until then.
-    enabled_by_default = True
+    # On cloud AI the engine every non-Swedish reply speaks through, so a voice install needs only
+    # its key: on without an enabled_integrations entry, listed as "not configured" until then. On
+    # local AI (`local_backend`) it is off unless listed — the replies would leave the machine.
+    @classmethod
+    def default_enabled(cls) -> bool:
+        from assistant.llm import local_only_mode
+        return not local_only_mode()
 
     @property
     def name(self) -> str:

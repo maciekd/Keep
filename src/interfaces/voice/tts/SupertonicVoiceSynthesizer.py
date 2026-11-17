@@ -27,6 +27,13 @@ class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
 
     CONFIG_SECTION = "supertonic"
 
+    # The default voice of local AI (`local_backend`), where ElevenLabs is off: nothing spoken
+    # leaves the machine. On cloud AI it is opt-in.
+    @classmethod
+    def default_enabled(cls) -> bool:
+        from assistant.llm import local_only_mode
+        return local_only_mode()
+
     SUPERTONIC_SAMPLE_RATE = 44100
     OUTPUT_SAMPLE_RATE = 24000
 

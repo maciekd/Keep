@@ -6,11 +6,12 @@
 # An integration's own section lives in its folder, src/integrations/<name>/config.example.yaml: a line
 # `# >> section: path` stands where it belongs, and config_help(section) shows the section whole.
 
-# Every integration is off until it is listed here (Web Access and ElevenLabs TTS are on regardless).
+# Every integration is off until it is listed here (Web Access and the default TTS engine are on regardless).
 # Use the names list_integrations shows: Arlo, Aseko Pool, CalDAV, Google, Google Docs, iCloud, IMAP Mail, iMessage, Indigo,
 # HEOS, Microsoft 365, Philips Hue, Photos, Plejd, Reminders, Ring, Self Improvement, Sonos, Telegram Feed, Tesla, X, YR Weather.
-# The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default), Gemini TTS,
-# Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS: a request speaks through the
+# The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default on cloud AI),
+# Gemini TTS, Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS (on by default instead of
+# ElevenLabs with local_backend set, so nothing spoken leaves the machine): a request speaks through the
 # first enabled and configured one, Swedish preferring Gemini TTS, so a Swedish install enables Gemini TTS
 # (needs google_service_account) and a different English engine means enabling it and disabling
 # ElevenLabs TTS. The assistant's enable_integration / disable_integration edit this list.

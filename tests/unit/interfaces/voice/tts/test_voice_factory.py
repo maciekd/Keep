@@ -120,3 +120,27 @@ def test_every_call_builds_a_fresh_instance(engines):
     """Callers own the lifetime (DialogManager memoizes per language and closes on kill);
     a shared instance would let one dialog's kill close the websocket under another."""
     assert create_voice("en") is not create_voice("en")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("local, default_engine, other", [
+    (False, ElevenLabsVoiceSynthesizer, SupertonicVoiceSynthesizer),
+    (True, SupertonicVoiceSynthesizer, ElevenLabsVoiceSynthesizer),
+])
+def test_the_default_engine_follows_cloud_or_local_ai(monkeypatch, local, default_engine, other):
+    """Unlisted in enabled_integrations, ElevenLabs speaks on cloud AI and Supertonic on local AI,
+    so with `local_backend` set nothing spoken leaves the machine; a listed engine is on either way."""
+    monkeypatch.setattr("assistant.llm.local_only_mode", lambda: local)
+
+    class Listed:
+        def __init__(self, names):
+            self.names = names
+
+        def integration_enabled(self, name, default=False):
+            return name in self.names or default
+
+    enabled = Integration.__dict__["enabled"].original.__func__
+    unlisted = Listed(set())
+    assert enabled(default_engine, unlisted)
+    assert not enabled(other, unlisted)
+    assert enabled(other, Listed({other.config_name()}))

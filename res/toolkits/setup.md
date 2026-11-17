@@ -46,9 +46,9 @@ phone app needs. Warn before turning it on: no password, anyone on the Wi-Fi is 
 Voice on this server is the phone app's: a Linux server has no microphones or speakers of its own, the
 `local_outposts` settings need a Mac, and a reply is spoken on the phone. The voice speaks through the
 <!-- /linux -->
-first enabled and configured TTS engine: "ElevenLabs TTS" is on by default and needs only `api_keys.elevenlabs`;
-Swedish prefers "Gemini TTS" (`enable_integration("Gemini TTS")`, needs `google_service_account`). Cartesia Sonic, Fish
-Audio, Grok, Supertonic and Chirp 3 HD are opt-in: enable one and disable ElevenLabs TTS. Without an engine that can
+first enabled and configured TTS engine. On by default: "ElevenLabs TTS" (needs `api_keys.elevenlabs`), or with
+`local_backend` set "Supertonic TTS" (local, no key). Swedish prefers "Gemini TTS" (`enable_integration("Gemini TTS")`,
+needs `google_service_account`). The others are opt-in: enable one and disable the default. Without an engine that can
 speak, voice requests are answered as text. An engine exists only while voice runs: turn
 `interfaces.voice.enabled` on and restart before enabling one.
 
