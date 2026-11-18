@@ -38,7 +38,7 @@ Estimated Anthropic API <b>cost</b> is $80-200 / month. On a Claude Max, Ultra o
 **[Keep also works great with local AI](docs/local-ai.md)**
 
 ### Requirements
-<b>8 GB RAM</b> and a <b>Mac or Linux</b> (Ubuntu/Debian). 
+<b>4 GB RAM</b> and a <b>Mac or Linux</b> (Ubuntu/Debian). A Mac that listens through its own microphones needs <b>16 GB</b>.
 
 If you have your life in iCloud a Mac signed in to your personal iCloud is recommended. This can be the server machine or a separate satellite machine. 
 

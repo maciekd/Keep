@@ -450,8 +450,40 @@ check_mac() {
     esac
   fi
 
+  satellite || check_memory   # a satellite runs no assistant and no speech model
   check_disk
   check_network
+}
+
+MEMINFO=/proc/meminfo
+MIN_RAM_GB=4      # the server itself stays under 1 GB; the rest is the system's and the browser's
+VOICE_RAM_GB=16   # Whisper for the Mac's own microphones holds about 7 GB of GPU memory
+
+# The machine's memory in whole GB, rounded up: a Linux kernel reports what is left after its own
+# reservations, so a 4 GB machine says 3.8. Prints nothing when it cannot be read.
+ram_gb() {
+  if linux; then
+    awk '/^MemTotal:/ { print int(($2 + 1048575) / 1048576); exit }' "$MEMINFO" 2>/dev/null || true
+  else
+    { sysctl -n hw.memsize 2>/dev/null || true; } | awk '/^[0-9]+$/ { print int(($1 + 1073741823) / 1073741824) }'
+  fi
+}
+
+# Under MIN_RAM_GB nothing is installed. Under VOICE_RAM_GB a Mac is told what it may have to do
+# without: the speech recognition for its own microphones, which a Linux server does not have.
+check_memory() {
+  local ram
+  ram=$(ram_gb)
+  if [ -z "$ram" ]; then
+    dim "Memory: could not be read, not checked"
+    return
+  fi
+  [ "$ram" -ge "$MIN_RAM_GB" ] || fail "Only $ram GB of memory; Keep needs at least $MIN_RAM_GB GB." \
+    "The server, its browser and the system share it."
+  ok "Memory: $ram GB"
+  if ! linux && [ "$ram" -lt "$VOICE_RAM_GB" ]; then
+    warn "Local voice recognition (this Mac's own microphones) might not work with less than $VOICE_RAM_GB GB of memory."
+  fi
 }
 
 # The POSIX form of df (-P: one line per filesystem, -k: kilobytes), which BSD's and GNU's both
@@ -549,6 +581,7 @@ check_linux() {
   fi
   ok "systemd user session"
 
+  check_memory
   check_disk
   if command -v curl >/dev/null 2>&1; then
     check_network

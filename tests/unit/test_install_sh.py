@@ -162,7 +162,7 @@ class InstallShHarness:
             'STEP_NAME=test; API_KEY=""; WORKSPACE_ID=""; VERIFY_CODE=""; ANTHROPIC_SAID=""\n'
             'PY=""; CHILD_PID=""; SPINNER_PID=""; SPINNER_STATUS=""\n'
             'init_ui; TTY=""\n'
-            f'OS_RELEASE="{self.os_release}"; CPUINFO="{self.dir}/cpuinfo"\n'
+            f'OS_RELEASE="{self.os_release}"; CPUINFO="{self.dir}/cpuinfo"; MEMINFO="{self.dir}/meminfo"\n'
             + machine_stubs(self.dir) +
             # The n-th call answers with curl_<n>.code and, for its -o target, curl_<n>.body.
             f'curl() {{ echo "$*" >> "{self.curl_calls}"; local n prev="" a\n'
@@ -723,6 +723,13 @@ def loaded(path: Path):
         return ConfigManager()
 
 
+def a_mac(ram_gb: int = 16) -> str:
+    """The machine check_mac sees: Apple Silicon, macOS 15, this much memory."""
+    return (f'sysctl() {{ if [ "$2" = hw.memsize ]; then echo {ram_gb * 2 ** 30}; else echo 1; fi; }}\n'
+            'sw_vers() { echo 15.1; }; MIN_FREE_GB=0; MIN_MACOS=14\n'
+            'uname() { if [ "$1" = -m ]; then echo arm64; else echo Darwin; fi; }\n')
+
+
 def existing_install(harness, config: str):
     """A checkout an earlier install left, with its config.yaml."""
     (harness.keep_dir / '.git').mkdir(parents=True)
@@ -945,8 +952,7 @@ class TestSatelliteInstall:
         assert steps(result)[-1] == (8, 8)
         assert 'imessage.host' not in result.stdout
 
-    MAC = ('sysctl() { echo 1; }; sw_vers() { echo 15.1; }; MIN_FREE_GB=0; MIN_MACOS=14\n'
-           'uname() { if [ "$1" = -m ]; then echo arm64; else echo Darwin; fi; }\n')
+    MAC = a_mac()
 
     def test_the_mac_check_does_not_ask_for_anthropic_on_a_satellite(self, harness):
         result = harness.run(self.MAC + 'ROLE=imessage_satellite; check_mac')
@@ -1062,6 +1068,57 @@ class TestTheLinuxMachineCheck:
         assert re.search(r'asked=\s*0', result.stdout), "the network was tested with a curl that is not there"
         assert harness.apt_installs == [['curl']]
         assert 'github.com' in harness.curl_calls.read_text()
+
+
+def meminfo(harness, kb: int):
+    (harness.dir / 'meminfo').write_text(f'MemTotal:       {kb} kB\nMemFree:          181234 kB\nMemAvailable:    2915496 kB\n')
+
+
+class TestTheMemoryCheck:
+    """Too little memory for a server stops the install; too little for the Mac's own speech
+    recognition is a warning, on the one kind of install that has it."""
+
+    def test_a_linux_machine_sold_as_4_gb_reports_less_and_still_installs(self, harness):
+        meminfo(harness, 3_981_234)
+        result = on_linux(harness, CHECK)
+        assert result.returncode == 0, result.stdout
+        assert 'warn:' not in harness.log.read_text()
+
+    def test_a_linux_machine_with_too_little_memory_stops_before_apt(self, harness):
+        meminfo(harness, 2_014_208)
+        result = on_linux(harness, CHECK + '; ensure_packages')
+        assert result.returncode == 1
+        assert '2 GB' in result.stdout and 'Unexpected error' not in result.stdout
+        assert harness.calls('sudo') == []
+
+    def test_memory_that_cannot_be_read_does_not_stop_the_install(self, harness):
+        result = on_linux(harness, CHECK)
+        assert result.returncode == 0, result.stdout
+        assert 'ok: Memory' not in harness.log.read_text()
+
+    @pytest.mark.parametrize('ram_gb, warned', [(8, True), (16, False), (64, False)])
+    def test_a_mac_under_16_gb_is_warned_about_its_own_microphones(self, harness, ram_gb, warned):
+        result = harness.run(a_mac(ram_gb) + 'check_mac')
+        assert result.returncode == 0, result.stdout
+        assert ('warn:' in harness.log.read_text()) == warned
+        assert f'{ram_gb} GB' in result.stdout
+
+    def test_a_mac_with_too_little_memory_stops(self, harness):
+        result = harness.run(a_mac(2) + 'check_mac')
+        assert result.returncode == 1
+        assert '2 GB' in result.stdout and 'Unexpected error' not in result.stdout
+
+    def test_a_satellite_is_neither_stopped_nor_warned(self, harness):
+        """It runs no assistant and no speech model."""
+        result = harness.run(a_mac(2) + 'ROLE=imessage_satellite; check_mac')
+        assert result.returncode == 0, result.stdout
+        assert 'warn:' not in harness.log.read_text()
+
+    def test_a_linux_server_is_not_warned_about_microphones_it_does_not_have(self, harness):
+        meminfo(harness, 7_900_000)
+        result = on_linux(harness, CHECK)
+        assert result.returncode == 0, result.stdout
+        assert 'warn:' not in harness.log.read_text() and '8 GB' in result.stdout
 
 
 class TestTheAptStep:
