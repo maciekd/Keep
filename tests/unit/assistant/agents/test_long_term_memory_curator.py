@@ -367,6 +367,28 @@ class TestCondensingPass:
         assert memory.rstrip("\n") == _bank(sizes[CONDENSE_PASSES])
         error.assert_called_once()
 
+    def test_a_later_pass_that_comes_back_longer_keeps_the_bank_of_the_pass_before(self):
+        curated, once, longer = (_bank(MEMORY_WORD_LIMIT + 2000), _bank(MEMORY_WORD_LIMIT + 1000),
+                                 _bank(MEMORY_WORD_LIMIT + 1500))
+        curator = self._curator([f"<memory>{curated}</memory>", f"<section>{once}</section>",
+                                 f"<section>{longer}</section>", "<section>never asked for</section>"])
+        with patch("assistant.agents.LongTermMemoryCurator.error") as error:
+            memory, metadata = curator.curate_memory_with_data("history", "", _bank(3000))
+        assert memory.rstrip("\n") == once, "the second pass added words: the first pass's bank is the result"
+        assert curator.llm.think.call_count == 3, "a pass that removed nothing is not followed by another"
+        assert metadata['condense']['to'] == curator.word_count(once)
+        error.assert_called_once()
+
+    def test_a_memory_log_that_cannot_be_written_does_not_cost_the_condensing(self, tmp_path, monkeypatch):
+        import assistant.agents.LongTermMemoryCurator as curator_mod
+        in_the_way = tmp_path / "log"
+        in_the_way.write_text("a file where the folder should be")
+        monkeypatch.setattr(curator_mod, "MEMORY_LOG_DIR", in_the_way)
+        condensed = _bank(MEMORY_WORD_LIMIT - 90)
+        curator = self._curator([f"<memory>{_bank(MEMORY_WORD_LIMIT + 2000)}</memory>", f"<section>{condensed}</section>"])
+        memory, _ = curator.curate_memory_with_data("history", "", _bank(3000))
+        assert memory.rstrip("\n") == condensed
+
     def test_the_bank_each_pass_got_is_kept_in_the_memory_log(self, tmp_path, monkeypatch):
         import assistant.agents.LongTermMemoryCurator as curator_mod
         monkeypatch.setattr(curator_mod, "MEMORY_LOG_DIR", tmp_path / "log")
@@ -411,6 +433,21 @@ class TestRunCondense:
         assert len(journals) == 1 and "Condensing pass" in journals[0].read_text()
         note = history.add_context_message.call_args.args[1]
         assert str(outcome['from']) in note and str(outcome['to']) in note
+
+    def test_the_journal_lists_every_pass_with_the_sizes_it_went_between(self, tmp_path, monkeypatch):
+        import assistant.agents.LongTermMemoryCurator as curator_mod
+        monkeypatch.setattr(curator_mod, "MEMORY_LOG_DIR", tmp_path / "log")
+        curator, _ = self._curator(tmp_path, None, _bank(MEMORY_WORD_LIMIT + 2017))
+        curator.llm.think.side_effect = [f"<section>{_bank(MEMORY_WORD_LIMIT + 1009)}</section>",
+                                         f"<section>{_bank(MEMORY_WORD_LIMIT - 13)}</section>"]
+        outcome = LongTermMemoryCurator.run_condense(curator=curator)
+        first, second = outcome['passes']
+        assert first['to'] == second['from'] and (outcome['from'], outcome['to']) == (first['from'], second['to'])
+        [journal] = (tmp_path / "log").glob("*_memory.md")
+        lines = journal.read_text().splitlines()
+        for one_pass in (first, second):
+            assert any(str(one_pass['from']) in line and str(one_pass['to']) in line and str(one_pass['cut']) in line
+                       for line in lines), f"the journal does not show the pass {one_pass['from']} → {one_pass['to']}"
 
     def test_the_given_cut_reaches_the_condenser(self, tmp_path):
         curator, _ = self._curator(tmp_path, f"<section>{_bank(100)}</section>", _bank(500))

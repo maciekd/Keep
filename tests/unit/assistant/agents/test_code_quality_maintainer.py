@@ -637,6 +637,23 @@ class TestStepTestHealth:
         assert f"{SLOW_TEST_MS} ms" in prompt and f"{TEST_HEALTH_RUNS} times" in prompt
         assert "{" not in prompt
 
+    @patch.object(CodeQualityMaintainer, '_run_claude', return_value="")
+    @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
+    def test_what_the_prompt_tells_claude_to_run_and_read_is_in_the_tree(self, mock_run, mock_claude, maintainer):
+        """The prompt is the only caller of the load script and the only reader of the example
+        config and the workflows there: a renamed file would fail the night's run, not a test."""
+        import re
+        from common.Paths import AISERVER_DIR
+        mock_run.return_value = Mock(stdout="master\n", returncode=0)
+        maintainer._step_test_health()
+        prompt = mock_claude.call_args[0][0]
+        named = set(re.findall(r'scripts/[\w/]+\.sh|config\.example\.yaml|\.github/workflows/', prompt))
+        assert {'scripts/test_under_load.sh', 'config.example.yaml', '.github/workflows/'} <= named
+        assert [name for name in named if not (AISERVER_DIR / name).exists()] == []
+        loaded = [int(count) for count in re.findall(r'test_under_load\.sh (\d+)\s', prompt)]
+        assert len(loaded) == 2 and 1 in loaded, "the loaded runs, and the single one with the example config"
+        assert 1 < max(loaded) < TEST_HEALTH_RUNS, "a loaded run costs several idle ones, so fewer of them"
+
     @patch.object(CodeQualityMaintainer, '_run_claude', side_effect=Exception("claude timed out"))
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_a_failed_run_reports_nothing_and_still_restores_the_branch(self, mock_run, mock_claude, maintainer):

@@ -81,6 +81,36 @@ class TestReplyParsing:
         reply = self.LEAKED + '<memory>\n# Bank\n* Marcus likes tea\n</memory>'
         assert self.parse(reply) == ("# Bank\n* Marcus likes tea", "")
 
+    def test_an_unclosed_answer_after_leaked_thinking_is_still_the_last_bank_and_its_commands(self):
+        reply = self.LEAKED + '<memory>\n# Bank\n* Marcus likes tea\n\n<commands>\nsave_watch("parcel", "due Thursday", "")'
+        assert self.parse(reply) == ("# Bank\n* Marcus likes tea", 'save_watch("parcel", "due Thursday", "")')
+
+    def test_a_bank_that_names_the_commands_tag_is_kept_whole_before_a_real_block(self):
+        bank = "# Bank\n* Frances asked what a `<commands>` block is.\n* Marcus likes tea"
+        reply = f'<memory>\n{bank}\n</memory>\n<commands>\ndelete_watch("parcel", "done")\n</commands>'
+        assert self.parse(reply) == (bank, 'delete_watch("parcel", "done")')
+
+    @pytest.mark.xfail(strict=True, reason="_split_commands takes the last '<commands>' of the reply wherever it stands: "
+                                           "in a reply without a command block a bank that names the tag is cut at the "
+                                           "mention, and the rest of the bank is handed over as commands")
+    def test_a_bank_that_names_the_commands_tag_is_kept_whole_without_a_command_block(self):
+        bank = "# Bank\n* Frances asked what a `<commands>` block is.\n* Marcus likes tea"
+        assert self.parse(f'<memory>\n{bank}\n</memory>') == (bank, "")
+
+    @pytest.mark.xfail(strict=True, reason="_last_memory_tag takes the last '<memory>' that ends a line as the block's: "
+                                           "a bank with a line ending in the tag loses everything above that line")
+    def test_a_bank_with_a_line_that_ends_in_the_memory_tag_is_kept_whole(self):
+        bank = "# Bank\n* Charlotte is allergic to cats\n* Frances asked about the line that reads <memory>\n* Marcus likes tea"
+        reply = f'<memory>\n{bank}\n</memory>\n<commands>\n</commands>'
+        assert self.parse(reply) == (bank, "")
+
+    @pytest.mark.xfail(strict=True, reason="_last_memory_tag prefers a '<memory>' that ends its line: when the leaked draft's "
+                                           "tag does and the answer's is followed by the bank on the same line, the draft "
+                                           "is read as the answer — the thinking lands in the bank and the drafted commands run")
+    def test_an_answer_whose_bank_starts_on_the_tags_line_still_wins_over_the_leaked_draft(self):
+        reply = self.LEAKED + '<memory># Bank\n* Marcus likes tea\n</memory>'
+        assert self.parse(reply) == ("# Bank\n* Marcus likes tea", "")
+
     def test_a_bank_that_writes_about_the_tags_is_kept_whole(self):
         bank = "# Bank\n* The parser reads the last `<memory>` block, up to `</memory>`.\n* Marcus likes tea"
         reply = f'<memory>\n{bank}\n</memory>\n<commands>\n</commands>'

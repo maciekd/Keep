@@ -50,10 +50,10 @@ class Ds4Harness:
     def port_taken_by(self, pid: int):
         (self.dir / 'lsof_out').write_text(f'{pid}\n')
 
-    def run(self, **env) -> subprocess.CompletedProcess:
+    def run(self, *args, **env) -> subprocess.CompletedProcess:
         full = dict(os.environ, BASH_ENV=str(self.env_file), DS4_DIR=str(self.ds4),
                     KV_DIR=str(self.dir / 'kv'), ARGS_OUT=str(self.args_out), PID_OUT=str(self.pid_out), **env)
-        return subprocess.run(['bash', str(SCRIPT)], env=full, capture_output=True, text=True, timeout=30)
+        return subprocess.run(['bash', str(SCRIPT), *args], env=full, capture_output=True, text=True, timeout=30)
 
     @property
     def launched(self) -> bool:
@@ -151,6 +151,36 @@ class TestLocalDs4StartSh:
         assert result.returncode == 1
         assert MODEL in result.stdout
         assert not harness.launched
+
+    def test_the_first_argument_is_the_model_to_run_over_the_environments(self, harness):
+        (harness.ds4 / 'gguf' / 'Other-Q4.gguf').write_text('model')
+        assert harness.run('gguf/Other-Q4.gguf', MODEL='gguf/Not-There.gguf').returncode == 0
+        assert harness.flags()['--model'] == 'gguf/Other-Q4.gguf'
+
+    def test_a_model_named_by_argument_that_is_not_there_is_refused_though_the_default_is(self, harness):
+        result = harness.run('gguf/Not-There.gguf')
+        assert result.returncode == 1 and not harness.launched
+        assert 'gguf/Not-There.gguf' in result.stdout
+
+    def test_a_missing_model_shows_the_models_that_are_there_and_never_the_vision_encoder(self, harness):
+        (harness.ds4 / MODEL).unlink()
+        (harness.ds4 / 'gguf' / 'Other-Q4.gguf').write_text('model')
+        (harness.ds4 / 'gguf' / 'notes.txt').write_text('not a model')
+        harness.with_vision()
+        result = harness.run()
+        assert result.returncode == 1 and not harness.launched
+        offered = [line.strip() for line in result.stdout.splitlines() if line.startswith('  ') and 'Other' in line]
+        assert offered == ['gguf/Other-Q4.gguf'], "the name is what the script takes as its argument"
+        assert VISION not in result.stdout and 'notes.txt' not in result.stdout
+
+    def test_a_missing_model_in_a_folder_without_any_still_ends_as_a_refusal(self, harness):
+        """Under `set -e` and pipefail the empty listing must not end the script before its exit code."""
+        (harness.ds4 / MODEL).unlink()
+        harness.with_vision()
+        result = harness.run()
+        assert result.returncode == 1 and not harness.launched
+        assert 'download_model.sh' in result.stdout
+        assert VISION not in result.stdout
 
     def test_a_server_that_dies_during_startup_fails_with_its_log_tail(self, harness):
         result = harness.run(DS4_FAKE_EXIT='1')
