@@ -18,7 +18,7 @@ from email.message import Message
 from typing import Any, Callable, List, Optional
 
 from imap_tools import MailBox, AND, MailMessageFlags
-from imap_tools.errors import MailboxFolderSelectError
+from imap_tools.errors import MailboxFolderSelectError, MailboxMoveError, MailboxCopyError
 
 from common.logging import trace, info, error
 from .MailAccount import MailAccount, FolderNotFound
@@ -216,6 +216,11 @@ class ImapMailAccount(MailAccount):
             with self._mailbox(source) as mailbox:
                 mailbox.move(uid, dest_folder)
         except MailboxFolderSelectError as e:
+            raise FolderNotFound(str(e)) from e
+        except (MailboxMoveError, MailboxCopyError) as e:
+            # RFC 3501: a destination that does not exist is refused with [TRYCREATE]
+            if "TRYCREATE" not in str(e):
+                raise
             raise FolderNotFound(str(e)) from e
 
     def _recent_from(self, sender_contains: str, limit: int) -> list:

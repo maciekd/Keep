@@ -163,8 +163,40 @@ class TestListing:
 
         assert account.moved == [("500", "@SaneLater", "INBOX")]
 
-    def test_a_missing_folder_lists_as_no_emails(self):
-        assert _MemoryAccount().fetch_latest("@Nonexistent") == "No emails found."
+    def test_a_missing_folder_is_said_to_be_missing_and_not_empty(self):
+        # prod 2026-11-17: "No emails found." for a folder that was not there read as "Sent is empty"
+        result = _MemoryAccount().fetch_latest("@Nonexistent")
+
+        assert "No emails found" not in result
+        assert "@Nonexistent" in result and "fake" in result and "list_folders" in result
+
+    def test_an_empty_folder_is_still_no_emails(self):
+        assert _MemoryAccount({"INBOX": [], "Archive": []}).fetch_latest("Archive") == "No emails found."
+
+    def test_a_folder_asked_for_with_the_wrong_brackets_or_case_is_the_one_listed(self):
+        for asked in ("(Gmail)/Sent Mail", "[gmail]/sent mail"):
+            account = _MemoryAccount({"INBOX": [], "[Gmail]/Sent Mail": [_message(uid="7", subject="Radering")]})
+            assert "Subject: Radering" in account.fetch_latest(asked)
+
+    def test_an_id_listed_under_the_wrong_spelling_is_moved_out_of_the_real_folder(self):
+        account = _MemoryAccount({"INBOX": [], "[Gmail]/Sent Mail": [_message(uid="7")]})
+        account.fetch_latest("(Gmail)/Sent Mail")
+
+        account.move("AA", "INBOX")
+
+        assert account.moved == [("7", "[Gmail]/Sent Mail", "INBOX")]
+
+    def test_a_folder_that_exists_as_asked_is_never_looked_up(self):
+        account = _MemoryAccount({"INBOX": [], "Receipts (2024)": [_message(subject="Kvitto")], "Receipts [2024]": []})
+        account._folders = Mock(side_effect=AssertionError("no folder list is needed"))
+
+        assert "Subject: Kvitto" in account.fetch_latest("Receipts (2024)")
+
+    def test_a_folder_list_that_fails_leaves_the_folder_missing(self):
+        account = _MemoryAccount()
+        account._folders = Mock(side_effect=OSError("connection reset"))
+
+        assert "@Nonexistent" in account.fetch_latest("@Nonexistent") and "list_folders" in account.fetch_latest("@Nonexistent")
 
     def test_unread_only_filters_the_seen_ones(self):
         account = _MemoryAccount({"INBOX": [_message(uid="1", subject="Old", flags=("\\Seen",)),
@@ -335,6 +367,15 @@ class TestMove:
         account.move("AB", "Archive")
 
         assert account.moved == [("500", "@SaneLater", "Archive"), ("1", "INBOX", "Archive")]
+
+    def test_a_destination_with_the_wrong_brackets_is_the_real_folder_and_the_answer_names_it(self):
+        account = _MemoryAccount({"INBOX": [_message(uid="1")], "[Gmail]/Trash": []})
+        account.fetch_latest()
+
+        result = account.move("AA", "(Gmail)/Trash")
+
+        assert account.moved == [("1", "INBOX", "[Gmail]/Trash")]
+        assert "[Gmail]/Trash" in result and "(Gmail)" not in result
 
     def test_a_missing_destination_is_a_folder_error(self):
         result = _MemoryAccount().move("1", "Nowhere")

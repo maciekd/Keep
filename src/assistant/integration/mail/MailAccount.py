@@ -35,6 +35,12 @@ class FolderNotFound(Exception):
     """The backend has no folder by the name a listing or a move named."""
 
 
+def _folder_key(name: str) -> str:
+    """What two spellings of one folder share: the letters, whatever the case and whichever
+    brackets."""
+    return name.strip().replace("[", "(").replace("]", ")").casefold()
+
+
 # Types a sender's client uses when it does not know (or care) what the file is; the extension
 # then says more than the type does.
 GENERIC_CONTENT_TYPES = ("", "application/octet-stream", "binary/octet-stream",
@@ -232,11 +238,11 @@ class MailAccount(ABC):
         try:
             scope = "unread " if unread_only else ""
             info(f"Fetching latest {scope}emails from {self.name} ({folder})...")
-            messages = self._list(folder, unread_only)
+            messages, folder = self._in_folder(folder, lambda name: self._list(name, unread_only))
             return self._format_email_list(messages, folder)
         except FolderNotFound:
-            info(f"{self.name}: folder '{folder}' does not exist here — no emails.")
-            return "No emails found."
+            info(f"{self.name}: folder '{folder}' does not exist here, and no folder is named like it")
+            return f"Folder '{folder}' does not exist in {self.name} — list_folders shows the ones it has."
         except Exception as e:
             error(f"Failed to fetch latest {self.name} emails: {e}")
             return f"Error fetching {self.name} emails: {e}"
@@ -287,7 +293,7 @@ class MailAccount(ABC):
             uid = self._resolve_email_id(email_id)
             source = self._folder_of(email_id)
             info(f"Moving {self.name} email UID {uid}: '{source}' -> '{dest_folder}'")
-            self._move(uid, source, dest_folder)
+            _, dest_folder = self._in_folder(dest_folder, lambda name: self._move(uid, source, name))
             # Echo the subject back into the result so the model's feedback channel
             # carries the human-meaningful identity, not just the opaque short id —
             # otherwise it can't tell which message it actually moved. Truncated the
@@ -305,6 +311,31 @@ class MailAccount(ABC):
         except Exception as e:
             error(f"Failed to move {self.name} email {email_id}: {e}")
             return f"Error moving email: {e}"
+
+    def _in_folder(self, folder: str, operation):
+        """What `operation(folder)` returns and the folder it ran in. A name the backend does not
+        have is tried once more as the account's folder that differs from it only in case or in
+        its brackets: a folder asked for as "(Gmail)/Sent Mail" is "[Gmail]/Sent Mail". Raises
+        FolderNotFound when the account has no such folder either."""
+        try:
+            return operation(folder), folder
+        except FolderNotFound:
+            meant = self._folder_meant(folder)
+            if meant is None:
+                raise
+            info(f"{self.name}: no folder '{folder}' — taking it as '{meant}'")
+            return operation(meant), meant
+
+    def _folder_meant(self, folder: str) -> Optional[str]:
+        wanted = _folder_key(folder)
+        try:
+            meant = next((name for name in self._folders() if name != folder and _folder_key(name) == wanted), None)
+        except Exception as e:
+            error(f"{self.name}: could not list the folders to find the one '{folder}' stands for: {e}")
+            return None
+        if meant is None:
+            trace(f"{self.name}: no folder differs from '{folder}' only in case or brackets")
+        return meant
 
     def fetch_recent_raw(self, sender_contains: str, since_minutes: int = 10, limit: int = 5) -> List:
         """Recent raw messages from a sender, the last `since_minutes` only (the 2FA mail polling)."""

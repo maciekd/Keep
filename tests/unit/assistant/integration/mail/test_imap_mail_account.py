@@ -186,12 +186,32 @@ class TestFetchLatest:
         assert "SINCE" not in str(whole.kwargs["criteria"]) and "UNSEEN" in str(whole.kwargs["criteria"])
         assert "[GM-AA]" in result and "[GM-AB]" in result
 
-    def test_a_missing_folder_lists_as_no_emails(self, gmail, mock_mailbox):
+    def test_a_folder_the_server_cannot_select_is_said_to_be_missing(self, gmail, mock_mailbox):
         from imap_tools.errors import MailboxFolderSelectError
         MockMB, _ = mock_mailbox
         MockMB.return_value.login.side_effect = MailboxFolderSelectError("cmd", "no such folder")
 
-        assert gmail.fetch_latest("@Nonexistent") == "No emails found."
+        result = gmail.fetch_latest("@Nonexistent")
+
+        assert "@Nonexistent" in result and "Gmail" in result and "No emails found" not in result
+
+    def test_the_sent_folder_asked_for_in_parentheses_is_selected_with_its_square_brackets(self, gmail, mock_mailbox):
+        from imap_tools.errors import MailboxFolderSelectError
+        MockMB, mailbox = mock_mailbox
+        opened = MockMB.return_value.login.return_value
+
+        def login(address, password, initial_folder=None):
+            if initial_folder == "(Gmail)/Sent Mail":
+                raise MailboxFolderSelectError(("NO", [b"Unknown Mailbox"]), "OK")
+            return opened
+        MockMB.return_value.login.side_effect = login
+        mailbox.folder.list.return_value = [Mock(), Mock()]
+        mailbox.folder.list.return_value[0].name = "INBOX"
+        mailbox.folder.list.return_value[1].name = "[Gmail]/Sent Mail"
+        mailbox.fetch.return_value = [_message(uid="7", subject="Radering")]
+
+        assert "Subject: Radering" in gmail.fetch_latest("(Gmail)/Sent Mail")
+        assert MockMB.return_value.login.call_args.kwargs["initial_folder"] == "[Gmail]/Sent Mail"
 
     def test_a_connection_failure_is_an_error_text(self, gmail, mock_mailbox):
         MockMB, _ = mock_mailbox
@@ -239,6 +259,24 @@ class TestReadAndMove:
         mailbox.move.side_effect = MailboxFolderSelectError("cmd", "no such folder")
 
         assert gmail.move("99", "Nowhere").startswith("Error moving email: folder not found")
+
+    def test_a_destination_the_server_refuses_with_trycreate_is_a_folder_error(self, gmail, mock_mailbox):
+        from imap_tools.errors import MailboxMoveError
+        _, mailbox = mock_mailbox
+        mailbox.move.side_effect = MailboxMoveError(("NO", [b"[TRYCREATE] No folder Nowhere (Failure)"]), "OK")
+        mailbox.folder.list.return_value = []
+
+        assert gmail.move("99", "Nowhere").startswith("Error moving email: folder not found")
+
+    def test_a_move_refused_for_another_reason_is_not_a_folder_error(self, gmail, mock_mailbox):
+        from imap_tools.errors import MailboxMoveError
+        _, mailbox = mock_mailbox
+        mailbox.move.side_effect = MailboxMoveError(("NO", [b"[OVERQUOTA] Quota exceeded"]), "OK")
+
+        result = gmail.move("99", "Archive")
+
+        assert result.startswith("Error moving email") and "folder not found" not in result
+        mailbox.folder.list.assert_not_called()
 
     def test_lists_every_folder_by_name(self, gmail, mock_mailbox):
         _, mailbox = mock_mailbox

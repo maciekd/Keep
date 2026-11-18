@@ -63,7 +63,8 @@ class TestListing:
 
         assert acc.list_folders().split("\n") == ["Inbox", "Receipts", "Receipts/2026"]
         assert "Invoice 2026-09" in acc.fetch_latest("receipts/2026")
-        assert acc.fetch_latest("Nowhere") == "No emails found."
+        nowhere = acc.fetch_latest("Nowhere")
+        assert "Nowhere" in nowhere and "No emails found" not in nowhere
 
     def test_a_folder_nested_below_a_child_is_found_too(self, graph):
         graph.route("GET", "/me/mailFolders", FOLDERS)
