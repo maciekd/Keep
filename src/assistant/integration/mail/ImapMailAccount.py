@@ -1,8 +1,8 @@
 """The IMAP/SMTP implementation of MailAccount, parametrised by hosts, folders and a search hook.
 
 `PRESETS` holds what a known service needs: iCloud's SMTP server files nothing, so a Sent copy is
-appended over IMAP; Gmail files its own Sent copy and rejects non-ASCII SEARCH strings, so its
-preset folds the query (`gmail_search_criteria`). An account built from a preset may still override
+appended over IMAP; Gmail files its own Sent copy and rejects non-ASCII SEARCH strings on the command line, so its
+preset sends such a query as a literal (`gmail_search_criteria`). An account built from a preset may still override
 a host or port (Gmail's `email.smtp_host`).
 
 An account signs in with a password, or — when it is given an `oauth_token` supplier — with
@@ -11,7 +11,6 @@ XOAUTH2 (Gmail through the Google integration): the SASL string both servers tak
 `AUTH XOAUTH2`."""
 import smtplib
 import time
-import unicodedata
 from dataclasses import dataclass
 from datetime import date, timedelta
 from email.message import Message
@@ -29,19 +28,6 @@ SMTP_TIMEOUT = 20
 # generous enough for server-side SEARCH on a large mailbox while still bailing out on a hang.
 IMAP_TIMEOUT = 60
 
-# Letters NFKD cannot decompose to ASCII base + combining mark.
-_FOLD_MAP = str.maketrans({
-    'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE', 'œ': 'oe', 'Œ': 'OE',
-    'ß': 'ss', 'ð': 'd', 'Ð': 'D', 'þ': 'th', 'Þ': 'Th', 'đ': 'd', 'Đ': 'D',
-    'ł': 'l', 'Ł': 'L',
-})
-
-
-def _ascii_fold(text: str) -> str:
-    decomposed = unicodedata.normalize('NFKD', text.translate(_FOLD_MAP))
-    return ''.join(ch for ch in decomposed if not unicodedata.combining(ch))
-
-
 def xoauth2_string(address: str, access_token: str) -> str:
     """The SASL XOAUTH2 initial response as Gmail's IMAP and SMTP servers expect it (before
     the base64 the protocol wraps it in)."""
@@ -52,24 +38,24 @@ def plain_search_criteria(search_string: str):
     return AND(text=search_string)
 
 
+@dataclass(frozen=True)
+class LiteralCriteria:
+    """A search whose last argument travels as an IMAP literal (RFC 3501: the only way a string
+    with 8-bit bytes may be sent): `key` is the command line up to it, `literal` the bytes."""
+    key: str
+    literal: bytes
+
+
 def gmail_search_criteria(search_string: str):
-    """Gmail rejects any SEARCH whose command line contains raw 8-bit bytes ("BAD Could not
-    parse command") — RFC 3501 requires non-ASCII strings to be sent as literals, which neither
-    imap_tools nor imaplib does. Rather than drop to raw imaplib, fold the query to ASCII:
-    Gmail's search index matches diacritic-folded terms (verified live — "Bjorkangen" finds
-    "Björkängen")."""
-    folded = _ascii_fold(search_string)
-    if not folded.isascii():
-        # Chars that don't fold (emoji, CJK, ...): drop them if enough of the query survives
-        # to be meaningful; otherwise leave the query non-ASCII so Gmail's BAD reply surfaces
-        # to the LLM instead of an everything-matches empty search.
-        stripped = folded.encode('ascii', 'ignore').decode()
-        if any(c.isalnum() for c in stripped):
-            folded = stripped
-    if folded != search_string:
-        info(f"Gmail search: folded query '{search_string}' -> '{folded}'")
-    escaped = folded.replace('\\', '\\\\').replace('"', '\\"')
-    return AND(f'X-GM-RAW "{escaped}"')
+    """Gmail's own search syntax, X-GM-RAW. Gmail rejects a SEARCH whose command line holds raw
+    8-bit bytes ("BAD Could not parse command"), so a query with a letter outside ASCII goes as
+    a UTF-8 literal. Folding it to ASCII instead finds nothing: on the live account
+    (2026-11-17) a Swedish subject folded gave 0 hits and the same phrase as a literal 11."""
+    if search_string.isascii():
+        escaped = search_string.replace('\\', '\\\\').replace('"', '\\"')
+        return AND(f'X-GM-RAW "{escaped}"')
+    trace(f"Gmail search: '{search_string}' is not ASCII, sent as a UTF-8 literal")
+    return LiteralCriteria("X-GM-RAW", search_string.encode("utf-8"))
 
 
 @dataclass(frozen=True)
@@ -196,8 +182,14 @@ class ImapMailAccount(MailAccount):
             # No date filter: server-side SEARCH is index-backed (Gmail) or fast enough
             # (iCloud), and the fetch is capped at MAX_RESULTS newest matches anyway.
             # headers_only keeps the capped fetch cheap — the list view never needs bodies.
+            criteria = self._search_criteria(search_string)
+            if isinstance(criteria, LiteralCriteria):
+                # imaplib sends what `literal` holds after the command it runs next, announced
+                # as {n} at the end of that line: UID SEARCH CHARSET UTF-8 X-GM-RAW {n}
+                mailbox.client.literal = criteria.literal
+                criteria = criteria.key
             return self._timed_fetch(mailbox, f"search '{search_string}'",
-                                     criteria=self._search_criteria(search_string), charset='UTF-8',
+                                     criteria=criteria, charset='UTF-8',
                                      limit=self.MAX_RESULTS, reverse=True, mark_seen=False, headers_only=True)
 
     def _fetch(self, uid: str, folder: str):

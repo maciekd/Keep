@@ -1,10 +1,12 @@
 """ImapMailAccount: what reaches the IMAP and SMTP servers — the folders selected, the fetch
-parameters, the Sent copy, and what the presets decide (hosts, Gmail's folded search)."""
+parameters, the Sent copy, and what the presets decide (hosts, Gmail's search)."""
+import imaplib
 import smtplib
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch, Mock, MagicMock
 
 import pytest
+from imap_tools import MailBox
 
 from assistant.integration.mail.ImapMailAccount import ImapMailAccount, gmail_search_criteria, SMTP_TIMEOUT
 
@@ -83,31 +85,92 @@ class TestPresets:
         assert ImapMailAccount("A", "AA", missing, preset="icloud").address == ""
 
 
+class ScriptedImap(imaplib.IMAP4):
+    """A real imaplib client over a scripted server: what the account's search puts on the wire
+    is what imaplib itself would send Gmail."""
+
+    def __init__(self, hits: bytes):
+        self.sent = []
+        self._lines = [b"* OK ready\r\n"]
+        self._hits = hits
+        super().__init__("imap.example")
+        self.state = "SELECTED"
+
+    def open(self, host="", port=143, timeout=None):
+        pass
+
+    def shutdown(self):
+        pass
+
+    def send(self, data):
+        self.sent.append(data)
+        line = data.rstrip(b"\r\n")
+        if self._literal_tag is None and line.endswith(b"}"):
+            self._literal_tag = line.split(b" ", 1)[0]
+            self._lines.append(b"+ go ahead\r\n")
+        elif self._literal_tag is not None:
+            if data == b"\r\n":   # the line break imaplib ends a literal with
+                self._lines += [b"* SEARCH " + self._hits + b"\r\n", self._literal_tag + b" OK done\r\n"]
+                self._literal_tag = None
+        elif b" CAPABILITY" in line:
+            self._lines += [b"* CAPABILITY IMAP4rev1\r\n", line.split(b" ", 1)[0] + b" OK done\r\n"]
+        else:
+            self._lines += [b"* SEARCH " + self._hits + b"\r\n", line.split(b" ", 1)[0] + b" OK done\r\n"]
+
+    _literal_tag = None
+
+    def readline(self):
+        return self._lines.pop(0)
+
+
+@pytest.fixture
+def scripted_gmail(gmail):
+    """The Gmail account over a real imap_tools mailbox whose client is a ScriptedImap."""
+    client = ScriptedImap(b"7 9")
+    mailbox = MailBox.__new__(MailBox)
+    mailbox.client = client
+    opened = MagicMock()
+    opened.__enter__.return_value = mailbox
+    with patch.object(gmail, "_mailbox", return_value=opened), \
+            patch.object(MailBox, "_fetch_by_one", lambda self, uids, parts: iter(())):
+        yield gmail, client
+
+
 @pytest.mark.unit
 class TestGmailSearchCriteria:
-    """Gmail rejects raw 8-bit bytes on the SEARCH command line, so the criteria must always
-    be pure ASCII — folded, not dropped, since Gmail's index matches folded terms."""
+    """Gmail rejects raw 8-bit bytes on the SEARCH command line, and its index does not match a
+    query folded to ASCII (prod 2026-11-17: a Swedish subject, 0 hits for mails just sent) — a
+    query with a letter outside ASCII travels whole, as an IMAP literal."""
 
-    def test_diacritics_folded_to_ascii(self):
-        key = str(gmail_search_criteria("café résumé"))
-        assert 'cafe resume' in key and key.isascii()
+    def test_a_swedish_query_goes_to_the_server_as_a_utf8_literal_after_an_ascii_command_line(self, scripted_gmail):
+        gmail, client = scripted_gmail
+        query = "Begäran om radering på Björkängen"
+        gmail._search(query)
+        command, literal = client.sent[-3], client.sent[-2]
+        assert command.isascii() and b"SEARCH CHARSET UTF-8 X-GM-RAW" in command
+        assert literal == query.encode("utf-8")
+        assert command.rstrip().endswith(b"{%d}" % len(literal))   # the size is counted in bytes, not letters
 
-    def test_non_decomposing_letters_folded(self):
-        key = str(gmail_search_criteria("Ørsted Straße Ægir"))
-        assert 'Orsted Strasse AEgir' in key and key.isascii()
+    def test_an_emoji_or_cjk_query_travels_whole_too(self, scripted_gmail):
+        gmail, client = scripted_gmail
+        for query in ("meeting 🎉", "日本語"):
+            gmail._search(query)
+            assert client.sent[-2] == query.encode("utf-8")
+
+    def test_an_ascii_query_stays_on_the_command_line_with_no_literal(self, scripted_gmail):
+        gmail, client = scripted_gmail
+        gmail._search("order confirmation")
+        assert b'X-GM-RAW "order confirmation"' in client.sent[-1]
+        assert client.literal is None
+
+    def test_a_literal_is_not_left_behind_for_the_next_command(self, scripted_gmail):
+        gmail, client = scripted_gmail
+        gmail._search("Björkängen")
+        assert client.literal is None
 
     def test_quotes_and_backslashes_are_escaped(self):
         assert r'\"hello\"' in str(gmail_search_criteria('say "hello"'))
         assert r'path\\to\\file' in str(gmail_search_criteria(r'path\to\file'))
-
-    def test_unfoldable_chars_dropped_when_the_query_survives(self):
-        key = str(gmail_search_criteria("meeting 🎉"))
-        assert 'meeting' in key and '🎉' not in key and key.isascii()
-
-    def test_a_fully_unfoldable_query_is_kept_verbatim(self):
-        # Dropping everything would yield an empty X-GM-RAW that matches the whole mailbox;
-        # better to send it as-is and let Gmail's BAD reply surface to the LLM.
-        assert '日本語' in str(gmail_search_criteria("日本語"))
 
     def test_no_implicit_date_filter(self):
         # Search must cover the full mailbox history — a silent SINCE window made old
@@ -121,7 +184,7 @@ class TestGmailSearchCriteria:
         gmail.search("Björkängen")
         icloud.search("Björkängen")
         gmail_criteria, icloud_criteria = (call.kwargs["criteria"] for call in mailbox.fetch.call_args_list)
-        assert "X-GM-RAW" in str(gmail_criteria) and "Bjorkangen" in str(gmail_criteria)
+        assert "X-GM-RAW" in str(gmail_criteria) and "Björkängen" not in str(gmail_criteria)   # the words are the literal
         assert "X-GM-RAW" not in str(icloud_criteria) and "Björkängen" in str(icloud_criteria)
 
 
