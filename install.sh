@@ -4,15 +4,17 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/release/install.sh | bash
 #
-# Checks the Mac, finds or installs Python 3.12 without touching anything else on the
+# Checks the Mac, offers to install Chrome where there is none (the web search and the browse
+# commands drive it headless), finds or installs Python 3.12 without touching anything else on the
 # machine, clones the repository, builds the venv, asks for the Anthropic API key (and the
 # workspace it acts in, when the key is not tied to one), writes
 # config.yaml and hands the terminal to start.sh. Every step is idempotent: re-run the same
 # command to resume after a failure or to upgrade an existing install.
 #
 # On Linux (Ubuntu, Debian; docs/plans/LINUX_PLAN.md) the same steps run with that system's
-# means: the missing system packages come from apt — the one command run with sudo, printed
-# before sudo asks (with an `apt-get update` before it where apt's lists are empty) — and start.sh runs the server as a systemd user unit. Each such branch stands
+# means: the missing system packages come from apt — run with sudo, as is the install of a browser
+# the user said yes to, and nothing else; each command is printed before sudo asks (with an
+# `apt-get update` before it where apt's lists are empty) — and start.sh runs the server as a systemd user unit. Each such branch stands
 # beside the Mac's (`linux`); a Mac runs what it always ran.
 #
 # Environment overrides (all optional):
@@ -22,6 +24,8 @@
 #   ANTHROPIC_WORKSPACE_ID  the workspace (wrkspc_...) a key not tied to one workspace acts in;
 #                      skips that prompt. A key created for one workspace needs none.
 #   KEEP_NO_START=1    stop after installing instead of launching start.sh
+#   KEEP_BROWSER=1|0   where no Chrome or Chromium is found: install one (1) or leave it (0)
+#                      without asking. Without a terminal to ask on, none is installed.
 #   KEEP_REPO          repository URL              (default: https://github.com/maciekd/Keep.git)
 #   KEEP_BRANCH        branch to install           (default: release — what release.sh publishes;
 #                      an existing checkout keeps the branch it is on unless this is set)
@@ -53,7 +57,7 @@ main() {
   MIN_MACOS=14         # mlx needs Sonoma or newer
   MIN_FREE_GB=10       # the voice stack (torch, spacy, mlx) is close to 3 GB installed
   PIP_EXPECTED_PACKAGES=380   # packages a full install collects (pip freeze | wc -l); scales the progress bar
-  TOTAL_STEPS=8
+  TOTAL_STEPS=9
   ROLE=server          # server | imessage_satellite; settled by resolve_role
   STEP=0
   STEP_NAME="startup"
@@ -83,7 +87,7 @@ main() {
 
   printf '\n  %sKeep%s - personal AI done right\n' "$C_BOLD" "$C_RESET"
   if satellite; then
-    TOTAL_STEPS=7      # no API key step: no LLM runs on a satellite
+    TOTAL_STEPS=7      # no browser and no API key step: no assistant runs on a satellite
     dim "Installing an iMessage satellite into $KEEP_DIR  (override with KEEP_DIR=...)"
     dim "No assistant runs here: it lends this Mac user's Messages to your Keep server."
   else
@@ -103,6 +107,12 @@ main() {
     check_mac
     step "Xcode Command Line Tools"
     ensure_clt
+  fi
+
+  # Right after the system packages: on Linux sudo then still knows the password it was just given.
+  if ! satellite; then
+    step "Web browser"
+    ensure_browser
   fi
 
   step "Python 3.12"
@@ -136,13 +146,10 @@ main() {
     write_config
   fi
 
-  if linux; then
-    find_browser
-    enable_linger
-  fi
+  if linux; then enable_linger; fi
   summary
-  # shellcheck disable=SC2046
-  telemetry_event install_finished elapsed_s="$SECONDS" python="$PY_SOURCE" \
+  # shellcheck disable=SC2046,SC2086
+  telemetry_event install_finished elapsed_s="$SECONDS" python="$PY_SOURCE" ${BROWSER_STATE:+browser=$BROWSER_STATE} \
     commit="$(git -C "$KEEP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" $(telemetry_role)
   launch
 }
@@ -161,7 +168,7 @@ refuse_before_anything() {
   linux || return 0
   [ "$(id -u)" -ne 0 ] || fail "Please run the installer as your normal user, not as root." \
     "Keep runs as a systemd service of your own account, under your home directory. The installer asks" \
-    "for sudo once, for the system packages, and shows the command first."
+    "for sudo for the system packages alone (and for a browser, if you say yes to one), and shows each command first."
   if [ "${KEEP_ROLE:-}" = imessage_satellite ]; then
     fail "An iMessage satellite is a Mac: it serves the Messages app of a macOS user." \
       "Run this command on the Mac that holds the Messages account. On this machine, leave KEEP_ROLE out" \
@@ -271,13 +278,15 @@ open_log() {
   log "Keep installer started $(date '+%Y-%m-%d %H:%M:%S') by $(id -un)"
 }
 
-# A file for the log outside $KEEP_DIR. With the template spelled out, since GNU's mktemp takes no
+# A file for the log outside $KEEP_DIR (with -d, a folder: temp_dir). With the template spelled out, since GNU's mktemp takes no
 # bare prefix for -t as BSD's does; this form is the same file to both.
 temp_log() {
   local mktemp=/usr/bin/mktemp dir=${TMPDIR:-/tmp}
   [ -x "$mktemp" ] || mktemp=mktemp
-  "$mktemp" "${dir%/}/keep-install.XXXXXX"
+  "$mktemp" ${1:-} "${dir%/}/keep-install.XXXXXX"
 }
+
+temp_dir() { temp_log -d; }
 
 # A directory that holds nothing but log/install.log is one an earlier run created and then
 # failed in before the clone (no network, interrupted Command Line Tools wait, ...). It
@@ -379,9 +388,9 @@ stop_spinner() {
   fi
 }
 
-# run <label> <command...>: the command's output goes to the log, the screen shows a
-# spinner with the elapsed time; on failure the log's tail is shown and the install stops.
-run() {
+# attempt <label> <command...>: the command's output goes to the log, the screen shows a
+# spinner with the elapsed time; on failure the log's tail is shown and the status returned.
+attempt() {
   local label=$1; shift
   local start=$SECONDS status=0
   log ""
@@ -398,8 +407,11 @@ run() {
   fi
   printf '\n  %s✖ %s failed (exit %d). Last lines of the log:%s\n\n' "$C_RED" "$label" "$status" "$C_RESET"
   tail -n 25 "$LOG" | sed 's/^/    │ /'
-  fail "$label did not complete."
+  return "$status"
 }
+
+# run <label> <command...>: an attempt the install cannot go on without.
+run() { attempt "$@" || fail "$1 did not complete."; }
 
 # ask <prompt> <variable> [secret]: reads from the terminal, never from stdin.
 ask() {
@@ -419,7 +431,7 @@ ask() {
 
 check_mac() {
   [ "$(id -u)" -ne 0 ] || fail "Please run the installer as your normal user, not as root." \
-    "Everything is installed under your home directory; nothing needs sudo."
+    "Nothing the installer does needs sudo."
   [ "$(uname -s)" = "Darwin" ] || fail "Keep runs on macOS only (this is $(uname -s))."
 
   # hw.optional.arm64 is true even inside a Rosetta shell, where uname -m says x86_64.
@@ -709,37 +721,6 @@ apt_failed() {
     "Without sudo rights, ask an administrator to run:  $1"
 }
 
-# Chrome, for the browse commands and the web search (WebAccess drives it headless). Nothing is
-# installed here — a browser is the user's to choose — and without one the server runs all the
-# same. The names are the ones WebAccess looks for.
-BROWSER=""
-find_browser() {
-  local name
-  for name in google-chrome google-chrome-stable chromium chromium-browser; do
-    if command -v "$name" >/dev/null 2>&1; then
-      BROWSER=$(command -v "$name")
-      log "browser: $BROWSER"
-      return 0
-    fi
-  done
-  log "browser: none of google-chrome, google-chrome-stable, chromium, chromium-browser is on PATH"
-}
-
-# What to install for the browse commands, by distribution and architecture. Google publishes
-# Chrome for x86_64 only; Debian has Chromium as a package; Ubuntu's Chromium is a snap, which the
-# server drives from its systemd unit like any other (seen on 24.04, arm64 — LINUX_PLAN.md).
-browser_advice() {
-  local deb=https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-  if [ "$(uname -m)" = x86_64 ]; then
-    note "  Google Chrome:  curl -fsSLo /tmp/chrome.deb $deb && sudo apt-get install -y /tmp/chrome.deb"
-    if [ "$(os_release ID)" = debian ]; then note "  or Chromium:    sudo apt-get install -y chromium"; fi
-  elif [ "$(os_release ID)" = ubuntu ]; then
-    note "  Chromium:  sudo snap install chromium   (Google has no Chrome for ARM)"
-  else
-    note "  Chromium:  sudo apt-get install -y chromium"
-  fi
-}
-
 # The user's services start at boot and outlive the last logout only with lingering on; without it
 # the server would stop when the ssh session that installed it ends. One's own user needs no sudo
 # for it where polkit has its defaults.
@@ -753,6 +734,223 @@ enable_linger() {
     LINGER=refused
     log "loginctl enable-linger $(id -un) failed: $said"
   fi
+}
+
+# ------------------------------------------------------ 3. the browser ------
+
+# Chrome, for the web search and the browse commands (WebAccess drives it headless). The server
+# runs without one, so nothing here stops the install: a missing browser is offered, and one that
+# was declined or did not install is named in the summary with the way to get it. find_browser
+# looks where WebAccess looks (tests/unit/test_install_sh.py holds the two together), so what it
+# finds is what the server will use.
+BROWSER=""            # the one found
+BROWSER_STATE=""      # found | installed | declined | unasked | failed, for the install report
+BROWSER_NAMES="google-chrome google-chrome-stable chromium chromium-browser"
+SYSTEM_APPS=/Applications
+USER_APPS="$HOME/Applications"   # where Chrome goes for a user who may not write to /Applications
+SNAP_BIN=/snap/bin    # on the service's PATH (scripts/service.sh), not always on this shell's
+CHROME_DMG=https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg
+CHROME_DEB=https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+CHROME_TEAM=EQHXZ8M8AV   # Google's Developer ID team: whose signature the downloaded app must carry
+
+find_browser() {
+  local apps name
+  BROWSER=""
+  if ! linux; then
+    for apps in "$SYSTEM_APPS" "$USER_APPS"; do
+      for name in "Google Chrome" Chromium "Google Chrome Canary"; do
+        if [ -z "$BROWSER" ] && [ -x "$apps/$name.app/Contents/MacOS/$name" ]; then BROWSER="$apps/$name.app"; fi
+      done
+    done
+  fi
+  for name in $BROWSER_NAMES; do
+    if [ -z "$BROWSER" ] && command -v "$name" >/dev/null 2>&1; then BROWSER=$(command -v "$name"); fi
+  done
+  for name in $BROWSER_NAMES; do
+    if [ -z "$BROWSER" ] && linux && [ -x "$SNAP_BIN/$name" ]; then BROWSER="$SNAP_BIN/$name"; fi
+  done
+  log "browser: ${BROWSER:-none found (the Applications folders of a Mac, $BROWSER_NAMES on PATH and in $SNAP_BIN)}"
+}
+
+# Which browser this machine gets and how. Google publishes Chrome for the Mac and, on Linux, for
+# x86_64 only; Debian has Chromium as a package; Ubuntu's Chromium is a snap, which the server
+# drives from its systemd unit like any other (seen on 24.04, arm64 — LINUX_PLAN.md).
+browser_plan() {
+  BROWSER_NAME="Google Chrome"
+  if ! linux; then BROWSER_VIA=dmg
+  elif [ "$(uname -m)" = x86_64 ]; then BROWSER_VIA=deb
+  else
+    BROWSER_NAME=Chromium
+    if [ "$(os_release ID)" = ubuntu ]; then BROWSER_VIA=snap; else BROWSER_VIA=apt; fi
+  fi
+}
+
+# The same by hand: what the installer runs after a yes, and what the summary says after a no.
+browser_advice() {
+  browser_plan
+  case "$BROWSER_VIA" in
+    dmg)  note "  Google Chrome:  https://www.google.com/chrome/" ;;
+    deb)  note "  Google Chrome:  curl -fsSLo /tmp/chrome.deb $CHROME_DEB && sudo apt-get install -y /tmp/chrome.deb" ;;
+    snap) note "  Chromium:  sudo snap install chromium   (Google has no Chrome for ARM)" ;;
+    apt)  note "  Chromium:  sudo apt-get install -y chromium" ;;
+  esac
+}
+
+ensure_browser() {
+  find_browser
+  if [ -n "$BROWSER" ]; then
+    BROWSER_STATE=found
+    ok "$BROWSER"
+    return
+  fi
+  browser_plan
+  warn "No Chrome or Chromium is installed. Keep needs one to search and browse the web: it runs it headless, without a window."
+  if linux; then
+    note "The installer can install $BROWSER_NAME. This is what it runs:"
+    browser_advice
+  else
+    note "The installer can download $BROWSER_NAME from Google and put it in your Applications folder."
+  fi
+  if ! browser_wanted; then
+    note "Keep installs without it; the summary at the end says how to add one later."
+    return
+  fi
+  local status=0
+  if linux; then install_browser_linux || status=$?; else install_browser_mac || status=$?; fi
+  find_browser
+  if [ -n "$BROWSER" ]; then
+    BROWSER_STATE=installed
+    ok "$BROWSER"
+  else
+    BROWSER_STATE=failed
+    log "browser: the install ended with status $status and no browser is found"
+    warn "$BROWSER_NAME was not installed. Keep installs without it; the summary at the end says how to add one later."
+  fi
+}
+
+# Whether to install: KEEP_BROWSER, else one question, else — with no terminal to ask on — no.
+browser_wanted() {
+  case "$(printf '%s' "${KEEP_BROWSER:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)  dim "KEEP_BROWSER is set: installing $BROWSER_NAME."; return 0 ;;
+    0|false|no|off) dim "KEEP_BROWSER is off: not installing $BROWSER_NAME."; BROWSER_STATE=declined; return 1 ;;
+    "") ;;
+    *) fail "KEEP_BROWSER=${KEEP_BROWSER:-} is neither 1 nor 0." ;;
+  esac
+  if [ -z "$TTY" ]; then
+    dim "No terminal to ask on: $BROWSER_NAME is not installed (KEEP_BROWSER=1 installs it without asking)."
+    BROWSER_STATE=unasked
+    return 1
+  fi
+  local answer="" attempt=0
+  while :; do
+    attempt=$((attempt + 1))
+    ask "Install $BROWSER_NAME now? [Y/n]" answer
+    case "$(printf '%s' "$answer" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+      ""|y|yes) return 0 ;;
+      n|no)     BROWSER_STATE=declined; return 1 ;;
+    esac
+    if [ "$attempt" -ge 3 ]; then
+      warn "No yes or no after 3 attempts: not installing $BROWSER_NAME."
+      BROWSER_STATE=declined
+      return 1
+    fi
+    warn "Please answer y or n."
+  done
+}
+
+# Google's disk image, the app checked for Google's signature while still on the image, then copied.
+# The signature seals every file of the app, so hdiutil's own checksum pass over the image is left out.
+# No Homebrew and no password: /Applications takes it from an administrator, and anyone else gets it
+# in their own ~/Applications, where WebAccess looks as well.
+install_browser_mac() {
+  local app="Google Chrome.app" target=$SYSTEM_APPS work status=0
+  [ -w "$target" ] || target=$USER_APPS
+  if [ -e "$target/$app" ]; then
+    warn "$target/$app is there already, but not as an app that can be run. It is left as it is."
+    return 1
+  fi
+  work=$(temp_dir) || return 1
+  if attempt "Download Google Chrome" curl -fsSL --retry 2 -o "$work/chrome.dmg" "$CHROME_DMG" &&
+     attempt "Open the disk image" hdiutil attach -nobrowse -readonly -noautoopen -noverify -mountpoint "$work/image" "$work/chrome.dmg" &&
+     attempt "Check Google's signature" codesign --verify --deep \
+       -R="anchor apple generic and certificate leaf[subject.OU] = \"$CHROME_TEAM\"" "$work/image/$app" &&
+     mkdir -p "$target" &&
+     attempt "Copy to $target" ditto "$work/image/$app" "$target/$app"; then
+    status=0
+  else
+    status=1
+    rm -rf "${target:?}/${app:?}"   # ours: it was not there before the copy began
+  fi
+  hdiutil detach "$work/image" -force >>"$LOG" 2>&1 || true
+  rm -rf "${work:?}"
+  return "$status"
+}
+
+# With sudo, like the system packages, and under the same conditions: a sudo that is there, and a
+# terminal for its password or no password needed.
+install_browser_linux() {
+  if ! command -v sudo >/dev/null 2>&1; then
+    warn "sudo is not installed, so the installer cannot install $BROWSER_NAME."
+    return 1
+  fi
+  if [ -z "$TTY" ] && ! sudo -n -v >/dev/null 2>&1; then
+    warn "sudo needs a password and there is no terminal to ask for it on."
+    return 1
+  fi
+  local work status=0
+  case "$BROWSER_VIA" in
+    deb)
+      # A folder apt's own user can read: it fetches a local .deb as _apt, not as root.
+      work=$(temp_dir) || return 1
+      chmod 755 "$work"
+      if attempt "Download Google Chrome" curl -fsSL --retry 2 -o "$work/google-chrome.deb" "$CHROME_DEB"; then
+        apt_browser "$work/google-chrome.deb" || status=$?
+      else
+        status=1
+      fi
+      rm -rf "${work:?}" ;;
+    apt)  apt_browser chromium || status=$? ;;
+    snap) printf '  … %s\n' "snap install chromium (sudo may ask for your password)"
+          as_root snap install chromium || status=$? ;;
+  esac
+  if [ "$status" -ne 0 ]; then
+    printf '\n  %s✖ %s did not install. Last lines of the log:%s\n\n' "$C_RED" "$BROWSER_NAME" "$C_RESET"
+    tail -n 15 "$LOG" | sed 's/^/    │ /'
+  fi
+  return "$status"
+}
+
+# as_root <command...>: through sudo, its output in the log and stdin taken away (see apt_install).
+as_root() {
+  log ""
+  log "--- sudo $*"
+  sudo env DEBIAN_FRONTEND=noninteractive "$@" </dev/null >>"$LOG" 2>&1
+}
+
+# apt_browser <package or .deb>: with its recommended packages (the fonts a page is drawn with), and
+# once more after an apt-get update where apt's lists knew a package by no name.
+apt_browser() {
+  local offset
+  printf '  … %s\n' "apt-get install (sudo may ask for your password; apt's output goes to the log)"
+  offset=$(($(wc -c <"$LOG") + 1))
+  as_root apt-get install -y "$1" && return 0
+  apt_lists_stale "$offset" || return 1
+  note "apt's package lists are empty or old. Refreshing them first: ${C_BOLD}sudo apt-get update${C_RESET}"
+  as_root apt-get update || log "apt-get update failed"
+  as_root apt-get install -y "$1"
+}
+
+# The summary's word on the browser. A Mac's names it only when there is none.
+browser_summary() {
+  if [ -n "$BROWSER" ]; then
+    if linux; then note "Browser    $BROWSER  (for the web search and the browse commands)"; printf '\n'; fi
+    return
+  fi
+  warn "No Chrome or Chromium found: Keep runs without one, but cannot search or browse the web until one is installed."
+  browser_advice
+  note "  Or run the install command again: it offers to install it. No reinstall is needed afterwards:"
+  note "  Keep finds the browser at its next web search."
+  printf '\n'
 }
 
 # --------------------------------------------------------- 2. Xcode CLT -----
@@ -1420,6 +1618,7 @@ summary() {
   note "Stop       $KEEP_DIR/stop.sh"
   note "Upgrade    re-run the install command"
   printf '\n'
+  browser_summary
 }
 
 # A Linux server is a systemd unit on a machine that usually has no screen: the summary says how
@@ -1469,14 +1668,7 @@ linux_summary() {
     note "whoever reaches the address is then the owner, so only on a network you trust."
   fi
   printf '\n'
-  if [ -n "$BROWSER" ]; then
-    note "Browser    $BROWSER  (for the web search and the browse commands)"
-  else
-    warn "No Chrome or Chromium found: Keep runs without one, but cannot search or browse the web until one is installed."
-    browser_advice
-    note "  No reinstall is needed afterwards: $KEEP_DIR/start.sh picks it up."
-  fi
-  printf '\n'
+  browser_summary
 }
 
 # What a satellite's owner needs next, read back from config.yaml as it stands — so a re-run on an

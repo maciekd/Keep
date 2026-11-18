@@ -261,9 +261,14 @@ untouched.
   `venv` and then fails to make one — else **uv**, never Homebrew. `find_python`'s uv glob names
   the build for this machine (`linux-<arch>-gnu`); `python_ok` asserts `uname -m` on Linux where
   the Mac asserts arm64.
-- **Chrome** for `WebAccess`: the installer looks for the four names `WebAccess` looks for and
-  installs nothing. Without one the summary says what to install — Google Chrome's `.deb` on
-  x86_64, the `chromium` package on Debian, the `chromium` snap on Ubuntu/ARM.
+- **Chrome** for `WebAccess`: the installer looks for the four names `WebAccess` looks for (on
+  PATH and in `/snap/bin`, which the unit's PATH has and an ssh command's may not) and, without
+  one, asks whether to install it (`ensure_browser`, the step after the system packages, so sudo
+  still knows its password; `KEEP_BROWSER=1|0` answers for it, and without a terminal nothing is
+  installed) — Google Chrome's `.deb` on x86_64, the `chromium` package on Debian, the `chromium`
+  snap on Ubuntu/ARM. A no or a failed install does not stop the install: the summary says what
+  to run. *The installing itself is not yet proven on a real machine — only the commands were,
+  typed by hand (checklist, line 22); Chrome's `.deb` on x86_64 not at all.*
 - `install_requirements`: both files as on the Mac, the voice file with the CPU torch index (§1).
   No PortAudio and no `mpv` from apt: nothing on Linux opens an audio device.
 - `enable_linger` (`loginctl --no-ask-password enable-linger <user>`) before the summary; a

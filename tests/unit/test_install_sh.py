@@ -12,7 +12,9 @@ Either system's branch runs on either system: `KEEP_OS` names it, and the harnes
 unless a test asks for Linux. Whatever the Linux branch would do to the machine — `sudo`,
 `apt-get`, `dpkg-query`, `apt-cache`, `systemctl`, `loginctl` — is a function of the harness
 answering from files in tmp_path, sourced before every call whichever system is asked for: no
-test reaches the real one.
+test reaches the real one. The same goes for what installs Chrome on a Mac (`hdiutil`, `codesign`,
+`ditto`), and the folders a browser is looked for in are tmp_path's, so the machine's own Chrome
+is neither found nor replaced.
 """
 import json
 import os
@@ -51,6 +53,8 @@ DEBIAN = 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"\
 MINT = 'PRETTY_NAME="Linux Mint 22"\nVERSION_ID="22"\nID=linuxmint\nID_LIKE="ubuntu debian"\n'
 FEDORA = 'PRETTY_NAME="Fedora Linux 41 (Server Edition)"\nVERSION_ID=41\nID=fedora\n'
 BROWSERS = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']
+CHROME_APP = 'Google Chrome.app'
+CHROME_BINARY = f'{CHROME_APP}/Contents/MacOS/Google Chrome'
 
 
 def machine_stubs(d: Path) -> str:
@@ -98,6 +102,17 @@ systemctl() {{
     [ ! -f "{d}/no_user_systemd" ] || {{ echo "Failed to connect to bus: No medium found" >&2; return 1; }}
 }}
 loginctl() {{ echo "$*" >> "{d}/loginctl_calls"; [ ! -f "{d}/linger_refused" ]; }}
+hdiutil() {{
+    echo "$*" >> "{d}/hdiutil_calls"
+    [ "$1" = attach ] || return 0
+    local prev="" a
+    for a in "$@"; do
+        [ "$prev" != -mountpoint ] || {{ mkdir -p "$a/{CHROME_APP}/Contents/MacOS"; : > "$a/{CHROME_BINARY}"; chmod +x "$a/{CHROME_BINARY}"; }}
+        prev=$a
+    done
+}}
+codesign() {{ echo "$*" >> "{d}/codesign_calls"; [ ! -f "{d}/not_googles" ]; }}
+ditto() {{ echo "$*" >> "{d}/ditto_calls"; cp -R "$1" "$2"; }}
 """
 
 
@@ -113,6 +128,9 @@ class InstallShHarness:
         self.curl_calls = tmp_path / 'curl_calls'
         self.asked = tmp_path / 'asked'
         self.answers = None
+        self.system_apps = tmp_path / 'Applications'
+        self.user_apps = tmp_path / 'home' / 'Applications'
+        self.snap_bin = tmp_path / 'snap' / 'bin'
         self.os_release = tmp_path / 'os-release'
         self.os_release.write_text(UBUNTU)
         self.set_curl(('200', ''))
@@ -163,6 +181,7 @@ class InstallShHarness:
             'PY=""; CHILD_PID=""; SPINNER_PID=""; SPINNER_STATUS=""\n'
             'init_ui; TTY=""\n'
             f'OS_RELEASE="{self.os_release}"; CPUINFO="{self.dir}/cpuinfo"; MEMINFO="{self.dir}/meminfo"\n'
+            f'SYSTEM_APPS="{self.system_apps}"; USER_APPS="{self.user_apps}"; SNAP_BIN="{self.snap_bin}"\n'
             + machine_stubs(self.dir) +
             # The n-th call answers with curl_<n>.code and, for its -o target, curl_<n>.body.
             f'curl() {{ echo "$*" >> "{self.curl_calls}"; local n prev="" a\n'
@@ -693,7 +712,7 @@ class TestTelemetry:
 # the role, the config, the telemetry, the step counter and the summary are the real ones. The
 # terminal is taken away, so nothing here can wait on a prompt.
 MAIN = (
-    'for step in check_mac ensure_clt ensure_python ensure_repo ensure_venv install_requirements obtain_api_key launch; do\n'
+    'for step in check_mac ensure_clt ensure_browser ensure_python ensure_repo ensure_venv install_requirements obtain_api_key launch; do\n'
     '  eval "$step() { echo \\"ran:$step\\"; }"\n'
     'done\n'
     'eval "real_$(declare -f init_ui)"\n'
@@ -791,7 +810,7 @@ class TestSatelliteInstall:
         result = harness.run(MAIN, KEEP_ROLE=SATELLITE, KEEP_NO_TELEMETRY='1')
         assert result.returncode == 0, result.stdout
         assert ran(result) == ['check_mac', 'ensure_clt', 'ensure_python', 'ensure_repo', 'ensure_venv',
-                               'install_requirements', 'launch']
+                               'install_requirements', 'launch'], "a satellite browses nothing and asks for no key"
         counted = steps(result)
         assert counted == [(n, len(counted)) for n in range(1, len(counted) + 1)], "the step counter skips or overruns"
         assert 'API key' not in result.stdout
@@ -949,7 +968,7 @@ class TestSatelliteInstall:
         result = harness.run(MAIN)
         assert result.returncode == 0, result.stdout
         assert (harness.keep_dir / 'config.yaml').read_text() == EXISTING_SERVER
-        assert steps(result)[-1] == (8, 8)
+        assert steps(result)[-1] == (9, 9)
         assert 'imessage.host' not in result.stdout
 
     MAC = a_mac()
@@ -978,7 +997,7 @@ class TestSatelliteInstall:
 
 # main() on Linux, with the steps that touch the machine or the network replaced as in MAIN. The
 # Mac's two steps are named too: on Linux neither may run.
-LINUX_MAIN = MAIN.replace('for step in ', 'for step in check_linux ensure_packages find_browser ')
+LINUX_MAIN = MAIN.replace('for step in ', 'for step in check_linux ensure_packages ')
 ARCH = os.uname().machine
 CHECK = 'uname() { echo x86_64; }; MIN_FREE_GB=0; check_linux'
 NO_PYTHON = 'find_python() { return 1; }\n'
@@ -1357,12 +1376,186 @@ class TestWhereALinuxInstallIsRefused:
         assert ran(on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1', LC_ALL='C'))
 
 
+# Seen from a terminal: the harness's `ask` answers from its file whatever TTY names.
+ASKED = 'TTY=/dev/tty; ensure_browser; echo "state:$BROWSER_STATE"; summary'
+ARM_UBUNTU, ARM_DEBIAN, X86 = (UBUNTU, 'aarch64'), (DEBIAN, 'aarch64'), (UBUNTU, 'x86_64')
+
+
+class TestTheBrowserStep:
+    """Without a Chrome or Chromium the installer offers one and installs it after a yes; the server
+    runs without, so neither a no nor a failed install stops the install."""
+
+    def linux(self, harness, machine, script=ASKED, sudo_installs=True, **env):
+        """`sudo_installs`: a sudo that is handed an install leaves a Chromium where the snap puts it."""
+        release, arch = machine
+        harness.os_release.write_text(release)
+        harness.absent(*BROWSERS)
+        installs = (f'eval "real_$(declare -f sudo)"\n'
+                    f'sudo() {{ real_sudo "$@" || return; case " $* " in *" install "*) mkdir -p "$SNAP_BIN"; '
+                    f': > "$SNAP_BIN/chromium"; chmod +x "$SNAP_BIN/chromium" ;; esac; }}\n') if sudo_installs else ''
+        return on_linux(harness, f'uname() {{ echo {arch}; }}\n{installs}{script}', **env)
+
+    def mac(self, harness, script=ASKED, **env):
+        harness.absent(*BROWSERS)
+        harness.system_apps.mkdir(exist_ok=True)
+        return harness.run(script, **env)
+
+    @pytest.mark.parametrize('machine, command', [
+        (X86, 'apt-get install -y'), (ARM_DEBIAN, 'apt-get install -y chromium'), (ARM_UBUNTU, 'snap install chromium'),
+    ], ids=['x86_64', 'Debian on ARM', 'Ubuntu on ARM'])
+    def test_a_yes_installs_the_browser_of_the_machine_with_sudo(self, harness, machine, command):
+        harness.answers = harness.dir / 'answers'
+        harness.answers.write_text('y\n')
+        result = self.linux(harness, machine)
+        assert result.returncode == 0, result.stdout
+        assert 'state:installed' in result.stdout and len(harness.prompts) == 1
+        (install,) = [call for call in harness.calls('sudo') if ' install ' in call]
+        assert command in install
+        assert 'cannot search or browse' not in result.stdout
+
+    def test_on_x86_64_what_apt_installs_is_the_deb_downloaded_from_google(self, harness):
+        harness.answers = harness.dir / 'answers'
+        harness.answers.write_text('\n')
+        self.linux(harness, X86)
+        (download,) = [call for call in harness.curl_calls.read_text().splitlines() if '.deb' in call]
+        saved_as = re.search(r'-o (\S+\.deb) https://dl\.google\.com/', download).group(1)
+        (install,) = [call for call in harness.calls('sudo') if ' install ' in call]
+        assert install.endswith(saved_as), "apt was handed something else than the file curl wrote"
+        assert not Path(saved_as).exists(), "the downloaded package was left behind"
+
+    @pytest.mark.parametrize('answers', ['n\n', 'what\nhm\n?\n'], ids=['no', 'no answer that is one'])
+    def test_a_no_installs_nothing_and_the_summary_says_how_to(self, harness, answers):
+        harness.answers = harness.dir / 'answers'
+        harness.answers.write_text(answers)
+        result = self.linux(harness, ARM_DEBIAN)
+        assert result.returncode == 0, result.stdout
+        assert 'state:declined' in result.stdout and harness.calls('sudo') == []
+        assert 'cannot search or browse' in result.stdout and 'apt-get install -y chromium' in result.stdout
+
+    @pytest.mark.parametrize('system', [MAC, LINUX])
+    def test_without_a_terminal_nothing_is_asked_and_nothing_installed(self, harness, system):
+        harness.answers = harness.dir / 'answers'
+        harness.answers.write_text('y\n')
+        harness.absent(*BROWSERS)
+        result = harness.run('ensure_browser; echo "state:$BROWSER_STATE"', KEEP_OS=system)
+        assert result.returncode == 0, result.stdout
+        assert 'state:unasked' in result.stdout and harness.prompts == []
+        assert harness.calls('sudo') == [] and harness.calls('hdiutil') == []
+        assert 'KEEP_BROWSER' in result.stdout, "the way to have it installed unattended is not said"
+
+    @pytest.mark.parametrize('value, state, installs', [('1', 'installed', 1), ('0', 'declined', 0)])
+    def test_keep_browser_answers_the_question(self, harness, value, state, installs):
+        result = self.linux(harness, ARM_UBUNTU, KEEP_BROWSER=value)
+        assert f'state:{state}' in result.stdout and harness.prompts == []
+        assert len([call for call in harness.calls('sudo') if ' install ' in call]) == installs
+
+    def test_a_keep_browser_that_is_neither_stops_before_anything_is_installed(self, harness):
+        result = self.linux(harness, ARM_UBUNTU, KEEP_BROWSER='maybe')
+        assert result.returncode == 1 and 'KEEP_BROWSER' in result.stdout
+        assert harness.calls('sudo') == []
+
+    @pytest.mark.parametrize('system', [MAC, LINUX])
+    def test_a_browser_that_is_there_is_not_asked_about(self, harness, system):
+        harness.absent(*BROWSERS[1:])
+        result = harness.run(f'{BROWSERS[0]}() {{ :; }}; TTY=/dev/tty; ensure_browser; echo "state:$BROWSER_STATE"',
+                             KEEP_OS=system)
+        assert 'state:found' in result.stdout and harness.prompts == []
+
+    def test_an_install_that_fails_does_not_stop_the_install(self, harness):
+        harness.flag('apt_broken')
+        result = self.linux(harness, ARM_DEBIAN, sudo_installs=False, KEEP_BROWSER='1')
+        assert result.returncode == 0, result.stdout
+        assert 'state:failed' in result.stdout
+        assert 'dpkg was interrupted' in result.stdout, "apt's own words are not shown"
+        assert 'apt-get install -y chromium' in result.stdout.split('Keep is installed')[1]
+
+    def test_apt_lists_that_know_no_package_are_refreshed_once(self, harness):
+        harness.flag('apt_lists_empty')
+        result = self.linux(harness, ARM_DEBIAN, KEEP_BROWSER='1')
+        assert 'state:installed' in result.stdout
+        assert [call.split('apt-get ')[1].split()[0] for call in harness.calls('sudo')] == ['install', 'update', 'install']
+
+    def test_sudo_that_cannot_ask_for_its_password_installs_nothing(self, harness):
+        harness.flag('sudo_needs_password')
+        result = self.linux(harness, ARM_DEBIAN, script='ensure_browser; echo "state:$BROWSER_STATE"', KEEP_BROWSER='1')
+        assert result.returncode == 0 and 'state:failed' in result.stdout
+        assert not any(' install ' in call for call in harness.calls('sudo'))
+
+    def test_a_snap_chromium_is_found_where_the_shell_has_no_snap_folder_on_its_path(self, harness):
+        """The service's PATH has /snap/bin (scripts/service.sh); an ssh command's may not."""
+        harness.absent(*BROWSERS)
+        harness.snap_bin.mkdir(parents=True)
+        (harness.snap_bin / 'chromium').write_text('')
+        (harness.snap_bin / 'chromium').chmod(0o755)
+        result = on_linux(harness, 'ensure_browser; echo "state:$BROWSER_STATE"')
+        assert 'state:found' in result.stdout
+
+    def test_on_a_mac_a_yes_puts_googles_chrome_in_applications(self, harness):
+        harness.answers = harness.dir / 'answers'
+        harness.answers.write_text('yes\n')
+        result = self.mac(harness)
+        assert result.returncode == 0, result.stdout
+        assert 'state:installed' in result.stdout
+        assert os.access(harness.system_apps / CHROME_BINARY, os.X_OK)
+        assert 'dl.google.com' in harness.curl_calls.read_text()
+        assert harness.calls('sudo') == [], "a Mac's install needs no password"
+        assert 'cannot search or browse' not in result.stdout
+        assert any(call.startswith('detach') for call in harness.calls('hdiutil')), "the disk image was left mounted"
+
+    def test_the_signature_asked_for_is_that_of_googles_developer_id(self, harness):
+        """Contract with Apple's code signing: EQHXZ8M8AV is the team Google signs Chrome with."""
+        self.mac(harness, KEEP_BROWSER='1')
+        (check,) = harness.calls('codesign')
+        assert 'EQHXZ8M8AV' in check and check.endswith(CHROME_APP)
+
+    def test_an_app_that_is_not_googles_is_not_copied(self, harness):
+        harness.flag('not_googles')
+        result = self.mac(harness, KEEP_BROWSER='1')
+        assert result.returncode == 0, result.stdout
+        assert 'state:failed' in result.stdout and harness.calls('ditto') == []
+        assert list(harness.system_apps.iterdir()) == []
+        assert 'cannot search or browse' in result.stdout
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason='root writes to any folder')
+    def test_a_user_who_may_not_write_to_applications_gets_it_in_their_own(self, harness):
+        harness.system_apps.mkdir()
+        harness.system_apps.chmod(0o555)
+        result = self.mac(harness, KEEP_BROWSER='1')
+        assert 'state:installed' in result.stdout
+        assert os.access(harness.user_apps / CHROME_BINARY, os.X_OK)
+
+    def test_an_app_of_that_name_that_cannot_be_run_is_left_as_it_is(self, harness):
+        (harness.system_apps / CHROME_APP).mkdir(parents=True)
+        (harness.system_apps / CHROME_APP / 'kept').write_text('x')
+        result = self.mac(harness, KEEP_BROWSER='1')
+        assert result.returncode == 0 and 'state:failed' in result.stdout
+        assert [path.name for path in (harness.system_apps / CHROME_APP).iterdir()] == ['kept']
+
+    def test_every_mac_app_webaccess_would_start_is_found(self, harness, monkeypatch):
+        """Contract with WebAccess: an app it probes that the installer missed would be installed twice."""
+        from assistant.tools.WebAccess import WebAccess
+        from common import Platform
+        monkeypatch.setattr(Platform, 'current', lambda: Platform.MAC)
+        monkeypatch.setenv('HOME', str(harness.user_apps.parent))
+        probed = WebAccess._chrome_search_paths()
+        assert any(path.startswith(str(harness.user_apps)) for path in probed)
+        harness.absent(*BROWSERS)
+        for path in probed:
+            here = Path(str(path).replace('/Applications/', f'{harness.system_apps}/', 1)) if path.startswith('/Applications/') else Path(path)
+            here.parent.mkdir(parents=True)
+            here.write_text('')
+            here.chmod(0o755)
+            result = harness.run('ensure_browser; echo "state:$BROWSER_STATE"')
+            assert 'state:found' in result.stdout, path
+            here.unlink()
+
+
 class TestTheLinuxInstallEndToEnd:
     def test_the_linux_steps_run_in_order_and_the_macs_two_do_not(self, harness):
         result = on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1')
         assert result.returncode == 0, result.stdout
-        assert ran(result) == ['check_linux', 'ensure_packages', 'ensure_python', 'ensure_repo', 'ensure_venv',
-                               'install_requirements', 'obtain_api_key', 'find_browser', 'launch']
+        assert ran(result) == ['check_linux', 'ensure_packages', 'ensure_browser', 'ensure_python', 'ensure_repo',
+                               'ensure_venv', 'install_requirements', 'obtain_api_key', 'launch']
         counted = steps(result)
         assert counted == [(n, len(counted)) for n in range(1, len(counted) + 1)]
         assert yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())['vault']['key']

@@ -771,10 +771,11 @@ class WebAccess(Integration):
     @staticmethod
     def _chrome_search_paths() -> list[str]:
         """The explicit binary paths probed when locating Chrome/Chromium."""
+        # ~/Applications too: where install.sh puts Chrome for a user who may not write to /Applications.
         candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+            f"{folder}/{app}.app/Contents/MacOS/{app}"
+            for folder in ("/Applications", os.path.expanduser("~/Applications"))
+            for app in ("Google Chrome", "Chromium", "Google Chrome Canary")
         ]
         if Platform.current() == Platform.LINUX:
             candidates += [
@@ -811,7 +812,7 @@ class WebAccess(Integration):
         chrome_path = self._find_chrome_binary()
         if not chrome_path:
             install_hint = (
-                "install it with 'brew install --cask google-chrome'"
+                "install Google Chrome (https://www.google.com/chrome/, or run Keep's install command again: it offers to)"
                 if Platform.is_mac()
                 else "install Google Chrome or Chromium (Debian: 'sudo apt install chromium', "
                      "Ubuntu: 'sudo snap install chromium')"
