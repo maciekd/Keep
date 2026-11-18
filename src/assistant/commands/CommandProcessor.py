@@ -18,7 +18,7 @@ from assistant.Notifier import notifier
 
 # kill() queues this so the worker thread wakes from command_queue.get() and exits instead
 # of blocking there for the life of the process (one such thread per LLM round, before).
-_STOP = (None, None, None)
+_STOP = (None, None, None, None)
 
 
 class CommandProcessor:
@@ -189,7 +189,7 @@ class CommandProcessor:
         # Runs until kill()'s stop sentinel arrives — never leaving on is_killed alone, so every
         # queued item gets its task_done() and a command_queue.join() after a kill cannot hang.
         while True:
-            command_name, params, dialog_manager = self.command_queue.get()
+            command_name, params, dialog_manager, unreadable = self.command_queue.get()
             if command_name is None:
                 self.command_queue.task_done()
                 trace("Command worker: killed — thread exiting.")
@@ -218,7 +218,10 @@ class CommandProcessor:
                 self.last_dispatched_display = self._label(command_name, params_display)
 
                 blocked = False
-                if getattr(self._context_for(dialog_manager), 'guest', False) is True:
+                if unreadable:
+                    self.append_command_reply(unreadable)
+                    blocked = True
+                elif getattr(self._context_for(dialog_manager), 'guest', False) is True:
                     info(f"Command {command_name} refused: the request is from a guest, every command is "
                          f"disabled for the turn")
                     self.append_command_reply(
@@ -441,7 +444,38 @@ class CommandProcessor:
     # Runs on: request thread (during LLM stream processing). Queues work for command worker thread.
     def invoke_command(self, command_name: str, params: list[str], dialog_manager):
         self.commands_dispatched += 1
-        self.command_queue.put((command_name, params, dialog_manager))
+        self.command_queue.put((command_name, params, dialog_manager, None))
+
+    def _answer_unreadable(self, command_name: str, params: list[str], dialog_manager, answer: str):
+        """A call that must not run (`_unreadable`) takes its place in the queue like any
+        call, so its answer stands among the results in the order the reply was written."""
+        self.commands_dispatched += 1
+        self.command_queue.put((command_name, params, dialog_manager, answer))
+
+    # A value is the text between its quotes. A call that goes on after a closing quote is
+    # code around the value — prod 2026-11-17: a mail body written as a triple-quoted block,
+    # `.replace(…) if False else` and a second block ran as one body holding both blocks and
+    # the code between them, and went to an outside company. After a block nothing may follow,
+    # whatever the command; after a plain string the text has always been glued to the value
+    # (a remembered sentence with quotes of its own), which a command behind the approval gate
+    # — a message somebody receives — is too costly to run on.
+    UNREADABLE_NOTE = ("{label} was not run: the call goes on after the closing quote of a value "
+                       "({stray}), so the value could not be read as it was meant. A value is the final text "
+                       "itself, whole inside its quotes — never an expression around it, and a quote inside a "
+                       "plain string is escaped or the text put in a triple-quoted block. Issue the call again.")
+    UNREADABLE_SHOWN_CHARS = 80
+
+    def _unreadable(self, command_name: str, display: str, content: str) -> str | None:
+        """Why the call just read must not run, as the answer for the model, or None."""
+        stray = self.format.text_after_quote(content, blocks_only=not self.commands.is_sensitive(command_name))
+        if not stray:
+            return None
+        note(f"{command_name} not run: the call goes on after a closing quote ({stray[:self.UNREADABLE_SHOWN_CHARS]!r})")
+        label = self._label(command_name, display)
+        if len(label) > self.UNTERMINATED_COMMAND_SHOWN_CHARS:
+            label = label[:self.UNTERMINATED_COMMAND_SHOWN_CHARS] + "…"
+        shown = stray if len(stray) <= self.UNREADABLE_SHOWN_CHARS else stray[:self.UNREADABLE_SHOWN_CHARS] + "…"
+        return self.UNREADABLE_NOTE.format(label=label, stray=shown)
 
     def reset_parse_state(self):
         """Forget partial parse progress from an aborted stream so a transparent retry
@@ -495,6 +529,9 @@ class CommandProcessor:
             if self.fetch_pending and not self.commands.is_stop_and_wait(command_name):
                 self._cut_after_fetch(f"the call {self._label(command_name, display)}")
                 return ""
+            if unreadable := self._unreadable(command_name, display, content):
+                self._answer_unreadable(command_name, params, dialog_manager, unreadable)
+                return remainder
             self.invoke_command(command_name, params, dialog_manager)
             if self.commands.is_stop_and_wait(command_name):
                 self.fetch_pending = command_name

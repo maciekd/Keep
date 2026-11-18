@@ -92,6 +92,13 @@ class CommandFormat(ABC):
         for a complete call block holding no call (the text after the block, for the processor
         to go on with), or `(None, None)` when the buffer holds no complete call."""
 
+    def text_after_quote(self, buffer: str, blocks_only: bool = False) -> str | None:
+        """What the first call of the buffer carries between the closing quote of a value and
+        the next comma — code written around the value, which the call must not run with
+        (`CommandParser.text_after_quote`) — or None. A format whose values stand between
+        tags has no such place."""
+        return None
+
     @abstractmethod
     def call_end(self, buffer: str) -> int:
         """The position in `buffer` where the text after its first call begins, in the text

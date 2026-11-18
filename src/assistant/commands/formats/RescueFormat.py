@@ -98,6 +98,9 @@ class RescueFormat(CommandFormat):
                  f"— it runs as usual and is stored in {self.name} syntax (rescue #{self.rescued} of this reply)")
         return call, rest
 
+    def text_after_quote(self, buffer: str, blocks_only: bool = False) -> str | None:
+        return self._reader(buffer).text_after_quote(buffer, blocks_only)
+
     def call_end(self, buffer: str) -> int:
         return self._reader(buffer).call_end(buffer)
 

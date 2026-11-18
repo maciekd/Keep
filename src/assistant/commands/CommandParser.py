@@ -25,7 +25,10 @@ class CommandParser:
     # list index (icloud.devices[0].id) or a regex character class ([Cc]omplete,
     # /orders/[0-9]+) — and must not be normalized to parens like the home
     # automation names every other command carries.
-    KEEP_BRACKETS_COMMANDS = {"config_set", "config_help", "config_request", "config_delete", "browse_wait", "browse_network"}
+    # A mail folder is named as the server names it: Gmail's own are "[Gmail]/Sent Mail",
+    # "[Gmail]/All Mail" … (prod 2026-11-17: the Sent folder was asked for as "(Gmail)/Sent Mail").
+    KEEP_BRACKETS_COMMANDS = {"config_set", "config_help", "config_request", "config_delete", "browse_wait", "browse_network",
+                              "latest_email", "move_email"}
 
     def __init__(self, possible_commands: list[str]):
         self.possible_commands = possible_commands
@@ -279,23 +282,44 @@ class CommandParser:
         For RAW_PARAM_COMMANDS and FREE_TEXT_COMMANDS the list always contains a single element
         with the verbatim payload.
         """
+        call = self._first_call(content, streaming)
+        if call is None:
+            return None, None
+        command_name, raw_params, remainder = call
+        params, _ = self._scan(raw_params, self._is_verbatim(command_name),
+                               command_name in self.KEEP_BRACKETS_COMMANDS)
+        return (command_name, params), remainder
+
+    def text_after_quote(self, content: str, blocks_only: bool = False) -> str | None:
+        """What the first call of the content carries between the closing quote of a value and
+        the next comma, or None when every quoted value ends where its quote closes. Such text
+        is code written around the value (prod 2026-11-17: a mail body sent as
+        a triple-quoted block, `.replace(…) if False else` and a second block, went out garbled) or a string whose own
+        quotes were not escaped: either way the value the call would run with is not the one
+        that was meant. With `blocks_only` only a triple-quoted block is looked at — after a
+        plain string the text is glued to the value, as it always was."""
+        call = self._first_call(content)
+        if call is None or self._is_verbatim(call[0]):
+            return None
+        _, strays = self._scan(call[1])
+        return next((text for text, after_block in strays if after_block or not blocks_only), None)
+
+    def _is_verbatim(self, command_name: str) -> bool:
+        return command_name in self.RAW_PARAM_COMMANDS or command_name in self.FREE_TEXT_COMMANDS
+
+    def _first_call(self, content: str, streaming: bool = False) -> tuple[str, str, str] | None:
+        """The first complete call of the content as (command name, the raw text between its
+        parentheses, the text after it), or None when there is none."""
         # Strip <code> tags so commands wrapped in them are parsed correctly
         content = self._strip_code_tags(content)
 
         index = self._find_matching_paren(content, streaming)
         if index <= 0:
-            return None, None
+            return None
 
         command_with_params = content[:index + 1]
-        remainder = content[index + 1:]
-
         command_name = command_with_params.split('(', 1)[0].lower().strip()
-        raw_params = self.extract_parameters(command_with_params)
-        is_raw = command_name in self.RAW_PARAM_COMMANDS or command_name in self.FREE_TEXT_COMMANDS
-        keep_brackets = command_name in self.KEEP_BRACKETS_COMMANDS
-        params = self.split_parameters(raw_params, raw_param_command=is_raw, keep_brackets=keep_brackets)
-
-        return (command_name, params), remainder
+        return command_name, self.extract_parameters(command_with_params), content[index + 1:]
 
     def extract_parameters(self, command: str) -> str:
         """Extract raw parameters from command string."""
@@ -333,13 +357,22 @@ class CommandParser:
         list with no cleaning applied. With keep_brackets (KEEP_BRACKETS_COMMANDS)
         square brackets stay as written instead of becoming parentheses.
         """
+        return cls._scan(raw, raw_param_command, keep_brackets)[0]
+
+    @classmethod
+    def _scan(cls, raw: str, raw_param_command: bool = False,
+              keep_brackets: bool = False) -> tuple[list[str], list[tuple[str, bool]]]:
+        """The arguments of `split_parameters`, and beside them every text found between a
+        closing quote and the next comma, each as (the text, whether a triple-quoted block
+        closed before it)."""
         if raw_param_command:
-            return [raw]
+            return [raw], []
 
         if raw.strip() == "":
-            return []
+            return [], []
 
         tokens: list[str] = []
+        strays: list[tuple[str, bool]] = []
         n = len(raw)
         i = 0
         while i < n:
@@ -356,9 +389,11 @@ class CommandParser:
                 end = raw.find(cls._BLOCK_QUOTE, i + 3)
                 end = n if end < 0 else end
                 tokens.append(raw[i + 3:end].strip("\n"))
-                i = min(end + 3, n)
+                i = after = min(end + 3, n)
                 while i < n and raw[i] != ',':
                     i += 1
+                if raw[after:i].strip():
+                    strays.append((raw[after:i].strip(), True))
             elif ch in cls._QUOTE_CHARS:
                 quote = ch
                 i += 1
@@ -380,9 +415,12 @@ class CommandParser:
                 # Tolerate stray non-whitespace text between the closing quote
                 # and the next comma — append it to the value so nothing is
                 # silently lost (e.g. "abc"def parses as "abcdef").
+                after = i
                 while i < n and raw[i] != ',':
                     buf.append(raw[i])
                     i += 1
+                if after < i:
+                    strays.append((raw[after:i].strip(), False))
                 # Normalize square brackets to parens so room-name suffixes like
                 # "Ceiling Spots [Garage]" match the parser's canonical form
                 # whether or not the LLM wrapped the value in quotes.
@@ -402,7 +440,7 @@ class CommandParser:
                 # If the comma was the final char, an empty trailing token is implied.
                 if i >= n:
                     tokens.append("")
-        return tokens
+        return tokens, strays
 
     @classmethod
     def clean_parameter(cls, token: str, keep_brackets: bool = False) -> str:
