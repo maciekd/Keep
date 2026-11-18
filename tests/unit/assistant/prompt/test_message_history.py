@@ -1106,6 +1106,60 @@ class TestWipeToday:
         assert section.last_update_time > 0
 
 
+class TestWipeRecent:
+    """The last minutes go; what is older — rows, trim state — stays as the LLM had it."""
+
+    def _wipe(self, section, minutes=30, remaining=()):
+        db = Mock()
+        db.delete_history_since.return_value = 2
+        db.get_recent_history.return_value = list(remaining)
+        with patch('assistant.prompt.MessageHistory.FloxyDatabase.get_instance', return_value=db):
+            deleted = section.wipe_recent(minutes)
+        return db, deleted
+
+    def test_deletes_from_that_many_minutes_ago_and_reloads(self):
+        section = _make_history_section()
+        notified = []
+        section.subscribe(lambda: notified.append(True))
+        old = {"role": "user", "content": "old", "timestamp": time.time() - 7200}
+        before = time.time()
+        db, deleted = self._wipe(section, remaining=[old])
+        since = db.delete_history_since.call_args.args[0]
+        assert before - 1800 <= since <= time.time() - 1800
+        assert deleted == 2
+        assert section.history == [old]
+        assert section.wipes == 1
+        assert notified == [True]
+
+    def test_an_older_trim_cutoff_and_collapse_hold(self):
+        section = _make_history_section()
+        cutoff = time.time() - 7200
+        section._trim_cutoff = cutoff
+        section._collapsed = {cutoff + 60, time.time() - 60}
+        self._wipe(section)
+        assert section._trim_cutoff == cutoff
+        assert section._collapsed == {cutoff + 60}
+
+    def test_a_cutoff_inside_the_wiped_span_starts_the_window_over(self):
+        section = _make_history_section()
+        section._trim_cutoff = time.time() - 600
+        self._wipe(section)
+        assert section._trim_cutoff == 0.0
+
+    def test_section_notes_and_the_eviction_stub_stay_other_recent_notes_go(self):
+        section = _make_history_section()
+        now = time.time()
+        delta = {"role": "system", "content": "delta", "timestamp": now - 60,
+                 "source": section.SOURCE_PROMPT_DELTA, "section": "cars"}
+        stub = {"role": "system", "content": "stub", "timestamp": now - 120,
+                "source": section.SOURCE_TOOLKIT_EVICTED, "toolkits": ["home"]}
+        old_orphan = {"role": "system", "content": "old", "timestamp": now - 7200, "source": "orphaned_command"}
+        orphan = {"role": "system", "content": "new", "timestamp": now - 30, "source": "orphaned_command"}
+        section.transient_entries = [old_orphan, stub, delta, orphan]
+        self._wipe(section)
+        assert section.transient_entries == [old_orphan, stub, delta]
+
+
 class TestCommandResults:
     """A command round's result is persisted as a `command` row so the next turn still
     sees it, and renders as the very `result:` user turn the follow-up round was sent."""

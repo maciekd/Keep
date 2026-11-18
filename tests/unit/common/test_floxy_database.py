@@ -595,6 +595,22 @@ def test_delete_todays_history(floxy_db):
     assert "Old entry" in history
 
 
+@pytest.mark.unit
+def test_delete_history_since_leaves_what_is_older(floxy_db):
+    now = time.time()
+    floxy_db.add_history_entry("user", "An hour ago", now - 3600)
+    floxy_db.add_history_entry("user", "Ten minutes ago", now - 600)
+    floxy_db.add_history_entry("assistant", "Just now", now)
+
+    deleted = floxy_db.delete_history_since(now - 1800)
+
+    assert deleted == 2
+    history = floxy_db.get_interaction_history(date.today() - timedelta(days=1), date.today() + timedelta(days=1))
+    assert "An hour ago" in history
+    assert "Ten minutes ago" not in history
+    assert "Just now" not in history
+
+
 # ---------------------------------------------------------------------------
 # search_photos (FTS)
 # ---------------------------------------------------------------------------

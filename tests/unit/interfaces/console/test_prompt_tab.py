@@ -1,11 +1,12 @@
-"""PromptTab: `c` asks before wiping today's dialog history, `y` wipes it through
-MessageHistory, anything else cancels; the outcome replaces the key hints until the next key."""
+"""PromptTab: `c` asks before wiping today's dialog history and `r` before wiping its last
+30 minutes, `y` wipes through MessageHistory, anything else cancels; the outcome replaces the
+key hints until the next key."""
 from unittest.mock import Mock
 
 import pytest
 
 from interfaces.console.framework.TUIScreen import TUIScreen
-from interfaces.console.tabs.PromptTab import PromptTab, CONFIRM_HINT
+from interfaces.console.tabs.PromptTab import PromptTab, CONFIRM_HINT, CONFIRM_RECENT_HINT
 
 
 @pytest.fixture
@@ -15,6 +16,7 @@ def prompt_manager():
     pm.message_history.last_update_time = 1.0
     pm.message_history.render_for_display.return_value = "**User**: hi"
     pm.message_history.wipe_today.return_value = 4
+    pm.message_history.wipe_recent.return_value = 2
     return pm
 
 
@@ -69,6 +71,28 @@ class TestClear:
         tab.handle_input('c')
         tab.handle_input('y')
         assert bottom_bar(tab) == "Clear failed: db locked"
+
+    def test_r_asks_first_and_y_wipes_the_last_half_hour_only(self, tab, prompt_manager):
+        assert tab.handle_input('r') is True
+        assert bottom_bar(tab) == CONFIRM_RECENT_HINT.strip()
+        prompt_manager.message_history.wipe_recent.assert_not_called()
+
+        assert tab.handle_input('y') is True
+        prompt_manager.message_history.wipe_recent.assert_called_once_with(30)
+        prompt_manager.message_history.wipe_today.assert_not_called()
+        assert "Wiped 2 history entries" in bottom_bar(tab)
+        assert "30 minutes" in bottom_bar(tab)
+
+    def test_the_half_hour_question_is_cancelled_like_the_days(self, tab, prompt_manager):
+        tab.handle_input('r')
+        assert tab.handle_input('c') is True   # an answer to the question, not a second one
+        prompt_manager.message_history.wipe_recent.assert_not_called()
+        prompt_manager.message_history.wipe_today.assert_not_called()
+        assert bottom_bar(tab) == "Clear cancelled"
+
+    def test_both_clears_are_in_the_hints_of_an_80_column_terminal(self, tab):
+        assert "c clear" in bottom_bar(tab)
+        assert "r clear 30m" in bottom_bar(tab)
 
     def test_v_shows_the_other_channels_window(self, tab, prompt_manager):
         """The text window is shown until `v` flips to voice's, and the history is rendered

@@ -181,7 +181,7 @@ class HistoryFeed(AssistantObserver):
                 self._route(entry)
 
     def _rebuild(self):
-        """Today's history was wiped: start the pane over from what the history still holds."""
+        """History rows were wiped (the Prompt tab's clears): start the pane over from what the history still holds."""
         self._wipes = self._history.wipes
         info("HistoryFeed: history wiped, rebuilding the chat from what remains")
         self._pane.clear()

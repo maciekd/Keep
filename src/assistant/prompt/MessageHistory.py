@@ -115,7 +115,7 @@ class MessageHistory:
         self.transient_entries: list[dict] = []
         self._subscribers: list[Callable[[], None]] = []
         self.last_update_time = 0.0   # shown in the prompt section stats
-        self.wipes = 0                # bumped by wipe_today so subscribers know rows vanished
+        self.wipes = 0                # bumped by a wipe so subscribers know rows vanished
         # Generous entry cap — the byte watermarks below are the real limit. Must
         # stay well above what TRIM_HIGH_BYTES can hold: if this cap binds first,
         # the DB window slides one entry per exchange and the head shifts every
@@ -192,6 +192,31 @@ class MessageHistory:
         self._load_history()
         self.wipes += 1
         info(f"MessageHistory: wiped today's history ({deleted} rows), {len(self.history)} older entries remain")
+        self._notify_changed()
+        return deleted
+
+    def wipe_recent(self, minutes: int) -> int:
+        """Delete the persisted history of the last `minutes` (the Prompt tab's second "clear"),
+        so a test can be run again without losing the day. Returns the number of rows deleted.
+        Everything older stays as the LLM had it: the trim cutoff and the collapsed rows hold,
+        unless the cutoff lies in the wiped span — then nothing of the window is left and it
+        starts over from what the day still holds. The prompt-delta notes and the eviction stub
+        stay too: they say where the prompt's sections and the toolkits stand, not what was
+        said, and a section's notes are a chain with no link to spare."""
+        since = time.time() - minutes * 60
+        deleted = FloxyDatabase.get_instance().delete_history_since(since)
+        kept = [e for e in self.transient_entries
+                if e["timestamp"] < since or e.get("source") == self.SOURCE_PROMPT_DELTA or self._is_eviction_stub(e)]
+        dropped_notes = len(self.transient_entries) - len(kept)
+        self.transient_entries = kept
+        if self._trim_cutoff >= since:
+            trace("MessageHistory: the trim cutoff lay in the wiped span — the window starts over")
+            self._trim_cutoff = 0.0
+        self._collapsed = {ts for ts in self._collapsed if ts < since}
+        self._load_history()
+        self.wipes += 1
+        info(f"MessageHistory: wiped the last {minutes} minutes ({deleted} rows, {dropped_notes} transient "
+             f"note(s)), {len(self.history)} older entries remain")
         self._notify_changed()
         return deleted
 

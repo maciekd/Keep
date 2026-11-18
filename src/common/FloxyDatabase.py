@@ -685,19 +685,24 @@ class FloxyDatabase:
         """Delete all conversation history entries from today (since midnight). Returns count deleted."""
         from datetime import datetime
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        return self.delete_history_since(today_start)
 
+    def delete_history_since(self, since: float) -> int:
+        """Delete the conversation history entries at or after the timestamp `since`. Returns count deleted."""
+        from datetime import datetime
+        when = datetime.fromtimestamp(since).strftime('%Y-%m-%d %H:%M:%S')
         with self.lock:
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
-                cursor.execute('DELETE FROM history WHERE timestamp >= ?', (today_start,))
+                cursor.execute('DELETE FROM history WHERE timestamp >= ?', (since,))
                 deleted_count = cursor.rowcount
                 conn.commit()
                 conn.close()
-                info(f"Deleted {deleted_count} history entries for today")
+                info(f"Deleted {deleted_count} history entries since {when}")
                 return deleted_count
             except sqlite3.Error as e:
-                error(f"Error deleting today's history: {e}")
+                error(f"Error deleting the history since {when}: {e}")
                 return 0
 
     def get_recent_history(self, limit: int = 100) -> List[dict]:
