@@ -28,7 +28,8 @@ class CommandFormat(ABC):
     @abstractmethod
     def instructions(self) -> str:
         """The {COMMAND_SYSTEM} text of the prompt: how a call is written in this syntax, what
-        is not one, and how a command is mentioned without calling it."""
+        is not one, and — where a mention could run — how a command is mentioned without
+        calling it."""
 
     @abstractmethod
     def render_declaration(self, declaration: Declaration) -> str:

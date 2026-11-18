@@ -22,7 +22,7 @@ CODE_TAGS = ("<code>", "</code>")
 INSTRUCTIONS = """\
 The commands use python syntax.
 
-Emit every command as a plain, literal function call at the start of a line of your reply: the command name
+Emit every command as a plain, literal function call at the start of a line in your reply: the command name
 followed by its arguments in parentheses, strings in double quotes and numbers bare, for example
 `turn_on("Kitchen lamp")` or `dim("Kitchen lamp", 40)`. That exact text is what gets executed. Separate several
 arguments with commas; a quote inside a string is written `\\"`; a long or multi-line value goes in a triple-quoted
@@ -33,7 +33,7 @@ or any other fence, and do NOT use structures like `{"tool": "...", "arguments":
 `{"name": "...", "parameters": {...}}`. The parser only understands the plain `command("argument")` form — anything
 else is treated as ordinary text, so the action silently never runs.
 
-A call written inside a sentence does not run: the user reads it as text. To mention a command, write its name without the parentheses."""
+A call written inside a sentence does not run: the user reads it as text."""
 
 
 def render_declaration(declaration: Declaration) -> str:
