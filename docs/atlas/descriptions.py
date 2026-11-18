@@ -59,6 +59,7 @@ GROUPS = {
     'src/interfaces/chat': ('chat', 'The contract every chat UI shares: transports, drafts, sessions and the hub that fans notifications out.'),
     'src/interfaces/telegram': ('telegram', 'The Telegram bot as a chat transport, with voice notes transcribed by Google Cloud STT.'),
     'src/interfaces/imessage': ('imessage', 'The assistant as an iMessage contact of its own: a chat transport over the Messages account of its Apple ID, serving the people on its allowlist in plain texts.'),
+    'src/interfaces/backups': ('backups', 'A small web page on its own port to make, list, download and restore the backups.'),
     'src/interfaces/console': ('console', 'The terminal ops console: a tabbed dashboard with the Home chat, served over TCP to tui.py.'),
     'src/interfaces/console/crystal': ('crystal', 'A 90s-demo software 3D renderer that draws the console’s logo and startup intro in terminal cells.'),
     'src/interfaces/console/framework': ('framework', 'The TUI engine: a double-buffered cell screen with a picture layer (kitty graphics protocol or half-block pixels), a frame server over TCP and text-width helpers.'),

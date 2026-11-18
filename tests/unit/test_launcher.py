@@ -198,7 +198,7 @@ class TestInterfaceFlags:
         from interfaces.http.HttpInterface import HttpInterface
         assert Interface.enabled_by_default is True and HttpInterface.enabled_by_default is True
         from common import ConfigStore
-        assert ConfigStore.INTERFACE_ENABLED_BY_DEFAULT == {"voice": False, "imessage": False}
+        assert ConfigStore.INTERFACE_ENABLED_BY_DEFAULT == {"voice": False, "imessage": False, "backups": False}
 
     def test_every_interface_flag_is_honoured(self, quiet_heavy_startup):
         real_get = config.get

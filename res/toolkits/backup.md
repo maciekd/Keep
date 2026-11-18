@@ -19,3 +19,8 @@ no backup opens without it, and the installer on a new machine asks for it. A ba
 opens only once the user types that one the same way. `backup.directory` is set the same way, typed by the user: a
 synced folder (iCloud Drive, Dropbox) takes the backups off this machine. Never suggest sending a backup by mail or
 chat: it holds every key.
+
+With `interfaces.backups.enabled` the same is a web page (`interfaces.backups.host` and `port`, default port 5050):
+make a backup, list them, download one to the user's own computer, restore one with the passphrase typed on the page.
+The user turns it on in config.yaml by hand and it starts with the server; it has no login, so whoever reaches the
+address can download the backups.

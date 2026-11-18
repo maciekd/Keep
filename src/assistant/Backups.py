@@ -9,6 +9,7 @@ the owner. A restore is staged here and put in place by the next start (floxy_ai
 What a backup leaves out: the logs, the browser profile (too big; a login brings it back), the
 caches, and anything outside the install (extra_integration_dirs is code of the install's own).
 """
+import hmac
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -70,6 +71,12 @@ def _keep() -> int:
         return max(1, int(ConfigManager.get_instance().get(KEEP_KEY, DEFAULT_KEEP)))
     except (TypeError, ValueError):
         return DEFAULT_KEEP
+
+
+def passphrase_matches(typed: str) -> bool:
+    """Whether *typed* is the configured backup passphrase (never true while none is set)."""
+    configured = _passphrase()
+    return bool(configured) and hmac.compare_digest(typed.encode(), configured.encode())
 
 
 def passphrase_problem() -> str:

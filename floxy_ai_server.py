@@ -49,7 +49,7 @@ init(autoreset=True, strip=False)
 # Start order; stop() runs in reverse. http first (owns the Quart app), console early so
 # its log tab sees the rest of the boot, voice before telegram (the Notifier), imessage last
 # (its approvals are asked in the chats started before it).
-INTERFACE_ORDER = ("http", "console", "voice", "telegram", "imessage")
+INTERFACE_ORDER = ("http", "console", "voice", "telegram", "backups", "imessage")
 
 
 def _interface_class(name: str):
@@ -69,6 +69,9 @@ def _interface_class(name: str):
     if name == "imessage":
         from interfaces.imessage.IMessageInterface import IMessageInterface
         return IMessageInterface
+    if name == "backups":
+        from interfaces.backups.BackupsInterface import BackupsInterface
+        return BackupsInterface
     raise ValueError(name)
 
 
@@ -78,7 +81,7 @@ def _enabled(name: str, running_as_testsuite: bool) -> bool:
     from common import ConfigStore
     if name == "http":
         return True  # every other interface registers routes on its app
-    if name in ("telegram", "console", "imessage") and running_as_testsuite:
+    if name in ("telegram", "console", "imessage", "backups") and running_as_testsuite:
         # The prompt suite runs one server per worker; a console per server would mean each
         # racing for the one TUI port and a tui.py client landing in a test server.
         info(f"{name.capitalize()} interface skipped in testsuite mode.")

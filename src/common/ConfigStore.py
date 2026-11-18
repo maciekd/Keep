@@ -31,7 +31,7 @@ from common.logging import info, trace
 # `role` decides whether this install is a Keep server at all, and `imessage_satellite` holds the
 # token and the network switch of a process that hands out an account's messages: both are set
 # on the Mac they are about, by hand or by the installer.
-DENIED_PREFIXES = ("vault.key", "interfaces.http",
+DENIED_PREFIXES = ("vault.key", "interfaces.http", "interfaces.backups",
                    "indigo.ssh_user", "indigo.prompt_file", "indigo.log_refiner",
                    "photos.screen_prepare_command",
                    "role", "imessage_satellite")
@@ -148,7 +148,7 @@ def _list_length(key: str) -> int:
 # before importing an interface's module (voice pulls in the audio stack), so it cannot read
 # the class's `enabled_by_default`; http is always on and never read. The iMessage chat is off
 # too: it needs an Apple ID of the assistant's own.
-INTERFACE_ENABLED_BY_DEFAULT = {"voice": False, "imessage": False}
+INTERFACE_ENABLED_BY_DEFAULT = {"voice": False, "imessage": False, "backups": False}
 _INTERFACE_FLAG_RE = re.compile(r"^interfaces\.([a-z]+)\.enabled$")
 
 
