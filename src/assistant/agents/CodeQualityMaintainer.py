@@ -2415,7 +2415,7 @@ class CodeQualityMaintainer:
         from assistant.integration.mail.MailAccess import MailAccess
         account = MailAccess.current().sender()
         if account is None or not account.address:
-            error("CodeQualityMaintainer: no mail account configured, skipping send.")
+            info("CodeQualityMaintainer: no mail account configured, skipping send.")
             return None
         address = account.address
 
