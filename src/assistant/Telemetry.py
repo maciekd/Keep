@@ -20,12 +20,15 @@ off early by an earlier rule gets the rest of its days back. Events queue up and
 background thread posts them in batches in PostHog's capture format; a failed batch is
 dropped, a request is never held up.
 
-An error is PostHog's `$exception` event, so it lands in its error tracking: while the
-telemetry runs it is the sink of `common.logging.error()`, which hands over the message and
-the exception it was logged for — the caught and survived ones, and through
-`common/UncaughtExceptions.py` the ones nothing caught. It goes out for as long as the install
-runs, like every event without the dialog's text: the message with the vault's values as
-placeholders and then scrubbed by pattern (`ErrorScrub`), the stack as file, function and
+While the telemetry runs it is the sink of `common.logging.error()`, which hands over the
+message and the exception it was logged for — the caught and survived ones, and through
+`common/UncaughtExceptions.py` the ones nothing caught. An error that may be a defect in the
+code is PostHog's `$exception` event, so it lands in its error tracking, where a new issue
+should mean a new bug; one the code foresaw — a service away, a sign-in expired, an
+integration's failing health check — is a plain `problem` event with the same message and the
+place it was logged at (`ErrorKind.classify` draws the line). Both go out for as long as the
+install runs, like every event without the dialog's text: the message with the vault's values
+as placeholders and then scrubbed by pattern (`ErrorScrub`), the stack as file, function and
 line — no source and no variables —, and one event per place in the code per `ERROR_INTERVAL`."""
 import platform
 import queue
@@ -39,6 +42,7 @@ from typing import Callable, Optional
 
 import requests
 
+from assistant import ErrorKind
 from assistant.ErrorScrub import scrub
 from common import ConfigStore, DevelopmentConfig, Version
 from common.ConfigManager import config
@@ -274,12 +278,14 @@ class Telemetry:
         self._enqueue("memory_size", {"words": words, "chars": chars, "watch_items": watch_items,
                                       "procedures": procedures})
 
-    def error_report(self, message: str, exception: Optional[BaseException] = None, handled: bool = True):
+    def error_report(self, message: str, exception: Optional[BaseException] = None, handled: bool = True,
+                     outside: bool = False):
         """An `error()` was logged — *exception* is the one it was logged for, None for an error
         that is a message alone, which is then placed by where it was logged; *handled* is
-        false for an exception nothing caught. Not bound to the
-        transcript window: what goes out is the scrubbed message and the stack's files,
-        functions and lines."""
+        false for an exception nothing caught, *outside* true where the call site said the
+        cause is not the code. Not bound to the transcript window: what goes out is the
+        scrubbed message and the stack's files, functions and lines — as `$exception` for what
+        may be a defect, as `problem` with the last frame alone for what the code foresaw."""
         if threading.current_thread() is self._thread or not self._on():
             return      # the worker's own errors are about the sending itself
         chain = _chain(exception) if exception is not None else []
@@ -292,6 +298,17 @@ class Telemetry:
             return
         # The newest exception carries the logged message; the ones behind it their own text.
         values = [self._error_text(message or "")] + [self._error_text(str(e)) for e in chain[1:]]
+        defect, why = ErrorKind.classify(chain, handled, outside)
+        if not defect:
+            trace(f"Telemetry: {place} goes out as a problem, no issue in the error tracking — {why}.")
+            self._enqueue("problem", {
+                "type": kinds[0], "message": values[0], "caused_by": kinds[1:], "why": why,
+                "file": last.get("filename"), "function": last.get("function"), "line": last.get("lineno"),
+                "thread": threading.current_thread().name,
+                "repeats": repeats,
+            })
+            return
+        trace(f"Telemetry: {place} goes to the error tracking — {why}.")
         self._enqueue("$exception", {
             "$exception_list": [{"type": kind, "value": value,
                                  "mechanism": {"handled": handled, "synthetic": exception is None},

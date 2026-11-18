@@ -379,8 +379,14 @@ def _fail_at_the_garage():
     raise ValueError("no answer from the garage door")
 
 
+class DoorAway(Exception):
+    """A failure the garage code named: defined in the tree, as far as its module says."""
+    __module__ = "integrations.garage.GarageClient"
+
+
 class TestErrorReports:
-    """Every `error()` the server logs goes out as PostHog's `$exception` event."""
+    """An `error()` the server logs goes out as PostHog's `$exception` event when it may be a
+    defect, and as a plain `problem` event when the code foresaw it."""
 
     def _report(self, telemetry, message="Garage: the door did not answer", raiser=_fail_at_the_garage):
         try:
@@ -422,9 +428,64 @@ class TestErrorReports:
             telemetry.error_report("Feed: the cursor went backwards")
         notices_a_problem()
         telemetry.stop()
-        [entry] = _by_name(sent, "$exception")[0]["properties"]["$exception_list"]
-        assert entry["mechanism"]["synthetic"] and entry["type"] == "Error"
-        assert entry["stacktrace"]["frames"][-1]["function"] == "notices_a_problem"
+        [event] = _by_name(sent, "problem")
+        assert event["properties"]["type"] == "Error" and event["properties"]["function"] == "notices_a_problem"
+        assert event["properties"]["file"] == "tests/unit/assistant/test_telemetry.py"
+
+    def test_a_failure_the_code_named_is_a_problem_and_no_issue_in_the_error_tracking(self, telemetry, sent):
+        def the_door_is_away():
+            raise DoorAway("no answer from 192.0.2.7")
+        self._report(telemetry, message="Garage: m@mlab.test could not be told", raiser=the_door_is_away)
+        telemetry.stop()
+        assert _by_name(sent, "$exception") == []
+        [event] = _by_name(sent, "problem")
+        properties = event["properties"]
+        assert properties["type"] == "DoorAway" and properties["function"] == "the_door_is_away"
+        assert "could not be told" in properties["message"] and "m@mlab.test" not in properties["message"]
+
+    def test_a_problem_names_what_it_came_from(self, telemetry, sent):
+        def wrapped():
+            try:
+                raise ConnectionResetError("reset by peer")
+            except ConnectionResetError as e:
+                raise RuntimeError("the door did not answer") from e
+        self._report(telemetry, raiser=wrapped)
+        telemetry.stop()
+        [event] = _by_name(sent, "problem")
+        assert event["properties"]["type"] == "RuntimeError"
+        assert event["properties"]["caused_by"] == ["ConnectionResetError"]
+
+    def test_a_call_site_that_reports_the_outside_files_no_issue_unless_the_code_broke(self, telemetry, sent):
+        from common.logging import error
+
+        def a_check_that_fails():
+            try:
+                raise RuntimeError("Work: token expired")
+            except RuntimeError:
+                error("Garage: health check failed", outside=True)
+
+        def a_check_that_is_broken():
+            try:
+                None.state
+            except AttributeError:
+                error("Garage: health check failed", outside=True)
+        a_check_that_fails()
+        a_check_that_is_broken()
+        telemetry.stop()
+        assert [e["properties"]["type"] for e in _by_name(sent, "problem")] == ["RuntimeError"]
+        [issue] = _by_name(sent, "$exception")
+        assert issue["properties"]["$exception_list"][0]["type"] == "AttributeError"
+
+    def test_a_repeating_problem_is_held_back_like_a_repeating_issue(self, telemetry, sent, monkeypatch):
+        def notices():
+            telemetry.error_report("Feed: the source is away")
+        for _ in range(3):
+            notices()
+        clock = time.time()
+        monkeypatch.setattr(telemetry_module.time, "time", lambda: clock + telemetry_module.ERROR_INTERVAL + 1)
+        notices()
+        telemetry.stop()
+        assert [e["properties"]["repeats"] for e in _by_name(sent, "problem")] == [0, 2]
 
     def test_an_uncaught_exception_is_marked_unhandled(self, telemetry, sent):
         from common.logging import error
@@ -503,9 +564,8 @@ class TestErrorReports:
         the_feed_notices()
         the_garage_notices()
         telemetry.stop()
-        last = [e["properties"]["$exception_list"][0]["stacktrace"]["frames"][-1]
-                for e in _by_name(sent, "$exception")]
-        assert [f["function"] for f in last] == ["the_feed_notices", "the_garage_notices"]
+        assert [e["properties"]["function"] for e in _by_name(sent, "problem")] \
+            == ["the_feed_notices", "the_garage_notices"]
 
     def test_the_text_of_the_exception_behind_goes_out_scrubbed_too(self, telemetry, sent):
         def wrapped():

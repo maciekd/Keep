@@ -223,6 +223,13 @@ class TestWhichFailuresAreLoggedAsErrors:
         assert error.call_count == 2
         assert all("Connection refused" in call.args[0] for call in error.call_args_list)
 
+    def test_a_lasting_failure_is_reported_as_the_integration_s_state_not_as_a_defect(
+            self, mock_config, integration, errors):
+        error, _ = errors
+        for _ in range(IntegrationMonitor.FAILURE_THRESHOLD):
+            mock_config._check_integration(integration)
+        assert error.call_args.kwargs == {"outside": True}
+
     def test_a_passing_check_in_between_starts_the_count_again(self, mock_config, integration, errors):
         error, _ = errors
         failed = ConnectionError("Connection refused")

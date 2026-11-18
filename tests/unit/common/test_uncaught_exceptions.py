@@ -13,7 +13,7 @@ from common import UncaughtExceptions
 def reported(monkeypatch):
     """What the error sink was handed, with the process's own hooks put back afterwards."""
     seen = []
-    monkeypatch.setattr(logging_module, "_error_sink", lambda message, exception, handled: seen.append(
+    monkeypatch.setattr(logging_module, "_error_sink", lambda message, exception, handled, outside: seen.append(
         (message, exception, handled)))
     monkeypatch.setattr(sys, "excepthook", sys.excepthook)
     monkeypatch.setattr(threading, "excepthook", threading.excepthook)

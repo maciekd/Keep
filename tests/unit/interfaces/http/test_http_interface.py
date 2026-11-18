@@ -12,7 +12,7 @@ from interfaces.http.HttpInterface import HttpInterface
 @pytest.fixture
 def reported(monkeypatch):
     seen = []
-    monkeypatch.setattr(logging_module, "_error_sink", lambda message, exception, handled: seen.append(
+    monkeypatch.setattr(logging_module, "_error_sink", lambda message, exception, handled, outside: seen.append(
         (message, exception, handled)))
     return seen
 

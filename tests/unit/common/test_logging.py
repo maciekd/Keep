@@ -216,7 +216,7 @@ class TestErrorSink:
     def seen(self, monkeypatch):
         import common.logging as logging_mod
         seen = []
-        monkeypatch.setattr(logging_mod, "_error_sink", lambda message, exception, handled: seen.append(
+        monkeypatch.setattr(logging_mod, "_error_sink", lambda message, exception, handled, outside: seen.append(
             (message, exception, handled)))
         return seen
 
@@ -234,6 +234,15 @@ class TestErrorSink:
         error("Music: no zones")
         assert seen == [("Music: no zones", None, True)]
 
+    def test_what_the_call_site_says_of_the_cause_reaches_the_sink(self, monkeypatch):
+        import common.logging as logging_mod
+        said = []
+        monkeypatch.setattr(logging_mod, "_error_sink",
+                            lambda message, exception, handled, outside: said.append(outside))
+        logging_mod.error("Music: the speaker is away", outside=True)
+        logging_mod.error("Music: no zones")
+        assert said == [True, False]
+
     def test_only_errors_reach_the_sink(self, seen):
         from common.logging import info, trace
         info("Music: 4 zones")
@@ -244,7 +253,7 @@ class TestErrorSink:
         import common.logging as logging_mod
         calls = []
 
-        def sink(message, exception, handled):
+        def sink(message, exception, handled, outside):
             calls.append(message)
             logging_mod.error("the sink has a problem of its own")
         monkeypatch.setattr(logging_mod, "_error_sink", sink)
@@ -254,7 +263,7 @@ class TestErrorSink:
     def test_a_failing_sink_does_not_fail_the_caller(self, monkeypatch):
         import common.logging as logging_mod
 
-        def sink(message, exception, handled):
+        def sink(message, exception, handled, outside):
             raise RuntimeError("PostHog is away")
         monkeypatch.setattr(logging_mod, "_error_sink", sink)
         logging_mod.error("Music: no zones")

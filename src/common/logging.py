@@ -30,13 +30,14 @@ _reporting = threading.local()
 
 
 def set_error_sink(sink):
-    """`sink(message, exception_or_None, handled)` called for every `error()`; None removes it.
-    *handled* is false for an exception nothing caught, which a hook handed to `error()`."""
+    """`sink(message, exception_or_None, handled, outside)` called for every `error()`; None
+    removes it. *handled* is false for an exception nothing caught, which a hook handed to
+    `error()`; *outside* is what the call site said of the cause."""
     global _error_sink
     _error_sink = sink
 
 
-def _report_error(message, exception):
+def _report_error(message, exception, outside):
     """Hands an error to the sink. An `error()` the sink itself logs is not handed on again,
     and a sink that fails costs one stdout line, never the caller."""
     sink = _error_sink
@@ -45,9 +46,9 @@ def _report_error(message, exception):
     _reporting.active = True
     try:
         if exception is not None:
-            sink(message, exception, False)
+            sink(message, exception, False, outside)
         else:
-            sink(message, sys.exc_info()[1], True)
+            sink(message, sys.exc_info()[1], True, outside)
     except Exception as e:
         print(f"Error sink failed: {type(e).__name__}: {e}")
     finally:
@@ -208,11 +209,14 @@ def note(message):
     log(message, Style.BRIGHT + Fore.LIGHTBLUE_EX, "NOTE")
 
 
-def error(message, exception=None):
+def error(message, exception=None, outside=False):
     """*exception* is for the hooks that log an exception nothing caught. An error logged in
-    an `except` block needs no argument: the exception being handled is found by itself."""
+    an `except` block needs no argument: the exception being handled is found by itself.
+    *outside* says the cause is not the code — a service away, an account signed out — where
+    the exception's class cannot say so (`assistant/ErrorKind.py`): the log line is the same,
+    the error tracking gets no issue for it."""
     log(message, Style.BRIGHT + Fore.RED, "ERROR")
-    _report_error(message, exception)
+    _report_error(message, exception, outside)
 
 
 def trace(message):
