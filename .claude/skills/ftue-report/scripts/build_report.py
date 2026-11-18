@@ -36,10 +36,38 @@ def rich(s, secrets):
     for sec in secrets:
         s = s.replace(sec, "••••••")
     out = html.escape(s, quote=False)
-    out = re.sub(r"&lt;(/?)(b|i|code)&gt;", r"<\1\2>", out)
+    out = re.sub(r"&lt;(/?)(b|i|code|pre)&gt;", r"<\1\2>", out)
     out = re.sub(r'&lt;a href="([^"]*)"&gt;', r'<a href="\1" target="_blank" rel="noopener">', out)
     out = out.replace("&lt;/a&gt;", "</a>").replace("&amp;amp;", "&amp;")
-    return out.replace("\n", "<br>")
+    return balanced(out).replace("\n", "<br>")
+
+
+def balanced(out):
+    """A reply can carry a tag it never closes (a command cut out of the text takes the closer
+    with it), and an open <code> would style the rest of the page. None of these tags nests in
+    itself, so an opener still open when the same tag opens again, when an outer tag closes or
+    when the reply ends is dropped, and so is a closer that closes nothing."""
+    parts, open_tags, last = [], [], 0      # open_tags: (tag, the index of its opener in parts)
+    for m in re.finditer(r"<(/?)(b|i|code|pre|a)\b[^>]*>", out):
+        parts.append(out[last:m.start()])
+        last = m.end()
+        closing, tag = m.group(1), m.group(2)
+        names = [name for name, _ in open_tags]
+        if tag in names:
+            while open_tags[-1][0] != tag:
+                parts[open_tags.pop()[1]] = ""
+            if closing:
+                open_tags.pop()
+                parts.append(m.group(0))
+                continue
+            parts[open_tags.pop()[1]] = ""
+        if not closing:
+            open_tags.append((tag, len(parts)))
+            parts.append(m.group(0))
+    parts.append(out[last:])
+    for _, opener in open_tags:
+        parts[opener] = ""
+    return "".join(parts)
 
 
 def gap_text(delta):
