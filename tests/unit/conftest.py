@@ -149,6 +149,8 @@ CAST_CONFIG = {
     # install says: its tests build the transport over a fake host and patch the keys they need.
     "imessage_chat.host": "local",
     "interfaces.imessage.enabled": False,
+    # And the backup page, which would otherwise open a real port in every test that builds the server.
+    "interfaces.backups.enabled": False,
 }
 _real_config_get = _config_module.config.get
 

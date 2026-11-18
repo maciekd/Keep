@@ -9,7 +9,7 @@ the owner. A restore is staged here and put in place by the next start (floxy_ai
 What a backup leaves out: the logs, the browser profile (too big; a login brings it back), the
 caches, and anything outside the install (extra_integration_dirs is code of the install's own).
 """
-import hmac
+import tarfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -71,12 +71,6 @@ def _keep() -> int:
         return max(1, int(ConfigManager.get_instance().get(KEEP_KEY, DEFAULT_KEEP)))
     except (TypeError, ValueError):
         return DEFAULT_KEEP
-
-
-def passphrase_matches(typed: str) -> bool:
-    """Whether *typed* is the configured backup passphrase (never true while none is set)."""
-    configured = _passphrase()
-    return bool(configured) and hmac.compare_digest(typed.encode(), configured.encode())
 
 
 def passphrase_problem() -> str:
@@ -165,14 +159,31 @@ def resolve(name: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
-def stage(path: Path) -> str:
-    """Unpacks *path* for the next start; the problem as text, "" when it is staged."""
-    if problem := passphrase_problem():
+def describe(path: Path, passphrase: str = "") -> dict:
+    """The manifest of the backup at *path*, opened with *passphrase* (the configured one when
+    empty). Raises `Backup.WrongPassphrase` when it does not open — also while no passphrase is
+    set at all — and `BackupError` when it is no backup."""
+    passphrase = passphrase or _passphrase()
+    if not passphrase:
+        info(f"Backups: no passphrase to open {path.name} with")
+        raise Backup.WrongPassphrase()
+    try:
+        return Backup.manifest(path, passphrase)
+    except (tarfile.TarError, EOFError, OSError) as e:
+        raise BackupError(f"the backup file is damaged ({e})")
+
+
+def stage(path: Path, passphrase: str = "") -> str:
+    """Unpacks *path* for the next start, opened with *passphrase* — the configured one when
+    empty; the problem as text, "" when it is staged."""
+    if not passphrase and (problem := passphrase_problem()):
         return problem
     try:
-        data = Backup.stage(path, _passphrase(), AISERVER_DIR)
+        data = Backup.stage(path, passphrase or _passphrase(), AISERVER_DIR)
     except Backup.WrongPassphrase:
-        info(f"Backups: {path} does not open with the configured passphrase")
+        info(f"Backups: {path} does not open with the {'typed' if passphrase else 'configured'} passphrase")
+        if passphrase:
+            return f"that passphrase does not open {path.name}"
         return (f"the backup passphrase does not open {path.name}. If it was made with another passphrase, ask the "
                 f"user to type that one with config_request(\"{PASSPHRASE_KEY}\") and try again")
     except (BackupError, OSError) as e:

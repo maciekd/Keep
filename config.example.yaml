@@ -323,9 +323,12 @@ interfaces:
   imessage: { enabled: false }              # Keep as an iMessage contact of its own; needs the imessage_chat section
   console:  { enabled: true, port: 5151 }   # TUI dashboard (tui.py connects to this port)
   # A web page for the backups (the backup section below): make one, list them, download one to your own
-  # computer, restore one (the backup passphrase is asked on the page). No login: whoever reaches host:port can
-  # make and download backups — encrypted, but holding every key of this config. 0.0.0.0 answers the whole
-  # network; 127.0.0.1 only this machine. Read at startup; edit it here by hand (the assistant cannot change it).
+  # computer, restore a listed one or a .keepbackup file uploaded from the browser (one downloaded earlier or
+  # made on another machine). Every restore waits for your approve/deny in the chat (Telegram, the console) and
+  # nothing is restored before it; a file that does not open with backup.passphrase has the page ask for the
+  # passphrase it was made with. No login: whoever reaches host:port can make and download backups — encrypted,
+  # but holding every key of this config. 0.0.0.0 answers the whole network; 127.0.0.1 only this machine.
+  # Read at startup; edit it here by hand (the assistant cannot change it).
   backups:  { enabled: false, host: 0.0.0.0, port: 5050 }
 
 # macOS only: a Linux server has no microphones or speakers of its own and does not read this section.
