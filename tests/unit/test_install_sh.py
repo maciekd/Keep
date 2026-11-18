@@ -510,6 +510,91 @@ class TestWriteConfig:
         assert config['developer_release'] is False
 
 
+class TestOfferRestore:
+    """A fresh install offers to restore a backup in place of the API key and the new config.
+    The venv's python is a double that records what scripts/restore_backup.py was handed."""
+
+    def setup_restore(self, harness) -> Path:
+        venv_bin = harness.keep_dir / '.venv' / 'bin'
+        venv_bin.mkdir(parents=True)
+        (venv_bin / 'python').symlink_to(DOUBLES / 'restore_python')
+        backup = harness.dir / 'My Backups' / 'keep-20261118.keepbackup'
+        backup.parent.mkdir()
+        backup.write_bytes(b'KEEPBACKUP1\n')
+        return backup
+
+    def restore_calls(self, harness) -> list[str]:
+        path = harness.dir / 'restore_calls'
+        return path.read_text().splitlines() if path.exists() else []
+
+    def offer(self, harness, codes: str = '0', **env):
+        return harness.run('TTY=/dev/null; offer_restore', KEEP_TEST_ASKED=str(harness.dir / 'restore_calls'),
+                           KEEP_TEST_RESTORE_CODES=codes, **env)
+
+    def test_enter_at_the_question_is_a_fresh_start(self, harness):
+        self.setup_restore(harness)
+        harness.set_answers('')
+        result = self.offer(harness)
+        assert result.returncode == 1
+        assert len(harness.prompts) == 1
+        assert self.restore_calls(harness) == []
+
+    def test_no_terminal_asks_nothing_and_restores_nothing(self, harness):
+        self.setup_restore(harness)
+        result = harness.run('offer_restore', KEEP_TEST_ASKED=str(harness.dir / 'restore_calls'))
+        assert result.returncode == 1
+        assert self.restore_calls(harness) == []
+
+    def test_a_dragged_in_path_is_restored_with_the_typed_passphrase(self, harness):
+        """A file dragged into Terminal arrives with a backslash before each space and a blank after it."""
+        backup = self.setup_restore(harness)
+        dragged = str(backup).replace(' ', '\\ ') + ' '
+        harness.set_answers(dragged, 'correct horse')
+        result = self.offer(harness)
+        assert result.returncode == 0, result.stdout
+        script, passphrase = self.restore_calls(harness)[0].split(' | ')
+        assert script.endswith(f'scripts/restore_backup.py {backup}')
+        assert passphrase == 'correct horse'
+        assert 'correct horse' not in result.stdout
+
+    def test_a_wrong_passphrase_is_asked_again(self, harness):
+        backup = self.setup_restore(harness)
+        harness.set_answers(str(backup), 'wrong', 'right')
+        result = self.offer(harness, codes='3 0')
+        assert result.returncode == 0, result.stdout
+        assert [c.split(' | ')[1] for c in self.restore_calls(harness)] == ['wrong', 'right']
+
+    def test_three_wrong_passphrases_stop_the_install(self, harness):
+        backup = self.setup_restore(harness)
+        harness.set_answers(str(backup), 'a', 'b', 'c', 'd')
+        result = self.offer(harness, codes='3')
+        assert result.returncode == 1
+        assert len(self.restore_calls(harness)) == 3
+
+    def test_a_failed_restore_stops_the_install_rather_than_starting_fresh(self, harness):
+        backup = self.setup_restore(harness)
+        harness.set_answers(str(backup), 'pass')
+        result = self.offer(harness, codes='1')
+        assert result.returncode == 1
+        assert 'Could not restore' in result.stdout
+
+    def test_a_missing_file_is_asked_for_again(self, harness):
+        backup = self.setup_restore(harness)
+        harness.set_answers(str(harness.dir / 'nowhere.keepbackup'), str(backup), 'pass')
+        result = self.offer(harness)
+        assert result.returncode == 0, result.stdout
+        assert len(self.restore_calls(harness)) == 1
+
+    def test_the_environment_answers_both_questions(self, harness):
+        backup = self.setup_restore(harness)
+        harness.set_answers()
+        result = harness.run('offer_restore', KEEP_TEST_ASKED=str(harness.dir / 'restore_calls'),
+                             KEEP_RESTORE=str(backup), KEEP_BACKUP_PASSPHRASE='from env')
+        assert result.returncode == 0, result.stdout
+        assert harness.prompts == []
+        assert self.restore_calls(harness)[0].endswith(' | from env')
+
+
 FIRST = {'readme.md': 'Keep\n', '.gitignore': 'log/\n'}
 
 

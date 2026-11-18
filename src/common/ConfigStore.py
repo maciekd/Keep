@@ -60,6 +60,12 @@ OWNER_TYPED = {
                             "and can be told to text them, and runs no command for them.",
     "imessage_chat.bots": "Whoever is typed here is treated as another household's assistant over iMessage: a "
                           "guest without commands, answered only a few times an hour.",
+    # A passphrase or a folder the assistant stated could be one an instruction in a mail chose:
+    # the backups — every key of config.yaml — would then open for, or land with, its author.
+    "backup.passphrase": "Every Keep backup is encrypted with this passphrase, and no backup can be restored "
+                         "without it: keep it in your password manager.",
+    "backup.directory": "Every Keep backup — all of Keep's keys, memory and history — is written to the folder "
+                        "typed here.",
 }
 OWNER_TYPED_PREFIXES = tuple(OWNER_TYPED)
 BACKUP_DIR = CACHE_DIR / "config-backups"

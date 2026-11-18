@@ -19,6 +19,13 @@ from common import grpc_env  # noqa: F401  — sets gRPC env vars; ahead of anyt
 from common import SystemTrust
 _TLS_TRUST = SystemTrust.install()
 
+# A restore the running server staged (restore_backup) is put in place here, ahead of the
+# config and of anything that opens the database: the next import reads config.yaml.
+_RESTORED = None
+if __name__ == "__main__":
+    from common import Backup
+    _RESTORED = Backup.apply_pending()
+
 import asyncio
 import atexit
 import faulthandler
@@ -605,6 +612,9 @@ def _launch():
     _verify_config_or_exit()
     info("Loading libraries...")
     server = build(port, testsuite)
+    if _RESTORED:
+        from assistant.SystemNote import system_note
+        system_note("server", _RESTORED)
     atexit.register(server.stop)   # the fallback for a start that never reached main()'s finally
     asyncio.run(main(server))
 

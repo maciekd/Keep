@@ -1,0 +1,12 @@
+#!/bin/bash
+# install.sh's test double for the venv's python running scripts/restore_backup.py: appends its
+# arguments and the passphrase it was handed to KEEP_TEST_ASKED, one line a call, and exits with
+# the call's code from KEEP_TEST_RESTORE_CODES (space-separated; the last one repeats).
+# Checked in, not written by the test: macOS assesses a new executable file on its first run.
+echo "$* | ${KEEP_BACKUP_PASSPHRASE:-}" >> "$KEEP_TEST_ASKED"
+read -r -a codes <<< "${KEEP_TEST_RESTORE_CODES:-0}"
+n=$(wc -l < "$KEEP_TEST_ASKED")
+index=$(( n <= ${#codes[@]} ? n - 1 : ${#codes[@]} - 1 ))
+code=${codes[$index]}
+if [ "$code" = 0 ]; then echo "Restored the backup"; else echo "Not restored: the test says no" >&2; fi
+exit "$code"

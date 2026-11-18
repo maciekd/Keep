@@ -163,6 +163,8 @@ _config_module.config.get = _cast_config_get
 # the suite's time. Sixteen rounds derive in microseconds and no test cares about strength.
 import common.vault.Vault
 common.vault.Vault.SCRYPT_N = 2 ** 4
+import common.Backup
+common.Backup.SCRYPT_N = 2 ** 4
 
 # No fsync per commit: hundreds of tests write a throwaway SQLite file under tmp_path, and
 # waiting for the disk on each commit was ~0.4 s of the wall time. Nothing here survives a crash.

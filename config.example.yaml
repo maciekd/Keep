@@ -350,6 +350,18 @@ vault:                      # secrets the LLM never sees — the console's Vault
                             # existing vault.bin can no longer be opened. Unset = vault disabled.
   default_country_code: 46  # a phone number written with a leading 0 is filed under this country code
 
+# Backup & restore (the backup toolkit): one encrypted .keepbackup file holds the config (every key and token),
+# the vault, the long-term memory, the dialog history and the integrations' sign-ins. A fresh install restores
+# one when install.sh asks; a running server with restore_backup. Read at each backup, no restart needed.
+backup:
+  # Encrypts every backup; typed by you (config_request), never stated in the chat. Keep it in a password
+  # manager: a backup cannot be opened without it, and a new machine asks for it.
+  passphrase:
+  # Where backups are written: a folder outside the Keep checkout. A synced folder (iCloud Drive, Dropbox)
+  # takes them off this machine. Typed by you (config_request).
+  directory: ~/KeepBackups
+  keep: 10                  # the newest this many are kept; older ones are deleted after a backup
+
 # >> reminders: src/integrations/reminders/config.example.yaml
 
 # Web search (Serper) tuning. Optional — these are the defaults.

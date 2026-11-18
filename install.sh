@@ -23,6 +23,10 @@
 #   ANTHROPIC_API_KEY  skips the API key prompt
 #   ANTHROPIC_WORKSPACE_ID  the workspace (wrkspc_...) a key not tied to one workspace acts in;
 #                      skips that prompt. A key created for one workspace needs none.
+#   KEEP_RESTORE       a fresh install only: restore this Keep backup (.keepbackup, made by the
+#                      assistant's `backup` command) instead of asking for an API key; without it a
+#                      fresh install asks whether to restore one. KEEP_BACKUP_PASSPHRASE skips the
+#                      passphrase prompt.
 #   KEEP_NO_START=1    stop after installing instead of launching start.sh
 #   KEEP_BROWSER=1|0   where no Chrome or Chromium is found: install one (1) or leave it (0)
 #                      without asking. Without a terminal to ask on, none is installed.
@@ -141,9 +145,15 @@ main() {
     ok "config.yaml kept as it is"
   else
     step "Anthropic API key"
-    obtain_api_key
-    step "Configuration"
-    write_config
+    if offer_restore; then
+      ok "The backup's key is used"
+      step "Configuration"
+      ok "config.yaml, vault, memory and history restored from the backup"
+    else
+      obtain_api_key
+      step "Configuration"
+      write_config
+    fi
   fi
 
   if linux; then enable_linger; fi
@@ -1328,6 +1338,62 @@ obtain_api_key() {
     esac
     [ -z "${ANTHROPIC_API_KEY:-}" ] || fail "ANTHROPIC_API_KEY from the environment was rejected."
   done
+}
+
+# A fresh install may come back as an earlier one: a backup the assistant made (its `backup`
+# command, a .keepbackup file) brings config.yaml with the keys, the vault, the memory and the
+# history, in place of the API key and the new config. KEEP_RESTORE=<file> answers the question
+# ahead of time, KEEP_BACKUP_PASSPHRASE the passphrase. Succeeds when a backup was restored.
+offer_restore() {
+  local file="${KEEP_RESTORE:-}" passphrase="${KEEP_BACKUP_PASSPHRASE:-}" tries=0 status output
+  if [ -z "$file" ]; then
+    [ -n "$TTY" ] || return 1
+    note "Moving Keep from another machine? A backup made there brings everything along."
+    ask "Path to a Keep backup (.keepbackup), or Enter for a fresh start:" file
+    file=$(clean_path "$file")
+    [ -n "$file" ] || return 1
+  else
+    file=$(clean_path "$file")
+  fi
+  while [ ! -f "$file" ]; do
+    [ -z "${KEEP_RESTORE:-}" ] || fail "KEEP_RESTORE names $file, and there is no such file."
+    warn "No file at $file."
+    ask "Path to the backup, or Enter for a fresh start:" file
+    file=$(clean_path "$file")
+    [ -n "$file" ] || return 1
+  done
+  while :; do
+    if [ -z "$passphrase" ]; then
+      [ "$tries" -lt 3 ] || fail "The passphrase did not open the backup 3 times." \
+        "Re-run the installer and try again, or press Enter at the backup question for a fresh start."
+      ask "Backup passphrase:" passphrase secret
+      tries=$((tries + 1))
+      [ -n "$passphrase" ] || { warn "Nothing entered."; continue; }
+    fi
+    status=0
+    output=$(KEEP_BACKUP_PASSPHRASE="$passphrase" "$KEEP_DIR/.venv/bin/python" "$KEEP_DIR/scripts/restore_backup.py" "$file" 2>&1) || status=$?
+    log "restore_backup.py exited $status: $output"
+    case $status in
+      0) ok "Restored $(basename "$file")"; return 0 ;;
+      3) [ -z "${KEEP_BACKUP_PASSPHRASE:-}" ] || fail "KEEP_BACKUP_PASSPHRASE does not open $file."
+         warn "That passphrase does not open the backup."; passphrase="" ;;
+      *) fail "Could not restore $file: $(printf '%s' "$output" | tail -n 1)" \
+           "Re-run the installer and press Enter at the backup question for a fresh start." ;;
+    esac
+  done
+}
+
+# clean_path <text>: a path as a terminal hands it over — blanks around it, quotes or a backslash
+# before each space from a file dragged into the window, a leading ~.
+clean_path() {
+  local p=$1
+  p="${p#"${p%%[![:space:]]*}"}"
+  p="${p%"${p##*[![:space:]]}"}"
+  p="${p#[\"\']}"
+  p="${p%[\"\']}"
+  p="${p//\\ / }"
+  case $p in "~"|"~/"*) p="$HOME${p#\~}" ;; esac
+  printf '%s' "$p"
 }
 
 # -------------------------------------------------------------- 8. config ---

@@ -17,7 +17,7 @@ from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess, NETWORK_LOG_HEADER
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
-from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
+from assistant import Backups, Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
 from common.logging import trace, info, note, error, fine
 from assistant.agents.BuildPreflight import BuildPreflight
 from assistant.agents.CodeQualityMaintainer import (CodeQualityMaintainer, IssueDraft, JobPullRequest,
@@ -120,7 +120,7 @@ class Commands:
     `approve_guarded_commands` is true.
     """
     SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server", "try_pull_request", "leave_own_branch",
-                                    "report_issue", "pr_feedback", "improve_local_integration"})
+                                    "report_issue", "pr_feedback", "improve_local_integration", "restore_backup"})
     # The browser actions that can submit a form or run a script on a site. Off by default
     # because a card per click would make a multi-step browsing task unusable and the
     # autonomous check, which has no approval channel, could not browse at all (PR #148).
@@ -137,6 +137,9 @@ class Commands:
                             "as a trial that lasts until the pull request is released; restart_server goes "
                             "back to the normal code before that. The console goes blank for a moment and "
                             "reconnects by itself.",
+        "restore_backup": "Replaces this install's config, vault, memory, dialog history and sign-ins with the "
+                          "backup's and relaunches the server. What it replaces is kept in cache/pre-restore-<time>. "
+                          "The console goes blank for a moment and reconnects by itself.",
         "leave_own_branch": "Takes the server off the branch of your own it runs: checks the normal branch out "
                             "again, pulls it and relaunches the server. Your branch stays in git; uncommitted "
                             "changes can keep the checkout from switching. The console goes blank for a moment "
@@ -1507,6 +1510,33 @@ class Commands:
 
         self.fire_and_forget(_run, parameter_string)
 
+    def cmd_backup(self, parameter_string: str = ""):
+        self.background_command(Backups.create, ())
+
+    def cmd_list_backups(self, parameter_string: str = "") -> str:
+        return Backups.listing()
+
+    def cmd_restore_backup(self, parameter_string: str) -> str:
+        """`restore_backup(file)`: stage the backup (the newest without a name) and relaunch; the
+        next start puts it in place before anything reads config.yaml or the database."""
+        path = Backups.resolve(parameter_string)
+        if path is None:
+            info(f"restore_backup: no backup '{parameter_string.strip()}' found")
+            return (f"restore_backup failed: no backup '{parameter_string.strip() or 'latest'}' in "
+                    f"{Backups.directory()}. {Backups.listing()}")
+        if problem := Backups.passphrase_problem():
+            return f"restore_backup failed: {problem}"
+
+        def _run(_params):
+            problem = Backups.stage(path)
+            if problem:
+                system_note("server", f"The restore of {path.name} did not start: {problem}.")
+                return
+            CodeQualityMaintainer.restart(f"restoring the backup {path.name}", resumes_conversation=True)
+
+        self.fire_and_forget(_run, parameter_string)
+        return f"Restoring {path.name}: the server unpacks it and restarts to put it in place."
+
     def cmd_try_pull_request(self, parameter_string: str):
         """`try_pull_request(number)`: run one of the install's own open PRs as a trial. The
         vetting answers at once (a refusal is the command result); the fetch, the pip sync and
@@ -2746,6 +2776,9 @@ class Commands:
             else f"Working on the local {name} integration"
     def describe_report_issue(self, p):           return "Reporting an issue to the developers"
     def describe_restart_server(self, p):         return "Restarting server"
+    def describe_backup(self, p):                 return "Making a backup"
+    def describe_list_backups(self, p):           return "Listing the backups"
+    def describe_restore_backup(self, p):         return f"Restoring the backup {p.strip() or 'latest'}"
     def describe_leave_own_branch(self, p):       return "Leaving your branch and restarting server"
     def describe_try_pull_request(self, p):       return f"Trying PR #{p.strip().lstrip('#').strip() or '?'}"
     def describe_pr_feedback(self, p):            return f"Posting feedback on PR #{self._first_argument(p).lstrip('#') or '?'}"
