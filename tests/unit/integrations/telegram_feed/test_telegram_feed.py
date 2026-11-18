@@ -761,6 +761,33 @@ class TestWakeAssistant:
         assert rows == []
 
     @pytest.mark.asyncio
+    async def test_a_draft_she_deletes_without_a_reply_leaves_nobody_following_her(self, wake):
+        # She is woken, shows her spinner and answers NO: the bubble is deleted with nothing but
+        # frames ever in it. The group never saw a message of hers, so whoever writes next is
+        # talking to the others — and once woken, she would otherwise be woken by every message.
+        m, say, fake = wake
+        await say("Michelle, what's for dinner?", msg_id=9)
+        await say("`█`", sender_id=777, bot=True, name="Keep", msg_id=10)
+        for frame in ("`░`", "Thinking…\n `█`", "Thinking (↓ 120 tokens)…", "Running command…\n `░`"):
+            m.edit(frame, msg_id=10)
+        fake.receive_chat_message.reset_mock()
+        rows = await say("never mind, I'll order pizza", sender_id=124, name="Bob", msg_id=11)
+        fake.receive_chat_message.assert_not_called()
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_her_reply_after_the_spinner_frames_still_makes_her_the_last_sender(self, wake):
+        m, say, fake = wake
+        await say("Michelle, what's for dinner?", msg_id=9)
+        await say("`█`", sender_id=777, bot=True, name="Keep", msg_id=10)
+        m.edit("Thinking…\n `░`", msg_id=10)
+        m.edit("Pasta, 20 minutes to go.", msg_id=10)
+        fake.receive_chat_message.reset_mock()
+        rows = await say("and the salad?", sender_id=124, name="Bob", msg_id=11)
+        fake.receive_chat_message.assert_called_once()
+        assert rows == []
+
+    @pytest.mark.asyncio
     async def test_a_reaction_to_her_bubble_or_an_edit_of_an_older_one_moves_nothing(self, wake):
         # Telethon reports a reaction as an edit with the text unchanged; an older bubble
         # edited is not the group's latest message either way.

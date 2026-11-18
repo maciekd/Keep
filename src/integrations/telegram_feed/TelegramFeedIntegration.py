@@ -31,6 +31,7 @@ DIRECTORY_TTL = 300         # seconds a built directory serves lookups (the appr
 SEND_RATE_LIMIT_WINDOW = 60.0
 SEND_RATE_LIMIT_MAX = 5
 LOGOUT_TIMEOUT = 30         # seconds for //wipe's log-out, connect included
+DRAFT = "draft"             # the bot's own bubble before it has any text: nobody's message yet
 LOGIN_HINT = "sign the account in with telegram_login(phone) from the console chat, or in the console's Telegram tab"
 CODE_REUSE_NOTE = ("Asked again within a few minutes, Telegram repeats the same code without sending a new message — "
                    "wait for that one before requesting another.")
@@ -374,7 +375,8 @@ class TelegramFeedIntegration(Integration, Feed):
         The decision is the group wake rule every chat platform shares (`assistant/GroupWake.py`):
         the name, the "right after the bot" rule, and the last sender a refused turn leaves in
         place. The bot's reply itself lands as an edit of her draft bubble, which
-        `_note_bot_edit` records."""
+        `_note_bot_edit` records; the bubble as she posts it — a spinner frame, deleted again
+        when she has nothing to say — is nobody's message and moves nothing."""
         from telethon import utils
         try:
             chat_id = utils.get_peer_id(chat)   # the Bot API id: -<id> for a group, -100<id> for a supergroup
@@ -388,15 +390,21 @@ class TelegramFeedIntegration(Integration, Feed):
             return False
         bot_id = self._bot_user_id()
         outcome = await self._hand_over(msg, chat, chat_id, ids, bot_id)
-        self._wake.settle(chat_id, msg.sender_id, outcome)
+        if outcome != DRAFT:
+            self._wake.settle(chat_id, msg.sender_id, outcome)
         return outcome == TURN
 
     async def _hand_over(self, msg, chat, chat_id: int, ids: list[int], bot_id: Optional[int]) -> str:
         """`_wake_assistant`'s decision: TURN when handed over, ROW when the message stays a
-        context row (or nothing at all), REFUSED when the chat layer would not take the turn."""
+        context row (or nothing at all), REFUSED when the chat layer would not take the turn,
+        DRAFT when it is the bot's own bubble before it has any text."""
         text = msg.text or ""
         if bot_id is not None and msg.sender_id == bot_id:
             self._bot_bubbles[chat_id] = (msg.id, text)
+            if self._is_draft_placeholder(msg):
+                trace(f"TelegramFeed: [{chat_id}] the bot posted her draft bubble, no text in it yet — "
+                      f"the last sender stays as it is")
+                return DRAFT
             trace("TelegramFeed: the bot's own message in the group — not woken by herself")
             return ROW
         if not text:
@@ -442,7 +450,9 @@ class TelegramFeedIntegration(Integration, Feed):
         """The bot's reply is an edit of the draft bubble she posted first, so it never comes
         through `NewMessage`: an edit that changes the text of her latest bubble in a group makes
         her the group's last sender again. A reaction to the bubble arrives as an edit too, with
-        the text unchanged, and moves nothing."""
+        the text unchanged, and moves nothing — and neither does the next frame of the spinner:
+        a draft that never gets a text is deleted (she answered NO), and whoever writes next
+        does not follow a message the group never saw."""
         msg = event.message
         bot_id = self._bot_user_id()
         if bot_id is None or getattr(msg, 'sender_id', None) != bot_id:
@@ -458,6 +468,9 @@ class TelegramFeedIntegration(Integration, Feed):
         if text == bubble[1]:
             return
         self._bot_bubbles[chat_id] = (msg.id, text)
+        if is_draft_placeholder(text):
+            trace(f"TelegramFeed: [{chat_id}] the bot's draft bubble shows another frame, still no text")
+            return
         self._wake.spoke(chat_id, bot_id)
         trace(f"TelegramFeed: [{chat_id}] the bot's bubble got its text — she is the last sender again")
 
