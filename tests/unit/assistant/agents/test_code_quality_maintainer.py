@@ -14,6 +14,7 @@ import subprocess
 import threading
 
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest, WORKING_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS, gh_not_installed_message, GithubAccess, IssueDraft, PREFILL_URL_LIMIT, ISSUE_LABEL
+from assistant.agents.CodeQualityMaintainer import COMMIT_AUTHOR_RULE
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -678,7 +679,9 @@ class TestStepGenerateTests:
         assert [c[0][0] for c in mock_run.call_args_list] == [
             ["git", "rev-parse", "--abbrev-ref", "HEAD"], ["git", "checkout", "release"]]
         assert mock_run.call_args[1]["cwd"] == WORKING_DIR
-        mock_claude.assert_called_once_with(GENERATE_TESTS_PROMPT, "generate-tests")
+        mock_claude.assert_called_once()
+        prompt, label = mock_claude.call_args[0]
+        assert prompt.startswith(GENERATE_TESTS_PROMPT) and label == "generate-tests"
 
     @patch.object(CodeQualityMaintainer, '_run_claude', return_value="Eight tests added. PR #70.")
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
@@ -2455,14 +2458,15 @@ class TestPrJobDelivery:
             prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer._pr_job("Fix it.", "self-improvement", READER),
                                        trial="\nPUSH TO PR #204\n")
         fork.assert_not_called()
-        assert prompt.endswith("PUSH TO PR #204\n") and "alice" not in prompt
+        assert prompt.startswith("Fix it.\nPUSH TO PR #204\n") and "alice" not in prompt
 
     @pytest.mark.parametrize("access", [PUSHER, None])
     def test_an_account_that_can_push_gets_the_prompt_as_is(self, access):
+        """Nothing about a fork or a trial is added: the prompt, and the rule every committing run ends with."""
         with patch.object(CodeQualityMaintainer, "_ensure_fork") as fork:
             prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer._pr_job("Fix it.", "self-improvement", access))
         fork.assert_not_called()
-        assert prompt == "Fix it."
+        assert prompt == "Fix it." + COMMIT_AUTHOR_RULE
 
 
 @pytest.mark.unit
@@ -2642,7 +2646,7 @@ class TestPullRequestTrialHooks:
             else:
                 prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer.improve_integration("Tesla", "tesla", "fix the trunk"),
                                            trial="\nPUSH TO PR #204\n")
-        assert prompt.endswith("PUSH TO PR #204\n") and "fix the trunk" in prompt
+        assert "\nPUSH TO PR #204\n" in prompt and "fix the trunk" in prompt
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_a_trial_restart_hands_start_sh_the_branch_to_fall_back_to(self, mock_popen):
@@ -2690,7 +2694,7 @@ class TestFixBugsStep:
         with patch.object(CodeQualityMaintainer, '_github_unavailable', return_value=None):
             prompt, _ = _claude_prompt(lambda: CodeQualityMaintainer._step_fix_bugs(self.ANALYSIS),
                                        trial="\nPush to the tried PR.")
-        assert prompt.endswith("Push to the tried PR.") and "off by one" in prompt
+        assert "\nPush to the tried PR." in prompt and "off by one" in prompt
 
     def test_the_step_hands_the_report_on_without_the_pr(self):
         """The step feeds the nightly report; _pr_job's tuple there rendered as its repr."""

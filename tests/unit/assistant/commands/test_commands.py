@@ -13,6 +13,7 @@ from assistant.commands.CommandParser import CommandParser
 from assistant import Procedures
 from assistant.commands import Toolkits, ToolkitPreloader
 from assistant.commands.Commands import Commands, is_reference_result
+from assistant.agents.BuildPreflight import BuildPreflight, Unmet
 from assistant.agents.CodeQualityMaintainer import JobPullRequest, IssueDraft
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from assistant.tools.WebAccess import WebAccess
@@ -980,7 +981,8 @@ class TestABuildOnASmallMachine:
         job = Mock(return_value=job_result)
         chat = Mock()
         chat.markdown_to_html.side_effect = lambda md: md
-        with patch("assistant.commands.Commands.build_memory_warning", return_value=warning), \
+        found = BuildPreflight((Unmet("memory", warning, blocks=False),) if warning else ())
+        with patch.object(BuildPreflight, "check", return_value=found), \
              patch("assistant.commands.Commands.system_note"), \
              patch("assistant.Notifier._notifier", chat), \
              patch.object(commands_instance, "fire_and_forget", side_effect=lambda fn, p: fn(p)):
@@ -988,6 +990,22 @@ class TestABuildOnASmallMachine:
             answer = getattr(commands_instance, starter)(*args)
         job.assert_called_once()
         assert (self.WARNING in answer) if warning else (answer is None)
+
+    @pytest.mark.parametrize("starter", ["_run_pr_job", "_run_local_job"])
+    def test_a_machine_that_lacks_something_starts_nothing_and_is_told_all_of_it(self, commands_instance, starter):
+        """Eleven builds were started on one install to find five gaps, one each (2026-11-17)."""
+        job = Mock()
+        found = BuildPreflight((Unmet("github", "gh is not logged in."), Unmet("git_author", "git has no author."),
+                                Unmet("memory", self.WARNING, blocks=False)))
+        with patch.object(BuildPreflight, "check", return_value=found) as check, \
+             patch.object(commands_instance, "fire_and_forget") as started:
+            args = ("Self-improvement", job) if starter == "_run_pr_job" else (job,)
+            answer = getattr(commands_instance, starter)(*args)
+        started.assert_not_called()
+        job.assert_not_called()
+        assert all(said in answer for said in ("gh is not logged in.", "git has no author.", self.WARNING))
+        # a job on the local folders opens no pull request, so it is not held to what one needs
+        assert check.call_args.kwargs.get("pull_request", True) is (starter == "_run_pr_job")
 
     def test_the_commands_hand_the_answer_on(self, commands_instance):
         """What `run` gives the LLM is the command's own return value."""

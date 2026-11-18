@@ -9,6 +9,7 @@ from assistant.agents.CodeQualityMaintainer import (
     claude_status, claude_path, ClaudeStatus, CodeQualityMaintainer, ClaudeNotInstalledError, GithubAccess,
     NOT_INSTALLED_SHORT, NOT_LOGGED_IN_SHORT, DISABLED_MESSAGE, NOT_INSTALLED_MESSAGE,
 )
+from assistant.agents.BuildPreflight import BuildPreflight, Unmet, CREDITS_AGE_FOR_HEALTH
 from assistant.integration.Integration import IntegrationState
 from assistant.integration.IntegrationMonitor import IntegrationMonitor
 from integrations.self_improvement.SelfImprovementIntegration import SelfImprovementIntegration
@@ -126,18 +127,66 @@ class TestSelfImprovementIntegration:
         SelfImprovementIntegration.reset_instance()
         IntegrationMonitor.reset_instance()
 
-    @patch("integrations.self_improvement.SelfImprovementIntegration.claude_status", return_value=ClaudeStatus(None, False, NOT_INSTALLED_SHORT))
-    def test_missing_cli_is_the_error(self, _status):
-        with pytest.raises(RuntimeError, match="CLI not found"):
-            SelfImprovementIntegration().check_health()
+    NO_CLI = Unmet("claude", NOT_INSTALLED_SHORT)
+    NO_LOGIN = Unmet("claude", NOT_LOGGED_IN_SHORT)
+    NO_USAGE = Unmet("credits", "Claude Code cannot run the model: out of usage credits.")
+    NO_GH = Unmet("github", "The GitHub CLI (gh) is not logged in.")
+    NO_AUTHOR = Unmet("git_author", "git has no author on the server machine.")
 
-    @patch("integrations.self_improvement.SelfImprovementIntegration.claude_status", return_value=ClaudeStatus("/opt/bin/claude", False, NOT_LOGGED_IN_SHORT))
-    def test_monitor_shows_the_login_hint(self, _status):
+    def _checked(self, *unmet):
+        """On a machine that lacks *unmet*: the integration's state after each of as many checks
+        as turn a failure into an error, its health text, and the preflight as it was asked."""
         monitor = IntegrationMonitor.get_instance()
         integration = SelfImprovementIntegration.get_instance()
         monitor.register(integration)
-        assert monitor.check_now("Self Improvement") == IntegrationState.WARNING
-        assert integration.last_error == NOT_LOGGED_IN_SHORT
+        with patch.object(BuildPreflight, "check", return_value=BuildPreflight(tuple(unmet))) as check:
+            states = [monitor.check_now("Self Improvement") for _ in range(IntegrationMonitor.FAILURE_THRESHOLD)]
+        return states, integration.last_error or "", check
+
+    def test_missing_cli_is_the_error(self):
+        with patch.object(BuildPreflight, "check", return_value=BuildPreflight((self.NO_CLI,))):
+            with pytest.raises(RuntimeError, match="CLI not found"):
+                SelfImprovementIntegration().check_health()
+
+    def test_monitor_shows_the_login_hint(self):
+        states, said, _ = self._checked(self.NO_LOGIN)
+        assert states[0] == IntegrationState.WARNING
+        assert said == NOT_LOGGED_IN_SHORT
+
+    def test_everything_a_build_lacks_is_in_the_one_health_text(self):
+        """Enabling it gave "ok" on a machine that then lost builds to five gaps, one at a time."""
+        states, said, _ = self._checked(self.NO_USAGE, self.NO_GH, self.NO_AUTHOR)
+        assert all(item.text in said for item in (self.NO_USAGE, self.NO_GH, self.NO_AUTHOR))
+        assert states[-1] == IntegrationState.ERROR      # without usage nothing runs, an analysis included
+
+    def test_what_only_a_build_needs_is_a_warning_that_never_becomes_an_error(self):
+        """Without gh, or an author for the commits, the analyses and the issue drafts still work."""
+        states, said, _ = self._checked(self.NO_GH, self.NO_AUTHOR)
+        assert set(states) == {IntegrationState.WARNING}
+        assert self.NO_GH.text in said and self.NO_AUTHOR.text in said
+
+    def test_the_health_check_asks_for_usage_once_a_day_and_not_at_every_check(self):
+        """The check runs every 15 minutes around the clock and a test request costs about a cent."""
+        _, _, check = self._checked()
+        ages = {c.kwargs["credits_max_age"] for c in check.call_args_list}
+        assert ages == {CREDITS_AGE_FOR_HEALTH}
+        assert CREDITS_AGE_FOR_HEALTH >= 24 * 60 * 60
+
+    def test_coming_up_asks_for_usage_anew(self):
+        """Setting up is when a missing credit matters most: a pass from before the integration
+        was switched on, or restarted, is not believed."""
+        from assistant.agents import BuildPreflight as preflight
+        preflight._credits_passed[("/opt/bin/claude", False, "claude-fable-5-2")] = 1000.0
+        SelfImprovementIntegration.reset_instance()
+        SelfImprovementIntegration.get_instance()
+        assert not preflight._credits_passed
+
+    def test_the_health_state_carries_the_few_words_and_not_the_remedy(self):
+        """The state is in list_integrations and can be in the prompt; the remedy is the refused build's to give."""
+        gh = Unmet("github", "The GitHub CLI (gh) is not logged in. Run `gh auth login` on the server machine.",
+                   brief="there is no GitHub login")
+        _, said, _ = self._checked(gh, self.NO_AUTHOR)
+        assert "there is no GitHub login" in said and "gh auth login" not in said
 
     def test_example_config_documents_the_setup(self):
         assert "self_improvement" in ConfigSchema.sections()
@@ -217,14 +266,13 @@ class TestBuildMemory:
         with patch("assistant.agents.CodeQualityMaintainer.machine_memory", side_effect=OSError("no /proc")):
             assert cqm.build_memory_warning() is None
 
-    @patch("integrations.self_improvement.SelfImprovementIntegration.claude_status",
-           return_value=ClaudeStatus("/opt/bin/claude", True, "logged in"))
-    def test_a_small_machine_is_a_note_on_enabling_and_a_healthy_integration(self, _status):
+    def test_a_small_machine_is_a_note_on_enabling_and_a_healthy_integration(self):
         """A warning state would be shown at every check and ask for what no restart gives."""
         SelfImprovementIntegration.reset_instance()
         try:
             integration = SelfImprovementIntegration()
-            with self._on(3.8):
+            small = BuildPreflight((Unmet("memory", "This machine has 4 GB of memory.", blocks=False),))
+            with self._on(3.8), patch.object(BuildPreflight, "check", return_value=small):
                 assert "4 GB" in integration.enable_note()
                 assert integration.check_health() is True
             assert integration.enable_note() is None      # the conftest's roomy machine

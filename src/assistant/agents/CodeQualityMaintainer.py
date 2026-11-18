@@ -19,6 +19,7 @@ import common.DevelopmentConfig as DevelopmentConfig
 import common.Platform as Platform
 from common.logging import info, error, trace, note
 from ..llm import parse_llm_config
+from . import CommitAuthor
 from ..llm.ClaudeLLM import WORKSPACE_HEADER, claude_workspace_id
 from common.ConfigManager import ConfigManager
 from common.Paths import REPO_DIR, LOG_DIR, CACHE_DIR, AISERVER_DIR as _AISERVER_PATH
@@ -662,6 +663,19 @@ NOTE: If the request is too vague to act on or the change is too complex/risky f
 IMPORTANT: Your entire response to the user must be in your final message. Keep the report concise — it will be read over a chat on a phone.
 """
 
+# Appended to the prompt of every run that commits. A run that found git without an author used
+# to pick one itself or be stopped trying, by turns (2026-11-17: of four builds on one machine two
+# committed under a name they made up and two were blocked). Where git has none a run's environment
+# now carries the gh account's (`CommitAuthor.env`, set in `_run_claude`), and this keeps a run
+# from choosing another.
+COMMIT_AUTHOR_RULE = """
+The commits carry the author git gives them here — its config, or the one this run's environment already names —
+exactly as it is. Never choose one yourself: no `git config user.name` or `user.email`, no `-c user.…`, no
+`--author`, and set no GIT_AUTHOR_* or GIT_COMMITTER_* variable. If git refuses a commit for lack of an author,
+stop there: leave the work uncommitted on its branch, open no pull request and say in your report that git has
+no author on this machine.
+"""
+
 # The paragraph both improve_integration prompts share: what the PR may touch, since this is a
 # user's install and the developers review what comes in.
 INTEGRATION_SCOPE = """
@@ -860,7 +874,8 @@ class CodeQualityMaintainer:
     @staticmethod
     def unavailable_reason() -> Optional[str]:
         """Why Claude Code jobs cannot run right now, None when they can: the "Self Improvement"
-        integration is the switch. A missing or logged-out CLI is reported by the run itself."""
+        integration is the switch. What the machine lacks is `BuildPreflight`'s to say before a
+        build starts; an analysis reports a missing or logged-out CLI itself."""
         from integrations.self_improvement.SelfImprovementIntegration import SelfImprovementIntegration
         if not SelfImprovementIntegration.enabled(ConfigManager()):
             return DISABLED_MESSAGE
@@ -1317,9 +1332,12 @@ class CodeQualityMaintainer:
         if add_dirs:
             cmd += ["--add-dir", *map(str, add_dirs)]
             trace(f"CodeQualityMaintainer [{label}] Claude Code may also write in {', '.join(map(str, add_dirs))}")
+        env, author = status.env(), CommitAuthor.env()
+        if author:
+            env = {**(env or os.environ), **author}
         process = subprocess.Popen(
             cmd, cwd=WORKING_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL, text=True, env=status.env()
+            stdin=subprocess.DEVNULL, text=True, env=env
         )
         timed_out = threading.Event()
 
@@ -1424,7 +1442,7 @@ class CodeQualityMaintainer:
         try:
             info("CodeQualityMaintainer: generating missing tests for recent commits...")
             trace("Starting Claude Code in the background...")
-            report = CodeQualityMaintainer._run_claude(GENERATE_TESTS_PROMPT, "generate-tests")
+            report = CodeQualityMaintainer._run_claude(GENERATE_TESTS_PROMPT + COMMIT_AUTHOR_RULE, "generate-tests")
             info("CodeQualityMaintainer: test generation complete.")
         except ClaudeUnavailableError:
             raise   # the night reports it and knows whether to go on
@@ -1455,7 +1473,7 @@ class CodeQualityMaintainer:
                  f"under load with the example config and the day's failed CI runs...")
             report = CodeQualityMaintainer._run_claude(
                 TEST_HEALTH_PROMPT.format(runs=TEST_HEALTH_RUNS, loaded_runs=TEST_HEALTH_LOADED_RUNS,
-                                          slow_ms=SLOW_TEST_MS), "test-health")
+                                          slow_ms=SLOW_TEST_MS) + COMMIT_AUTHOR_RULE, "test-health")
             info("CodeQualityMaintainer: test health complete.")
             return report
         except ClaudeUnavailableError:
@@ -1597,7 +1615,8 @@ class CodeQualityMaintainer:
             target = f'The work is on the "{name}" integration, the folder {folder}.'
         info(f"CodeQualityMaintainer: starting local integration work on "
              f"{folder or (name and 'a new ' + name + ' folder') or 'the local directories'}...")
-        prompt = LOCAL_INTEGRATION_PROMPT.format(roots=", ".join(map(str, roots)), target=target, request=request)
+        prompt = LOCAL_INTEGRATION_PROMPT.format(roots=", ".join(map(str, roots)), target=target,
+                                                 request=request) + COMMIT_AUTHOR_RULE
         trace(f"prompt: {prompt}")
         try:
             result = CodeQualityMaintainer._run_claude(prompt, "local-integration", add_dirs=tuple(roots))
@@ -1837,7 +1856,7 @@ class CodeQualityMaintainer:
                 error(f"CodeQualityMaintainer: {label} not started, no fork to open the PR from: {e}")
                 return (f"{access.login} cannot push to {access.repo}, and the fork the pull request would come "
                         f"from could not be made: {e}"), None
-        prompt += delivery
+        prompt += delivery + COMMIT_AUTHOR_RULE
         branch = CodeQualityMaintainer._job_home()
         open_before = CodeQualityMaintainer._open_pull_requests()
         try:

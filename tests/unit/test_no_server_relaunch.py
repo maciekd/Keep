@@ -55,6 +55,14 @@ def test_pip_cannot_install_into_the_venv_the_suite_runs_in():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("binary", ["claude", "/opt/bin/claude"])
+def test_no_request_is_sent_through_this_machines_claude_code(binary):
+    """`claude -p` is a model call on the developer's account; the build preflight sends one."""
+    with pytest.raises(RuntimeError, match="Claude Code"):
+        subprocess.run([binary, "-p", "Reply with the single word OK.", "--no-such-option"], capture_output=True, timeout=10)
+
+
+@pytest.mark.unit
 def test_the_real_messages_app_cannot_be_scripted():
     """A send through Messages.app reaches a real person's phone."""
     with pytest.raises(RuntimeError, match="Messages"):

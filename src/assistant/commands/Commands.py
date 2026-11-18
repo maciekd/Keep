@@ -19,8 +19,9 @@ from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
 from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
 from common.logging import trace, info, note, error, fine
+from assistant.agents.BuildPreflight import BuildPreflight
 from assistant.agents.CodeQualityMaintainer import (CodeQualityMaintainer, IssueDraft, JobPullRequest,
-                                                    build_memory_warning, build_model_refusal)
+                                                    build_model_refusal)
 from common.ConfigManager import ConfigManager
 from common import ConfigSchema, ConfigStore, FullDiskAccess, IntegrationDirs, Platform, Watchdog
 from common.ConfigStore import ConfigStoreError
@@ -1236,8 +1237,12 @@ class Commands:
         """Run a Claude Code job on the local integration folders in the background and
         deliver its report: pushed to the chats, and summed up in the history as a system
         row with its own time (as `_run_pr_job`), which also tells the LLM the server still
-        runs the old code — a changed folder is live after restart_server."""
+        runs the old code — a changed folder is live after restart_server. Nothing starts
+        while the machine lacks what the job needs (`_preflight`)."""
         label = self.LOCAL_JOB_LABEL
+        preflight, refusal = self._preflight(label, pull_request=False)
+        if refusal:
+            return refusal
 
         def _run_and_deliver(_params):
             try:
@@ -1250,7 +1255,7 @@ class Commands:
                 error(f"{label} failed: {e}")
 
         self.fire_and_forget(_run_and_deliver, None)
-        return self._build_started(label)
+        return self._build_started(label, preflight)
 
     @classmethod
     def _local_outcome(cls, report: str, sent: bool) -> str:
@@ -1279,8 +1284,13 @@ class Commands:
         report: pushed to the chats, and summed up in the history as a system row with its
         own time (`_pr_outcome`) — never as an assistant row, which the window glued onto
         the reply that made the call (#137). The PR is the one the job found it opened,
-        never one the report's text mentions. Returns what the command answers with at once:
-        `_build_started`."""
+        never one the report's text mentions. Nothing starts while the machine lacks what a
+        build needs (`_preflight`). Returns what the command answers with at once: that
+        refusal, or `_build_started`."""
+        preflight, refusal = self._preflight(label)
+        if refusal:
+            return refusal
+
         def _run_and_deliver(_params):
             try:
                 report, pr = job()
@@ -1294,18 +1304,29 @@ class Commands:
                 error(f"{label} failed: {e}")
 
         self.fire_and_forget(_run_and_deliver, None)
-        return self._build_started(label)
+        return self._build_started(label, preflight)
 
     @staticmethod
-    def _build_started(label: str) -> Optional[str]:
+    def _preflight(label: str, pull_request: bool = True) -> tuple[BuildPreflight, Optional[str]]:
+        """What the server machine lacks for the build about to start, and the command's answer
+        when any of it is in the way: every such item at once, so no build is started to find
+        the next one out (on 2026-11-17 eleven were, one prerequisite each)."""
+        preflight = BuildPreflight.check(pull_request=pull_request)
+        if not preflight.blocking:
+            return preflight, None
+        info(f"{label} not started: the machine lacks {', '.join(u.key for u in preflight.blocking)}")
+        return preflight, preflight.refusal(label)
+
+    @staticmethod
+    def _build_started(label: str, preflight: BuildPreflight) -> Optional[str]:
         """What a command that has just started a build answers with: nothing, or — on a
         machine with too little memory for one — the warning the LLM passes on while the job
         runs. The job is started either way."""
-        warning = build_memory_warning()
-        if warning is None:
+        if not preflight.advisory:
             return None
         info(f"{label}: started on a machine short of memory for a build, the owner is told")
-        return f"The job is started and runs in the background. Tell the user this as well: {warning}"
+        return ("The job is started and runs in the background. Tell the user this as well: "
+                + " ".join(u.text for u in preflight.advisory))
 
     @staticmethod
     def _trial_invitation(pr: Optional[JobPullRequest]) -> str:

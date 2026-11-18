@@ -89,6 +89,11 @@ class _NoRelaunchPopen(subprocess.Popen):
         # the suite. The script tests run the scripts over bash functions of these names.
         if words[:1] in (["systemctl"], ["systemd-run"], ["loginctl"]):
             raise RuntimeError(f"a unit test tried to reach this machine's systemd: {words}")
+        # `claude -p` is a model call on the developer's own account: a job (an hour of it), or the
+        # one-word test request of assistant/agents/BuildPreflight, which the health check of Self
+        # Improvement and every build command send. `claude auth status` is local and stays allowed.
+        if words and Path(words[0]).name == "claude" and "-p" in words:
+            raise RuntimeError("a unit test tried to send a request through this machine's Claude Code")
         super().__init__(args, *rest, **kwargs)
 
 
@@ -242,6 +247,27 @@ def isolated_job_home_record(tmp_path_factory):
     server keeps while one of its Claude Code jobs has the checkout on a work branch."""
     from assistant.agents import CodeQualityMaintainer
     CodeQualityMaintainer.JOB_HOME_FILE = tmp_path_factory.mktemp("job_home") / "job_home_branch"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def a_machine_that_lacks_nothing_for_a_build():
+    """No unit test depends on what the machine it runs on has for a build — Claude Code, its
+    usage, gh, a git author: a build command and the Self Improvement health check ask
+    `BuildPreflight.check`, which answers "nothing missing" under the suite. A test of what a
+    machine lacks patches `check`; the preflight's own tests call the real one, which they keep
+    from before this fixture ran (test_build_preflight.py)."""
+    from assistant.agents.BuildPreflight import BuildPreflight
+    BuildPreflight.check = staticmethod(lambda pull_request=True, credits_max_age=0: BuildPreflight())
+
+
+@pytest.fixture(autouse=True, scope="session")
+def a_machine_whose_git_has_an_author():
+    """No unit test depends on the git author of the machine it runs on, or asks its gh who is
+    logged in: a Claude Code run adds `CommitAuthor.env()` to its environment — nothing on a
+    developer's machine, the gh account's on a CI runner, whose git has no author. The module's
+    own tests call the real one, kept from before this fixture ran (test_commit_author.py)."""
+    from assistant.agents import CommitAuthor
+    CommitAuthor.env = lambda: {}
 
 
 @pytest.fixture(autouse=True, scope="session")

@@ -23,9 +23,8 @@
 # A build runs Claude Code and the test suite beside the server: a machine with less than 8 GB of memory
 # (swap counted) may run out, which ends the build and can restart the server. Enabling the integration
 # and starting a build each say so on such a machine; nothing is refused.
-# The health check runs `claude auth status` (a free local call) every 15 minutes, first ~10 s
-# after start; a missing CLI, or one with neither a login nor the key, shows as the error in
-# list_integrations.
+# The health check runs every 15 minutes, first ~10 s after start: whatever a build would lack (the
+# CLI, its credentials, usage for the model, gh) shows in list_integrations.
 # The model the runs use is ai.code_quality.model: a Fable model (the default) or an Opus one, and
 # claude-opus-5-5 is the one to switch to when the account has no usage for Fable or Fable costs too
 # much. A smaller model (Sonnet, Haiku) writes no code here: config_set does not take one, and a
