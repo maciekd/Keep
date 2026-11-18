@@ -8,7 +8,8 @@
 # commands drive it headless), finds or installs Python 3.12 without touching anything else on the
 # machine, clones the repository, builds the venv, asks for the Anthropic API key (and the
 # workspace it acts in, when the key is not tied to one), writes
-# config.yaml and hands the terminal to start.sh. Every step is idempotent: re-run the same
+# config.yaml, puts a `keep` command in ~/.local/bin (the console, from any folder) and hands the
+# terminal to start.sh. Every step is idempotent: re-run the same
 # command to resume after a failure or to upgrade an existing install.
 #
 # On Linux (Ubuntu, Debian; docs/plans/LINUX_PLAN.md) the same steps run with that system's
@@ -147,6 +148,7 @@ main() {
   fi
 
   if linux; then enable_linger; fi
+  if ! satellite; then ensure_launcher; fi
   summary
   # shellcheck disable=SC2046,SC2086
   telemetry_event install_finished elapsed_s="$SECONDS" python="$PY_SOURCE" ${BROWSER_STATE:+browser=$BROWSER_STATE} \
@@ -1605,6 +1607,73 @@ telemetry_event() {
   log "telemetry: $event -> HTTP ${code:-none}"
 }
 
+# ---------------------------------------------------------- the launcher ----
+
+# `keep` from any folder: a script in ~/.local/bin that runs this install's keep.sh — a script and
+# not a link, since keep.sh finds its checkout by its own path. Nothing here stops the install,
+# and the shell profile is the user's to change: where the folder is not on PATH the summary shows
+# the line that puts it there. A `keep` that is not this script is left as it is.
+BIN_DIR="$HOME/.local/bin"
+LAUNCHER_MARK="# Keep's launcher, written by install.sh"
+LAUNCHER=""           # on_path | off_path; empty: no launcher to name, the summary gives keep.sh by its path
+ensure_launcher() {
+  local target="$BIN_DIR/keep" dir found
+  dir=$(cd "$KEEP_DIR" 2>/dev/null && pwd) || dir=$KEEP_DIR
+  if [ -L "$target" ] || { [ -e "$target" ] && ! grep -qF "$LAUNCHER_MARK" "$target" 2>/dev/null; }; then
+    log "launcher: $target exists and is not this installer's; left as it is"
+    return 0
+  fi
+  if ! mkdir -p "$BIN_DIR" 2>>"$LOG" ||
+     ! printf '#!/bin/bash\n%s\nexec %q "$@"\n' "$LAUNCHER_MARK" "$dir/keep.sh" 2>>"$LOG" >"$target" ||
+     ! chmod +x "$target" 2>>"$LOG"; then
+    log "launcher: could not write $target"
+    return 0
+  fi
+  found=$(command -v keep 2>/dev/null || true)
+  if [ -n "$found" ] && [ "$found" -ef "$target" ]; then
+    LAUNCHER=on_path
+  elif [ -n "$found" ]; then
+    log "launcher: $target written, but \`keep\` is $found on this PATH"
+    return 0
+  else
+    LAUNCHER=off_path
+  fi
+  log "launcher: $target runs $dir/keep.sh ($LAUNCHER)"
+}
+
+# What opens the console, as the user can type it right now.
+console_command() {
+  if [ "$LAUNCHER" = on_path ]; then echo keep; else echo "$KEEP_DIR/keep.sh"; fi
+}
+
+# The launcher is written and its folder is not on PATH: the line that puts it there, for the
+# profile this user's shell reads — or, where that profile already names the folder (Ubuntu's and
+# Debian's add it at a login that finds it), only that a new login is what is missing.
+launcher_tip() {
+  [ "$LAUNCHER" = off_path ] || return 0
+  local profile="" shown=$BIN_DIR rest
+  rest=${BIN_DIR#"$HOME"/}
+  [ "$rest" = "$BIN_DIR" ] || shown="\$HOME/$rest"
+  case "${SHELL##*/}" in
+    zsh)  if linux; then profile=.zshrc; else profile=.zprofile; fi ;;
+    bash) if [ -f "$HOME/.bash_profile" ]; then profile=.bash_profile; else profile=.profile; fi ;;
+  esac
+  if [ -z "$profile" ]; then
+    note "To type just \"keep\" anywhere, add $BIN_DIR to the PATH of your shell."
+  elif grep -qF "$rest" "$HOME/$profile" 2>/dev/null; then
+    if linux; then
+      note "To type just \"keep\" anywhere, log out and in again: ~/$profile then puts it on your PATH."
+    else
+      note "To type just \"keep\" anywhere, open a new terminal window: ~/$profile puts it on your PATH."
+    fi
+  else
+    note "To type just \"keep\" anywhere run:"
+    note "echo 'export PATH=\"$shown:\$PATH\"' >> ~/$profile"
+    note "(it holds from the next terminal window on)"
+  fi
+  printf '\n'
+}
+
 # ----------------------------------------------------------- summary --------
 
 summary() {
@@ -1616,8 +1685,10 @@ summary() {
   note "Log        $LOG"
   note "Start      $KEEP_DIR/start.sh      (server + console)"
   note "Stop       $KEEP_DIR/stop.sh"
+  note "Console    $(console_command)"
   note "Upgrade    re-run the install command"
   printf '\n'
+  launcher_tip
   browser_summary
 }
 
@@ -1634,9 +1705,10 @@ linux_summary() {
   note "Log        $LOG"
   note "Start      $KEEP_DIR/start.sh      (starts the service; in a terminal, the console follows)"
   note "Stop       $KEEP_DIR/stop.sh       (until the next start or boot)"
-  note "Console    $KEEP_DIR/keep.sh       (needs a terminal)"
+  note "Console    $(console_command)       (needs a terminal)"
   note "Upgrade    re-run the install command"
   printf '\n'
+  launcher_tip
   note "${C_BOLD}Keep runs as a service of your account${C_RESET}, the systemd user unit keep.service: systemd"
   if [ "$LINGER" = refused ]; then
     note "starts it again when it dies."
@@ -1766,7 +1838,7 @@ launch_linux() {
   trap - ERR EXIT INT TERM
   cd "$KEEP_DIR"
   if [ -z "$TTY" ] || [ -z "$IS_TTY" ]; then
-    dim "Starting Keep as keep.service. No terminal here, so no console: open it with $KEEP_DIR/keep.sh"
+    dim "Starting Keep as keep.service. No terminal here, so no console: open it with $(console_command)"
     printf '\n'
     exec ./start.sh </dev/null
   fi

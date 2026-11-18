@@ -14,7 +14,7 @@ unless a test asks for Linux. Whatever the Linux branch would do to the machine 
 answering from files in tmp_path, sourced before every call whichever system is asked for: no
 test reaches the real one. The same goes for what installs Chrome on a Mac (`hdiutil`, `codesign`,
 `ditto`), and the folders a browser is looked for in are tmp_path's, so the machine's own Chrome
-is neither found nor replaced.
+is neither found nor replaced. The `keep` launcher goes into a `.local/bin` of tmp_path's too.
 """
 import json
 import os
@@ -131,6 +131,8 @@ class InstallShHarness:
         self.system_apps = tmp_path / 'Applications'
         self.user_apps = tmp_path / 'home' / 'Applications'
         self.snap_bin = tmp_path / 'snap' / 'bin'
+        self.home = tmp_path / 'home'
+        self.bin_dir = self.home / '.local' / 'bin'
         self.os_release = tmp_path / 'os-release'
         self.os_release.write_text(UBUNTU)
         self.set_curl(('200', ''))
@@ -182,6 +184,7 @@ class InstallShHarness:
             'init_ui; TTY=""\n'
             f'OS_RELEASE="{self.os_release}"; CPUINFO="{self.dir}/cpuinfo"; MEMINFO="{self.dir}/meminfo"\n'
             f'SYSTEM_APPS="{self.system_apps}"; USER_APPS="{self.user_apps}"; SNAP_BIN="{self.snap_bin}"\n'
+            f'BIN_DIR="{self.bin_dir}"\n'
             + machine_stubs(self.dir) +
             # The n-th call answers with curl_<n>.code and, for its -o target, curl_<n>.body.
             f'curl() {{ echo "$*" >> "{self.curl_calls}"; local n prev="" a\n'
@@ -1681,3 +1684,129 @@ class TestLinuxTelemetry:
         (harness.dir / 'uuid').write_text('11111111-2222-4333-8444-555555555555\n')
         result = on_linux(harness, f'uuidgen() {{ return 127; }}; KERNEL_UUID="{harness.dir}/uuid"; init_telemetry; echo "id=$TELEMETRY_ID"')
         assert 'id=11111111-2222-4333-8444-555555555555' in result.stdout
+
+
+BARE_PATH = '/usr/bin:/bin'     # no `keep` of the machine's own on it, and not the launcher's folder
+
+
+class TestTheKeepCommand:
+    """`keep` from any folder: a launcher in ~/.local/bin, and a summary that names the command
+    only where the shell would find it."""
+    INSTALLED = 'ensure_launcher; BROWSER=/usr/bin/chromium; LINGER=on; summary'
+
+    def install(self, harness, system=MAC, shell='/bin/zsh', on_path=False, script=INSTALLED):
+        harness.home.mkdir(exist_ok=True)
+        harness.keep_dir.mkdir(exist_ok=True)
+        path = f'{harness.bin_dir}:{BARE_PATH}' if on_path else BARE_PATH
+        result = harness.run(script, KEEP_OS=system, HOME=str(harness.home), SHELL=shell, PATH=path)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout
+
+    def tip(self, said: str) -> list[str]:
+        return [line.strip() for line in said.splitlines() if line.strip().startswith('echo ')]
+
+    def test_the_launcher_runs_the_installs_keep_sh_from_any_folder_with_its_arguments(self, harness):
+        """keep.sh finds its checkout by its own path, so it must be run by that path — in a folder
+        whose name the shell would split."""
+        keep_dir = harness.dir / "Marcus's Keep"
+        keep_dir.mkdir()
+        (keep_dir / 'keep.sh').write_text('echo "ran:$0"; printf "arg:%s\\n" "$@"\n')
+        (keep_dir / 'keep.sh').chmod(0o755)
+        self.install(harness, script=f'KEEP_DIR="{keep_dir}"; ensure_launcher')
+        launcher = harness.bin_dir / 'keep'
+        assert launcher.stat().st_mode & stat.S_IXUSR
+        result = spawn(['bash', str(launcher), 'one two', 'three'])
+        assert result.stdout.splitlines() == [f'ran:{keep_dir}/keep.sh', 'arg:one two', 'arg:three']
+
+    @pytest.mark.parametrize('system', [MAC, LINUX])
+    def test_on_the_path_the_summary_says_keep_and_gives_no_tip(self, harness, system):
+        said = self.install(harness, system, on_path=True)
+        assert re.search(r'^\s*Console\s+keep\b', said, re.M) and f'{harness.keep_dir}/keep.sh' not in said.split('ssh -t')[0]
+        assert self.tip(said) == []
+
+    @pytest.mark.parametrize('system, shell, existing, profile', [
+        (MAC, '/bin/zsh', (), '.zprofile'),
+        (LINUX, '/usr/bin/zsh', (), '.zshrc'),
+        (LINUX, '/bin/bash', (), '.profile'),
+        (MAC, '/bin/bash', ('.bash_profile',), '.bash_profile'),
+    ], ids=['zsh on a Mac', 'zsh on Linux', 'bash', 'bash with a .bash_profile'])
+    def test_off_the_path_the_tip_is_a_line_that_puts_keep_on_it(self, harness, system, shell, existing, profile):
+        """The line is run as shown, and a shell that then reads the profile finds the launcher."""
+        harness.home.mkdir()
+        for name in existing:
+            (harness.home / name).write_text('# the profile this user already has\n')
+        said = self.install(harness, system, shell)
+        assert f'{harness.keep_dir}/keep.sh' in said, 'the command that works right now is still shown'
+        (line,) = self.tip(said)
+        # The prelude moves the launcher's folder into tmp_path; an install's own is under $HOME.
+        line = line.replace(str(harness.bin_dir), '$HOME/.local/bin')
+        env = {'HOME': str(harness.home), 'PATH': BARE_PATH}
+        assert spawn(['bash', '-c', line], env=env).returncode == 0
+        found = spawn(['bash', '-c', f'. "$HOME/{profile}"; command -v keep'], env=env).stdout.strip()
+        assert found == str(harness.bin_dir / 'keep')
+
+    def test_an_installs_own_tip_names_the_folder_by_home(self, harness):
+        """As the installer runs for real: the folder under $HOME, written so that the profile
+        line holds no user name."""
+        said = self.install(harness, script=f'BIN_DIR="$HOME/.local/bin"; {self.INSTALLED}')
+        (line,) = self.tip(said)
+        assert '"$HOME/.local/bin:$PATH"' in line and str(harness.home) not in line
+
+    @pytest.mark.parametrize('system', [MAC, LINUX])
+    def test_a_profile_that_already_names_the_folder_is_not_added_to(self, harness, system):
+        """Ubuntu's ~/.profile puts ~/.local/bin on PATH at a login that finds the folder: a second
+        line would be noise, a new login is all that is missing."""
+        harness.home.mkdir()
+        (harness.home / '.profile').write_text(f'if [ -d "{harness.bin_dir}" ]; then PATH="{harness.bin_dir}:$PATH"; fi\n')
+        said = self.install(harness, system, '/bin/bash')
+        assert self.tip(said) == [] and '~/.profile' in said
+
+    def test_a_shell_whose_profile_is_not_known_gets_no_line_to_paste(self, harness):
+        said = self.install(harness, shell='/usr/bin/fish')
+        assert self.tip(said) == [] and str(harness.bin_dir) in said
+
+    @pytest.mark.parametrize('foreign', ['a file', 'a link'])
+    def test_a_keep_that_is_somebody_elses_is_left_as_it_is(self, harness, foreign):
+        harness.bin_dir.mkdir(parents=True)
+        target, other = harness.bin_dir / 'keep', harness.dir / 'another_keep'
+        other.write_text('#!/bin/sh\necho the password manager\n')
+        if foreign == 'a link':
+            target.symlink_to(other)
+        else:
+            target.write_text(other.read_text())
+        said = self.install(harness, on_path=True)
+        assert target.is_symlink() == (foreign == 'a link') and target.read_text() == other.read_text()
+        assert f'{harness.keep_dir}/keep.sh' in said and self.tip(said) == []
+
+    def test_a_rerun_from_another_folder_points_the_launcher_there(self, harness):
+        self.install(harness)
+        moved = harness.dir / 'KeepMoved'
+        moved.mkdir()
+        self.install(harness, script=f'KEEP_DIR="{moved}"; ensure_launcher')
+        assert f'{moved}/keep.sh' in (harness.bin_dir / 'keep').read_text()
+        assert f'{harness.keep_dir}/keep.sh' not in (harness.bin_dir / 'keep').read_text()
+
+    def test_another_keep_earlier_on_the_path_is_not_what_the_summary_names(self, harness):
+        """`keep` would start that program: the summary gives the path, and no line that would not help."""
+        earlier = harness.dir / 'earlier'
+        earlier.mkdir()
+        (earlier / 'keep').symlink_to(DOUBLES / 'start.sh')
+        harness.home.mkdir()
+        harness.keep_dir.mkdir()
+        result = harness.run(self.INSTALLED, HOME=str(harness.home), SHELL='/bin/zsh',
+                             PATH=f'{earlier}:{harness.bin_dir}:{BARE_PATH}')
+        assert not re.search(r'^\s*Console\s+keep\b', result.stdout, re.M) and self.tip(result.stdout) == []
+        assert f'{harness.keep_dir}/keep.sh' in result.stdout
+
+    def test_a_folder_that_cannot_be_made_does_not_stop_the_install(self, harness):
+        harness.home.mkdir()
+        (harness.home / '.local').write_text('a file where the folder would go\n')
+        said = self.install(harness)
+        assert f'{harness.keep_dir}/keep.sh' in said and self.tip(said) == []
+
+    @pytest.mark.parametrize('role, written', [({}, True), ({'KEEP_ROLE': SATELLITE}, False)], ids=['server', 'satellite'])
+    def test_an_install_writes_the_launcher_for_a_server_and_not_for_a_satellite(self, harness, role, written):
+        """A satellite has no console to open."""
+        result = harness.run(MAIN, KEEP_NO_TELEMETRY='1', **role)
+        assert result.returncode == 0, result.stdout
+        assert (harness.bin_dir / 'keep').exists() == written
