@@ -143,14 +143,14 @@ class NamedParameterFormat(CommandFormat):
 
     # --- the stream: a block between the sentinels ------------------------------------------
 
-    def is_possibly_command(self, buffer: str) -> bool:
+    def is_possibly_command(self, buffer: str, mid_line: bool = False) -> bool:
         stripped = buffer.strip()
         return not stripped or stripped.startswith(self.OPEN) or self.OPEN.startswith(stripped)
 
-    def find_start(self, buffer: str) -> int:
+    def find_start(self, buffer: str, mid_line: bool = False) -> int:
         return buffer.find(self.OPEN)
 
-    def partial_tail(self, buffer: str) -> int:
+    def partial_tail(self, buffer: str, mid_line: bool = False) -> int:
         for length in range(min(len(self.OPEN) - 1, len(buffer)), 0, -1):
             if buffer.endswith(self.OPEN[:length]):
                 pos = len(buffer) - length

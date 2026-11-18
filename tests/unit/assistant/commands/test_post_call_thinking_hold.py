@@ -113,8 +113,8 @@ class TestTheHoldOnAResumingBackend:
 
     def test_text_before_any_call_streams_live(self, processor):
         dm = dialog(ResumingLLM())
-        shown = feed(processor, dm, "Sure, one moment. ", CALL, "Done.")
-        assert shown[0] == "Sure, one moment. "
+        shown = feed(processor, dm, "Sure, one moment.\n", CALL, "Done.")
+        assert shown[0] == "Sure, one moment.\n"
         assert shown[-1].strip() == "Done."
 
 

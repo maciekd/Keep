@@ -1,4 +1,4 @@
-"""Keep's own call syntax, `command(params)` written inline in the reply, as `CommandParser` reads it.
+"""Keep's own call syntax, `command(params)` at the start of a line of the reply, as `CommandParser` reads it.
 
 The parser is wrapped method for method: the raw, free-text and keep-brackets exceptions are
 quirks of this syntax and live in the parser, not in the processor.
@@ -22,17 +22,18 @@ CODE_TAGS = ("<code>", "</code>")
 INSTRUCTIONS = """\
 The commands use python syntax.
 
-Emit every command as a plain, literal function call written inline in your reply: the command name followed by
-its arguments in parentheses, strings in double quotes and numbers bare, for example `turn_on("Kitchen lamp")`
-or `dim("Kitchen lamp", 40)`. That exact text is what gets executed. Separate several arguments with commas; a
-quote inside a string is written `\\"`; a long or multi-line value goes in a triple-quoted block, `\"\"\"…\"\"\"`.
+Emit every command as a plain, literal function call at the start of a line of your reply: the command name
+followed by its arguments in parentheses, strings in double quotes and numbers bare, for example
+`turn_on("Kitchen lamp")` or `dim("Kitchen lamp", 40)`. That exact text is what gets executed. Separate several
+arguments with commas; a quote inside a string is written `\\"`; a long or multi-line value goes in a triple-quoted
+block, `\"\"\"…\"\"\"`.
 
 NEVER express a command as JSON, a tool-call object, or a fenced code block. Do NOT wrap commands in ```json ... ```
 or any other fence, and do NOT use structures like `{"tool": "...", "arguments": {...}}` or
 `{"name": "...", "parameters": {...}}`. The parser only understands the plain `command("argument")` form — anything
 else is treated as ordinary text, so the action silently never runs.
 
-NEVER write a command in regular text to the user — it will be executed! To merely mention a command, leave out the parentheses; then it will not run."""
+A call written inside a sentence does not run: the user reads it as text. To mention a command, write its name without the parentheses."""
 
 
 def render_declaration(declaration: Declaration) -> str:
@@ -116,14 +117,14 @@ class KeepFormat(CommandFormat):
     def render_tool_call(cls, name: str, arguments) -> str:
         return render_tool_call(name, cls.arguments_dict(arguments))
 
-    def is_possibly_command(self, buffer: str) -> bool:
-        return self.parser.is_possibly_command(buffer)
+    def is_possibly_command(self, buffer: str, mid_line: bool = False) -> bool:
+        return self.parser.is_possibly_command(buffer, mid_line)
 
-    def find_start(self, buffer: str) -> int:
-        return self.parser.find_command_start(buffer)
+    def find_start(self, buffer: str, mid_line: bool = False) -> int:
+        return self.parser.find_command_start(buffer, mid_line)
 
-    def partial_tail(self, buffer: str) -> int:
-        return self.parser.find_partial_command_tail(buffer)
+    def partial_tail(self, buffer: str, mid_line: bool = False) -> int:
+        return self.parser.find_partial_command_tail(buffer, mid_line)
 
     def complete(self, buffer: str, streaming: bool = False) -> bool:
         return self.parser.find_complete_command(buffer, streaming=streaming)
@@ -139,25 +140,13 @@ class KeepFormat(CommandFormat):
         return self.parser.text_after_quote(buffer, blocks_only)
 
     def call_end(self, buffer: str) -> int:
-        """The parser drops every code tag before it looks, so its rest has lost the ones the
-        prose after the call may carry: only its length is used, counting past the tags of the
-        text as written to find where the call ends."""
-        call, rest = self.parser.extract_command_and_params(buffer)
-        if call is None:
-            return -1
-        call_chars = len(CommandParser._strip_code_tags(buffer)) - len(rest)
-        position = 0
-        while call_chars > 0 and position < len(buffer):
-            tag = next((t for t in CODE_TAGS if buffer.startswith(t, position)), None)
-            if tag:
-                position += len(tag)
-            else:
-                position += 1
-                call_chars -= 1
-        return position
+        return self.parser.call_end(buffer)
 
     def unterminated(self, buffer: str) -> str | None:
         return self.parser.unterminated_command(buffer)
 
     def extract_all(self, text: str) -> list[tuple[str, list[str]]]:
         return self.parser.extract_all_commands(text)
+
+    def calls_in_prose(self, text: str) -> list[tuple[str, list[str]]]:
+        return self.parser.calls_in_prose(text)

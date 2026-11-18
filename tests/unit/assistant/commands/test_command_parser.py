@@ -198,19 +198,22 @@ class TestCommandParser:
     def test_find_command_start_at_position_zero(self, parser):
         assert parser.find_command_start("turn_on(kitchen)") == 0
 
-    def test_find_command_start_after_prefix_text(self, parser):
-        assert parser.find_command_start("Sure! turn_on(kitchen)") == 6
+    def test_find_command_start_after_a_line_of_text(self, parser):
+        assert parser.find_command_start("Sure!\nturn_on(kitchen)") == 6
+
+    def test_find_command_start_skips_a_call_inside_a_sentence(self, parser):
+        assert parser.find_command_start("Sure! turn_on(kitchen)") == -1
 
     def test_find_command_start_not_found(self, parser):
         assert parser.find_command_start("no commands here") == -1
 
     def test_find_command_start_second_command_earlier(self, parser):
-        pos = parser.find_command_start("Hello turn_off(b) and turn_on(a)")
+        pos = parser.find_command_start("Hello\nturn_off(b)\nturn_on(a)")
         assert pos == 6
 
     def test_find_command_start_case_insensitive(self, parser):
         assert parser.find_command_start("TURN_ON(kitchen)") == 0
-        assert parser.find_command_start("Sure! Turn_Off(bedroom)") == 6
+        assert parser.find_command_start("Sure!\nTurn_Off(bedroom)") == 6
 
     def test_find_command_start_with_code_tags_returns_original_position(self, parser):
         """Position must refer to the original string, not a stripped version (regression for 73c66685)"""
@@ -231,7 +234,7 @@ class TestCommandParser:
         assert ("turn_off", ["bedroom"]) in commands
 
     def test_extract_all_commands_with_prefix_text(self, parser):
-        commands = parser.extract_all_commands("Sure! Here's the result: turn_on(kitchen)")
+        commands = parser.extract_all_commands("Sure! Here's the result:\nturn_on(kitchen)")
         assert len(commands) == 1
         assert commands[0] == ("turn_on", ["kitchen"])
 
@@ -636,7 +639,7 @@ class TestBrowseEvalRawParams:
 
     def test_browse_eval_in_extract_all_commands(self, parser):
         js = "return {a: 1, b: '2'}"
-        commands = parser.extract_all_commands(f"some text browse_eval({js}) trailing")
+        commands = parser.extract_all_commands(f"some text\nbrowse_eval({js}) trailing")
         assert len(commands) == 1
         assert commands[0] == ("browse_eval", [js])
 

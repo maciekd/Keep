@@ -75,15 +75,15 @@ class RescueFormat(CommandFormat):
                 reader, earliest = rescue, start
         return reader
 
-    def is_possibly_command(self, buffer: str) -> bool:
-        return any(reader.is_possibly_command(buffer) for reader in self._readers)
+    def is_possibly_command(self, buffer: str, mid_line: bool = False) -> bool:
+        return any(reader.is_possibly_command(buffer, mid_line) for reader in self._readers)
 
-    def find_start(self, buffer: str) -> int:
-        starts = [pos for reader in self._readers if (pos := reader.find_start(buffer)) >= 0]
+    def find_start(self, buffer: str, mid_line: bool = False) -> int:
+        starts = [pos for reader in self._readers if (pos := reader.find_start(buffer, mid_line)) >= 0]
         return min(starts) if starts else -1
 
-    def partial_tail(self, buffer: str) -> int:
-        tails = [pos for reader in self._readers if (pos := reader.partial_tail(buffer)) > 0]
+    def partial_tail(self, buffer: str, mid_line: bool = False) -> int:
+        tails = [pos for reader in self._readers if (pos := reader.partial_tail(buffer, mid_line)) > 0]
         return min(tails) if tails else -1
 
     def complete(self, buffer: str, streaming: bool = False) -> bool:
@@ -124,6 +124,9 @@ class RescueFormat(CommandFormat):
     def extract_all(self, text: str) -> list[tuple[str, list[str]]]:
         return [call for start, end, reader in self._spans(text) for call in reader.extract_all(text[start:end])]
 
+    def calls_in_prose(self, text: str) -> list[tuple[str, list[str]]]:
+        return self.primary.calls_in_prose(text)
+
     def _cut_block(self, block: str, keep: int) -> str:
         return self._reader(block)._cut_block(block, keep)
 
@@ -135,9 +138,12 @@ class RescueFormat(CommandFormat):
             if reader is self.primary:
                 continue
             invokes = [invoke for _, _, block in reader.blocks(text[start:end]) for invoke in block]
-            # Two blocks with nothing between them (one never closed ends where the next opens)
-            # still stand one call per line.
-            out.append(text[at:start] or ("\n" if out else ""))
+            # A block runs wherever it stands; the call written in its place starts a line,
+            # where the active syntax may read one (Keep's reads none inside a sentence) —
+            # so do two blocks with nothing between them.
+            out.append(text[at:start])
+            if (written := "".join(out)) and not written.endswith("\n"):
+                out.append("\n")
             out.append("\n".join(self.primary.render_tool_call(name, dict(arguments)) for name, arguments in invokes))
             at, blocks, calls = end, blocks + 1, calls + len(invokes)
         if not blocks:

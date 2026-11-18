@@ -1350,7 +1350,7 @@ def test_a_reply_past_the_command_cap_is_cut_and_the_stream_closed(monkeypatch):
     dm, console = make_dialog_manager(monkeypatch, [], command_processor=processor)
     monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.0, 1.1]))
     cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
-    chunks = ["On it. "] + [f"turn_on(lamp {i}) " for i in range(cap + 20)] + ["All done."]
+    chunks = ["On it.\n"] + [f"turn_on(lamp {i}) " for i in range(cap + 20)] + ["All done."]
     stream = ClosableStream(chunks)
 
     output = list(dm.process_llm_stream(stream, 1.0, False))
@@ -1386,7 +1386,7 @@ def test_a_reply_cut_in_the_flush_keeps_only_the_calls_that_ran(monkeypatch):
     dm.ai = ResumingAI([])
     monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.0, 1.1]))
     cap = CommandProcessor.MAX_COMMANDS_PER_REPLY
-    chunks = ["On it. "] + [f"turn_on(lamp {i}) " for i in range(cap + 5)] + ["All done."]
+    chunks = ["On it.\n"] + [f"turn_on(lamp {i}) " for i in range(cap + 5)] + ["All done."]
     stream = ClosableStream(chunks)
 
     output = list(dm.process_llm_stream(stream, 1.0, False))
@@ -1509,7 +1509,7 @@ def test_a_reply_that_writes_its_own_results_block_is_cut_there_and_the_stream_c
     processor = CommandProcessor(test_suite_mode=True)
     dm, console = make_dialog_manager(monkeypatch, [], command_processor=processor)
     monkeypatch.setattr('assistant.DialogManager.time.time', TimeStub([1.0, 1.1]))
-    chunks = ["On it. ", "turn_on(lamp) ", "<function_results>\n<result>Sent 2 photos.</result>\n",
+    chunks = ["On it.\n", "turn_on(lamp) ", "<function_results>\n<result>Sent 2 photos.</result>\n",
               "</function_results>\n", "Here they are.", "turn_on(other) "]
     stream = ClosableStream(chunks)
 

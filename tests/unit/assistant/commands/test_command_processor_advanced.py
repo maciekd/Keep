@@ -422,31 +422,33 @@ class TestEmbeddedCommandDetection:
         # Simulate _filter_thinking_tags catching '<' and prepending to next token
         r1 = processor.process("Check this link<", mock_dialog_manager)
         # '<' goes to thinking_buffer, "Check this link" may flush
-        r2 = processor.process("/b>open_url(https://example.com) Done!", mock_dialog_manager)
+        r2 = processor.process("/b>\nopen_url(https://example.com) Done!", mock_dialog_manager)
         combined = (r1 or "") + (r2 or "")
         assert "open_url" not in combined
         assert "Check this link</b>" in combined
         # open_url is stop-and-wait: the prose after it is dropped (the after-the-fetch guard).
         assert "Done!" not in combined and processor.reply_cut
 
-    def test_command_after_arbitrary_text(self, processor, mock_dialog_manager):
-        """Command preceded by non-command text in a single chunk"""
+    def test_a_call_inside_a_sentence_stays_reply_text(self, processor, mock_dialog_manager):
+        """A call preceded by text on its line is the model talking about the command"""
         result = processor.process("Sure thing! turn_on(kitchen) Lights are on.", mock_dialog_manager)
         assert "Sure thing!" in result
-        assert "turn_on" not in result
+        assert "turn_on(kitchen)" in result
         assert "Lights are on." in result
+        assert processor.commands_dispatched == 0
 
     def test_multiple_commands_with_text_between(self, processor, mock_dialog_manager):
-        """Multiple commands with text before, between, and after"""
-        result = processor.process("OK turn_on(kitchen) and also turn_off(bedroom) done", mock_dialog_manager)
-        assert "OK " in result
+        """Multiple commands, each starting its line, with text before, between, and after"""
+        result = processor.process("OK\nturn_on(kitchen)\nand also\nturn_off(bedroom) done", mock_dialog_manager)
+        assert "OK" in result
         assert "turn_on" not in result
         assert "turn_off" not in result
-        assert "done" in result
+        assert "and also" in result and "done" in result
+        assert processor.commands_dispatched == 2
 
     def test_partial_command_at_end_still_buffers(self, processor, mock_dialog_manager):
         """Text with a partial command at end should buffer the command part"""
-        r1 = processor.process("Hello turn_on(", mock_dialog_manager)
+        r1 = processor.process("Hello\nturn_on(", mock_dialog_manager)
         assert r1 is None or "Hello" in (r1 or "")
 
         r2 = processor.process("kitchen) Done!", mock_dialog_manager)
@@ -1267,8 +1269,8 @@ class TestCodeTagStripping:
         assert "print()" in result
 
     def test_text_before_code_tagged_command_retained(self, processor, mock_dialog_manager):
-        """Text before a <code>-wrapped command should be output (streamed)"""
-        r1 = processor.process("Sure! ", mock_dialog_manager)
+        """The line of text before a <code>-wrapped command should be output (streamed)"""
+        r1 = processor.process("Sure!\n", mock_dialog_manager)
         r2 = processor.process("<code>turn_on(kitchen)</code>", mock_dialog_manager)
         combined = (r1 or "") + (r2 or "")
         assert "Sure!" in combined
@@ -1276,7 +1278,7 @@ class TestCodeTagStripping:
 
     def test_text_before_and_after_code_tagged_command(self, processor, mock_dialog_manager):
         """Text surrounding a <code>-wrapped command should both be output (streamed)"""
-        r1 = processor.process("OK, ", mock_dialog_manager)
+        r1 = processor.process("OK,\n", mock_dialog_manager)
         r2 = processor.process("<code>turn_off(bedroom)</code> Lights are off now.", mock_dialog_manager)
         combined = (r1 or "") + (r2 or "")
         assert "OK," in combined
@@ -1285,7 +1287,7 @@ class TestCodeTagStripping:
 
     def test_text_before_and_after_code_tagged_command_streamed_tokens(self, processor, mock_dialog_manager):
         """Streamed token-by-token: text before, then <code>cmd</code>, then text after"""
-        r1 = processor.process("Sure! ", mock_dialog_manager)
+        r1 = processor.process("Sure!\n", mock_dialog_manager)
         r2 = processor.process("<code>", mock_dialog_manager)
         r3 = processor.process("turn_on(kitchen)", mock_dialog_manager)
         r4 = processor.process("</code>", mock_dialog_manager)
@@ -2359,7 +2361,7 @@ class TestFabricatedResults:
         return dm
 
     def test_the_calls_before_the_tag_ran_and_nothing_after_it_is_read(self, processor, dm):
-        shown = processor.process("On it. turn_on(lamp) " + self.FAKE + "turn_on(other) Sent.", dm) or ""
+        shown = processor.process("On it.\nturn_on(lamp) " + self.FAKE + "turn_on(other) Sent.", dm) or ""
         shown += processor.process("turn_on(third) and more prose", dm) or ""
         shown += processor.flush_buffer(dm) or ""
         processor.command_queue.join()
@@ -2412,11 +2414,11 @@ class TestFabricatedResults:
         assert shown == "Sure. "
 
     def test_kept_of_ends_the_stored_turn_at_the_last_call_that_ran(self, processor, dm):
-        raw = "On it. turn_on(lamp) " + self.FAKE + "turn_on(other) Sent."
+        raw = "On it.\nturn_on(lamp) " + self.FAKE + "turn_on(other) Sent."
         processor.process(raw, dm)
         processor.command_queue.join()
         kept = processor.kept_of(raw)
-        assert kept.startswith("On it. turn_on(lamp)")
+        assert kept.startswith("On it.\nturn_on(lamp)")
         assert "<function_results" not in kept and "turn_on(other)" not in kept
 
     def test_kept_of_holds_no_results_block_when_no_call_ran(self, processor, dm):
@@ -2473,8 +2475,8 @@ class TestAfterTheFetchGuard:
         assert processor.commands_dispatched == 3 and processor.command_reply is None
 
     def test_text_before_the_fetch_still_shows(self, processor):
-        shown = self.feed(processor, 'One moment. search_email("invoice")')
-        assert shown == "One moment. " and processor.commands_dispatched == 1 and not processor.reply_cut
+        shown = self.feed(processor, 'One moment.\nsearch_email("invoice")')
+        assert shown == "One moment.\n" and processor.commands_dispatched == 1 and not processor.reply_cut
 
     def test_a_reply_without_a_fetch_is_untouched(self, processor):
         shown = self.feed(processor, 'remember("paid")\nNoted.')

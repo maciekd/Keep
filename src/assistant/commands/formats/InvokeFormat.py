@@ -135,18 +135,18 @@ class InvokeFormat(NamedParameterFormat):
     # out still writes the closer after its last bare invoke, and it is dropped, never shown.
     _OPENERS = (OPEN, INVOKE_OPEN, CLOSE)
 
-    def is_possibly_command(self, buffer: str) -> bool:
+    def is_possibly_command(self, buffer: str, mid_line: bool = False) -> bool:
         stripped = buffer.strip()
         return not stripped or any(stripped.startswith(o) or o.startswith(stripped) for o in self._OPENERS)
 
-    def find_start(self, buffer: str) -> int:
+    def find_start(self, buffer: str, mid_line: bool = False) -> int:
         return self._first_opener(buffer, 0)
 
     def _first_opener(self, buffer: str, at: int) -> int:
         starts = [pos for o in self._OPENERS if (pos := buffer.find(o, at)) >= 0]
         return min(starts) if starts else -1
 
-    def partial_tail(self, buffer: str) -> int:
+    def partial_tail(self, buffer: str, mid_line: bool = False) -> int:
         tails = [pos for o in self._OPENERS if (pos := self._tail_of(buffer, o)) > 0]
         return min(tails) if tails else -1
 

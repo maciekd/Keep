@@ -44,7 +44,7 @@ design: out of scope, and it stays Keep whichever format the chat tier runs.
 ### One convention for the texts
 
 - **A mention is the bare backticked name**: `` `browse_close` ``, `` `load_toolkit` ``. Every
-  format's instructions already say a bare name never runs (Keep: "leave out the parentheses").
+  format's instructions already say a bare name never runs (Keep: "write its name without the parentheses").
 - **`name()` is written for one thing only: the declaration of a parameterless command**, on its
   own line like every declaration (`` `browse_close()` — shut down the browser… ``). The rewriter
   renders it with `render_declaration` — the `<function>` line in invoke, the schema line in qwen

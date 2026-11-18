@@ -107,15 +107,15 @@ class TestStreaming:
         assert processor.reply_cut  # the prose after load_toolkit, a stop-and-wait command, is dropped
 
     def test_keep_calls_in_the_same_reply_still_run_in_order_with_the_rescued_one(self, processor):
-        reply = 'turn_on("Hall") then ' + bare("dim", ("light_name", "Hall"), ("dim_percentage", "20")) + ' and restart_server()'
+        reply = 'turn_on("Hall") then ' + bare("dim", ("light_name", "Hall"), ("dim_percentage", "20")) + '\nrestart_server()'
         out = stream(processor, list(reply))
         assert processor.calls == [("turn_on", ["Hall"]), ("dim", ["Hall", "20"]), ("restart_server", [])]
         assert "<" not in out and processor.format.rescued == 1
 
     def test_a_keep_reply_is_untouched_by_the_rescue(self, processor):
-        out = stream(processor, ["Sure. ", "turn_on(", '"Lamp")', " Done — see <b>bold</b> text."])
+        out = stream(processor, ["Sure.\n", "turn_on(", '"Lamp")', " Done — see <b>bold</b> text."])
         assert processor.calls == [("turn_on", ["Lamp"])]
-        assert out.strip() == "Sure.  Done — see <b>bold</b> text." and processor.format.rescued == 0
+        assert out.strip() == "Sure.\n Done — see <b>bold</b> text." and processor.format.rescued == 0
 
     def test_a_closer_nothing_opened_is_dropped_not_shown(self, processor):
         out = stream(processor, [bare("restart_server") + "\n" + CLOSE + "\nRestarting."])

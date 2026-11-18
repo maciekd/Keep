@@ -6,6 +6,7 @@ import threading
 import time
 
 from common.DevelopmentConfig import LOCAL_DEVELOPMENT_MODE
+from .CommandParser import CommandParser
 from .formats.CommandFormats import CommandFormats
 from .formats.RescueFormat import RescueFormat
 from .CommandEcho import describe_completion
@@ -100,6 +101,11 @@ class CommandProcessor:
 
     def __init__(self, test_suite_mode: bool):
         self.previous_content_buffer = ""
+        # Whether the reply read so far ends inside a line that holds a sentence, where the
+        # inline syntax reads no call; and the reply's text as read, for the log line that
+        # names the calls left in a sentence.
+        self._mid_line = False
+        self._reply_read = ""
         self.thinking_buffer = ""
         self.thinking_content_buffer = ""
         self.in_thinking_tag = False
@@ -361,7 +367,7 @@ class CommandProcessor:
         return self.format
 
     def is_possibly_command(self, content: str) -> bool:
-        return self.format.is_possibly_command(content)
+        return self.format.is_possibly_command(content, self._mid_line)
 
     # Runs on: a background lane thread. `content` is the batch's results — all of the
     # round's so far — and `contains_error` whether one of them failed.
@@ -486,6 +492,8 @@ class CommandProcessor:
         self.thinking_content_buffer = ""
         self.in_thinking_tag = False
         self.thinking_start_time = None
+        self._mid_line = False
+        self._reply_read = ""
 
     def start_new_reply(self):
         """A later reply fed through the same processor (the autonomous check keeps one for
@@ -697,6 +705,7 @@ class CommandProcessor:
 
         filtered_content, partial_tag = self._filter_thinking_tags(content, dialog_manager)
         self.thinking_buffer = partial_tag
+        self._reply_read += filtered_content
 
         if self.in_thinking_tag or partial_tag:
             if filtered_content:
@@ -728,6 +737,7 @@ class CommandProcessor:
             if self.format.complete(self.previous_content_buffer, streaming=self._streaming):
                 self.debug(f"Processing command!")
                 self.previous_content_buffer = self.process_one_command(self.previous_content_buffer, dialog_manager)
+                self._mid_line = False   # another call may follow on the line
                 if self.commands_dispatched >= self.MAX_COMMANDS_PER_REPLY:
                     info(f"Reply cut after {self.commands_dispatched} commands — the rest of the stream is "
                          f"dropped unread: {self.previous_content_buffer[:80]!r}")
@@ -745,7 +755,7 @@ class CommandProcessor:
             return None
         else:
             # Scan for a command embedded later in the buffer
-            cmd_pos = self.format.find_start(self.previous_content_buffer)
+            cmd_pos = self.format.find_start(self.previous_content_buffer, self._mid_line)
             if cmd_pos > 0:
                 self.debug(f"found embedded command at pos {cmd_pos}")
                 before = self.previous_content_buffer[:cmd_pos]
@@ -830,6 +840,7 @@ class CommandProcessor:
     def _released(self, text: str) -> str | None:
         """`text` as the reply may show it: itself, or None when a stop-and-wait command is
         pending and the text says anything — the reply is cut there (FETCH_CUT_NOTE)."""
+        self._mid_line = CommandParser.mid_line_after(text, self._mid_line)
         if self.fetch_pending and text.strip():
             self._cut_after_fetch(f"{len(text.strip())} chars of text")
             return None
@@ -887,7 +898,7 @@ class CommandProcessor:
     def _partial_tail(self, buffer: str) -> int:
         """Where a possible start of a call or of a `<function_results` tag begins at the end
         of the buffer: text to hold until the next chunk says what it is; -1 when none."""
-        tails = [pos for pos in (self.format.partial_tail(buffer), self._results_tail(buffer)) if pos >= 0]
+        tails = [pos for pos in (self.format.partial_tail(buffer, self._mid_line), self._results_tail(buffer)) if pos >= 0]
         return min(tails) if tails else -1
 
     @classmethod
@@ -925,6 +936,11 @@ class CommandProcessor:
         """Flush any remaining buffer content with strict (non-streaming) parsing.
         Called after the LLM stream ends so commands like set_volume(level: 5)
         that were held back during streaming get processed."""
+        flushed = self._flush(dialog_manager)
+        self._log_calls_in_prose()
+        return flushed
+
+    def _flush(self, dialog_manager) -> str | None:
         if not self.previous_content_buffer and not self.thinking_buffer and self._post_call_hold is None:
             return None
         self._streaming = False
@@ -969,6 +985,18 @@ class CommandProcessor:
         error(f"Stream ended on tag-shaped text that is no call in any syntax read here — not run: {leftover!r}")
         self._report_not_run("Nothing was run: the reply ended in tag-shaped text that is not a call in the "
                              "syntax this prompt teaches, so no call could be read from it.", leftover, dialog_manager)
+
+    def _log_calls_in_prose(self):
+        """Say in the log which calls the reply wrote inside a sentence: they were shown as
+        text and nobody is told — a round to tell the model would have it speak again after
+        a reply that only mentioned a command."""
+        read, self._reply_read = self._reply_read, ""
+        if self.reply_cut:
+            return   # behind the cut nothing was read
+        calls = self.format.calls_in_prose(self.without_dropped_thinking(read))
+        if calls:
+            labels = "; ".join(self._label(name, ", ".join(params)) for name, params in calls)
+            info(f"{len(calls)} call(s) written inside a sentence — shown as text, not run: {labels[:300]}")
 
     def _report_not_run(self, what: str, leftover: str, dialog_manager):
         """Queue `what` for the circle-back round, with the dropped text quoted."""

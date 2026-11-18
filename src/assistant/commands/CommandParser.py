@@ -2,9 +2,22 @@ import re
 
 
 class CommandParser:
-    """Recognises and parses `command(params)` invocations in the LLM's streamed reply text."""
+    """Recognises and parses `command(params)` invocations in the LLM's streamed reply text.
+
+    Where a call stands decides whether it is one: a call starts its line — behind nothing but
+    whitespace and the backticks or `<code>` tag a model wraps it in — or follows another
+    call on the same line. A `name(…)` anywhere else is the model talking about the command
+    and stays reply text. On the production server, June to November 2026, 16,714 of 17,003
+    calls started their line and 12 followed another call; not one of the 243 written inside
+    a sentence was meant to run, and about 45 of those ran (a `restart_server()` out of
+    "Want me to run restart_server() after you've edited the file?"). A list bullet in front
+    is a sentence too: all 29 calls behind one were mentions.
+    """
     COMMAND_PARAMETERS_START = "("
     COMMAND_PARAMETERS_END = ")"
+    # What may stand between the start of a line, or the call before, and a call.
+    _LEAD_RE = re.compile(r"(?:\s|`|</?code>)*")
+    _CODE_OPEN = "<code>"
 
     # Commands whose argument is opaque source text (e.g. JavaScript) that must
     # not be normalized — clean_parameters would strip quotes/brackets/backticks
@@ -32,17 +45,27 @@ class CommandParser:
 
     def __init__(self, possible_commands: list[str]):
         self.possible_commands = possible_commands
+        self._names_of: tuple[str, ...] | None = None
+        self._names_re: re.Pattern | None = None
 
     @staticmethod
     def _strip_code_tags(content: str) -> str:
         """Strip <code> and </code> tags that the LLM may wrap commands in."""
         return content.replace("<code>", "").replace("</code>", "")
 
-    def is_possibly_command(self, content: str) -> bool:
+    def is_possibly_command(self, content: str, mid_line: bool = False) -> bool:
+        """True while `content` is, or may still grow into, a call. With `mid_line` it
+        continues a line that already holds a sentence, where no call starts before the
+        next line break."""
+        lead = content[:len(content) - len(content.lstrip())]
         content = content.strip()
         if len(content) <= 0:
             return True
+        if mid_line and "\n" not in lead:
+            return False
         content_lower = content.lower()
+        if self._CODE_OPEN.startswith(content_lower):
+            return True
         stripped_lower = self._strip_code_tags(content_lower)
         for c in self.possible_commands:
             c += self.COMMAND_PARAMETERS_START
@@ -540,29 +563,99 @@ class CommandParser:
             i += 1
         return open_count > 0 and close_count >= open_count
 
-    def find_command_start(self, content: str) -> int:
-        """Scan content for the earliest `command_name(` pattern. Returns the position, or -1."""
-        content_lower = content.lower()
-        earliest = -1
-        for cmd in self.possible_commands:
-            pos = content_lower.find(cmd + self.COMMAND_PARAMETERS_START)
-            if pos >= 0 and (earliest == -1 or pos < earliest):
-                earliest = pos
-        return earliest
+    def _names(self) -> re.Pattern:
+        """Every `name(` of the known commands, the longest name first where two start alike."""
+        names = tuple(self.possible_commands)
+        if names != self._names_of:
+            by_length = sorted(names, key=len, reverse=True)
+            self._names_re = re.compile("(?:" + "|".join(re.escape(name.lower()) for name in by_length) + r")\(")
+            self._names_of = names
+        return self._names_re
 
-    def find_partial_command_tail(self, content: str) -> int:
-        """Find position where the tail of content is a prefix of a known command name.
-        Returns the start position of the partial match, or -1 if none found.
+    # A reply as received still holds its thinking blocks, and the text behind one begins
+    # the reply as the stream showed it: the block's end counts as a line's end.
+    _LINE_ENDS = ("\n", "</thinking>", "</think>")
+
+    @classmethod
+    def _starts_line(cls, content: str, pos: int, mid_line: bool) -> bool:
+        """Whether a call may start at `pos`: nothing but its wrapping stands before it on its
+        line. The content's first line is the rest of a sentence when `mid_line`."""
+        line = max(at + len(end) if (at := content.rfind(end, 0, pos)) >= 0 else 0 for end in cls._LINE_ENDS)
+        return (line > 0 or not mid_line) and cls._LEAD_RE.fullmatch(content, line, pos) is not None
+
+    @classmethod
+    def mid_line_after(cls, text: str, mid_line: bool) -> bool:
+        """Whether reply text that was `mid_line` before `text` is inside a sentence after it."""
+        line = text.rfind("\n") + 1
+        return (mid_line and line == 0) or cls._LEAD_RE.fullmatch(text, line) is None
+
+    def find_command_start(self, content: str, mid_line: bool = False) -> int:
+        """The position of the earliest `command_name(` that starts its line, or -1. A text
+        that begins where a call ended begins on a clear line, so a walk that goes on behind
+        each call it reads finds the calls that follow one another on a line."""
+        if not self.possible_commands:
+            return -1
+        for match in self._names().finditer(content.lower()):
+            if self._starts_line(content, match.start(), mid_line):
+                return match.start()
+        return -1
+
+    def call_end(self, content: str) -> int:
+        """Where the text after the first call of `content` begins, in the text as written,
+        or -1 without a complete call. The parser drops every code tag before it looks, so
+        the length of its rest counts the call's characters and the tags are stepped over."""
+        call, rest = self.extract_command_and_params(content)
+        if call is None:
+            return -1
+        call_chars = len(self._strip_code_tags(content)) - len(rest)
+        position = 0
+        while call_chars > 0 and position < len(content):
+            tag = next((t for t in ("<code>", "</code>") if content.startswith(t, position)), None)
+            if tag:
+                position += len(tag)
+            else:
+                position += 1
+                call_chars -= 1
+        return position
+
+    def calls_in_prose(self, content: str) -> list[tuple[str, list[str]]]:
+        """The complete calls of a reply that stand where no call runs — inside a sentence or
+        behind a list bullet — as (name, params), in order. One that is part of other code
+        (`window.stop()`, `def stop(self)`) or runs over its line's end is no call anybody
+        wrote, and what a call that did run holds between its parentheses is its value."""
+        found: list[tuple[str, list[str]]] = []
+        if not self.possible_commands:
+            return found
+        names, lower = self._names(), content.lower()
+        at, mid_line = 0, False
+        while match := names.search(lower, at):
+            pos = match.start()
+            end = self.call_end(content[pos:])
+            if self._starts_line(content[at:], pos - at, mid_line):
+                at, mid_line = (pos + end, False) if end > 0 else (pos + 1, True)
+                continue
+            written = end > 0 and "\n" not in content[pos:pos + end]
+            before = content[max(pos - 2, 0):pos]
+            glued = before[-1:].isalnum() or before[-1:] == "." or (before[-1:] == "_" and before[:-1].isalnum())
+            if written and not glued:
+                found.append(self.extract_command_and_params(content[pos:])[0])
+            at, mid_line = (pos + end if written else match.end()), True
+        return found
+
+    def find_partial_command_tail(self, content: str, mid_line: bool = False) -> int:
+        """Find position where the tail of content is a prefix of a known command name, or of
+        the `<code>` tag a call may be wrapped in. Returns the start position of the partial
+        match, or -1 if none found.
         Used during streaming to avoid flushing a partial command name embedded at the buffer's end.
-        Only matches at word boundaries (preceded by whitespace or start of string) to avoid
-        false positives like 'text' matching the 't' in 'turn_on'."""
+        Only matches where a call may start (`_starts_line`): a word inside a sentence is
+        never held, whatever command name it begins like."""
         content_lower = content.lower()
         best_pos = -1
-        for cmd in self.possible_commands:
+        for cmd in (*self.possible_commands, self._CODE_OPEN):
             for length in range(min(len(cmd), len(content_lower)), 0, -1):
                 if content_lower.endswith(cmd[:length]):
                     pos = len(content_lower) - length
-                    if pos > 0 and content_lower[pos - 1] not in (' ', '\t', '\n', '\r'):
+                    if not self._starts_line(content, pos, mid_line):
                         break
                     if pos > 0 and (best_pos == -1 or pos < best_pos):
                         best_pos = pos

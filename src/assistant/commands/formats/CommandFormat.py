@@ -65,19 +65,23 @@ class CommandFormat(ABC):
         return arguments if isinstance(arguments, dict) else {"value": arguments}
 
     @abstractmethod
-    def is_possibly_command(self, buffer: str) -> bool:
+    def is_possibly_command(self, buffer: str, mid_line: bool = False) -> bool:
         """True while the buffer is, or may still grow into, a call — the streaming processor
-        then holds it back instead of releasing it as reply text. An empty buffer counts."""
+        then holds it back instead of releasing it as reply text. An empty buffer counts.
+        `mid_line` says the buffer continues a line of the reply that already holds a
+        sentence: a syntax whose call must start its line (Keep's) reads none there, a block
+        syntax does not care."""
 
     @abstractmethod
-    def find_start(self, buffer: str) -> int:
+    def find_start(self, buffer: str, mid_line: bool = False) -> int:
         """The position where the earliest call starts in the buffer, or -1 when none can
-        start in it."""
+        start in it. `mid_line` as for `is_possibly_command`."""
 
     @abstractmethod
-    def partial_tail(self, buffer: str) -> int:
+    def partial_tail(self, buffer: str, mid_line: bool = False) -> int:
         """The position where a possible call opener begins at the end of the buffer (a
-        suffix that is a prefix of one), or -1 when the buffer ends on no such thing."""
+        suffix that is a prefix of one), or -1 when the buffer ends on no such thing.
+        `mid_line` as for `is_possibly_command`."""
 
     @abstractmethod
     def complete(self, buffer: str, streaming: bool = False) -> bool:
@@ -116,6 +120,11 @@ class CommandFormat(ABC):
     def extract_all(self, text: str) -> list[tuple[str, list[str]]]:
         """Every call in a complete text, in order, as `(name, params)` — the cache layer's
         view of a stored reply, so no display text."""
+
+    def calls_in_prose(self, text: str) -> list[tuple[str, list[str]]]:
+        """The calls a complete reply wrote where this syntax runs none, as `(name, params)`,
+        for the log. A block syntax has no such place."""
+        return []
 
     def rewritten(self, text: str) -> str:
         """A complete reply as the history stores it: every call in this syntax. A format

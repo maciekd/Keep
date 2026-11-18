@@ -55,8 +55,8 @@ class TestCachedLLM:
         assert commands[0] == ("turn_on", "kitchen lights")
 
     def test_extract_commands_with_preceding_text(self, cached_llm):
-        """Commands preceded by non-command text are now correctly extracted."""
-        response = "Sure! turn_on(kitchen lights)"
+        """A command on the line after non-command text is extracted."""
+        response = "Sure!\nturn_on(kitchen lights)"
         commands = cached_llm.extract_all_commands(response)
         assert len(commands) == 1
         assert commands[0] == ("turn_on", "kitchen lights")
