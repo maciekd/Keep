@@ -127,6 +127,9 @@ class RescueFormat(CommandFormat):
     def calls_in_prose(self, text: str) -> list[tuple[str, list[str]]]:
         return self.primary.calls_in_prose(text)
 
+    def unknown_calls(self, text: str) -> list[tuple[str, str]]:
+        return self.primary.unknown_calls(text)
+
     def _cut_block(self, block: str, keep: int) -> str:
         return self._reader(block)._cut_block(block, keep)
 

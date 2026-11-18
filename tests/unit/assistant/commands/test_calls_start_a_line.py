@@ -219,3 +219,65 @@ class TestTheStoredTurn:
         assert "restart_server()" in read.prose and "turn_on" not in read.prose
         assert len(read.before) + len(read.after) == 1
 
+
+HEADLESS = {
+    "the head of the name lost": '_act("35")',
+    "a stray underscore before a whole name": '_load_toolkit("web")',
+    "a command that does not exist": 'switch_lamp("Kitchen lamp", "on")',
+    "indented, after a line of prose": 'On it.\n  _act("35")',
+    "a value over several lines": '_message("owner", """Dinner is ready.\nCome down (now).""")',
+}
+
+NO_CALL_OF_ANYTHING = {
+    "a known command": LAMP,
+    "a method of something": 'console.log("lamp")',
+    "a word with a capital": "Done(ish)",
+    "inside a sentence": 'I tried _act("35") twice.',
+    "behind a bullet": '- _act("35")',
+    "words after it on the line": '_act("35") did nothing',
+    "no name at all": "(const lamp = 1; return lamp)",
+}
+
+
+class TestACallOfNoCommand:
+    """A line that is a call of something that is no command: the model lost a part of the name."""
+
+    @pytest.mark.parametrize("reply", HEADLESS.values(), ids=HEADLESS.keys())
+    def test_the_line_is_found(self, parser, reply):
+        (name, line), = parser.unknown_calls(reply)
+        assert name not in NAMES and line.startswith(name + "(") and reply.endswith(line)
+
+    @pytest.mark.parametrize("reply", NO_CALL_OF_ANYTHING.values(), ids=NO_CALL_OF_ANYTHING.keys())
+    def test_anything_else_is_not(self, parser, reply):
+        assert parser.unknown_calls(reply) == []
+
+    @pytest.mark.parametrize("size", EVERY_CHUNKING)
+    @pytest.mark.parametrize("reply", HEADLESS.values(), ids=HEADLESS.keys())
+    def test_the_model_is_told_and_the_user_has_read_the_line(self, processor, size, reply):
+        shown = stream(processor, reply, size)
+        report = processor.take_unterminated_command_report()
+        name, line = processor.format.unknown_calls(reply)[0]
+        assert processor.calls == [] and words(shown) == words(reply)
+        assert name in report and line[:40] in report
+
+    def test_a_reply_that_wrote_the_call_again_right_is_not_reported(self, processor):
+        """The model's own correction ran: a report on top would have it run the call twice."""
+        stream(processor, '_on("Hall")\n\nOops, let me write that correctly.\n\nturn_on("Hall")', 7)
+        assert processor.calls == [("turn_on", ["Hall"])]
+        assert processor.take_unterminated_command_report() is None
+
+    @pytest.mark.parametrize("raw", ['Run this:\n```python\nprint("lamp")\n```', 'Run this:\n<pre>\nprint("lamp")\n</pre>'],
+                             ids=["a code fence", "a pre block"])
+    def test_a_line_of_a_code_sample_is_not_reported(self, processor, raw):
+        dm = dialog()
+        for chunk in (raw.replace("`", ""),):   # the dialog strips the backticks before the processor
+            processor.process(chunk, dm)
+        processor.flush_buffer(dm, raw)
+        assert processor.take_unterminated_command_report() is None
+
+    def test_a_reply_through_no_dialog_has_nobody_to_tell(self, processor):
+        stream(processor, '_act("35")', 1000, dm=None)
+        assert processor.take_unterminated_command_report() is None
+
+    def test_a_block_syntax_has_no_such_line(self):
+        assert InvokeFormat(list(NAMES)).unknown_calls('_act("35")') == []

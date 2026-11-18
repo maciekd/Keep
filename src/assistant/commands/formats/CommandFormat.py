@@ -126,6 +126,12 @@ class CommandFormat(ABC):
         for the log. A block syntax has no such place."""
         return []
 
+    def unknown_calls(self, text: str) -> list[tuple[str, str]]:
+        """The lines of a complete reply that are a call of something that is no command, as
+        `(name, the line as written)` — the model lost a part of the name. A block syntax
+        names its command in a tag, where no such line is a call."""
+        return []
+
     def rewritten(self, text: str) -> str:
         """A complete reply as the history stores it: every call in this syntax. A format
         reads only its own syntax, so the text as written; the rescue (`RescueFormat`) renders

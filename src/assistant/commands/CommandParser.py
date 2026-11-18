@@ -642,6 +642,20 @@ class CommandParser:
             at, mid_line = (pos + end if written else match.end()), True
         return found
 
+    # A line that is a call and nothing else: a lowercase name, its parentheses (a
+    # triple-quoted value may run over lines), the line's end.
+    _CALL_LINE_RE = re.compile(r'^[ \t]*([a-z_][a-z0-9_]*)\((?:"""[\s\S]*?"""|[^\n])*\)[ \t]*$', re.M)
+
+    def unknown_calls(self, content: str) -> list[tuple[str, str]]:
+        """The lines of a complete reply that are a call of something that is no command, as
+        (name, the line as written), in order. Opus 5.5 loses the head of a call now and then:
+        `_act("35")` for `browse_act("35")`, `_load_toolkit("web")` — seven replies on the
+        production server between 2026-10-20 and 2026-11-18, none before. A name with a dot
+        (`console.log(…)`) or a capital is code or prose, not a call somebody meant."""
+        names = {name.lower() for name in self.possible_commands}
+        return [(match.group(1), match.group(0).strip()) for match in self._CALL_LINE_RE.finditer(content)
+                if match.group(1) not in names]
+
     def find_partial_command_tail(self, content: str, mid_line: bool = False) -> int:
         """Find position where the tail of content is a prefix of a known command name, or of
         the `<code>` tag a call may be wrapped in. Returns the start position of the partial

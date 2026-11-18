@@ -682,7 +682,7 @@ class DialogManager:
                 break
 
         cut_in_stream = getattr(self.command_processor, "reply_cut", False)
-        flushed = self.command_processor.flush_buffer(self)
+        flushed = self.command_processor.flush_buffer(self, self.llm_response_raw)
         yield from self.drain_events()
         # The flush parses what the stream held back (the post-call hold, a call split across
         # chunks); a cut it raises there would otherwise leave the calls that never ran in the turn.

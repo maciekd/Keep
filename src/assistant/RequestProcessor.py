@@ -863,11 +863,11 @@ class RequestProcessor:
             # Folded in only now: a command finishing earlier would have replaced it.
             report = old_dialog_manager.command_processor.take_unterminated_command_report()
             if report and unterminated_reports >= self.MAX_UNTERMINATED_COMMAND_REPORTS:
-                error(f"Unterminated command again after {unterminated_reports} report(s) to the LLM "
+                error(f"A call that did not run again after {unterminated_reports} report(s) to the LLM "
                       f"this request — not circling back for it another time.")
             elif report:
                 unterminated_reports += 1
-                info(f"Reporting the unterminated command to the LLM ({unterminated_reports} of "
+                info(f"Reporting the call that did not run to the LLM ({unterminated_reports} of "
                      f"{self.MAX_UNTERMINATED_COMMAND_REPORTS} this request).")
                 old_dialog_manager.command_processor.append_command_reply(report)
 

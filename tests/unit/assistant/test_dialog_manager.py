@@ -47,7 +47,7 @@ class FakeCommandProcessor:
             return ""
         return content
 
-    def flush_buffer(self, dialog_manager):
+    def flush_buffer(self, dialog_manager, raw=None):
         return None
 
     def without_dropped_thinking(self, raw):
@@ -1241,7 +1241,7 @@ def test_flush_buffer_content_yielded_and_accumulated(monkeypatch):
     """When flush_buffer returns content, it should be yielded, appended to llm_response,
     and sent to the TUI console (covers DialogManager lines 151-155)."""
     fcp = FakeCommandProcessor()
-    fcp.flush_buffer = lambda dm: "flushed text"
+    fcp.flush_buffer = lambda dm, raw=None: "flushed text"
 
     dm, console = make_dialog_manager(monkeypatch, ["Hello "], command_processor=fcp)
 

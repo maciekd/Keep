@@ -932,12 +932,16 @@ class CommandProcessor:
             kept = kept[:at]
         return kept
 
-    def flush_buffer(self, dialog_manager) -> str | None:
+    def flush_buffer(self, dialog_manager, raw: str | None = None) -> str | None:
         """Flush any remaining buffer content with strict (non-streaming) parsing.
         Called after the LLM stream ends so commands like set_volume(level: 5)
-        that were held back during streaming get processed."""
+        that were held back during streaming get processed. `raw` is the reply as the model
+        wrote it, backticks included, when the caller has it: it shows a code fence."""
         flushed = self._flush(dialog_manager)
-        self._log_calls_in_prose()
+        read, self._reply_read = self.without_dropped_thinking(self._reply_read), ""
+        if not self.reply_cut:   # behind the cut nothing was read
+            self._log_calls_in_prose(read)
+            self._report_unknown_calls(read, raw if raw is not None else read, dialog_manager)
         return flushed
 
     def _flush(self, dialog_manager) -> str | None:
@@ -986,31 +990,53 @@ class CommandProcessor:
         self._report_not_run("Nothing was run: the reply ended in tag-shaped text that is not a call in the "
                              "syntax this prompt teaches, so no call could be read from it.", leftover, dialog_manager)
 
-    def _log_calls_in_prose(self):
+    def _log_calls_in_prose(self, read: str):
         """Say in the log which calls the reply wrote inside a sentence: they were shown as
         text and nobody is told — a round to tell the model would have it speak again after
         a reply that only mentioned a command."""
-        read, self._reply_read = self._reply_read, ""
-        if self.reply_cut:
-            return   # behind the cut nothing was read
-        calls = self.format.calls_in_prose(self.without_dropped_thinking(read))
+        calls = self.format.calls_in_prose(read)
         if calls:
             labels = "; ".join(self._label(name, ", ".join(params)) for name, params in calls)
             info(f"{len(calls)} call(s) written inside a sentence — shown as text, not run: {labels[:300]}")
 
-    def _report_not_run(self, what: str, leftover: str, dialog_manager):
-        """Queue `what` for the circle-back round, with the dropped text quoted."""
+    # What marks a reply as showing code: a line of it that looks like a call is a sample.
+    _CODE_MARKS = ("```", "<pre")
+
+    def _report_unknown_calls(self, read: str, raw: str, dialog_manager):
+        """Tell the model, in a round of its own, that a line of the reply was a call of
+        something that is no command (`_act("35")` for `browse_act("35")`): the user saw the
+        line as text and nothing ran. Only a reply that ran no command is reported — where
+        the model wrote the call again below, right, a report would have it run twice — and
+        never one that shows code."""
+        calls = self.format.unknown_calls(read)
+        if not calls:
+            return
+        lines = "; ".join(line for _, line in calls)
+        if self.commands_dispatched or self.unterminated_command_report is not None:
+            info(f"{len(calls)} line(s) call what is no command, in a reply that ran {self.commands_dispatched} "
+                 f"command(s) — shown as text, not reported: {lines[:300]}")
+            return
+        if any(mark in raw for mark in self._CODE_MARKS):
+            trace(f"{len(calls)} line(s) call what is no command, in a reply that shows code — taken for the sample: {lines[:300]}")
+            return
+        names = ", ".join(dict.fromkeys(name for name, _ in calls))
+        error(f"The reply calls what is no command ({names}) and ran nothing — shown as text: {lines[:300]}")
+        self._report_not_run(f"{names} is not a command: nothing was run.", lines, dialog_manager, shown=True)
+
+    def _report_not_run(self, what: str, leftover: str, dialog_manager, shown: bool = False):
+        """Queue `what` for the circle-back round, with the text it is about quoted — dropped
+        from the reply, or with `shown` a line the user read as text."""
         if dialog_manager is None:
             info("No dialog to circle back through (autonomous run) — the dropped call is only logged.")
             return
         if self.is_killed or dialog_manager.is_killed:
             info("Request was killed mid-command — the dropped call is not reported to the LLM.")
             return
-        shown = leftover.strip()
-        if len(shown) > self.UNTERMINATED_COMMAND_SHOWN_CHARS:
-            shown = shown[:self.UNTERMINATED_COMMAND_SHOWN_CHARS] + "…"
-        self.unterminated_command_report = (
-            f"{what} Nothing after that point in the reply reached the user either. Received: {shown}")
+        text = leftover.strip()
+        if len(text) > self.UNTERMINATED_COMMAND_SHOWN_CHARS:
+            text = text[:self.UNTERMINATED_COMMAND_SHOWN_CHARS] + "…"
+        fate = "The user saw it as text." if shown else "Nothing after that point in the reply reached the user either."
+        self.unterminated_command_report = f"{what} {fate} Received: {text}"
 
     def _killed(self, dialog_manager) -> bool:
         return self.is_killed or (dialog_manager is not None and dialog_manager.is_killed)

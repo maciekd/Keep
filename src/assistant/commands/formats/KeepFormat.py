@@ -149,3 +149,6 @@ class KeepFormat(CommandFormat):
 
     def calls_in_prose(self, text: str) -> list[tuple[str, list[str]]]:
         return self.parser.calls_in_prose(text)
+
+    def unknown_calls(self, text: str) -> list[tuple[str, str]]:
+        return self.parser.unknown_calls(text)
