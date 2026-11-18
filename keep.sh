@@ -13,6 +13,23 @@ cd "$(dirname "$0")"
 RLOG=log/restart.log
 rlog() { mkdir -p log; echo "[$(date '+%Y-%m-%d %H:%M:%S')] keep.sh: $*" >> "$RLOG"; }
 
+# The backups without a server — for when the server is what will not start, and with it the
+# chat and the backup page (scripts/restore_backup.py). Over ssh the shell of the install's own
+# user is the authorization: no chat approval. `restore` stops the server, puts the backup in
+# place and starts the server again.
+case "$1" in
+    backups)
+        rlog "listing the backups"
+        exec .venv/bin/python scripts/restore_backup.py --list ;;
+    restore)
+        [ -n "$2" ] || { echo "usage: ./keep.sh restore <name>|<path>|latest   (./keep.sh backups lists them)" >&2; exit 1; }
+        rlog "restoring the backup $2 from the command line"
+        .venv/bin/python scripts/restore_backup.py --stop-server "$2" || { rlog "restore of $2 not done ($?)"; exit 1; }
+        rlog "restored $2 — starting the server"
+        echo "Restored. Starting the server …"
+        exec ./start.sh ;;
+esac
+
 if [ ! -t 0 ]; then
     if [ "${KEEP_OS:-$(uname -s)}" = Linux ]; then      # as scripts/role.sh tells the system
         rlog "run without a terminal on Linux — nothing to open the console in"

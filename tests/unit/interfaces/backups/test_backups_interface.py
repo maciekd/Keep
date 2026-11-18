@@ -35,18 +35,30 @@ def install(tmp_path, monkeypatch):
 
 
 class Approver:
-    """The chat: answers every approval with *decision*, once *release* is set."""
+    """The chat: answers every approval with *decision*, once *release* is set — or "cancelled"
+    as soon as the request's `cancelled()` says it is gone, as ChatHub does."""
 
     def __init__(self, decision="approve"):
         self.decision = decision
         self.release = threading.Event()
         self.release.set()
         self.asked = []
+        self.where = []
+        self.told = []
 
-    def request_approval(self, title, details="", **kw):
+    def request_approval(self, title, details="", cancelled=None, **kw):
         self.asked.append(details)
-        self.release.wait(5)
+        self.where.append(kw)
+        for _ in range(500):
+            if self.release.wait(0.01):
+                return self.decision
+            if cancelled is not None and cancelled():
+                return "cancelled"
         return self.decision
+
+    def send_message(self, text, **kw):
+        self.told.append(text)
+        return True
 
 
 @pytest.fixture
@@ -62,6 +74,9 @@ def server(install, chat, monkeypatch):
     restarts = []
     monkeypatch.setattr(page_module, "restart_after_restore", restarts.append)
     monkeypatch.setattr(page_module, "_restore", None)
+    monkeypatch.setattr(page_module, "_wrong", [])
+    monkeypatch.setattr(page_module, "_locked_until", 0.0)
+    monkeypatch.setattr(page_module, "PASSPHRASE_WAIT_SECONDS", 0.05)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), page_module._Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}", restarts
@@ -188,7 +203,7 @@ def test_nothing_is_staged_while_the_approval_is_pending_and_the_page_says_so(se
                 break
             threading.Event().wait(0.01)
         body = _get(url + "/")[1].decode()
-        assert chat.asked and 'http-equiv="refresh"' in body
+        assert chat.asked and "fetch('/state')" in body and 'action="/approve"' in body
         assert not (install / Backup.STAGING).exists() and restarts == []
         status, _ = _post(f"{url}/restore", name=made.name)
         assert status == 409 and len(chat.asked) == 1
@@ -241,3 +256,123 @@ def test_a_cancelled_upload_is_deleted(server, chat, tmp_path):
 def test_the_assistant_can_neither_open_the_page_nor_move_it():
     assert ConfigStore.is_denied("interfaces.backups.host")
     assert ConfigStore.is_denied("interfaces.backups.enabled")
+
+
+def _waiting(url, chat, made):
+    """A restore of *made* waiting for approval, the chat holding its answer back."""
+    chat.release.clear()
+    _post(f"{url}/restore", name=made.name)
+    for _ in range(300):
+        if chat.asked:
+            return
+        threading.Event().wait(0.01)
+    raise AssertionError("the chat was never asked")
+
+
+def test_the_approval_is_asked_in_every_owner_chat_the_console_among_them(server, chat):
+    """No source and no conversation: ChatHub then asks every owner chat, the console's included."""
+    url, _ = server
+    Backups.create()
+    [made] = Backups.backups()
+    _post(f"{url}/restore", name=made.name)
+    _settled()
+    assert not chat.where[0].get("source") and not chat.where[0].get("conversation")
+
+
+def test_this_installs_passphrase_approves_a_restore_the_chat_never_answers(server, install, chat):
+    url, restarts = server
+    Backups.create()
+    [made] = Backups.backups()
+    try:
+        _waiting(url, chat, made)
+        _post(f"{url}/approve", passphrase=PASSPHRASE)
+        job = _settled()
+    finally:
+        chat.release.set()
+    assert job.state == page_module.DONE and restarts == [made.name]
+    assert (install / Backup.STAGING).is_dir()
+    assert chat.told, "the owner hears of a restore approved on the page"
+
+
+def test_a_wrong_passphrase_approves_nothing(server, install, chat):
+    url, restarts = server
+    Backups.create()
+    [made] = Backups.backups()
+    try:
+        _waiting(url, chat, made)
+        _post(f"{url}/approve", passphrase="a wrong guess")
+        assert page_module.current().state == page_module.WAITING and restarts == []
+    finally:
+        chat.decision = "deny"
+        chat.release.set()
+    assert _settled().state == page_module.REFUSED and not (install / Backup.STAGING).exists()
+
+
+def test_the_passphrase_an_upload_was_made_with_never_approves_it(server, install, chat, tmp_path):
+    url, restarts = server
+    chat.release.clear()
+    try:
+        _upload(url, _made_elsewhere(tmp_path, "another long passphrase").read_bytes())
+        _post(f"{url}/passphrase", passphrase="another long passphrase")
+        assert page_module.current().state == page_module.WAITING
+        _post(f"{url}/approve", passphrase="another long passphrase")
+        assert page_module.current().state == page_module.WAITING and restarts == []
+    finally:
+        chat.decision = "deny"
+        chat.release.set()
+    assert _settled().state == page_module.REFUSED and restarts == []
+
+
+@pytest.mark.parametrize("silence", ["unavailable", "timeout"])
+def test_a_chat_that_gives_no_answer_leaves_the_passphrase_as_the_way(server, install, chat, monkeypatch, silence):
+    url, restarts = server
+    monkeypatch.setattr(page_module, "PASSPHRASE_WAIT_SECONDS", 5)
+    chat.decision = silence
+    Backups.create()
+    [made] = Backups.backups()
+    _post(f"{url}/restore", name=made.name)
+    for _ in range(300):
+        if page_module.current().chat_note:
+            break
+        threading.Event().wait(0.01)
+    assert page_module.current().state == page_module.WAITING
+    _post(f"{url}/approve", passphrase=PASSPHRASE)
+    assert _settled().state == page_module.DONE and restarts == [made.name]
+
+
+def test_a_deny_in_the_chat_wins_over_a_later_passphrase(server, install, chat):
+    url, restarts = server
+    chat.decision = "deny"
+    Backups.create()
+    [made] = Backups.backups()
+    _post(f"{url}/restore", name=made.name)
+    _settled()
+    _post(f"{url}/approve", passphrase=PASSPHRASE)
+    assert page_module.current().state == page_module.REFUSED and restarts == []
+
+
+def test_wrong_guesses_lock_the_passphrase_out_for_a_while(server, install, chat, monkeypatch):
+    url, restarts = server
+    now = [1000.0]
+    monkeypatch.setattr(page_module, "_clock", lambda: now[0])
+    Backups.create()
+    [made] = Backups.backups()
+    try:
+        _waiting(url, chat, made)
+        for _ in range(page_module.MAX_WRONG):
+            _post(f"{url}/approve", passphrase="a wrong guess")
+        _post(f"{url}/approve", passphrase=PASSPHRASE)
+        assert page_module.current().state == page_module.WAITING and restarts == []
+        assert chat.told, "the owner hears of the lockout"
+        now[0] += page_module.LOCKOUT_SECONDS + 1
+        _post(f"{url}/approve", passphrase=PASSPHRASE)
+        job = _settled()
+    finally:
+        chat.release.set()
+    assert job.state == page_module.DONE and restarts == [made.name]
+
+
+def test_no_passphrase_approves_anything_while_no_restore_waits(server, install, chat):
+    url, restarts = server
+    status, _ = _post(f"{url}/approve", passphrase=PASSPHRASE)
+    assert page_module.current() is None and restarts == []

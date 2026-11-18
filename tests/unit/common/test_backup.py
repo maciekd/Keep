@@ -259,3 +259,53 @@ class TestRestoreScript:
         written, target = made
         assert self.run(target, written.path, "nope").returncode == 3
         assert "Frances" in (target / "config.yaml").read_text()
+
+
+class TestCommandLine:
+    """scripts/restore_backup.py by hand over ssh (`./keep.sh backups` / `restore`): the backups of the
+    configured folder by name, opened with the configured passphrase, the server stopped first."""
+
+    @pytest.fixture
+    def cli(self, made, tmp_path, monkeypatch):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("restore_backup_cli", RESTORE_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        written, target = made
+        config = tmp_path / "cli-config.yaml"
+        config.write_text(f"backup:\n  passphrase: {PASSPHRASE}\n  directory: {written.path.parent}\n")
+        monkeypatch.setenv("FLOXY_CONFIG", str(config))
+        monkeypatch.delenv("KEEP_BACKUP_PASSPHRASE", raising=False)
+        monkeypatch.setattr(module, "ROOT", target)
+        monkeypatch.setattr(module.sys.stdin, "isatty", lambda: False, raising=False)
+        stops = []
+        monkeypatch.setattr(module.subprocess, "run", lambda command, **kw: stops.append(command))
+        module.stops = stops
+        return module, written, target
+
+    def test_list_names_the_backups_of_the_configured_folder(self, cli, capsys):
+        module, written, _ = cli
+        assert module.main(["restore_backup.py", "--list"]) == 0
+        assert written.path.name in capsys.readouterr().out
+
+    def test_latest_is_restored_with_the_configured_passphrase_after_stopping_the_server(self, cli):
+        module, _, target = cli
+        assert module.main(["restore_backup.py", "--stop-server", "latest"]) == 0
+        assert "Marcus" in (target / "config.yaml").read_text()
+        assert [Path(c[0]).name for c in module.stops] == ["stop.sh"]
+
+    def test_a_name_without_its_suffix_is_one_of_the_folder(self, cli):
+        module, written, target = cli
+        assert module.main(["restore_backup.py", written.path.stem]) == 0
+        assert "Marcus" in (target / "config.yaml").read_text() and module.stops == []
+
+    def test_a_backup_no_passphrase_opens_stops_nothing(self, cli, monkeypatch):
+        module, _, target = cli
+        monkeypatch.setenv("KEEP_BACKUP_PASSPHRASE", "not the one")
+        assert module.main(["restore_backup.py", "--stop-server", "latest"]) == module.EXIT_WRONG_PASSPHRASE
+        assert module.stops == [] and "Frances" in (target / "config.yaml").read_text()
+
+    def test_an_unknown_name_stops_nothing(self, cli):
+        module, _, target = cli
+        assert module.main(["restore_backup.py", "--stop-server", "nothing-such"]) == 1
+        assert module.stops == [] and "Frances" in (target / "config.yaml").read_text()

@@ -324,9 +324,11 @@ interfaces:
   console:  { enabled: true, port: 5151 }   # TUI dashboard (tui.py connects to this port)
   # A web page for the backups (the backup section below): make one, list them, download one to your own
   # computer, restore a listed one or a .keepbackup file uploaded from the browser (one downloaded earlier or
-  # made on another machine). Every restore waits for your approve/deny in the chat (Telegram, the console) and
-  # nothing is restored before it; a file that does not open with backup.passphrase has the page ask for the
-  # passphrase it was made with. No login: whoever reaches host:port can make and download backups — encrypted,
+  # made on another machine). Every restore waits for approval and nothing is restored before it: approve/deny
+  # in the chat (Telegram, or the console: ssh to the server and run ~/Keep/keep.sh), or type this install's
+  # backup.passphrase on the page — for when the chat is what broke; five wrong ones lock that for 15 minutes,
+  # and the passphrase an uploaded file was made with never approves it. A file that does not open with
+  # backup.passphrase has the page ask for the passphrase it was made with. No login: whoever reaches host:port can make and download backups — encrypted,
   # but holding every key of this config. 0.0.0.0 answers the whole network; 127.0.0.1 only this machine.
   # Read at startup; edit it here by hand (the assistant cannot change it).
   backups:  { enabled: false, host: 0.0.0.0, port: 5050 }
@@ -360,7 +362,9 @@ vault:                      # secrets the LLM never sees — the console's Vault
 
 # Backup & restore (the backup toolkit): one encrypted .keepbackup file holds the config (every key and token),
 # the vault, the long-term memory, the dialog history and the integrations' sign-ins. A fresh install restores
-# one when install.sh asks; a running server with restore_backup. Read at each backup, no restart needed.
+# one when install.sh asks; a running server with restore_backup. A server that will not start, over ssh as
+# the install's user: ./keep.sh backups lists them, ./keep.sh restore <name>|latest stops the server, restores
+# and starts it again (no chat approval: the shell is the authorization). Read at each backup, no restart needed.
 backup:
   # Encrypts every backup; typed by you (config_request), never stated in the chat. Keep it in a password
   # manager: a backup cannot be opened without it, and a new machine asks for it.

@@ -21,6 +21,10 @@ synced folder (iCloud Drive, Dropbox) takes the backups off this machine. Never 
 chat: it holds every key.
 
 With `interfaces.backups.enabled` the same is a web page (`interfaces.backups.host` and `port`, default port 5050):
-make a backup, list them, download one to the user's own computer, restore one with the passphrase typed on the page.
-The user turns it on in config.yaml by hand and it starts with the server; it has no login, so whoever reaches the
-address can download the backups.
+make a backup, list them, download one to the user's own computer, restore a listed or uploaded one. A restore from
+the page is approved in the chat (Telegram or the console — reachable over ssh with `~/Keep/keep.sh` when Telegram is
+down) or with this install's `backup.passphrase` typed on the page. The user turns it on in config.yaml by hand and it
+starts with the server; it has no login, so whoever reaches the address can download the backups.
+
+When the server itself will not start, the user restores over ssh, as the user Keep runs as: `./keep.sh backups` lists
+them and `./keep.sh restore <name>` (or `latest`) stops the server, restores and starts it again — no approval needed.

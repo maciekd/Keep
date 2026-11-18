@@ -11,19 +11,27 @@ download is the encrypted `.keepbackup` file, which opens only with `backup.pass
 it holds every key of config.yaml, so set `host` to 127.0.0.1 on a network you do not trust.
 
 A restore — of a listed backup or of a `.keepbackup` file uploaded from the browser (one
-downloaded earlier, or made on another machine) — is one `_Restore` at a time and waits for
-the owner's approve/deny in the chat, like `restart_server`: a backup somebody on the network
-made themselves names its own owner, so nothing is staged before the owner said yes. A file
+downloaded earlier, or made on another machine) — is one `_Restore` at a time and is staged only
+once approved: a backup somebody on the network made themselves names its own owner. It is
+approved either in the chat — every owner chat is asked, the console among them (ssh to the
+server, `./keep.sh`), like `restart_server` — or on the page with this install's current
+`backup.passphrase`, for when the chat itself is what broke. The passphrase an uploaded file was
+made with never approves anything (whoever uploads their own backup knows it), and wrong guesses
+lock the page's approval for LOCKOUT_SECONDS after MAX_WRONG within FAILURE_WINDOW. A deny in the
+chat ends the restore; a chat that cannot show the question or is not answered in time leaves
+the passphrase as the way, for PASSPHRASE_WAIT_SECONDS more. A file
 that does not open with `backup.passphrase` (or an install with none set) has the page ask
 for the passphrase it was made with; that passphrase opens this file alone and is never kept.
 An upload waits under cache/backup-upload until the restore ends. A download or a restore
 names a file of the backup directory by its name, never a path.
 """
+import hmac
 import html
 import re
 import shutil
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,15 +52,25 @@ MAX_PART_HEADER = 8192
 CHUNK = 1 << 20
 UPLOADS = Path("cache") / "backup-upload"
 REFRESH_SECONDS = 3
+PASSPHRASE_WAIT_SECONDS = 600
+MAX_WRONG = 5
+FAILURE_WINDOW = 15 * 60
+LOCKOUT_SECONDS = 15 * 60
+APPROVE, DENY, BY_PASSPHRASE = "approve", "deny", "passphrase"
 
 # The states of a restore; the first two are the ones still under way.
 NEEDS_PASSPHRASE, WAITING, DONE, REFUSED, FAILED = "passphrase", "waiting", "done", "refused", "failed"
 
 OUTCOMES = {
     "deny": "Denied in the chat; nothing was restored.",
-    "timeout": "Nobody answered in the chat in time; nothing was restored.",
-    "unavailable": "No chat is reachable to approve it (Telegram, the console); nothing was restored.",
+    "timeout": "Nobody approved it in time, in the chat or with the passphrase; nothing was restored.",
+    "unavailable": "No chat could show the approval and nobody typed the passphrase in time; nothing was restored.",
     "cancelled": "The approval was withdrawn; nothing was restored.",
+}
+# What the page says while it still waits for the passphrase after the chat gave no answer.
+CHAT_NOTES = {
+    "timeout": "Nobody answered in the chat in time.",
+    "unavailable": "No chat could show the approval (Telegram, the console).",
 }
 
 
@@ -80,6 +98,9 @@ class _Restore:
     state: str = NEEDS_PASSPHRASE
     message: str = ""
     passphrase: str = ""
+    verdict: str = ""
+    chat_note: str = ""
+    decided: threading.Event = field(default_factory=threading.Event)
 
     def discard_upload(self):
         if self.uploaded:
@@ -89,6 +110,10 @@ class _Restore:
 _lock = threading.Lock()
 _restore: Optional[_Restore] = None
 _busy = threading.Lock()
+_attempts_lock = threading.Lock()
+_wrong: list[float] = []
+_locked_until = 0.0
+_clock = time.monotonic
 
 
 def current() -> Optional[_Restore]:
@@ -120,6 +145,60 @@ def give_passphrase(typed: str) -> None:
         info("Backup page: a passphrase came for no restore that asks for one, ignored")
         return
     _open(job, typed)
+
+
+def approve_with_passphrase(typed: str, client: str) -> tuple[bool, str]:
+    """Approves the restore waiting for approval when *typed* is this install's current
+    `backup.passphrase`; (False, why) otherwise. Wrong guesses lock this way out for a while."""
+    global _locked_until
+    job = current()
+    if job is None or job.state != WAITING or job.decided.is_set():
+        info(f"Backup page: a passphrase approval from {client} came for no restore waiting for one")
+        return False, "No restore is waiting for approval."
+    if Backups.passphrase_problem():
+        info("Backup page: no usable backup passphrase is configured, a restore cannot be approved with one")
+        return False, "This install has no backup passphrase to approve with; approve it in the chat."
+    with _attempts_lock:
+        now = _clock()
+        if now < _locked_until:
+            minutes = int((_locked_until - now) // 60) + 1
+            info(f"Backup page: passphrase approval from {client} refused, locked for {minutes} more minute(s)")
+            return False, (f"Too many wrong passphrases: approving with it is locked for {minutes} more minute(s). "
+                           f"Approve in the chat instead.")
+        if not hmac.compare_digest(typed.encode(), Backups.configured_passphrase().encode()):
+            _wrong[:] = [t for t in _wrong if now - t < FAILURE_WINDOW] + [now]
+            note(f"Backup page: wrong backup passphrase from {client} for the restore of {job.label} "
+                 f"({len(_wrong)} of {MAX_WRONG})")
+            if len(_wrong) >= MAX_WRONG:
+                _locked_until = now + LOCKOUT_SECONDS
+                _wrong.clear()
+                _tell_owner(f"The backup page refused {MAX_WRONG} wrong backup passphrases (the last from {client}) "
+                            f"for the restore of {job.label}; approving with the passphrase is locked for "
+                            f"{LOCKOUT_SECONDS // 60} minutes.")
+                return False, (f"That is not this install's backup passphrase. Approving with it is now locked for "
+                               f"{LOCKOUT_SECONDS // 60} minutes.")
+            return False, "That is not this install's backup passphrase."
+        _wrong.clear()
+    if _settle(job, BY_PASSPHRASE) != BY_PASSPHRASE:
+        return False, "The restore was answered in the chat first."
+    note(f"Backup page: restore of {job.label} approved with this install's backup passphrase from {client}")
+    return True, ""
+
+
+def _settle(job: _Restore, verdict: str) -> str:
+    """The first answer for *job* wins: the chat's or the page's passphrase. Returns the one that did."""
+    with _lock:
+        if not job.verdict:
+            job.verdict = verdict
+        job.decided.set()
+        return job.verdict
+
+
+def _tell_owner(text: str) -> None:
+    try:
+        Notifier.notifier().send_message(text)
+    except Exception as e:
+        error(f"Backup page: could not tell the chat: {type(e).__name__}: {e}")
 
 
 def cancel() -> None:
@@ -170,21 +249,31 @@ def _ask_and_restore(job: _Restore, manifest: dict) -> None:
     info(f"Backup page: asking the owner to approve the restore of {job.label}")
     try:
         decision = Notifier.notifier().request_approval("Restore a backup from the backup page?",
-                                                        _approval_details(job, manifest))
+                                                        _approval_details(job, manifest), cancelled=job.decided.is_set)
     except Exception as e:
         error(f"Backup page: the approval request failed: {type(e).__name__}: {e}")
         decision = "unavailable"
-    if decision != "approve":
-        note(f"Backup page: restore of {job.label} not approved ({decision})")
-        _finish(job, REFUSED, OUTCOMES.get(decision, f"Not approved ({decision}); nothing was restored."))
+    if decision not in (APPROVE, DENY) and not job.decided.is_set():
+        job.chat_note = CHAT_NOTES.get(decision, f"The chat gave no answer ({decision}).")
+        info(f"Backup page: the chat gave no answer for {job.label} ({decision}), waiting "
+             f"{PASSPHRASE_WAIT_SECONDS}s for the passphrase on the page")
+        job.decided.wait(PASSPHRASE_WAIT_SECONDS)
+    verdict = _settle(job, decision)
+    if verdict not in (APPROVE, BY_PASSPHRASE):
+        note(f"Backup page: restore of {job.label} not approved ({verdict})")
+        _finish(job, REFUSED, OUTCOMES.get(verdict, f"Not approved ({verdict}); nothing was restored."))
         return
-    note(f"Backup page: restore of {job.label} approved, staging it")
+    how = "in the chat" if verdict == APPROVE else "with the backup passphrase on the page"
+    note(f"Backup page: restore of {job.label} approved {how}, staging it")
+    if verdict == BY_PASSPHRASE:
+        _tell_owner(f"The restore of {job.label} was approved on the backup page with this install's backup "
+                    f"passphrase (from {job.client}); the server restarts with it.")
     with _busy:
         problem = Backups.stage(job.path, job.passphrase)
     if problem:
         _finish(job, FAILED, f"Approved, but the restore did not start: {problem}.")
         return
-    _finish(job, DONE, f"Approved: {job.label} is unpacked and the server restarts to put it in place. "
+    _finish(job, DONE, f"Approved {how}: {job.label} is unpacked and the server restarts to put it in place. "
                        f"Reload this page in a minute.")
     restart_after_restore(job.label)
 
@@ -208,15 +297,25 @@ def _restore_section() -> str:
                       f"placeholder=\"passphrase of this backup\" autocomplete=\"off\" required> <button>Open</button>"
                       f"</form><form method=\"post\" action=\"/cancel\"><button>Cancel</button></form>")
         elif job.state == WAITING:
-            status = (f"<p class=\"wait\">Waiting for approval in the chat: approve or deny the restore of {label} "
-                      f"there. This page refreshes by itself.</p>")
+            chat = (f"<span class=\"bad\">{html.escape(job.chat_note)}</span> " if job.chat_note else
+                    f"Approve or deny the restore of {label} in the chat — Telegram, or the console "
+                    f"(<code>ssh</code> to the server and run <code>{html.escape(str(Backups.AISERVER_DIR))}/keep.sh"
+                    f"</code>). ")
+            wrong = f"<p class=\"bad\">{html.escape(job.message)}</p>" if job.message else ""
+            status = (f"<p class=\"wait\">Waiting for approval. {chat}Or approve it here with this install's "
+                      f"backup passphrase (not the passphrase of an uploaded file):</p>{wrong}"
+                      f"<form method=\"post\" action=\"/approve\"><input type=\"password\" name=\"passphrase\" "
+                      f"placeholder=\"this install's backup passphrase\" autocomplete=\"off\" required> "
+                      f"<button>Approve restore</button></form>")
         else:
             status = f"<p class=\"{'ok' if job.state == DONE else 'bad'}\">{html.escape(job.message)}</p>"
     return f"""<h2>Restore</h2>{status}
 <p>Restore a backup file from this computer — one downloaded earlier or made on another machine:</p>
 <form method="post" action="/upload" enctype="multipart/form-data"><input type="file" name="backup"
 accept="{Backup.SUFFIX}" required> <button>Restore from file</button></form>
-<p>Every restore waits for the owner's approval in the chat; nothing is restored before it. A restore replaces this
+<p>Every restore waits for approval — in the chat, or with this install's backup passphrase typed here; nothing is
+restored before it. Without a running server: <code>./keep.sh backups</code> and <code>./keep.sh restore</code> over
+ssh. A restore replaces this
 install's state with the backup's and restarts the server; what it replaces is kept in
 <code>cache/pre-restore-&lt;time&gt;</code>.</p>"""
 
@@ -239,7 +338,9 @@ def page(message: str = "", failed: bool = False) -> str:
     table = ("<table><tr><th>Backup</th><th>Made</th><th>Size</th><th></th><th></th></tr>"
              + "".join(rows) + "</table>") if rows else "<p>No backups yet.</p>"
     job = current()
-    refresh = (f"<meta http-equiv=\"refresh\" content=\"{REFRESH_SECONDS};url=/\">"
+    # Reloads once the restore is no longer waiting — not before, so a passphrase being typed stays.
+    refresh = (f"<script>setInterval(() => fetch('/state').then(r => r.text()).then(s => {{ if (s !== '{WAITING}') "
+               f"location.href = '/'; }}), {REFRESH_SECONDS * 1000});</script>"
                if job is not None and job.state == WAITING else "")
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>Keep backups</title>{refresh}
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -285,6 +386,9 @@ class _Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/":
             return self._send(page())
+        if path == "/state":
+            job = current()
+            return self._send(job.state if job is not None else "none")
         if path.startswith("/download/"):
             return self._download(unquote(path[len("/download/"):]))
         self._send(page("No such page.", failed=True), 404)
@@ -300,6 +404,13 @@ class _Handler(BaseHTTPRequestHandler):
             return self._restore(form.get("name", ""))
         if path == "/passphrase":
             give_passphrase(form.get("passphrase", ""))
+            return self._send(page())
+        if path == "/approve":
+            approved, why = approve_with_passphrase(form.get("passphrase", ""), self.client_address[0])
+            job = current()
+            if approved or job is None or job.state != WAITING:
+                return self._send(page(why, failed=True) if why else page())
+            job.message = why
             return self._send(page())
         if path == "/cancel":
             cancel()
@@ -419,7 +530,7 @@ class BackupsInterface(Interface):
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, name="backup-page", daemon=True).start()
         note(f"Backup page on http://{host}:{port}/ — no login: whoever reaches it can download the backups; "
-             f"a restore waits for approval in the chat"
+             f"a restore waits for approval in the chat or with the backup passphrase"
              + (" (the whole network)" if host in ("0.0.0.0", "::", "") else ""))
 
     def stop(self) -> None:

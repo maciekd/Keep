@@ -1371,7 +1371,7 @@ offer_restore() {
       [ -n "$passphrase" ] || { warn "Nothing entered."; continue; }
     fi
     status=0
-    output=$(KEEP_BACKUP_PASSPHRASE="$passphrase" "$KEEP_DIR/.venv/bin/python" "$KEEP_DIR/scripts/restore_backup.py" "$file" 2>&1) || status=$?
+    output=$(KEEP_BACKUP_PASSPHRASE="$passphrase" "$KEEP_DIR/.venv/bin/python" "$KEEP_DIR/scripts/restore_backup.py" --yes "$file" 2>&1) || status=$?
     log "restore_backup.py exited $status: $output"
     case $status in
       0) ok "Restored $(basename "$file")"; return 0 ;;

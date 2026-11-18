@@ -17,16 +17,13 @@ from typing import Optional
 from assistant import FirstRun
 from assistant.integration.music.SpotifyAuth import TOKEN_PATH as SPOTIFY_TOKEN_PATH
 from common import Backup, Version
-from common.Backup import BackupError
+from common.Backup import BackupError, PASSPHRASE_KEY, DIRECTORY_KEY, DEFAULT_DIRECTORY
 from common.ConfigManager import ConfigManager
 from common.logging import info, error
 from common.Paths import (AISERVER_DIR, CACHE_DIR, CONFIG_PATH, ICLOUD_SESSION_DIR, MEMORY_DIR, VAULT_PATH,
                           VOICE_ID_DIR)
 
-PASSPHRASE_KEY = "backup.passphrase"
-DIRECTORY_KEY = "backup.directory"
 KEEP_KEY = "backup.keep"
-DEFAULT_DIRECTORY = "~/KeepBackups"
 DEFAULT_KEEP = 10
 MIN_PASSPHRASE_LENGTH = 8
 LISTED = 10
@@ -62,7 +59,8 @@ def directory() -> Path:
     return Path(str(ConfigManager.get_instance().get(DIRECTORY_KEY, DEFAULT_DIRECTORY) or DEFAULT_DIRECTORY)).expanduser()
 
 
-def _passphrase() -> str:
+def configured_passphrase() -> str:
+    """`backup.passphrase` as this install has it now; "" when none is set."""
     return str(ConfigManager.get_instance().get(PASSPHRASE_KEY, "") or "")
 
 
@@ -75,7 +73,7 @@ def _keep() -> int:
 
 def passphrase_problem() -> str:
     """Why no backup can be made or opened with the configured passphrase; "" when one can."""
-    passphrase = _passphrase()
+    passphrase = configured_passphrase()
     if not passphrase:
         return (f"no backup passphrase is set. Ask the user for one with config_request(\"{PASSPHRASE_KEY}\") — "
                 f"at least {MIN_PASSPHRASE_LENGTH} characters, kept in their password manager: no backup opens "
@@ -88,10 +86,7 @@ def passphrase_problem() -> str:
 
 def backups() -> list[Path]:
     """The backups of the backup directory, newest first."""
-    folder = directory()
-    if not folder.is_dir():
-        return []
-    return sorted(folder.glob(f"*{Backup.SUFFIX}"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return Backup.found_in(directory())
 
 
 def create() -> str:
@@ -106,7 +101,7 @@ def create() -> str:
                 f"would lose it. Ask the user for a folder outside it with config_request(\"{DIRECTORY_KEY}\").")
     dest = folder / f"keep-{datetime.now().strftime('%Y%m%d-%H%M%S')}{Backup.SUFFIX}"
     try:
-        written = Backup.write(dest, targets(), _passphrase(), AISERVER_DIR, Version.version())
+        written = Backup.write(dest, targets(), configured_passphrase(), AISERVER_DIR, Version.version())
     except (BackupError, OSError) as e:
         error(f"Backups: the backup failed: {e}")
         return f"The backup failed: {e}"
@@ -163,7 +158,7 @@ def describe(path: Path, passphrase: str = "") -> dict:
     """The manifest of the backup at *path*, opened with *passphrase* (the configured one when
     empty). Raises `Backup.WrongPassphrase` when it does not open — also while no passphrase is
     set at all — and `BackupError` when it is no backup."""
-    passphrase = passphrase or _passphrase()
+    passphrase = passphrase or configured_passphrase()
     if not passphrase:
         info(f"Backups: no passphrase to open {path.name} with")
         raise Backup.WrongPassphrase()
@@ -179,7 +174,7 @@ def stage(path: Path, passphrase: str = "") -> str:
     if not passphrase and (problem := passphrase_problem()):
         return problem
     try:
-        data = Backup.stage(path, passphrase or _passphrase(), AISERVER_DIR)
+        data = Backup.stage(path, passphrase or configured_passphrase(), AISERVER_DIR)
     except Backup.WrongPassphrase:
         info(f"Backups: {path} does not open with the {'typed' if passphrase else 'configured'} passphrase")
         if passphrase:

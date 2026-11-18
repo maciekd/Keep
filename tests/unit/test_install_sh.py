@@ -553,7 +553,7 @@ class TestOfferRestore:
         result = self.offer(harness)
         assert result.returncode == 0, result.stdout
         script, passphrase = self.restore_calls(harness)[0].split(' | ')
-        assert script.endswith(f'scripts/restore_backup.py {backup}')
+        assert script.endswith(f'scripts/restore_backup.py --yes {backup}')
         assert passphrase == 'correct horse'
         assert 'correct horse' not in result.stdout
 

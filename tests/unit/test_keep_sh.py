@@ -84,9 +84,9 @@ class Harness:
         """The wait loop runs this many rounds instead of the script's 120."""
         self.env['KEEP_TEST_POLLS'] = str(count)
 
-    def run(self, with_tty):
+    def run(self, with_tty, *args):
         env = script_env(self.tmp, self.system, self.env)
-        command = [BASH, str(self.root / 'keep.sh')]
+        command = [BASH, str(self.root / 'keep.sh'), *args]
         if with_tty:
             master, slave = os.openpty()
             try:
@@ -216,3 +216,34 @@ class TestOnlyThisUsersServer:
         result = harness.run(with_tty=True)
         assert 'start.sh ran' in result.stdout
         assert harness.recorded() == []
+
+
+class TestBackupsWithoutAServer:
+    """`./keep.sh backups` and `./keep.sh restore`: over ssh, with or without a terminal, the venv's
+    python runs scripts/restore_backup.py — a double here that records its arguments."""
+
+    @pytest.fixture
+    def venv(self, either):
+        python = either.root / '.venv' / 'bin' / 'python'
+        python.parent.mkdir(parents=True)
+        python.write_text('#!/bin/bash\necho "python $*" >> "$KEEP_TEST_CALLS"\nexit ${KEEP_TEST_RESTORE_EXIT:-0}\n')
+        python.chmod(0o755)
+        return either
+
+    def test_backups_lists_them_even_without_a_terminal(self, venv):
+        venv.run(False, 'backups')
+        assert venv.recorded() == ['python scripts/restore_backup.py --list']
+
+    def test_a_restore_stops_the_server_through_the_script_then_starts_it(self, venv):
+        result = venv.run(True, 'restore', 'latest')
+        assert venv.recorded() == ['python scripts/restore_backup.py --stop-server latest']
+        assert 'start.sh ran' in result.stdout
+
+    def test_a_restore_that_failed_starts_nothing(self, venv):
+        venv.env['KEEP_TEST_RESTORE_EXIT'] = '3'
+        result = venv.run(True, 'restore', 'latest')
+        assert result.returncode != 0 and 'start.sh ran' not in result.stdout
+
+    def test_a_restore_names_its_backup(self, venv):
+        result = venv.run(True, 'restore')
+        assert result.returncode != 0 and venv.recorded() == []

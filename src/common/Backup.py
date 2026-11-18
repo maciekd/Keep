@@ -58,6 +58,10 @@ PREVIOUS_PREFIX = "pre-restore-"
 # of these (or a root file the scripts run) is refused, whoever made the file.
 PROTECTED = (".git", ".venv", "src", "scripts", "tests", "tools", "res", "docs")
 PROTECTED_SUFFIXES = (".py", ".sh", ".app")
+# The config keys of the backups, read here too by scripts/restore_backup.py, which runs without a server.
+PASSPHRASE_KEY = "backup.passphrase"
+DIRECTORY_KEY = "backup.directory"
+DEFAULT_DIRECTORY = "~/KeepBackups"
 
 
 class BackupError(Exception):
@@ -332,6 +336,13 @@ def _owned_by_nobody(member: tarfile.TarInfo) -> tarfile.TarInfo:
 
 
 # --- reading ----------------------------------------------------------------------------
+
+def found_in(folder: Path) -> list[Path]:
+    """The backups of *folder*, newest first."""
+    if not folder.is_dir():
+        return []
+    return sorted(folder.glob(f"*{SUFFIX}"), key=lambda p: p.stat().st_mtime, reverse=True)
+
 
 def manifest(path: Path, passphrase: str) -> dict:
     """The manifest of the backup at *path*: what it holds and when it was made."""
