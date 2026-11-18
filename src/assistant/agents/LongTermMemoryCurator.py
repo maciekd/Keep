@@ -291,7 +291,8 @@ class LongTermMemoryCurator:
             watchlist_dir: The watch list the curator reads and tidies (defaults to memory/watchlist)
             procedures_dir: The procedures it indexes and adds to (defaults to memory/procedures)
             batch: Nobody waits for this curation (the nightly run), so it may take the half-price
-                batch API and an answer that is up to `ai.memory_curator.batch_wait_minutes` away
+                batch API and an answer that is up to `ai.memory_curator.batch_wait_minutes` away;
+                the sections of the condensing after it go the same way, a batch each
         """
         self.batch = batch
         self.watchlist_dir = watchlist_dir
@@ -612,16 +613,19 @@ class LongTermMemoryCurator:
         journal. Without `cut` the nightly rule: a pass asked for `condense_cut`, and again
         while the bank is over the trigger, CONDENSE_PASSES at most. With `cut` one pass asked
         for that many words. The bank each pass got is copied to log/memory/. `bank` itself
-        comes back when nothing was removed. Never a batch — small calls, a few minutes a pass."""
+        comes back when nothing was removed. In a run that takes the batch API (`_batches`) each
+        section is a batch of its own; one condenser for all the passes, so the first batch
+        without an answer is the last one of the night."""
         start = self.word_count(bank)
         current, passes = bank, []
+        condenser = MemoryCondenser(self.llm, MEMORY_WORD_LIMIT, batch=self._batches())
         for number in range(1, CONDENSE_PASSES + 1):
             words = self.word_count(current)
             asked = self.condense_cut(words) if cut is None else cut
             info(f"Rem: condensing pass {number} on {words} words (limit {MEMORY_WORD_LIMIT}), "
                  f"asked to remove {asked} words")
             self._keep_before_pass(current, number)
-            condensed, outcome = MemoryCondenser(self.llm, MEMORY_WORD_LIMIT).condense(current, asked)
+            condensed, outcome = condenser.condense(current, asked)
             passes.append(outcome)
             removed = words - self.word_count(condensed)
             if removed > 0:
@@ -797,18 +801,25 @@ class LongTermMemoryCurator:
             return current_memory, False
         return new_memory, False
 
-    def _think(self, prompt: str, user_message: str) -> str:
-        """The curation call: through the batch API at half price when this run can wait
-        (`batch`) and `ai.memory_curator.batch` has not turned it off, the ordinary call
-        otherwise — and whenever the batch gave no answer (a backend without a batch API, the
-        wait ran out, an error). A refusal is not retried: the same request is refused again."""
-        config = ConfigManager.get_instance()
+    def _batches(self) -> bool:
+        """Whether this run's calls go through the batch API at half price: it can wait
+        (`batch`) and `ai.memory_curator.batch` has not turned it off."""
         if not self.batch:
-            trace("Rem: an interactive curation — the ordinary call")
-        elif not config.get('ai.memory_curator.batch', True):
-            info("Rem: ai.memory_curator.batch is off — the ordinary call")
-        else:
-            wait_minutes = float(config.get('ai.memory_curator.batch_wait_minutes', BATCH_WAIT_MINUTES))
+            trace("Rem: a run somebody waits for, or one whose batch gave no answer — ordinary calls")
+            return False
+        if not ConfigManager.get_instance().get('ai.memory_curator.batch', True):
+            info("Rem: ai.memory_curator.batch is off — ordinary calls")
+            return False
+        return True
+
+    def _think(self, prompt: str, user_message: str) -> str:
+        """The curation call: through the batch API when the run takes it (`_batches`), the
+        ordinary call otherwise — and whenever the batch gave no answer (a backend without a
+        batch API, the wait ran out, an error); the condensing after it then goes straight to
+        ordinary calls as well. A refusal is not retried: the same request is refused again."""
+        if self._batches():
+            wait_minutes = float(ConfigManager.get_instance().get('ai.memory_curator.batch_wait_minutes',
+                                                                  BATCH_WAIT_MINUTES))
             try:
                 response = self.llm.think_batched(system_message=prompt, user_message=user_message,
                                                   thinking=Thinking.FULL, max_wait_seconds=wait_minutes * 60)
@@ -820,7 +831,9 @@ class LongTermMemoryCurator:
             if response is not None:
                 info("Rem: the dream came back from the batch API (half price)")
                 return response
-            info("Rem: no answer from the batch API — making the ordinary call")
+            info("Rem: no answer from the batch API — making the ordinary call, and ordinary calls for the "
+                 "rest of this run")
+            self.batch = False
         return self.llm.think(system_message=prompt, user_message=user_message, thinking=Thinking.FULL)
 
     def save_memory(self, memory_text: str, metadata: dict = None) -> str:

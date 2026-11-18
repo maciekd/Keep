@@ -638,7 +638,9 @@ local_backend: none
 #  memory_curator:
 #    llm: OllamaLLM
 #    # batch: false           # the nightly run goes through Anthropic's batch API (half price, the answer
-#    # batch_wait_minutes: 90 # minutes to an hour later); false, or no answer within the wait → the ordinary call
+#    # batch_wait_minutes: 90 # minutes to an hour later); false, or no answer within the wait → the ordinary call.
+#                           # The condensing of an oversize bank after it sends each section as a batch too
+#                           # (5 minutes a section at most; the first without an answer → ordinary calls for the rest)
 #    # tips_destination: "Our Keeps"   # where the nightly run posts tips for other households' Keeps: a
 #                           # post_message destination — the title (or the id as text) of a Telegram group the bot
 #                           # is in and that is on telegram_bot.allowed_chat_ids. The curator goes over the period

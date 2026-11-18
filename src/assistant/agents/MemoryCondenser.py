@@ -6,13 +6,17 @@ bank removed 236–347 of the 992 words asked). Here the model sees the whole ba
 system prompt that is cached, and then gets the bank back section by section, each time with
 what it has removed so far and what is still to go — the measurement it lacks. With the cache
 the pass costs little more than the one call did.
+
+A run nobody waits for (the nightly one) sends each section as a batch of its own, at half
+price: one after another still, since the tally of a section is what the sections before it
+gave, and a section sent after the one before it has ended reads the cache that one wrote.
 """
 import re
 import time
 from datetime import datetime
 
-from common.logging import info, trace
-from ..llm.AbstractLLM import Thinking
+from common.logging import info, error, trace
+from ..llm.AbstractLLM import LLMRefusalError, Thinking
 from ..llm.LLMUsage import LLMUsage
 
 PROMPT = """
@@ -52,6 +56,15 @@ still to go. {LEFT} more sections to go after this one. This section's fair shar
 # The most a section is asked to give, as a multiple of its proportional part of the whole cut.
 SHARE_CEILING = 1.5
 
+# How long a section waits for its batch. A section is answered in 10 to 90 seconds and the
+# output cap ends the longest at about two and a half minutes, so a batch still running after
+# this is waiting in Anthropic's queue, not being written. That happens: of 46 nightly curation
+# batches (prod, October–November 2026) 42 ran at the speed of an ordinary call and four waited
+# 10, 20, 46 and 82 minutes. The first section that runs into the cap sends the rest of the
+# condensing through ordinary calls (`MemoryCondenser.batch`) — a slow queue is slow for the
+# next section too, and with up to 45 of them (15 sections, three passes) the waits add up to hours.
+BATCH_WAIT_SECONDS = 300
+
 # A section starts at a heading of level 1 or 2 — level 3 and below stay inside their section.
 HEADING = re.compile(r'^#{1,2} ')
 
@@ -76,9 +89,13 @@ def split_sections(bank: str) -> list[str]:
 
 
 class MemoryCondenser:
-    def __init__(self, llm, word_limit: int):
+    def __init__(self, llm, word_limit: int, batch: bool = False):
+        """`batch`: nobody waits for this condensing, so each section goes through the batch
+        API at half price. It turns itself off at the first batch that gives no answer, for
+        every later section and pass of this condenser."""
         self.llm = llm
         self.word_limit = word_limit
+        self.batch = batch
 
     def condense(self, bank: str, cut: int) -> tuple[str, dict]:
         """The bank with at least `cut` words asked off it, section by section, and what
@@ -90,10 +107,12 @@ class MemoryCondenser:
             .replace("{CUT}", str(cut)).replace("{TARGET}", str(words - cut)) \
             .replace("{TODAY}", f"{datetime.now():%Y-%m-%d}").replace("{CURRENT_MEMORY}", bank)
         sections = split_sections(bank)
-        info(f"Condenser: {words} words in {len(sections)} sections, {cut} words to remove")
+        info(f"Condenser: {words} words in {len(sections)} sections, {cut} words to remove"
+             + (f" — each section a batch of its own (half price, up to {BATCH_WAIT_SECONDS / 60:.0f} min a section)"
+                if self.batch else ""))
         start_time = time.time()
         removed, result, unprocessed = 0, [], words
-        usage = LLMUsage(cost_usd=0.0)
+        usage = LLMUsage(cost_usd=0.0, batch=self.batch)
         self.llm.set_prompt_cache(True)
         try:
             for index, section in enumerate(sections, 1):
@@ -116,7 +135,7 @@ class MemoryCondenser:
                 # An ordinary request, not Thinking.FULL: a section is a short rewrite, and the
                 # chat output cap bounds a call whose thinking runs away (prod 2026-11-11: Fable
                 # 5.2 spent all 64k tokens of the FULL cap tallying words and wrote nothing).
-                response = self.llm.think(system_message=system, user_message=message, thinking=Thinking.NORMAL)
+                response = self._think(system, message, f"section {index}/{len(sections)}")
                 condensed = self._section(response)
                 heading = section.splitlines()[0][:60]
                 info(f"Condenser: section {index}/{len(sections)} call — {LLMUsage.describe_call(self.llm)}")
@@ -146,6 +165,31 @@ class MemoryCondenser:
             info(f"Condenser: {cut - removed} words short of the ask — no section is asked for more than "
                  f"{SHARE_CEILING} times its part of it, the next pass takes the rest")
         return new_bank, outcome
+
+    def _think(self, system: str, message: str, label: str) -> str:
+        """One section's reply: from a batch while `batch` is on, from the ordinary call
+        otherwise. A batch that gives no answer (no batch API, the wait ran out, an error) is
+        the last one tried — its section and every one after it take the ordinary call. A reply
+        cut off at the output cap is an answer, read by the caller from the stop reason: asked
+        again it would be cut off again. A refusal is raised, as from the ordinary call."""
+        if self.batch:
+            try:
+                response = self.llm.think_batched(system_message=system, user_message=message,
+                                                  thinking=Thinking.NORMAL, max_wait_seconds=BATCH_WAIT_SECONDS)
+            except LLMRefusalError:
+                raise
+            except Exception as e:
+                error(f"Condenser: {label} — the batch failed ({type(e).__name__}: {e})")
+                response = None
+            if response is not None:
+                return response
+            if getattr(self.llm, 'last_stop_reason', None) == 'max_tokens':
+                trace(f"Condenser: {label} — the batch's reply was cut off before any text")
+                return ""
+            self.batch = False
+            info(f"Condenser: {label} — no answer from the batch API, the ordinary call for this section "
+                 "and the rest of the condensing")
+        return self.llm.think(system_message=system, user_message=message, thinking=Thinking.NORMAL)
 
     @staticmethod
     def _section(response: str) -> str | None:

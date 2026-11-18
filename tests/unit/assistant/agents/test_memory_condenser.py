@@ -3,6 +3,7 @@ from unittest.mock import Mock, call
 
 import pytest
 
+from assistant.llm.AbstractLLM import LLMRefusalError
 from assistant.llm.LLMUsage import LLMUsage
 from assistant.agents.MemoryCondenser import SHARE_CEILING, MemoryCondenser, split_sections, word_count
 
@@ -134,3 +135,77 @@ class TestWhatThePassUsed:
         llm = _llm(["<section>short</section>"] * len(split_sections(BANK)))
         _, outcome = MemoryCondenser(llm, word_limit=10).condense(BANK, cut=5)
         assert outcome['to'] < outcome['from']
+
+
+TWO = "# People\n* Marcus likes coffee\n# House\n* two floors up\n"
+PEOPLE, HOUSE = "<section># People\n* coffee</section>", "<section># House\n* floors</section>"
+
+
+def _batching(batched, ordinary=()):
+    llm = _llm(list(ordinary))
+    llm.think_batched.side_effect = batched
+    return llm
+
+
+class TestBatchedSections:
+    """A condensing nobody waits for sends each section as a batch of its own, one after
+    another, and stops asking the batch API at the first batch that gives no answer."""
+
+    def test_every_section_comes_from_a_batch_with_the_tally_of_the_ones_before(self):
+        llm = _batching([PEOPLE, HOUSE])
+        new_bank, _ = MemoryCondenser(llm, 100, batch=True).condense(TWO, cut=4)
+        assert new_bank == "# People\n* coffee\n# House\n* floors\n"
+        assert "2 words are removed" in llm.think_batched.call_args_list[1].kwargs['user_message']
+        llm.think.assert_not_called()
+
+    def test_the_first_batch_without_an_answer_is_the_last_one_asked(self):
+        bank = TWO + "# Car\n* a red one\n"
+        llm = _batching([None], ordinary=[PEOPLE, HOUSE, "<section># Car\n* red</section>"])
+        condenser = MemoryCondenser(llm, 100, batch=True)
+        new_bank, _ = condenser.condense(bank, cut=6)
+        assert new_bank == "# People\n* coffee\n# House\n* floors\n# Car\n* red\n"
+        assert llm.think_batched.call_count == 1 and llm.think.call_count == 3
+        # ... and a later pass of the same condenser asks none either
+        llm.think.side_effect = ["<section># People</section>", "nothing", "nothing"]
+        condenser.condense(new_bank, cut=2)
+        assert llm.think_batched.call_count == 1
+
+    def test_a_batch_that_fails_is_answered_by_the_ordinary_call(self):
+        llm = _batching([RuntimeError("batches are down")], ordinary=[PEOPLE, HOUSE])
+        new_bank, _ = MemoryCondenser(llm, 100, batch=True).condense(TWO, cut=4)
+        assert new_bank == "# People\n* coffee\n# House\n* floors\n"
+
+    def test_a_refused_batch_is_not_sent_again(self):
+        llm = _batching([LLMRefusalError("refused")])
+        with pytest.raises(LLMRefusalError):
+            MemoryCondenser(llm, 100, batch=True).condense(TWO, cut=4)
+        llm.think.assert_not_called()
+
+    def test_a_batch_cut_off_before_any_text_keeps_the_section_and_is_not_asked_again(self):
+        """Asked again the reply would be cut off again — and a cut-off reply is no sign of a
+        slow queue, so the sections after it still go through the batch API."""
+        llm = _batching(None)
+        replies = iter([(None, 'max_tokens'), (HOUSE, 'end_turn')])
+
+        def batched(**_):
+            reply, llm.last_stop_reason = next(replies)
+            return reply
+        llm.think_batched.side_effect = batched
+        new_bank, _ = MemoryCondenser(llm, 100, batch=True).condense(TWO, cut=4)
+        assert new_bank == "# People\n* Marcus likes coffee\n# House\n* floors\n"
+        llm.think.assert_not_called()
+
+    def test_a_condensing_somebody_waits_for_asks_no_batch(self):
+        llm = _batching([], ordinary=[PEOPLE, HOUSE])
+        MemoryCondenser(llm, 100).condense(TWO, cut=4)
+        llm.think_batched.assert_not_called()
+
+    def test_the_pass_is_reported_at_batch_price_only_when_its_sections_were_batches(self):
+        usage = LLMUsage(output_tokens=3, batch=True, cost_usd=0.1)
+        llm = _batching([PEOPLE, HOUSE])
+        llm.last_usage = usage
+        _, batched = MemoryCondenser(llm, 100, batch=True).condense(TWO, cut=4)
+        llm = _batching([], ordinary=[PEOPLE, HOUSE])
+        llm.last_usage = LLMUsage(output_tokens=3, cost_usd=0.2)
+        _, ordinary = MemoryCondenser(llm, 100).condense(TWO, cut=4)
+        assert "batch" in batched['usage'] and "batch" not in ordinary['usage']

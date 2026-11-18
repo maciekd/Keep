@@ -782,9 +782,13 @@ class ClaudeLLM(AbstractLLM):
         return text
 
     # A batch is polled, not streamed: most end within the hour, so half a minute between
-    # looks costs nothing. After a cancel the batch still has to wind down before its result
-    # (the reply, if it finished in the meantime) can be read.
+    # looks costs nothing. The first minute is looked at more often: a small request (a section
+    # of the memory condenser, one after another) is answered within it, and half a minute a
+    # section would double the run. After a cancel the batch still has to wind down before its
+    # result (the reply, if it finished in the meantime) can be read.
     BATCH_POLL_SECONDS = 30
+    BATCH_EARLY_POLL_SECONDS = 5
+    BATCH_EARLY_SECONDS = 60
     BATCH_CANCEL_WAIT_SECONDS = 300
 
     def create_batched_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
@@ -839,6 +843,7 @@ class ClaudeLLM(AbstractLLM):
     def _wait_for_batch(self, batch_id: str, deadline: float) -> bool:
         """Poll until the batch has ended (True) or the deadline passes (False). A poll that
         fails on the network or on an overloaded API is just a missed look."""
+        started = time.time()
         while True:
             try:
                 status = self.client.messages.batches.retrieve(batch_id).processing_status
@@ -853,7 +858,8 @@ class ClaudeLLM(AbstractLLM):
                 info(f"Claude batch {batch_id}: poll failed (status={e.status_code}), looking again later")
             if time.time() >= deadline:
                 return False
-            time.sleep(self.BATCH_POLL_SECONDS)
+            early = time.time() - started < self.BATCH_EARLY_SECONDS
+            time.sleep(self.BATCH_EARLY_POLL_SECONDS if early else self.BATCH_POLL_SECONDS)
 
     def create_completion_with_images(self, messages: list[dict], images: list, background: bool = False) -> str:
         self._ensure_initialized()

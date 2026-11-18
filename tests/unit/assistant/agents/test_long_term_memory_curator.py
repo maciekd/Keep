@@ -399,14 +399,6 @@ class TestCondensingPass:
         kept = sorted(path.read_text() for path in (tmp_path / "log").glob("*before_condense*"))
         assert kept == sorted([curated, once + "\n"])
 
-    def test_the_condensing_pass_never_waits_for_a_batch(self):
-        curator = self._curator([f"<section>{_bank(3000)}</section>"])
-        curator.batch = True
-        curator.llm.think_batched.return_value = f"<memory>{_bank(int(MEMORY_WORD_LIMIT * 1.3))}</memory>"
-        curator.curate_memory_with_data("history", "", _bank(3000))
-        assert curator.llm.think_batched.call_count == 1     # the curation; the condensing went straight through
-        assert "<section>" in curator.llm.think.call_args_list[0].kwargs['user_message']
-
 
 class TestRunCondense:
     """The condensing pass on its own (`//memory_condense`): the live bank cut, saved with a
@@ -864,6 +856,57 @@ class TestBatch:
              patch('assistant.agents.LongTermMemoryCurator.FloxyDatabase.get_instance'):
             LongTermMemoryCurator.run(batch=True)
         assert curate.call_args.args[0].batch is True
+
+
+class TestBatchedCondensing:
+    """The condensing after a nightly curation takes the batch API too, a batch a section —
+    until a batch gives no answer: from then on the run makes ordinary calls."""
+
+    CURATED = f"<memory>{_bank(int(MEMORY_WORD_LIMIT * 1.3))}</memory>"
+    CONDENSED = f"<section>{_bank(3000)}</section>"
+
+    def _curate(self, batched: list, ordinary: list = (), batch_config=None):
+        llm = Mock()
+        llm.last_stop_reason = None
+        llm.think.side_effect = list(ordinary)
+        llm.think_batched.side_effect = list(batched)
+        curator = LongTermMemoryCurator(llm=llm, test_mode=True, batch=True)
+        values = {'interfaces.voice.enabled': False, 'ai.memory_curator.batch': True, **(batch_config or {})}
+        config = Mock()
+        config.get.side_effect = lambda key, default=None: values.get(key, default)
+        with patch('assistant.agents.LongTermMemoryCurator.ConfigManager.get_instance', return_value=config), \
+             patch('assistant.agents.LongTermMemoryCurator.WatchList.render', return_value=""), \
+             patch('assistant.agents.LongTermMemoryCurator.Procedures.render_index', return_value=""), \
+             patch.object(LongTermMemoryCurator, '_keep_before_pass'):
+            memory, _ = curator.curate_memory_with_data("history", "", _bank(3000))
+        return memory, llm
+
+    def test_the_sections_of_a_nightly_run_come_from_batches(self):
+        memory, llm = self._curate(batched=[self.CURATED, self.CONDENSED])
+        assert memory.rstrip("\n") == _bank(3000)
+        llm.think.assert_not_called()
+
+    def test_a_section_waits_far_shorter_for_its_batch_than_the_curation(self):
+        _, llm = self._curate(batched=[self.CURATED, self.CONDENSED])
+        curation, section = (c.kwargs['max_wait_seconds'] for c in llm.think_batched.call_args_list)
+        assert section * 5 < curation
+
+    def test_a_curation_whose_batch_gave_no_answer_is_condensed_by_ordinary_calls(self):
+        memory, llm = self._curate(batched=[None], ordinary=[self.CURATED, self.CONDENSED])
+        assert memory.rstrip("\n") == _bank(3000)
+        assert llm.think_batched.call_count == 1
+
+    def test_a_section_whose_batch_gave_no_answer_ends_the_batches_of_the_later_passes_too(self):
+        first_pass = f"<section>{_bank(MEMORY_WORD_LIMIT + 600)}</section>"     # still over the trigger
+        memory, llm = self._curate(batched=[self.CURATED, None], ordinary=[first_pass, self.CONDENSED])
+        assert memory.rstrip("\n") == _bank(3000)
+        assert llm.think_batched.call_count == 2 and llm.think.call_count == 2
+
+    def test_config_key_ai_memory_curator_batch_turns_the_sections_off_as_well(self):
+        """Contract with config.yaml: `ai.memory_curator.batch: false`."""
+        _, llm = self._curate(batched=[], ordinary=[self.CURATED, self.CONDENSED],
+                              batch_config={'ai.memory_curator.batch': False})
+        llm.think_batched.assert_not_called()
 
 
 class TestReferenceResultsLeaveTheTranscript:

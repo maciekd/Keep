@@ -811,6 +811,19 @@ class TestBatchedCompletion:
         llm.client.messages.batches.retrieve.side_effect = retrieve
         assert llm.create_batched_completion(MESSAGES) == "the reply"
 
+    def test_a_batch_is_looked_at_often_in_its_first_minute_and_rarely_after(self, sleep):
+        """A section of the memory condenser is answered within the minute, one after another:
+        half a minute between looks would double the run."""
+        llm = _batch_llm(["in_progress"] * 20 + ["ended"])
+        now = [1000.0]
+        sleep.side_effect = lambda seconds: now.__setitem__(0, now[0] + seconds)
+        with patch('assistant.llm.ClaudeLLM.time.time', side_effect=lambda: now[0]):
+            assert llm._wait_for_batch("batch_1", deadline=now[0] + 3600)
+        pauses = [c.args[0] for c in sleep.call_args_list]
+        first_minute = [p for n, p in enumerate(pauses) if sum(pauses[:n]) < 60]
+        later = pauses[len(first_minute):]
+        assert len(first_minute) >= 6 and later and min(later) >= 3 * max(first_minute)
+
     def test_fast_mode_has_no_batch(self, _sleep):
         llm = _batch_llm(["ended"])
         llm.speed = "fast"
