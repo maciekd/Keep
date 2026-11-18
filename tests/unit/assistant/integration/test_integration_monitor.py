@@ -215,13 +215,38 @@ class TestWhichFailuresAreLoggedAsErrors:
         assert sum("Connection refused" in call.args[0] for call in info.call_args_list) \
             == IntegrationMonitor.FAILURE_THRESHOLD - 1
 
-    def test_the_failure_that_reaches_the_threshold_is_an_error_and_so_is_each_one_after_it(
+    def test_a_failure_that_lasts_past_the_threshold_is_one_error_however_many_checks_follow(
+            self, mock_config, integration, errors):
+        error, info = errors
+        for _ in range(IntegrationMonitor.FAILURE_THRESHOLD + 5):
+            mock_config._check_integration(integration)
+        assert error.call_count == 1
+        assert "Connection refused" in error.call_args.args[0]
+        assert integration.state == IntegrationState.ERROR
+        assert sum("Connection refused" in call.args[0] for call in info.call_args_list) \
+            == IntegrationMonitor.FAILURE_THRESHOLD - 1 + 5, "each later check is still in the log"
+
+    def test_an_integration_in_error_that_fails_for_another_reason_is_an_error_again(
             self, mock_config, integration, errors):
         error, _ = errors
         for _ in range(IntegrationMonitor.FAILURE_THRESHOLD + 1):
             mock_config._check_integration(integration)
+        with patch.object(integration, "check_health", side_effect=PermissionError("token revoked")):
+            mock_config._check_integration(integration)
+            mock_config._check_integration(integration)
         assert error.call_count == 2
-        assert all("Connection refused" in call.args[0] for call in error.call_args_list)
+        assert "token revoked" in error.call_args.args[0]
+
+    def test_an_outage_that_comes_back_after_a_recovery_is_an_error_again(
+            self, mock_config, integration, errors):
+        error, _ = errors
+        for _ in range(IntegrationMonitor.FAILURE_THRESHOLD + 1):
+            mock_config._check_integration(integration)
+        with patch.object(integration, "check_health", return_value=True):
+            mock_config._check_integration(integration)
+        for _ in range(IntegrationMonitor.FAILURE_THRESHOLD + 1):
+            mock_config._check_integration(integration)
+        assert error.call_count == 2
 
     def test_a_lasting_failure_is_reported_as_the_integration_s_state_not_as_a_defect(
             self, mock_config, integration, errors):

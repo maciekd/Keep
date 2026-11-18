@@ -38,6 +38,10 @@ class CalendarUnavailable(Exception):
 
 
 class CalendarAccess:
+    # Which accounts the last read could not reach, and with what — the process's, since an
+    # access is built per read.
+    _reported_failing: frozenset = frozenset()
+
     def __init__(self, accounts: list[CalendarAccount], starting: bool = False):
         self._accounts = list(accounts)
         # True while the launcher has not registered the integrations yet (the prompt sections
@@ -104,10 +108,24 @@ class CalendarAccess:
         if len(failures) == len(self._accounts):
             # Not logged here: whoever catches it knows whether this is an attempt or the outcome.
             raise CalendarUnavailable(f"no calendar account could be read ({described})") from failures[-1][1]
-        if failures:
-            error(f"Calendar: {len(failures)} of {len(self._accounts)} account(s) could not be read ({described})")
+        self._report(failures, described)
         trace(f"Calendar: {len(events)} event(s) from {len(self._accounts) - len(failures)} account(s), {shown_total} calendar(s) shown")
         return "\n".join(headers) + "\n\n" + render(events, start_date, end_date, tag_calendars=shown_total > 1)
+
+    def _report(self, failures: list[tuple[CalendarAccount, Exception]], described: str):
+        """Some accounts read and some not: an error when which ones fail, or how, changes —
+        the week is read every few minutes, and an expired sign-in lasts until somebody signs in."""
+        failing = frozenset((account.name, type(e).__name__) for account, e in failures)
+        text = f"Calendar: {len(failures)} of {len(self._accounts)} account(s) could not be read ({described})"
+        if failing == CalendarAccess._reported_failing:
+            if failing:
+                info(f"{text} — as already reported")
+            return
+        CalendarAccess._reported_failing = failing
+        if failing:
+            error(text, outside=True)
+        else:
+            info(f"Calendar: every account can be read again ({len(self._accounts)})")
 
     @staticmethod
     def _label(account: CalendarAccount) -> str:

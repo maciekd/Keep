@@ -12,6 +12,7 @@ import pytest
 import websockets.exceptions
 from unittest.mock import Mock, patch, AsyncMock
 
+from assistant.integration.Integration import HealthWarning
 from assistant.tools.WebAccess import WebAccess
 
 
@@ -420,6 +421,19 @@ class TestBrowseCloseFullShutdown:
         assert wa.check_health() is True
         wa._browser_closed_by_user = False
         assert wa.check_health() is False
+
+    def test_a_machine_without_a_browser_is_a_warning_said_as_an_error_once(self):
+        """Linux, 2026-11-17: a server without Chrome counted "Health check returned False"
+        up to ERROR and logged it every cycle, for something no check can ever heal."""
+        wa = make_wa(_browser=None, _tab=None)
+        with patch.object(WebAccess, '_async_quit_driver', new=AsyncMock()), \
+                patch.object(WebAccess, '_find_chrome_binary', return_value=None), \
+                patch('assistant.tools.WebAccess.error') as logged:
+            run(wa._async_initialize_driver())
+            run(wa._async_initialize_driver())
+        assert logged.call_count == 1
+        with pytest.raises(HealthWarning):
+            wa.check_health()
 
     def test_close_resets_init_backoff_so_reopen_gets_a_real_attempt(self):
         # The documented recovery path is close → open; when the previous init

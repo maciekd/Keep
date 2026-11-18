@@ -539,6 +539,7 @@ class TestIntegrationMonitorRateLimitHandling:
         integration = Mock(spec=Integration)
         integration.state = IntegrationState.OK
         integration._consecutive_failures = 0
+        integration._last_error = None
 
         monitor._record_failure(integration, "some error")
 

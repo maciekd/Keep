@@ -27,7 +27,7 @@ from nodriver import cdp
 from nodriver.core.connection import ProtocolException, Transaction
 from bs4 import BeautifulSoup, Comment, NavigableString
 
-from ..integration.Integration import Integration
+from ..integration.Integration import HealthWarning, Integration
 from common import BrowseFillMask, Platform
 from common.logging import info, trace, note, fine, error
 from common.ConfigManager import ConfigManager
@@ -173,6 +173,10 @@ class WebAccess(Integration):
             # browse_close deliberately shut Chrome down; a fresh browser starts
             # lazily on the next browse command, so this is not a failure state.
             return self._driver_ready.is_set()
+        if self._chrome_missing:
+            # Nothing is broken and no check will ever pass until somebody installs a browser:
+            # a warning the owner can act on, never an ERROR counted up every cycle.
+            raise HealthWarning("no Chrome or Chromium is installed, so no page can be opened in a browser")
         return self._driver_ready.is_set() and self._browser is not None
 
     def wait_ready(self, timeout: float) -> bool:
@@ -767,6 +771,8 @@ class WebAccess(Integration):
         trace(f"Wiped Chrome profile at {self._profile_dir}")
 
     _CHROME_PATH_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
+    # True from a start that found no browser to the first that finds one.
+    _chrome_missing = False
 
     @staticmethod
     def _chrome_search_paths() -> list[str]:
@@ -817,16 +823,19 @@ class WebAccess(Integration):
                 else "install Google Chrome or Chromium (Debian: 'sudo apt install chromium', "
                      "Ubuntu: 'sudo snap install chromium')"
             )
-            error(
+            # An error the first time alone: every later start attempt finds the same nothing.
+            (info if self._chrome_missing else error)(
                 "Web Access disabled: no Chrome/Chromium binary found. "
                 "nodriver needs a Chrome/Chromium install to scrape web pages — "
                 f"{install_hint}; the next web command picks it up. "
                 f"Searched: {', '.join(self._chrome_search_paths())}"
                 + ("" if Platform.is_mac() else f", and the PATH for {', '.join(self._CHROME_PATH_NAMES)}")
             )
+            self._chrome_missing = True
             self._browser = None
             self._tab = None
             return
+        self._chrome_missing = False
 
         trace(f"Using Chrome binary: {chrome_path}")
         trace(f"Using persistent Chrome profile: {self._profile_dir}")

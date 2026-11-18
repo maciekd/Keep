@@ -477,6 +477,7 @@ class IntegrationMonitor:
         if integration.state == IntegrationState.RATE_LIMITED:
             return
         integration._consecutive_failures += 1
+        changed = error_msg != integration._last_error
         integration._last_error = error_msg
         failures = integration._consecutive_failures
 
@@ -484,8 +485,13 @@ class IntegrationMonitor:
             # Only a failure that lasts is an error: a service that resets one connection in a
             # hundred passes the next check. It is the integration's state, so no issue in the
             # error tracking — unless the check itself broke (a programming error is a defect anywhere).
-            error(f"Integration '{integration.name}' health check failed {failures} times in a row: {error_msg}",
-                  outside=True)
+            # Said as an error once, when the state is reached or the reason changes: an outage
+            # of a night is one error, not one per check.
+            text = f"Integration '{integration.name}' health check failed {failures} times in a row: {error_msg}"
+            if failures == self.FAILURE_THRESHOLD or changed:
+                error(text, outside=True)
+            else:
+                info(f"{text} — still in error, already reported")
             integration.state = IntegrationState.ERROR
             return
         info(f"Integration '{integration.name}' health check failed ({failures} of {self.FAILURE_THRESHOLD} "

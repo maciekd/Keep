@@ -29,6 +29,13 @@ def stockholm():
         yield
 
 
+@pytest.fixture(autouse=True)
+def nothing_reported_yet():
+    CalendarAccess._reported_failing = frozenset()
+    yield
+    CalendarAccess._reported_failing = frozenset()
+
+
 class _Account(CalendarAccount):
     """A calendar account over dicts: `calendars` maps a name to its events (None for a
     Reminders list), `aliases` maps the names the account takes besides the listed ones to the
@@ -224,7 +231,21 @@ class TestFetch:
             message = logged.call_args.args[0]
             assert "Broken" in message and "Work" in message and "iCloud" not in message
             assert CalendarAccess(accounts).fetch(*WEEK).splitlines()[:3] == week.splitlines()[:3]
-            assert logged.call_count == 2
+            assert logged.call_count == 1, "the same accounts down at the next read is no news"
+
+    def test_an_account_that_stays_down_is_an_error_again_only_when_what_fails_changes(self):
+        """A calendar is read every few minutes and a sign-in stays expired for days."""
+        broken, work = _Account("Broken", failing=True), _Account("Work", failing=True)
+        with patch("assistant.integration.calendar.CalendarAccess.error") as logged:
+            for _ in range(5):
+                CalendarAccess([_household(), broken]).coming_week()
+            assert logged.call_count == 1
+            CalendarAccess([_household(), broken, work]).coming_week()
+            assert logged.call_count == 2 and "Work" in logged.call_args.args[0]
+            CalendarAccess([_household()]).coming_week()
+            assert logged.call_count == 2, "every account back is no error"
+            CalendarAccess([_household(), broken]).coming_week()
+            assert logged.call_count == 3, "down again after a recovery is news"
 
     def test_an_outage_of_every_account_is_one_error_and_only_for_the_reader_that_gets_the_placeholder(self):
         accounts = [_Account("Family", failing=True), _Account("Work", failing=True)]
