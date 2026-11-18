@@ -421,11 +421,14 @@ class TestFirstConversation:
         chats = Mock()
         set_notifier(chats)
         try:
-            server = floxy_ai_server.Server(Mock(), [], [], None, running_as_testsuite=False)
-            floxy_ai_server._announce_startup(server)
-            chats.send_message.assert_not_called()
-            server.startup_announcement = "Server is up again"
-            floxy_ai_server._announce_startup(server)
+            # No migration note is pending: one is process-wide, and a test that migrated a config
+            # earlier in this worker would have it posted here as a second message.
+            with patch("common.ConfigMigrations.take_note", return_value=None):
+                server = floxy_ai_server.Server(Mock(), [], [], None, running_as_testsuite=False)
+                floxy_ai_server._announce_startup(server)
+                chats.send_message.assert_not_called()
+                server.startup_announcement = "Server is up again"
+                floxy_ai_server._announce_startup(server)
         finally:
             set_notifier(None)
         chats.send_message.assert_called_once_with("Server is up again", disable_notification=True, in_history=True)

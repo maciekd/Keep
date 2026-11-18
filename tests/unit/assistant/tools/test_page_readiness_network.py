@@ -112,7 +112,6 @@ class TestWaitForNetworkIdle:
         wa = make_wa()
         wa._PAGE_NET_IDLE_MS = 20
         wa._PAGE_NET_IDLE_TIMEOUT = 0.5
-        wa._network_touch()
         order = []
 
         async def scenario():
@@ -130,15 +129,20 @@ class TestWaitForNetworkIdle:
             return status
 
         with virtual_time():
+            # The last traffic is "now" on the clock the wait reads: stamped on the real clock before
+            # it, the idle period had already passed on a runner that took 20 ms to get here.
+            wa._network_touch()
             assert run(scenario()) == "idle"
         assert order == ['sent', 'answered', 'idle']
 
     def test_a_request_that_never_finishes_hits_the_soft_cap(self):
         wa = make_wa()
         pending(wa, 'poll', url='https://shop.example/api/poll')
-        started = time.time()
-        assert run(wa._async_wait_for_network_idle()) == "soft-timeout:network"
-        assert time.time() - started < 0.5
+        with virtual_time() as clock:
+            started = clock.now
+            assert run(wa._async_wait_for_network_idle()) == "soft-timeout:network"
+        waited, poll = clock.now - started, wa._PAGE_READY_POLL
+        assert wa._PAGE_NET_IDLE_TIMEOUT - poll / 2 < waited < wa._PAGE_NET_IDLE_TIMEOUT + 2 * poll
 
     def test_event_source_streams_are_not_pending(self):
         wa = make_wa()
@@ -153,10 +157,11 @@ class TestWaitForNetworkIdle:
     def test_only_fresh_activity_without_pending_requests_waits_out_the_idle_period(self):
         wa = make_wa()
         wa._PAGE_NET_IDLE_MS = 30
-        wa._network_touch()
-        started = time.time()
-        assert run(wa._async_wait_for_network_idle()) == "idle"
-        assert time.time() - started >= 0.025
+        with virtual_time() as clock:
+            wa._network_touch()
+            started = clock.now
+            assert run(wa._async_wait_for_network_idle()) == "idle"
+        assert clock.now - started > 0.0295, "a poll is 1 ms: the 30 ms were waited out to the last one"
 
 
 @pytest.mark.unit

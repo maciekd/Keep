@@ -37,6 +37,14 @@ def lingua():
 
 
 @pytest.fixture(autouse=True)
+def no_manager_outlives_its_test(monkeypatch):
+    """A manager registers itself process-wide as it is built (`LocalOutpostManager.instance`), and
+    the Dashboard reads the mics' noise floors from there: one left behind with mocks for outposts
+    broke the Dashboard test that drew its board next in the same worker."""
+    monkeypatch.setattr(LocalOutpostManager, "instance", None)
+
+
+@pytest.fixture(autouse=True)
 def cancel_outpost_timers(monkeypatch):
     """An outpost arms 2.5/5/15 s listen timers as it runs; none may outlive its test."""
     built = []

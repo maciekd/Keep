@@ -96,7 +96,11 @@ def _config(values: dict):
 
 
 @pytest.fixture(autouse=True)
-def _fresh():
+def _fresh(monkeypatch):
+    # The rate the bar is drawn by, not whatever the worker's earlier requests taught the class's
+    # tracker: at 800 t/s the 4000 tokens of the bar test are a prefill long enough to draw.
+    monkeypatch.setattr(OpenAICompatibleLLM._prefill, "tps", 800.0)
+
     def reset():
         OpenAICompatibleLLM._slot.reset()
         OpenAICompatibleLLM._prefill._requests.clear()

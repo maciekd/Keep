@@ -36,9 +36,14 @@ class Picture:
 
 
 @pytest.fixture
-def running(monkeypatch):
+def idle_slot():
+    return IDLE_TICK
+
+
+@pytest.fixture
+def running(monkeypatch, idle_slot):
     monkeypatch.setattr(module, "FRAME_INTERVAL", TICK)
-    monkeypatch.setattr(module, "IDLE_INTERVAL", IDLE_TICK)
+    monkeypatch.setattr(module, "IDLE_INTERVAL", idle_slot)
     monkeypatch.setattr(module, "IDLE_AFTER", 0.01)
     picture = Picture()
     srv = TUIServer(draw_screen_callback=picture, host="127.0.0.1", port=0)
@@ -86,22 +91,38 @@ def test_a_changing_picture_keeps_the_full_rate_and_a_change_ends_an_idle(runnin
     assert frames_per_second(picture, 0.03) > 1 / IDLE_TICK, "and the frames come at the full rate again"
 
 
-def test_a_wake_ends_an_idle_before_the_slot_is_up(running):
+def idle_at_each_log_from_now(srv, monkeypatch) -> list:
+    """`srv.idle` as the loop itself read it at each of its log calls from here on — it logs as it
+    turns idle and as it leaves that. The picture of these tests stands still, so the loop is
+    idle again IDLE_AFTER after a woken frame: `srv.idle` read from the test's thread says
+    whether that thread got to run within those 10 ms, and on a busy machine it does not."""
+    states = []
+    monkeypatch.setattr(module, "fine", lambda _message: states.append(srv.idle))
+    return states
+
+
+# An idle slot of a minute: a frame drawn at all after the loop went idle did not wait the slot out.
+A_MINUTE = pytest.mark.parametrize("idle_slot", [60.0], ids=["an idle slot of a minute"])
+
+
+@A_MINUTE
+def test_a_wake_ends_an_idle_before_the_slot_is_up(running, monkeypatch):
     srv, picture = running
     assert wait_until(lambda: srv.idle)
-    before = picture.frames
-    started = time.perf_counter()
+    states = idle_at_each_log_from_now(srv, monkeypatch)
     srv.wake()
-    assert wait_until(lambda: picture.frames > before, timeout=0.1)
-    assert time.perf_counter() - started < IDLE_TICK, "the woken frame did not wait out the idle slot"
-    assert not srv.idle
+    assert wait_until(lambda: states, timeout=5), "the wake drew no frame: the loop sleeps its idle slot out"
+    assert states[0] is False, "the woken frame runs at the full rate"
 
 
-def test_a_key_wakes_the_loop(running):
+@A_MINUTE
+def test_a_key_wakes_the_loop(running, monkeypatch):
     srv, picture = running
     assert wait_until(lambda: srv.idle)
+    states = idle_at_each_log_from_now(srv, monkeypatch)
     srv._emit_key("x", ("test", 0))
-    assert wait_until(lambda: not srv.idle, timeout=0.1)
+    assert wait_until(lambda: states, timeout=5), "the key drew no frame: the loop sleeps its idle slot out"
+    assert states[0] is False
 
 
 def test_a_wake_landing_while_a_frame_is_being_finished_is_not_lost(running, monkeypatch):
@@ -113,9 +134,16 @@ def test_a_wake_landing_while_a_frame_is_being_finished_is_not_lost(running, mon
 
     def log_and_wake_once(_message):
         idle_at_each_log.append(srv.idle)
-        if len(idle_at_each_log) == 1:
+        if srv.idle and idle_at_each_log.count(True) == 1:
             srv.wake()
 
     monkeypatch.setattr(module, "fine", log_and_wake_once)
-    assert wait_until(lambda: len(idle_at_each_log) >= 2), "the wake was erased: the loop stayed idle"
-    assert idle_at_each_log[:2] == [True, False], "the first thing after turning idle is the woken frame"
+    # A new picture, so that the loop turns idle with the hook in place: on a busy machine it had
+    # already done so, and said so, before the test got to put the hook in.
+    picture.text = "another still picture"
+
+    def the_log_call_after_turning_idle():
+        return idle_at_each_log[idle_at_each_log.index(True) + 1:] if True in idle_at_each_log else []
+
+    assert wait_until(the_log_call_after_turning_idle, timeout=5), "the wake was erased: the loop stayed idle"
+    assert the_log_call_after_turning_idle()[0] is False, "the first thing after turning idle is the woken frame"

@@ -54,7 +54,11 @@ def _stream(llm, values=None, **kwargs) -> list[str]:
 
 
 @pytest.fixture(autouse=True)
-def _clean_class_state():
+def _clean_class_state(monkeypatch):
+    # The trackers are the classes' own and a finished request teaches them its rate: put back, or a
+    # prefill another module's test expects a bar for is too short for one at the rate learnt here.
+    for tracker in (OpenAICompatibleLLM._prefill, Ds4LLM._prefill):
+        monkeypatch.setattr(tracker, "tps", tracker.tps)
     OpenAICompatibleLLM._models_checked.clear()
     OpenAICompatibleLLM._discovered_models.clear()
     OpenAICompatibleLLM._discovery_failed.clear()
