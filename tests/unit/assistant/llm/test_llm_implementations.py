@@ -1,5 +1,4 @@
 import base64
-import itertools
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
@@ -1622,16 +1621,18 @@ class TestGeminiLLMVideo:
         llm.client.models.generate_content.assert_not_called()
         assert llm.client.files.delete.call_count == 3  # once per retry attempt
 
-    @patch('assistant.llm.GeminiLLM.time.monotonic')
-    @patch('assistant.llm.GeminiLLM.time.sleep')
+    @patch('assistant.llm.GeminiLLM.time')
     @patch('assistant.llm.GeminiLLM.config')
     @patch('assistant.llm.GeminiLLM.types')
-    def test_processing_timeout_raises_and_deletes(self, mock_types, mock_config, sleep, monotonic):
-        from assistant.llm.GeminiLLM import INLINE_VIDEO_LIMIT, FILE_PROCESSING_TIMEOUT
-        llm = self._uploading_llm(mock_config, states=("PROCESSING",) * 10)
-        # The patch replaces the global time.monotonic, so daemon threads can consume
-        # entries too: a finite list ran dry under the full suite (StopIteration).
-        monotonic.side_effect = itertools.chain([0, 1, 1], itertools.repeat(FILE_PROCESSING_TIMEOUT + 2))
+    def test_processing_timeout_raises_and_deletes(self, mock_types, mock_config, mock_time):
+        from assistant.llm.GeminiLLM import INLINE_VIDEO_LIMIT
+        llm = self._uploading_llm(mock_config, states=("PROCESSING",))
+        llm.client.files.get.side_effect = lambda name: llm.client.files.upload.return_value
+        # The module's own clock, moved by its own sleeps: a patch of the global time.monotonic
+        # is read by every thread of the worker, and a list of readings ran dry or shifted there.
+        clock = [0.0]
+        mock_time.monotonic.side_effect = lambda: clock[0]
+        mock_time.sleep.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
 
         with pytest.raises(TimeoutError, match="still processing"):
             llm._create_completion_with_video("sys", "describe", b"v" * (INLINE_VIDEO_LIMIT + 1), "video/mp4", None)
