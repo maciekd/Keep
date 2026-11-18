@@ -967,13 +967,22 @@ class LongTermMemoryCurator:
         return MemoryFile.read(self.memory_file_path)
 
     @staticmethod
-    def _last_memory_tag(response: str) -> int | None:
-        """Where the last <memory> block of the reply opens, None without one. A tag that ends
-        its line is a block's; one inside a sentence (a bank that writes about the tag) counts
-        only when no other is there."""
-        tags = (list(re.finditer(r'<memory>(?=[ \t]*\n)', response))
-                or list(re.finditer(r'<memory>', response)))
-        return tags[-1].start() if tags else None
+    def _block_tags(tag: str, follows: str, response: str) -> list[int]:
+        """Where a block of the reply may open: each `tag` that starts its line or stands right
+        after `follows`, the tag that closes what comes before the block. A tag further into a
+        line is the bank writing about it."""
+        pattern = rf'(?:^|{re.escape(follows)})[ \t]*({re.escape(tag)})'
+        return [match.start(1) for match in re.finditer(pattern, response, re.MULTILINE)]
+
+    @classmethod
+    def _last_memory_tag(cls, response: str) -> int | None:
+        """Where the last <memory> block of the reply opens, None without one. A tag inside a
+        sentence counts only when no block's tag is there."""
+        tags = cls._block_tags('<memory>', '</think>', response)
+        if tags:
+            return tags[-1]
+        start = response.rfind('<memory>')
+        return None if start < 0 else start
 
     @classmethod
     def _answer(cls, response: str) -> str:
@@ -997,14 +1006,15 @@ class LongTermMemoryCurator:
                   "in the wrong order, its commands are NOT run")
         return answer
 
-    @staticmethod
-    def _split_commands(response: str) -> tuple[str, str]:
+    @classmethod
+    def _split_commands(cls, response: str) -> tuple[str, str]:
         """The reply without its last <commands> block, and the block's content ('' when there
-        is none). An unclosed block runs to the end of the reply."""
-        start = response.rfind('<commands>')
-        if start < 0:
+        is none: a bank that names the tag holds no block). An unclosed block runs to the end
+        of the reply."""
+        tags = cls._block_tags('<commands>', '</memory>', response)
+        if not tags:
             return response, ""
-        match = re.compile(r'<commands>(.*?)(?:</commands>|\Z)', re.DOTALL).match(response, start)
+        match = re.compile(r'<commands>(.*?)(?:</commands>|\Z)', re.DOTALL).match(response, tags[-1])
         return response[:match.start()] + response[match.end():], match.group(1).strip()
 
     def _think_whole(self, prompt: str, what: str) -> str:
