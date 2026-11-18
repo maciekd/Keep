@@ -15,8 +15,8 @@
 #      server machine, run `claude` and complete /login. Do not log in over SSH — a login made
 #      in an SSH session is not seen by the server process. A login takes precedence over the key.
 #   3. For the PRs: the GitHub CLI logged in on the server machine, any GitHub account —
-#      `brew install gh`, then `gh auth login` in a terminal there. An account without write access
-#      to the repository opens its PRs from a fork of its own, made on its first PR. report_issue
+#      `brew install gh` (on Linux `sudo apt install gh`), then `gh auth login` in a terminal there.
+#      An account without write access to the repository opens its PRs from a fork of its own, made on its first PR. report_issue
 #      files the issue through the same login; without one it drafts the issue and sends it with a
 #      link, for the user to file by hand. self_analysis needs neither.
 #   4. Optional: a mail account (imap.accounts): the nightly report is mailed from the account send_email uses to its own address.

@@ -16,6 +16,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import common.DevelopmentConfig as DevelopmentConfig
+import common.Platform as Platform
 from common.logging import info, error, trace, note
 from ..llm import parse_llm_config
 from ..llm.ClaudeLLM import WORKSPACE_HEADER, claude_workspace_id
@@ -109,15 +110,22 @@ REPORT_TITLES = dict(zip(NIGHTLY_STEPS, ("Test Generation", "Bug Analysis", "Log
 REPORT_ORDER = ("bugs", "logs", "fix", "tests", "health", "merge", "pins")
 # The pattern of a pinned bug in tests/unit: the open-pins step runs Claude Code only when the tree holds one.
 STRICT_XFAIL_PATTERN = r"pytest\.mark\.xfail\(\s*strict\s*=\s*True"
-GH_NOT_INSTALLED_MESSAGE = (
-    "The GitHub CLI (gh) is not installed on the server machine, so Keep cannot open a pull request. "
-    "Install it with `brew install gh` and run `gh auth login` in a terminal on that machine — any GitHub "
-    "account will do — then try again."
-)
+GH_INSTALL_COMMANDS = {Platform.MAC: "brew install gh", Platform.LINUX: "sudo apt install gh"}
 GH_NOT_LOGGED_IN_MESSAGE = (
     "The GitHub CLI (gh) is not logged in on the server machine, so Keep cannot open a pull request. "
     "Run `gh auth login` in a terminal on that machine — any GitHub account will do — then try again."
 )
+
+
+def gh_not_installed_message() -> str:
+    """What the user hears when gh is missing, with the install command of the system the server runs on."""
+    command = GH_INSTALL_COMMANDS.get(Platform.current())
+    install = f"Install it with `{command}`" if command else "Install it"
+    return ("The GitHub CLI (gh) is not installed on the server machine, so Keep cannot open a pull request. "
+            f"{install} and run `gh auth login` in a terminal on that machine — any GitHub account will do — "
+            "then try again.")
+
+
 PUSH_PERMISSIONS = ("ADMIN", "MAINTAIN", "WRITE")   # GitHub's viewerPermission values that may push a branch
 ISSUE_DRAFT_DIR = LOG_DIR / "issue_drafts"           # report_issue's drafts when gh cannot file them
 # The longest prefilled new-issue link sent to the chat. Telegram documents no limit for a link's
@@ -1598,7 +1606,7 @@ class CodeQualityMaintainer:
             status = gh("auth", "status")
         except FileNotFoundError:
             info("CodeQualityMaintainer: gh is not installed")
-            return None, GH_NOT_INSTALLED_MESSAGE
+            return None, gh_not_installed_message()
         except Exception as e:
             error(f"CodeQualityMaintainer: gh auth status failed: {e}")
             return None, GH_NOT_LOGGED_IN_MESSAGE
@@ -2015,7 +2023,7 @@ class CodeQualityMaintainer:
     def _not_filed_because(reason: str) -> str:
         """The clause the user hears for a `_github_access` refusal: the three ways gh cannot
         file from this machine, in the words of the chat message the draft comes with."""
-        if reason == GH_NOT_INSTALLED_MESSAGE:
+        if reason == gh_not_installed_message():
             return "the GitHub CLI is not installed on this machine"
         if reason == GH_NOT_LOGGED_IN_MESSAGE:
             return "there is no GitHub login on this machine"

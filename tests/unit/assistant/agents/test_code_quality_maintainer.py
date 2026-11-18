@@ -13,7 +13,7 @@ import os
 import subprocess
 import threading
 
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest, WORKING_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS, GH_NOT_INSTALLED_MESSAGE, GithubAccess, IssueDraft, PREFILL_URL_LIMIT, ISSUE_LABEL
+from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest, WORKING_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS, gh_not_installed_message, GithubAccess, IssueDraft, PREFILL_URL_LIMIT, ISSUE_LABEL
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -2370,9 +2370,12 @@ class TestGithubAccess:
         assert CodeQualityMaintainer._github_unavailable() == reason
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run', side_effect=FileNotFoundError("gh"))
-    def test_a_missing_gh_names_the_install(self, mock_run):
-        access, reason = CodeQualityMaintainer._github_access()
-        assert access is None and reason == GH_NOT_INSTALLED_MESSAGE and "brew install gh" in reason
+    def test_a_missing_gh_names_the_install_of_the_server_s_system(self, mock_run):
+        for system, command, other in (("mac", "brew install gh", "apt"), ("linux", "apt install gh", "brew")):
+            with patch("common.Platform.current", return_value=system):
+                access, reason = CodeQualityMaintainer._github_access()
+                assert access is None and command in reason and other not in reason, system
+                assert "not installed" in CodeQualityMaintainer._not_filed_because(reason), system
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.run')
     def test_an_unreadable_repository_is_a_reason(self, mock_run):
@@ -2534,7 +2537,7 @@ class TestReportIssue:
         return (prompts[0] if prompts else None), result
 
     def test_without_gh_the_issue_is_drafted_and_comes_back(self, tmp_path):
-        prompt, (report, draft) = self._report(None, GH_NOT_INSTALLED_MESSAGE,
+        prompt, (report, draft) = self._report(None, gh_not_installed_message(),
                                                write_draft="Title: Hallway lights stay on\n\nThe scene ended.",
                                                tmp_path=tmp_path)
         assert "gh issue create" not in prompt and str(tmp_path) in prompt
@@ -2553,7 +2556,7 @@ class TestReportIssue:
             assert words in draft.why, reason
 
     def test_a_run_that_drafted_nothing_returns_no_draft(self, tmp_path):
-        _, (report, draft) = self._report(None, GH_NOT_INSTALLED_MESSAGE, tmp_path=tmp_path)
+        _, (report, draft) = self._report(None, gh_not_installed_message(), tmp_path=tmp_path)
         assert draft is None and report
 
     def test_without_gh_and_without_a_github_origin_nothing_runs(self, tmp_path):

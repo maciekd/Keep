@@ -13,6 +13,7 @@ from assistant.integration.Feed import Feed, FeedBatch, FeedEntry
 from assistant.integration.Integration import Integration
 from assistant.PromptInjectionDetector import is_prompt_injection
 from assistant.tools.MediaAnalyzer import media_analyzer
+import common.Platform as Platform
 from common.ConfigManager import config
 from common.logging import info, trace, error, fine, note
 from common.Paths import AISERVER_DIR
@@ -40,7 +41,7 @@ MIN_PHONE_DIGITS = 7
 
 def import_neonize():
     """neonize imports python-magic at module level, and that needs the libmagic library the
-    installer never puts on a Mac (`brew install libmagic`). The feed sends text only and
+    installer never puts on a Mac (on Linux it is the apt package libmagic1). The feed sends text only and
     neonize sniffs mime types only for the media it sends, so a stand-in built on mimetypes
     stands in for the library when it is missing. Deferred to a call: the folder must import
     without the 20 MB native library, and the unit suite never loads it."""
@@ -52,7 +53,8 @@ def import_neonize():
         stub.from_buffer = lambda data, mime=False: "application/octet-stream"
         stub.from_file = lambda path, mime=False: mimetypes.guess_type(path)[0] or "application/octet-stream"
         sys.modules["magic"] = stub
-        note("WhatsApp: libmagic is not installed — media sends would need `brew install libmagic`; text is unaffected")
+        install = "brew install libmagic" if Platform.is_mac() else "sudo apt install libmagic1"
+        note(f"WhatsApp: libmagic is not installed — media sends would need `{install}`; text is unaffected")
     root = logging.getLogger()
     level_before = root.level
     import neonize
