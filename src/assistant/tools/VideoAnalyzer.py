@@ -42,12 +42,19 @@ def short_clip_fps(duration: float | None) -> float | None:
     return float(min(MAX_VIDEO_FPS, math.ceil(SHORT_CLIP_MIN_FRAMES / duration)))
 
 
+class VideoKeyMissing(Exception):
+    """The video tier's backend has no API key yet — a state of the install, not a failure."""
+
+
 class VideoAnalyzer:
     """Describes video clips with the `ai.video` tier LLM.
 
     The raw bytes go to the model exactly as received; there is no re-encoding step. If the
     configured LLM has no video input (anything but Gemini today) clips are left undescribed —
-    by decision, no frame-sampling workaround. Use `video_analyzer()` for the process-wide instance.
+    by decision, no frame-sampling workaround. They are left undescribed as well while the
+    tier's backend has no API key: the tier defaults to Gemini, which an install running on
+    Claude alone never gave a key, and the key is asked for again at every clip, so setting it
+    needs no restart. Use `video_analyzer()` for the process-wide instance.
     """
 
     def __init__(self, llm=None):
@@ -70,6 +77,9 @@ class VideoAnalyzer:
         caller's (the Telegram feed would otherwise drop the whole message, text included)."""
         try:
             return self.max_video_size(self.llm)
+        except VideoKeyMissing as e:
+            trace(f"VideoAnalyzer: {e}, using the configured size cap")
+            return self.configured_max_size()
         except Exception as e:
             error(f"VideoAnalyzer: could not initialize the video LLM for its size cap ({e}), using the configured cap")
             return self.configured_max_size()
@@ -82,6 +92,9 @@ class VideoAnalyzer:
                     from ..llm import create_llm, parse_llm_config
                     name, model = parse_llm_config('video')
                     llm = create_llm(name, model)
+                    missing = llm.missing_api_key()
+                    if missing:
+                        raise VideoKeyMissing(f"the video tier's {llm.name()} has no {missing}")
                     llm.initialize()
                     self._llm = llm
                     trace(f"VideoAnalyzer: initialized {name} ({model}) for video analysis")
@@ -113,6 +126,9 @@ class VideoAnalyzer:
 
             info(f"VideoAnalyzer: analyzed video — {result['short_description']}")
             return self.format_description(result)
+        except VideoKeyMissing as e:
+            info(f"VideoAnalyzer: {e}, leaving the video undescribed")
+            return fallback
         except Exception as e:
             error(f"VideoAnalyzer: video analysis failed: {e}")
             return fallback

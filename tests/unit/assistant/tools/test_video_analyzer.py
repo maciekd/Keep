@@ -201,6 +201,7 @@ class TestDescribeBytes:
 class TestVideoLlm:
     def test_creates_from_video_tier_on_first_use(self):
         mock_llm = Mock()
+        mock_llm.missing_api_key.return_value = None
         with patch('assistant.llm.parse_llm_config', return_value=("SomeLLM", "some-model")) as mock_parse, \
              patch('assistant.llm.create_llm', return_value=mock_llm) as mock_create:
             assert VideoAnalyzer().llm is mock_llm
@@ -210,7 +211,46 @@ class TestVideoLlm:
 
     def test_caches_llm_across_calls(self):
         with patch('assistant.llm.parse_llm_config', return_value=("SomeLLM", None)), \
-             patch('assistant.llm.create_llm', return_value=Mock()) as mock_create:
+             patch('assistant.llm.create_llm', return_value=Mock(**{"missing_api_key.return_value": None})) as mock_create:
             analyzer = VideoAnalyzer()
             assert analyzer.llm is analyzer.llm
         mock_create.assert_called_once()
+
+
+def _keyless_llm() -> Mock:
+    llm = _video_llm(REPLY)
+    llm.missing_api_key.return_value = "api_keys.gemini"
+    return llm
+
+
+@pytest.mark.unit
+class TestVideoTierWithoutAKey:
+    """An install that runs on Claude alone never gave the video tier's default backend a key."""
+
+    def test_a_clip_stays_undescribed_and_no_error_is_logged(self):
+        llm = _keyless_llm()
+        with patch('assistant.llm.parse_llm_config', return_value=("SomeLLM", None)), \
+             patch('assistant.llm.create_llm', return_value=llm), \
+             patch('assistant.tools.VideoAnalyzer.error') as logged_error:
+            assert VideoAnalyzer().describe_bytes(b"vid", fallback="[Clip]") == "[Clip]"
+        llm.initialize.assert_not_called()
+        llm.think_with_video.assert_not_called()
+        logged_error.assert_not_called()
+
+    def test_the_size_cap_is_the_configured_one_and_no_error_is_logged(self):
+        with patch('assistant.llm.parse_llm_config', return_value=("SomeLLM", None)), \
+             patch('assistant.llm.create_llm', return_value=_keyless_llm()), \
+             patch('assistant.tools.VideoAnalyzer.error') as logged_error, \
+             patch('assistant.tools.VideoAnalyzer.config') as cfg:
+            cfg.get.return_value = 50
+            assert VideoAnalyzer().max_size() == 50 * 1024 * 1024
+        logged_error.assert_not_called()
+
+    def test_a_key_set_later_is_picked_up_without_a_restart(self):
+        llm = _keyless_llm()
+        with patch('assistant.llm.parse_llm_config', return_value=("SomeLLM", None)), \
+             patch('assistant.llm.create_llm', return_value=llm):
+            analyzer = VideoAnalyzer()
+            assert analyzer.describe_bytes(b"vid") == "[Video]"
+            llm.missing_api_key.return_value = None
+            assert "A dog runs" in analyzer.describe_bytes(b"vid")
