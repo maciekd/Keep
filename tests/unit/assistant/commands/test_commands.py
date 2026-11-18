@@ -2399,6 +2399,31 @@ class TestCmdConfigSet:
         assert answer.startswith("config_set failed")
         bg.assert_not_called()
 
+    @pytest.mark.parametrize("model", ["claude-sonnet-5-5", "sonnet", "claude-haiku-5-5"])
+    def test_the_builds_model_is_never_set_to_a_smaller_one_and_the_refusal_names_opus(self, commands_instance, model):
+        """2026-11-18: with Fable out of usage the assistant put the builds on Sonnet."""
+        with patch.object(commands_instance, "background_command") as bg:
+            answer = commands_instance.cmd_config_set("ai.code_quality.model", model)
+        assert answer.startswith("config_set failed") and "claude-opus-5-5" in answer
+        bg.assert_not_called()
+
+    @pytest.mark.parametrize("key, model", [("ai.code_quality.model", "claude-opus-5-5"),
+                                            ("ai.code_quality.model", "claude-fable-5-2"),
+                                            ("ai.photo_indexing.model", "claude-sonnet-5-5")])
+    def test_the_rule_is_about_the_builds_alone_and_lets_opus_and_fable_through(self, commands_instance, key, model):
+        with patch.object(commands_instance, "background_command") as bg:
+            assert commands_instance.cmd_config_set(key, model) is None
+        bg.assert_called_once()
+
+    def test_a_smaller_model_typed_into_the_prompt_is_not_written_either(self, commands_instance):
+        fake = _secret_notifier("claude-sonnet-5-5", decision="cancel")
+        with patch("assistant.commands.Commands.notifier", return_value=fake), \
+             patch.object(ConfigStore, "is_set", return_value=True), \
+             patch.object(ConfigStore, "set_value") as set_value:
+            commands_instance._run_config_request("ai.code_quality.model")
+        set_value.assert_not_called()
+        assert "claude-opus-5-5" in fake.reason, "the prompt says which model to type"
+
     def test_a_denied_key_is_refused_before_anything_runs(self, commands_instance):
         with patch.object(ConfigStore, "check_key",
                           side_effect=ConfigStoreError("'vault.key' cannot be changed from here — edit config.yaml by hand")), \

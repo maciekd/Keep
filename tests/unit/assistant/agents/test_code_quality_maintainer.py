@@ -1118,13 +1118,13 @@ class TestRunClaude:
         legacy = CodeQualityMaintainer._format_stream_line({"type": "result", "result": "ok", "cost_usd": 0.5})
         assert "$0.5000" in legacy
 
-    @patch('assistant.agents.CodeQualityMaintainer.parse_llm_config', return_value=("ClaudeLLM", "claude-sonnet-5"))
+    @patch('assistant.agents.CodeQualityMaintainer.parse_llm_config', return_value=("ClaudeLLM", "claude-opus-5"))
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')
     def test_model_configurable_via_config(self, mock_popen, mock_parse):
         mock_popen.return_value = _mock_popen()
         CodeQualityMaintainer._run_claude("test prompt", "label")
         cmd = mock_popen.call_args[0][0]
-        assert cmd[-2:] == ["--model", "claude-sonnet-5"]
+        assert cmd[-2:] == ["--model", "claude-opus-5"]
         mock_parse.assert_called_once_with("code_quality")
 
     @patch('assistant.agents.CodeQualityMaintainer.subprocess.Popen')

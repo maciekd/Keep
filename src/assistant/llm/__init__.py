@@ -54,7 +54,7 @@ _TIER_DEFAULTS = {
     'cache_auditor': ('GeminiLLM', 'gemini-3.8-flash'),  # used to decide is a user query is cachable or not, fairly simple decision so a cost efficient AI is good here
     'photo_indexing': ('ClaudeLLM', 'claude-sonnet-5-5'),  # describes each new Apple Photos still as the feed sees it (one call each, a few a day); a Claude model takes stills only — the clips go to the `video` tier's backend
     'photo_backfill': ('ClaudeLLM', 'claude-haiku-5-5'),  # the backlog: thousands of stills on a first run, the sweep behind the cursor, a bulk run — nobody waits for it, so the cheapest model that describes well
-    'code_quality': ('ClaudeLLM', 'claude-fable-5-2'),  # model for the nightly Claude Code CLI runs (CodeQualityMaintainer); only the model is used, the class is always the `claude` CLI
+    'code_quality': ('ClaudeLLM', 'claude-fable-5-2'),  # model for the Claude Code CLI runs (CodeQualityMaintainer.build_model: a Fable or an Opus model, a smaller one is replaced by Opus); only the model is used, the class is always the `claude` CLI
 }
 
 

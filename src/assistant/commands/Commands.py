@@ -20,7 +20,7 @@ from . import CommandSet, Toolkits, ToolkitPreloader
 from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
 from common.logging import trace, info, note, error, fine
 from assistant.agents.CodeQualityMaintainer import (CodeQualityMaintainer, IssueDraft, JobPullRequest,
-                                                    build_memory_warning)
+                                                    build_memory_warning, build_model_refusal)
 from common.ConfigManager import ConfigManager
 from common import ConfigSchema, ConfigStore, FullDiskAccess, IntegrationDirs, Platform, Watchdog
 from common.ConfigStore import ConfigStoreError
@@ -1800,6 +1800,8 @@ class Commands:
 
         def accept(value: str) -> str:
             try:
+                if refusal := build_model_refusal(key, value):
+                    raise ConfigStoreError(refusal)
                 ConfigStore.set_value(key, value)
             except ConfigStoreError as e:
                 outcome["reason"] = str(e)
@@ -1900,7 +1902,7 @@ class Commands:
         except ConfigStoreError as e:
             info(f"config_set: refused — {e}")
             return f"config_set failed: {e}"
-        if refusal := self._needs_mac(key):
+        if refusal := self._needs_mac(key) or build_model_refusal(key, value):
             info(f"config_set: refused — {refusal}")
             return f"config_set failed: {refusal}"
         self.background_command(self._run_config_set, [key, value], lane=self.CONFIG_LANE)

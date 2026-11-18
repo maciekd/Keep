@@ -8,7 +8,7 @@
 #      ~/.local/bin, which the server also looks in when it is not on the PATH). Nothing else is
 #      needed when api_keys.anthropic is set: the runs use that key, billed per token at the
 #      API price of ai.code_quality.model (a self_improvement run is a few dollars on a Fable
-#      model, well under a dollar on a Sonnet one; every report of a run on the key ends with
+#      model, about half of that on an Opus one; every report of a run on the key ends with
 #      a note saying so and what the run cost). The CLI is never run interactively, so no
 #      login and no workspace-trust prompt stands in the way.
 #   2. Optional: a claude.ai subscription (Pro/Max) instead of the key — open a terminal ON the
@@ -25,7 +25,11 @@
 # and starting a build each say so on such a machine; nothing is refused.
 # The health check runs `claude auth status` (a free local call) every 15 minutes, first ~10 s
 # after start; a missing CLI, or one with neither a login nor the key, shows as the error in
-# list_integrations. The model the runs use is ai.code_quality.model.
+# list_integrations.
+# The model the runs use is ai.code_quality.model: a Fable model (the default) or an Opus one, and
+# claude-opus-5-5 is the one to switch to when the account has no usage for Fable or Fable costs too
+# much. A smaller model (Sonnet, Haiku) writes no code here: config_set does not take one, and a
+# config.yaml that names one has its runs on claude-opus-5-5.
 self_improvement:
   # merge_strategy: rebase   # what the nightly auto-merge passes to `gh pr merge`: rebase (default), squash or merge
   # auto_merge_authors: [your-github-login]   # whose test-only PRs the nightly auto-merge may merge; default: the account `gh` is logged in as. PRs from forks are never merged

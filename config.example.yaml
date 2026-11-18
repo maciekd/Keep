@@ -659,7 +659,8 @@ local_backend: none
 #    llm: ClaudeLLM         # bulk run from the console; nobody waits for it, so the cheapest model that describes
 #    # model: claude-haiku-5-5    # well (Haiku 5.5). GeminiLLM / gemini-3.8-flash on either tier indexes its
 #                           # videos natively, no `video` tier needed.
-#  code_quality:            # model for the nightly Claude Code CLI runs (CodeQualityMaintainer)
+#  code_quality:            # model for the Claude Code CLI runs (CodeQualityMaintainer): a Fable or an Opus
+#                           # model (claude-opus-5-5), never a smaller one — see the self_improvement section
 #    model: claude-fable-5-2
 
 language: en-US         # drives TTS synthesis language for every engine that accepts a hint

@@ -50,6 +50,15 @@ USAGE_LIMIT_MARKERS = ("usage credits", "spend limit", "usage limit")
 # A result the CLI did not flag counts as the limit message only when it is one: a sentence or
 # two, never the length of a report that happens to discuss a limit.
 USAGE_LIMIT_MESSAGE_MAX_CHARS = 400
+# What a Claude Code run writes is a PR on the code every install runs next, so it runs on a
+# Fable or an Opus model and on nothing smaller, whatever config.yaml names (2026-11-18: told
+# that the account had no usage for Fable, the assistant put the builds on Sonnet). Matched on
+# the family, so the CLI's aliases ("opus") and a dated id pass as well.
+BUILD_MODEL_KEY = "ai.code_quality.model"
+BUILD_MODEL_FAMILIES = ("fable", "mythos", "opus")
+BUILD_FALLBACK_MODEL = "claude-opus-5-5"   # where to go from a Fable model that is out of reach
+BUILD_MODEL_RULE = (f"the builds run on a Fable or an Opus model, never on a smaller one — "
+                    f"{BUILD_FALLBACK_MODEL} is the model to switch to")
 CREDENTIALS_HINT = (
     f"Either put an Anthropic API key in config.yaml ({API_KEY_CONFIG_KEY}; the runs are then billed "
     "per token to that key), or log in with a claude.ai subscription: open a terminal on the server "
@@ -246,6 +255,31 @@ def claude_path() -> Optional[str]:
     if os.path.isfile(CLAUDE_FALLBACK_PATH) and os.access(CLAUDE_FALLBACK_PATH, os.X_OK):
         return CLAUDE_FALLBACK_PATH
     return None
+
+
+def is_build_model(model) -> bool:
+    """Whether a build may run on *model*: an id or a CLI alias of a Fable, Mythos or Opus model."""
+    lowered = str(model or "").lower()
+    return any(family in lowered for family in BUILD_MODEL_FAMILIES)
+
+
+def build_model() -> str:
+    """The model every Claude Code run uses: `ai.code_quality.model` while it names a Fable or
+    an Opus model, else Opus — a config.yaml that names a smaller one is not obeyed."""
+    _, model = parse_llm_config('code_quality')  # only the model matters; the runner is always the `claude` CLI
+    if is_build_model(model):
+        return model
+    info(f"CodeQualityMaintainer: {BUILD_MODEL_KEY} names '{model}', no model a build runs on — "
+         f"using {BUILD_FALLBACK_MODEL}")
+    return BUILD_FALLBACK_MODEL
+
+
+def build_model_refusal(key: str, value: str) -> Optional[str]:
+    """Why *value* is not written at *key*, None for every key but the builds' model and for a
+    model a build runs on: the config never comes to name a model `build_model` would not obey."""
+    if key != BUILD_MODEL_KEY or is_build_model(value):
+        return None
+    return f"'{value}' is not taken for {key}: {BUILD_MODEL_RULE}"
 
 
 def claude_api_key() -> Optional[str]:
@@ -1276,7 +1310,7 @@ class CodeQualityMaintainer:
         if not status.ok:
             error(f"CodeQualityMaintainer [{label}] Claude Code has no credentials: {status.detail}")
             raise ClaudeNotLoggedInError()
-        _, model = parse_llm_config('code_quality')  # only the model matters; the runner is always the `claude` CLI
+        model = build_model()
         trace(f"CodeQualityMaintainer [{label}] using Claude Code model {model}, {status.detail}")
         cmd = [status.path, "--permission-mode", "auto", "-p", prompt,
                "--output-format", "stream-json", "--verbose", "--model", model]
