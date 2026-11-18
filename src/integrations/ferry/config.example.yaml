@@ -1,0 +1,14 @@
+# The next departures of a Trafikverket car ferry (Färjerederiet), from Trafikverket's open data API.
+# Enable with "Ferry" in enabled_integrations.
+# SETUP: the API key is free — register at https://data.trafikverket.se/, then create a key under
+# "Mina sidor" / "Nycklar". Let the user type it with config_request (ferry.api_key), never in the chat.
+# Ask the user which route they take and set ferry.route to its name in Trafikverket's own list of
+# ferry routes (their API's FerryRoute objects — the "-leden" names, e.g. Hönöleden, Gullmarsleden,
+# Vaxholmsleden; the boat's or the island's name is not one). Case and å/ä/ö written as a/o do not
+# matter. An unknown name makes the integration report an error naming the closest routes and listing
+# all of them, so a first guess and a restart_integration are a fine way to find it; both directions
+# of the route are answered.
+ferry:
+  api_key: ""        # empty until the user has typed it; the integration counts as not configured till then
+  route: ""          # a route of Trafikverket's list, e.g. Hönöleden; required, none is built in
+  count: 4           # departures shown per direction
