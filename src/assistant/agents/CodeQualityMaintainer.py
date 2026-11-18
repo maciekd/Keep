@@ -593,6 +593,13 @@ integration, a contract), make NO change: say so in your report and describe exa
 can file it with report_issue instead.
 """
 
+# Added to the scope of a new integration whose folder an earlier, cut-short run left in the tree.
+UNFINISHED_FOLDER_NOTE = """
+`src/integrations/{folder}/` is already in the working tree: an earlier run of this request began it and was cut
+short before its pull request. It is on no released branch, so this is still the new integration: review what is
+there, finish it, and add the registry lines it lacks.
+"""
+
 IMPROVE_INTEGRATION_PROMPT = """
 This is a request for an automated change to the "{name}" integration of this code base, delivered as a pull
 request. It is usually a bug fix, but it can also be a small feature or improvement of that integration.
@@ -1635,7 +1642,8 @@ class CodeQualityMaintainer:
     @staticmethod
     def improve_integration(name: str, folder: Optional[str], request: str) -> tuple[str, Optional[JobPullRequest]]:
         """A PR confined to one integration: a change to the integration *name* in *folder*,
-        or — *folder* None, no integration of that name — a new one. After the run the files
+        or — *folder* None, no integration of that name, or a folder only this checkout has
+        (`_is_unfinished_folder`) — a new one. After the run the files
         of the PR the run opened (that one alone, `_job_pull_request`; a run that opened none
         has nothing checked) are checked against that scope (`scope_violations`, on the
         folder `_judged_folder` settles) and a PR that strays is closed, its branch kept and
@@ -1645,10 +1653,15 @@ class CodeQualityMaintainer:
         if reason:
             return reason, None
         version = CodeQualityMaintainer._version()
+        begun = folder if folder is not None and CodeQualityMaintainer._is_unfinished_folder(folder) else None
+        if begun:
+            folder = None
         if folder is None:
-            scope = INTEGRATION_SCOPE.format(folder="<folder>",
+            scope = INTEGRATION_SCOPE.format(folder=begun or "<folder>",
                                              registry=", plus the registry lines a new folder needs (" +
                                                       ", ".join(sorted(REGISTRY_FILES)) + " — additions only)")
+            if begun:
+                scope += UNFINISHED_FOLDER_NOTE.format(folder=begun)
             prompt = NEW_INTEGRATION_PROMPT.format(name=name, request=request, scope=scope,
                                                    label=INTEGRATION_PR_LABEL, version=version)
         else:
@@ -1683,6 +1696,38 @@ class CodeQualityMaintainer:
         return (f"PR #{pr.number} was closed again: {reason}.\n\nIts branch {pr.head} is kept, so the developers "
                 f"can reopen it. A change that needs more than one integration can be filed for them with "
                 f"report_issue.\n\nClaude Code's report:\n{report}"), None
+
+    @staticmethod
+    def _is_unfinished_folder(folder: str) -> bool:
+        """Whether the integration *folder* is only in this checkout: the branch the install
+        follows does not have it, as origin has that branch. A job cut short leaves the server
+        on its work branch, where the folder it began is registered like any integration
+        (2026-11-17: the retry was then scoped as a change to that folder, could not add the
+        registry lines a new folder needs and opened no PR). False when git cannot tell, and
+        during a PR trial, where the folder may be the tried PR's own."""
+        from assistant.agents.PullRequestTrial import PullRequestTrial
+        if PullRequestTrial.current() is not None:
+            trace(f"CodeQualityMaintainer: a PR trial runs, the {folder} folder is taken as an existing integration")
+            return False
+        ref = f"origin/{CodeQualityMaintainer.target_branch()}"
+        try:
+            known = CodeQualityMaintainer._run_subprocess(
+                ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], "git rev-parse", GIT_TIMEOUT)
+            if known.returncode != 0:
+                info(f"CodeQualityMaintainer: no {ref} here to look the {folder} folder up on, "
+                     f"it is taken as an existing integration")
+                return False
+            there = CodeQualityMaintainer._run_subprocess(
+                ["git", "cat-file", "-e", f"{ref}:{INTEGRATION_FOLDERS}{folder}"], "git cat-file", GIT_TIMEOUT)
+        except (OSError, subprocess.SubprocessError) as e:
+            error(f"CodeQualityMaintainer: could not look the {folder} folder up on {ref}: {e}")
+            return False
+        if there.returncode == 0:
+            trace(f"CodeQualityMaintainer: the {folder} folder is on {ref}, an existing integration")
+            return False
+        info(f"CodeQualityMaintainer: the {folder} folder is in this checkout but not on {ref} — begun by a job "
+             f"that never delivered it, so the request is for a new integration")
+        return True
 
     @staticmethod
     def _is_tried_pr(number: int) -> bool:
