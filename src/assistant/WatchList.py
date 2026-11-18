@@ -373,8 +373,9 @@ def render_due(directory: Path = None, now: datetime = None, tolerance: timedelt
     return "\n\n".join(_block(item, now.date(), now) for item in due)
 
 
-def _note_start(note: str) -> str:
-    """The start of a note, cut at a word once it runs past what an index line carries."""
+def index_start(note: str) -> str:
+    """The start of a text, cut at a word once it runs past what an index line carries — of a
+    watch item's note here, of a procedure's `When:` line in the procedures' index."""
     first = " ".join(note.strip().split("\n", 1)[0].split())
     if len(first) <= INDEX_NOTE_CHARS:
         return first
@@ -405,7 +406,7 @@ def render_index(directory: Path = None, today: date = None) -> str:
         facts = [fact for fact in (_due_fact(item, today),) if fact]
         if (stale := staleness(item, today)) and "due date" not in stale:
             facts.append(stale)
-        start = _note_start(item.note)
+        start = index_start(item.note)
         lines.append(f"- `{item.name}`" + (f" ({', '.join(facts)})" if facts else "") + (f" — {start}" if start else ""))
     return "\n".join(lines) or EMPTY
 

@@ -153,8 +153,8 @@ The commands:
   "weekly"), optional — omitted, both are kept as they were. A note longer than {WATCH_WORD_LIMIT} words is refused
   and the item keeps its old note. Never `checked_watch`: only a real check stamps it
 - `delete_watch("name", "outcome")` — the item is over
-- `save_procedure("name", "when to load it, one line", \"\"\"the full text\"\"\")` — a NEW procedure; the text in a
-  triple-quoted block
+- `save_procedure("name", "when to load it", \"\"\"the full text\"\"\")` — a NEW procedure; the text in a
+  triple-quoted block. Keep `when` under  {PROCEDURE_WHEN_CHARS} characters
 - `procedure_note("name", "the lesson")` — append a lesson to an existing procedure
 {TIPS}"""
 
@@ -210,8 +210,8 @@ Lift the watch items and the procedures out of the bank, as commands. Do NOT out
   merge them into ONE item whose note holds the current state and every detail worth keeping (order numbers, amounts,
   references, names, phone numbers, times). Where two mentions disagree, the later-dated one is the current state.
   `due` is the date it is due or expected as YYYY-MM-DD; leave it out when there is none. Skip what is already over.
-- `save_procedure("name", "when to load it, one line", \"\"\"the full text\"\"\")` — one per how-to, the text in a
-  triple-quoted block. Copy every step, URL, endpoint, code snippet, number and warning VERBATIM from the bank; do not
+- `save_procedure("name", "when to load it", \"\"\"the full text\"\"\")` — one per how-to, the text in a
+  triple-quoted block; keep `when` under {PROCEDURE_WHEN_CHARS} characters. Copy every step, URL, endpoint, code snippet, number and warning VERBATIM from the bank; do not
   summarise, do not drop a detail, do not invent a step. Give related how-tos separate procedures (one per site or
   task), and let the name say what it is (`vklass-login`, `online-purchases`).
 
@@ -728,6 +728,7 @@ class LongTermMemoryCurator:
             .replace("{INTERACTION_HISTORY}", interaction_history) \
             .replace("{CALENDAR}", calendar_data) \
             .replace("{WATCH_WORD_LIMIT}", str(WatchList.NOTE_WORD_LIMIT)) \
+            .replace("{PROCEDURE_WHEN_CHARS}", str(Procedures.WHEN_CHARS)) \
             .replace("{PERIOD}", period_text) \
             .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "") \
             .replace("{TIPS}", self._tips_prompt()) \
@@ -1035,7 +1036,9 @@ class LongTermMemoryCurator:
         today = f"{datetime.now():%Y-%m-%d}"
         watchlist_dir, procedures_dir = target / "watchlist", target / "procedures"
         info(f"Memory split: lifting the watch items and procedures out of a {self.word_count(bank)}-word bank...")
-        reply = self._think_whole(SPLIT_EXTRACT_PROMPT.replace("{TODAY}", today).replace("{BANK}", bank),
+        reply = self._think_whole(SPLIT_EXTRACT_PROMPT.replace("{TODAY}", today)
+                                  .replace("{PROCEDURE_WHEN_CHARS}", str(Procedures.WHEN_CHARS))
+                                  .replace("{BANK}", bank),
                                   "extracting the watch items and procedures")
         commands = self._split_commands(reply)[1]
         # A refused procedure stays in the old bank's text, which the rewrite below keeps verbatim

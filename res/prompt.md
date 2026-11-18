@@ -86,9 +86,10 @@ it:
 
 `load_procedure(name: str, ...)`
 
-`save_procedure(name: str, when: str, text: str)` — save a new procedure, or replace one entirely. `when` is one line
-saying when to load it. Write `text` so that you could follow it cold: every step in order, exact URLs, selectors,
-endpoints and code verbatim, what must NOT be done, how to tell that it worked; it runs to as many lines as it needs:
+`save_procedure(name: str, when: str, text: str)` — save a new procedure, or replace one entirely. `when` says
+when to load it, keep this under 48 characters. Write `text` so that you could follow it cold:
+every step in order, exact URLs, selectors, endpoints and code verbatim, what must NOT be done, how to tell that it
+worked; it runs to as many lines as it needs:
 `save_procedure("shop-checkout", "paying at shop.example", """...""")`.
 `delete_procedure(name: str)` — only when the user says so or the thing it describes no longer exists.
 

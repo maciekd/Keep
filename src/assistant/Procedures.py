@@ -3,7 +3,9 @@
 A procedure is a sequence that worked: how to log in somewhere, how to pay, how to read the
 pool display. Every step and literal matters, so a procedure is never condensed: the prompt
 carries only an index line per file (built here from the file, so nobody can erode it) and the
-`load_procedure` command loads the body when it is needed. `save_procedure` replaces a whole
+`load_procedure` command loads the body when it is needed. The index line is the name and the
+start of the `When:` line, as short as a watch item's (`WHEN_CHARS`): a save with a longer
+`when` is refused, and a line an older file holds is cut in the index alone. `save_procedure` replaces a whole
 procedure and `delete_procedure` removes one; a replaced or deleted version is copied to
 `log/memory/procedures/` first, which is a debugging trail the LLM never reads. The memory
 curator alone appends dated notes (`procedure_note`): it may add to a procedure, never rewrite it.
@@ -16,6 +18,7 @@ import threading
 from datetime import date, datetime
 from pathlib import Path
 
+from assistant import WatchList
 from common.logging import info, trace
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
 from common.vault.Redactor import redact_for_storage
@@ -29,6 +32,9 @@ MAX_FILE_CHARS = 10_000
 HEADER_PREFIX = "# Procedure: "
 NOTES_HEADING = "## Notes"
 WHEN_PREFIX = "When:"
+# The longest `when` a save may write, and how much of one the index carries: every procedure costs
+# its index line in every prompt, so the line is as short as a watch item's.
+WHEN_CHARS = WatchList.INDEX_NOTE_CHARS
 EMPTY = "No procedures saved yet."
 
 lock = threading.RLock()
@@ -85,8 +91,12 @@ def save(name: str, when_text: str, text: str, directory: Path = None, log_dir: 
         return "save_procedure failed: the name must contain letters or digits"
     if not text.strip():
         return "save_procedure failed: the procedure text is empty"
-    content = redact_for_storage(
-        f"# {name.strip()}\n{WHEN_PREFIX} {' '.join(when_text.split())}\n\n{text.strip()}\n")
+    when_text = " ".join(when_text.split())
+    if len(when_text) > WHEN_CHARS:
+        info(f"Procedures: save of '{slug(name)}' refused — `when` is {len(when_text)} chars, limit {WHEN_CHARS}")
+        return (f"save_procedure failed: `when` is {len(when_text)} chars, the limit is {WHEN_CHARS} — "
+                "shorten it and save again")
+    content = redact_for_storage(f"# {name.strip()}\n{WHEN_PREFIX} {when_text}\n\n{text.strip()}\n")
     if len(content) > MAX_FILE_CHARS:
         return (f"save_procedure failed: {len(content)} chars, the limit is {MAX_FILE_CHARS} — "
                 "split it into two procedures")
@@ -157,11 +167,12 @@ def load(name: str, directory: Path = None) -> str:
 
 
 def render_index(directory: Path = None) -> str:
-    """The `{PROCEDURES}` text: one line per procedure, from the files themselves."""
+    """The `{PROCEDURES}` text: one line per procedure, from the files themselves — the name and
+    the start of its `When:` line."""
     directory = directory or PROCEDURES_DIR
     lines = []
     for name in names(directory):
-        summary = when(read(name, directory) or "")
+        summary = WatchList.index_start(when(read(name, directory) or ""))
         lines.append(f"- `{name}`" + (f" — {summary}" if summary else ""))
     return "\n".join(lines) or EMPTY
 

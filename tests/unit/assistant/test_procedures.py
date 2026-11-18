@@ -60,6 +60,45 @@ class TestSave:
 
 
 @pytest.mark.unit
+class TestWhenLimit:
+    """A `when` is an index line of every prompt: a save with one over the limit is refused and
+    told the limit, and a longer line an older file holds is cut in the index alone."""
+
+    def test_a_when_at_the_limit_is_saved_and_one_character_more_is_refused(self, pd, log):
+        fits = "x" * Procedures.WHEN_CHARS
+        assert Procedures.save("fits", fits, BODY, pd, log) == ""
+        failure = Procedures.run("save_procedure", ["over", fits + "y", BODY], pd, log)
+        assert str(Procedures.WHEN_CHARS) in failure and str(Procedures.WHEN_CHARS + 1) in failure
+        assert Procedures.names(pd) == ["fits"]
+
+    def test_the_limit_counts_the_line_as_it_is_stored(self, pd, log):
+        spaced = "paying   at\n" + " " * Procedures.WHEN_CHARS + "shop.example"
+        assert Procedures.save("shop", spaced, BODY, pd, log) == ""
+
+    def test_a_refused_replacement_leaves_the_procedure_as_it_was(self, pd, log):
+        Procedures.save("shop", "paying", BODY, pd, log)
+        assert Procedures.save("shop", "z" * (Procedures.WHEN_CHARS + 1), "new steps", pd, log)
+        assert BODY in Procedures.read("shop", pd) and log_texts(log) == []
+
+    def test_a_longer_line_of_an_older_file_is_cut_at_a_word_in_the_index_and_loads_whole(self, pd, log):
+        Procedures.save("shop", "paying", BODY, pd, log)
+        long_when = "paying by card " + "at shop.example " * 6 + "LASTWORD"
+        path = pd / "shop.md"
+        path.write_text(path.read_text().replace("When: paying", f"When: {long_when}"))
+        line = Procedures.render_index(pd)
+        shown = line.split(" — ", 1)[1]
+        assert shown.endswith("…") and len(shown) <= Procedures.WHEN_CHARS + 1
+        assert long_when.startswith(shown[:-1]) and long_when[len(shown) - 1] == " "
+        assert long_when in Procedures.load("shop", pd)
+
+    def test_the_prompt_states_the_limit_the_save_enforces(self):
+        from common.Paths import RES_DIR
+        text = (RES_DIR / "prompt.md").read_text(encoding="utf-8")
+        declaration = " ".join(text.split("`save_procedure(name", 1)[1].split("`delete_procedure(", 1)[0].split())
+        assert f"{Procedures.WHEN_CHARS} characters" in declaration
+
+
+@pytest.mark.unit
 class TestNoReplaceMode:
     """What the memory curator gets: it may add, never replace or delete."""
 
