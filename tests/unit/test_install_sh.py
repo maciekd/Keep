@@ -1100,7 +1100,7 @@ class TestTheMemoryCheck:
     def test_a_mac_under_16_gb_is_warned_about_its_own_microphones(self, harness, ram_gb, warned):
         result = harness.run(a_mac(ram_gb) + 'check_mac')
         assert result.returncode == 0, result.stdout
-        assert ('warn:' in harness.log.read_text()) == warned
+        assert ('microphones' in harness.log.read_text()) == warned
         assert f'{ram_gb} GB' in result.stdout
 
     def test_a_mac_with_too_little_memory_stops(self, harness):
