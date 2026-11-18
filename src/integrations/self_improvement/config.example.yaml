@@ -20,6 +20,9 @@
 #      files the issue through the same login; without one it drafts the issue and sends it with a
 #      link, for the user to file by hand. self_analysis needs neither.
 #   4. Optional: a mail account (imap.accounts): the nightly report is mailed from the account send_email uses to its own address.
+# A build runs Claude Code and the test suite beside the server: a machine with less than 8 GB of memory
+# (swap counted) may run out, which ends the build and can restart the server. Enabling the integration
+# and starting a build each say so on such a machine; nothing is refused.
 # The health check runs `claude auth status` (a free local call) every 15 minutes, first ~10 s
 # after start; a missing CLI, or one with neither a login nor the key, shows as the error in
 # list_integrations. The model the runs use is ai.code_quality.model.

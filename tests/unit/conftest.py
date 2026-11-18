@@ -245,6 +245,15 @@ def isolated_job_home_record(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def a_machine_with_room_for_a_build():
+    """No unit test depends on the memory of the machine it runs on: a build command answers
+    with a warning on a small one (a CI runner has 7 GB, a laptop 64). A test of the warning
+    patches `machine_memory` to the machine it means."""
+    from assistant.agents import CodeQualityMaintainer
+    CodeQualityMaintainer.machine_memory = lambda: (64 * 1024 ** 3, 0)
+
+
+@pytest.fixture(autouse=True, scope="session")
 def isolated_imessage_chat_state(tmp_path_factory):
     """No unit test reads or writes the install's cache/imessage_chat.json — the iMessage chat's
     cursor into the assistant's own Messages account and its send counts: a transport built

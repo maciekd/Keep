@@ -19,7 +19,8 @@ from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
 from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
 from common.logging import trace, info, note, error, fine
-from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, IssueDraft, JobPullRequest
+from assistant.agents.CodeQualityMaintainer import (CodeQualityMaintainer, IssueDraft, JobPullRequest,
+                                                    build_memory_warning)
 from common.ConfigManager import ConfigManager
 from common import ConfigSchema, ConfigStore, FullDiskAccess, IntegrationDirs, Platform, Watchdog
 from common.ConfigStore import ConfigStoreError
@@ -1129,7 +1130,7 @@ class Commands:
         if reason:
             info(f"self_improvement not started: {reason}")
             return reason
-        self._run_pr_job("Self-improvement", lambda: CodeQualityMaintainer.improve_code(parameter_string))
+        return self._run_pr_job("Self-improvement", lambda: CodeQualityMaintainer.improve_code(parameter_string))
 
     def cmd_improve_integration(self, parameter_string: str):
         """`improve_integration(name, request)`: a PR confined to one integration — a fix to
@@ -1166,8 +1167,8 @@ class Commands:
                     f"change it. improve_local_integration works on it in place.")
         else:
             info(f"improve_integration: '{name}' is the {folder} folder")
-        self._run_pr_job("Integration improvement",
-                         lambda: CodeQualityMaintainer.improve_integration(name, folder, request))
+        return self._run_pr_job("Integration improvement",
+                                lambda: CodeQualityMaintainer.improve_integration(name, folder, request))
 
     LOCAL_WHOLE_NAMES = frozenset({"all", "*", "local", "directory", "directories"})
 
@@ -1220,7 +1221,7 @@ class Commands:
                             f"existing integration resembles.")
                 info(f"improve_local_integration: no integration named '{name}' — a new local one in {roots[0]}")
                 job = lambda: CodeQualityMaintainer.improve_local_integration(request, roots, name)
-        self._run_local_job(job)
+        return self._run_local_job(job)
 
     @staticmethod
     def _local_root_named(name: str, roots) -> bool:
@@ -1249,6 +1250,7 @@ class Commands:
                 error(f"{label} failed: {e}")
 
         self.fire_and_forget(_run_and_deliver, None)
+        return self._build_started(label)
 
     @classmethod
     def _local_outcome(cls, report: str, sent: bool) -> str:
@@ -1277,7 +1279,8 @@ class Commands:
         report: pushed to the chats, and summed up in the history as a system row with its
         own time (`_pr_outcome`) — never as an assistant row, which the window glued onto
         the reply that made the call (#137). The PR is the one the job found it opened,
-        never one the report's text mentions."""
+        never one the report's text mentions. Returns what the command answers with at once:
+        `_build_started`."""
         def _run_and_deliver(_params):
             try:
                 report, pr = job()
@@ -1291,6 +1294,18 @@ class Commands:
                 error(f"{label} failed: {e}")
 
         self.fire_and_forget(_run_and_deliver, None)
+        return self._build_started(label)
+
+    @staticmethod
+    def _build_started(label: str) -> Optional[str]:
+        """What a command that has just started a build answers with: nothing, or — on a
+        machine with too little memory for one — the warning the LLM passes on while the job
+        runs. The job is started either way."""
+        warning = build_memory_warning()
+        if warning is None:
+            return None
+        info(f"{label}: started on a machine short of memory for a build, the owner is told")
+        return f"The job is started and runs in the background. Tell the user this as well: {warning}"
 
     @staticmethod
     def _trial_invitation(pr: Optional[JobPullRequest]) -> str:
@@ -2022,7 +2037,18 @@ class Commands:
             return changed
         text = f"{changed}; {self._describe_restart(result['status'], result['restartable'])}"
         warning = self._setup_order_warning(result["status"]) if enable else None
-        return f"{text}. {warning}" if warning else text
+        if warning:
+            text = f"{text}. {warning}"
+        note = self._enable_note(canonical) if enable else None
+        return f"{text}. {note}" if note else text
+
+    def _enable_note(self, name: str) -> Optional[str]:
+        """What the integration itself has to say on being switched on (`Integration.enable_note`)."""
+        integration = self._integration_monitor().find(name)
+        note = integration.enable_note() if integration else None
+        if note:
+            info(f"enable_integration: {name} adds a note for the owner: {note}")
+        return note
 
     def _setup_order_warning(self, status: dict) -> Optional[str]:
         """The integration was meant to follow another (`Integration.setup_after`) that is not

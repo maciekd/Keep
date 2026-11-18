@@ -458,6 +458,7 @@ check_mac() {
 MEMINFO=/proc/meminfo
 MIN_RAM_GB=4      # the server itself stays under 1 GB; the rest is the system's and the browser's
 VOICE_RAM_GB=16   # Whisper for the Mac's own microphones holds about 7 GB of GPU memory
+BUILD_RAM_GB=8    # Claude Code and the test suite's workers beside the server: BUILD_MEMORY_GB of CodeQualityMaintainer
 
 # The machine's memory in whole GB, rounded up: a Linux kernel reports what is left after its own
 # reservations, so a 4 GB machine says 3.8. Prints nothing when it cannot be read.
@@ -471,6 +472,8 @@ ram_gb() {
 
 # Under MIN_RAM_GB nothing is installed. Under VOICE_RAM_GB a Mac is told what it may have to do
 # without: the speech recognition for its own microphones, which a Linux server does not have.
+# Under BUILD_RAM_GB either system is told the same of the builds: the server runs, but a build of
+# an integration ran a 4 GB container out of memory and took the server down with it.
 check_memory() {
   local ram
   ram=$(ram_gb)
@@ -483,6 +486,9 @@ check_memory() {
   ok "Memory: $ram GB"
   if ! linux && [ "$ram" -lt "$VOICE_RAM_GB" ]; then
     warn "Local voice recognition (this Mac's own microphones) might not work with less than $VOICE_RAM_GB GB of memory."
+  fi
+  if [ "$ram" -lt "$BUILD_RAM_GB" ]; then
+    warn "Having Keep build integrations itself (Self Improvement) might run out of memory with less than $BUILD_RAM_GB GB."
   fi
 }
 

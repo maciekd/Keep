@@ -184,3 +184,56 @@ class TestGating:
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
                 patch.object(CodeQualityMaintainer, "_trial_instructions", return_value=""):
             assert CodeQualityMaintainer.improve_code("fix it") == (NOT_INSTALLED_MESSAGE, None)
+
+
+GB = 1024 ** 3
+
+
+@pytest.mark.unit
+class TestBuildMemory:
+    """Too little memory for a build is said, never refused and never a health state."""
+
+    @staticmethod
+    def _on(ram_gb: float, swap_gb: float = 0):
+        return patch("assistant.agents.CodeQualityMaintainer.machine_memory",
+                     return_value=(int(ram_gb * GB), int(swap_gb * GB)))
+
+    @pytest.mark.parametrize("ram_gb, swap_gb, said", [
+        (1.9, 0, ("2 GB", "no swap")),          # the container the first build was killed in
+        (3.8, 0, ("4 GB", "no swap")),          # a machine sold as 4 GB reports less
+        (5.8, 1, ("6 GB", "1 GB of swap")),
+    ])
+    def test_a_small_machine_is_told_what_it_has(self, ram_gb, swap_gb, said):
+        with self._on(ram_gb, swap_gb):
+            warning = cqm.build_memory_warning()
+        assert all(fact in warning for fact in said)
+
+    @pytest.mark.parametrize("ram_gb, swap_gb", [(7.7, 0), (3.8, 4), (64, 0)])
+    def test_enough_memory_or_swap_to_make_it_up_is_no_warning(self, ram_gb, swap_gb):
+        with self._on(ram_gb, swap_gb):
+            assert cqm.build_memory_warning() is None
+
+    def test_memory_that_cannot_be_read_is_no_warning(self):
+        with patch("assistant.agents.CodeQualityMaintainer.machine_memory", side_effect=OSError("no /proc")):
+            assert cqm.build_memory_warning() is None
+
+    @patch("integrations.self_improvement.SelfImprovementIntegration.claude_status",
+           return_value=ClaudeStatus("/opt/bin/claude", True, "logged in"))
+    def test_a_small_machine_is_a_note_on_enabling_and_a_healthy_integration(self, _status):
+        """A warning state would be shown at every check and ask for what no restart gives."""
+        SelfImprovementIntegration.reset_instance()
+        try:
+            integration = SelfImprovementIntegration()
+            with self._on(3.8):
+                assert "4 GB" in integration.enable_note()
+                assert integration.check_health() is True
+            assert integration.enable_note() is None      # the conftest's roomy machine
+        finally:
+            SelfImprovementIntegration.reset_instance()
+
+    def test_the_installer_warns_under_the_same_figure(self):
+        """Contract between install.sh (BUILD_RAM_GB) and the server: one figure, told twice."""
+        import re
+        from common.Paths import AISERVER_DIR
+        figure = re.search(r"^BUILD_RAM_GB=(\d+)", (AISERVER_DIR / "install.sh").read_text(), re.M)
+        assert figure and int(figure.group(1)) == cqm.BUILD_MEMORY_GB

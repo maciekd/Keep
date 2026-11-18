@@ -1,7 +1,7 @@
-from typing import List
+from typing import List, Optional
 
 from assistant.integration.Integration import Integration
-from assistant.agents.CodeQualityMaintainer import claude_status
+from assistant.agents.CodeQualityMaintainer import build_memory_warning, claude_status
 from common.logging import trace
 
 
@@ -25,7 +25,9 @@ class SelfImprovementIntegration(Integration):
     health check asks `claude auth status`, a free local call, so a missing CLI or one without
     credentials shows in list_integrations within a cycle. A login takes precedence over the key
     (the key is only handed to the CLI when there is no login, since the environment variable
-    would shadow a login and move its billing to the key)."""
+    would shadow a login and move its billing to the key). A machine with too little memory for
+    a build is said when the integration is switched on (`enable_note`) and when a build starts,
+    and is no health state."""
 
     @property
     def name(self) -> str:
@@ -34,6 +36,9 @@ class SelfImprovementIntegration(Integration):
     @property
     def config_keys(self) -> List[str]:
         return []
+
+    def enable_note(self) -> Optional[str]:
+        return build_memory_warning()
 
     def check_health(self) -> bool:
         status = claude_status()

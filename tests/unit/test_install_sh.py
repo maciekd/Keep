@@ -1076,13 +1076,28 @@ def meminfo(harness, kb: int):
 
 class TestTheMemoryCheck:
     """Too little memory for a server stops the install; too little for the Mac's own speech
-    recognition is a warning, on the one kind of install that has it."""
+    recognition is a warning, on the one kind of install that has it, and too little for a build
+    of an integration a warning on either."""
 
     def test_a_linux_machine_sold_as_4_gb_reports_less_and_still_installs(self, harness):
         meminfo(harness, 3_981_234)
         result = on_linux(harness, CHECK)
         assert result.returncode == 0, result.stdout
-        assert 'warn:' not in harness.log.read_text()
+        assert 'microphones' not in harness.log.read_text()
+
+    @pytest.mark.parametrize('kb, warned', [(3_981_234, True), (6_100_000, True), (7_900_000, False), (16_300_000, False)])
+    def test_a_linux_machine_under_8_gb_is_warned_about_builds_and_installs(self, harness, kb, warned):
+        """Where a 4 GB container ran out of memory building an integration, server included."""
+        meminfo(harness, kb)
+        result = on_linux(harness, CHECK)
+        assert result.returncode == 0, result.stdout
+        assert ('Self Improvement' in harness.log.read_text()) == warned
+
+    @pytest.mark.parametrize('ram_gb, warned', [(4, True), (8, False)])
+    def test_a_mac_under_8_gb_is_warned_about_builds_too(self, harness, ram_gb, warned):
+        result = harness.run(a_mac(ram_gb) + 'check_mac')
+        assert result.returncode == 0, result.stdout
+        assert ('Self Improvement' in harness.log.read_text()) == warned
 
     def test_a_linux_machine_with_too_little_memory_stops_before_apt(self, harness):
         meminfo(harness, 2_014_208)

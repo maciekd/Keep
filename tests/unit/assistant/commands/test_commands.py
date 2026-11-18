@@ -963,6 +963,44 @@ class TestCmdScheduleAndCaffeinate:
         assert "20" in text
 
 # ---------------------------------------------------------------------------
+# TestABuildOnASmallMachine
+# ---------------------------------------------------------------------------
+
+class TestABuildOnASmallMachine:
+    """A build is started whatever the machine's memory, and on one with too little for it the
+    command's answer carries the warning for the LLM to pass on — a 4 GB container lost two
+    builds in six, and its server with them, with nobody told why."""
+
+    WARNING = "This machine has 4 GB of memory and no swap."
+
+    @pytest.mark.parametrize("starter, job_result", [("_run_pr_job", ("report", None)), ("_run_local_job", "report")])
+    @pytest.mark.parametrize("warning", [WARNING, None])
+    def test_the_answer_carries_the_warning_and_the_job_runs_all_the_same(self, commands_instance, starter,
+                                                                          job_result, warning):
+        job = Mock(return_value=job_result)
+        chat = Mock()
+        chat.markdown_to_html.side_effect = lambda md: md
+        with patch("assistant.commands.Commands.build_memory_warning", return_value=warning), \
+             patch("assistant.commands.Commands.system_note"), \
+             patch("assistant.Notifier._notifier", chat), \
+             patch.object(commands_instance, "fire_and_forget", side_effect=lambda fn, p: fn(p)):
+            args = ("Self-improvement", job) if starter == "_run_pr_job" else (job,)
+            answer = getattr(commands_instance, starter)(*args)
+        job.assert_called_once()
+        assert (self.WARNING in answer) if warning else (answer is None)
+
+    def test_the_commands_hand_the_answer_on(self, commands_instance):
+        """What `run` gives the LLM is the command's own return value."""
+        with patch("assistant.commands.Commands.CodeQualityMaintainer") as cqm, \
+             patch.object(commands_instance, "_run_pr_job", return_value=self.WARNING), \
+             patch.object(commands_instance, "_integration_folder", return_value="tesla"), \
+             patch("assistant.commands.Commands.IntegrationDirs.local_folder", return_value=None):
+            cqm.unavailable_reason.return_value = None
+            assert commands_instance.cmd_self_improvement("fix the timers") == self.WARNING
+            assert commands_instance.cmd_improve_integration("Tesla, show the tyre pressure") == self.WARNING
+
+
+# ---------------------------------------------------------------------------
 # TestCmdSelfImprovement
 # ---------------------------------------------------------------------------
 
@@ -1938,6 +1976,7 @@ class TestCmdListIntegrations:
     @staticmethod
     def _enable_with_prerequisite(commands_instance, prerequisite_state, in_ftue=True):
         monitor = Mock()
+        monitor.find.return_value = None
         statuses = [{"name": "Photos", "state": "disabled"}]
         if prerequisite_state is not None:
             statuses.append({"name": "iCloud", "state": prerequisite_state})
@@ -1968,8 +2007,23 @@ class TestCmdListIntegrations:
         assert self._enable_with_prerequisite(commands_instance, "disabled", in_ftue=False) \
             == "Photos enabled; Photos restarted: ok"
 
+    @pytest.mark.parametrize("command, noted", [("_run_enable_integration", True), ("_run_disable_integration", False)])
+    def test_what_an_integration_says_on_being_switched_on_ends_the_answer(self, commands_instance, command, noted):
+        """`Integration.enable_note`: Self Improvement on a machine with too little memory for a build."""
+        monitor = Mock()
+        monitor.get_all_statuses.return_value = [{"name": "Ring"}]
+        monitor.find.return_value.enable_note.return_value = "This machine is small."
+        monitor.restart.return_value = {"restartable": True, "status": {
+            "name": "Ring", "state": "ok", "last_error": None, "config_keys": []}}
+        with patch.object(Commands, "_integration_monitor", return_value=monitor), \
+             patch("assistant.commands.Commands.ConfigStore.enable_integration", return_value="Ring enabled"), \
+             patch("assistant.commands.Commands.ConfigStore.disable_integration", return_value="Ring disabled"):
+            text = getattr(commands_instance, command)("Ring")
+        assert text.endswith("This machine is small.") == noted
+
     def test_enable_integration_writes_the_name_and_restarts(self, commands_instance):
         monitor = Mock()
+        monitor.find.return_value = None
         monitor.get_all_statuses.return_value = [{"name": "Ring"}, {"name": "Sonos & Spotify"}]
         monitor.restart.return_value = {"restartable": True, "status": {
             "name": "Ring", "state": "not_configured", "last_error": None, "config_keys": ["ring.username"]}}

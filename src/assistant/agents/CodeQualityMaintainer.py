@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlencode
+
+import psutil
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -271,6 +273,42 @@ class ClaudeStatus:
         if workspace:
             env[CUSTOM_HEADERS_ENV] = f"{WORKSPACE_HEADER}: {workspace}"
         return env
+
+
+# Under this much memory a build may not fit: Claude Code and the unit suite's workers run beside
+# the server, and on a 4 GB container without swap two builds in six ended with the server taken
+# down for lack of memory. Swap counts, since it is what keeps the kernel from killing. The
+# installer warns under the same figure (BUILD_RAM_GB in install.sh).
+BUILD_MEMORY_GB = 8
+_GB = 1024 ** 3
+
+
+def machine_memory() -> tuple[int, int]:
+    """The machine's memory and its swap, in bytes (a container's are its own limits)."""
+    return psutil.virtual_memory().total, psutil.swap_memory().total
+
+
+def build_memory_warning() -> Optional[str]:
+    """What the owner should hear before this machine builds anything, None when it has the
+    memory for it: said when Self Improvement is switched on and at the start of each build,
+    never as a health state — a machine too small is not something a restart or a login mends.
+    Nothing is refused: the figure is where builds were seen to fail, not where they must."""
+    try:
+        ram, swap = machine_memory()
+    except Exception as e:
+        info(f"Build memory: could not be read ({e}), no warning")
+        return None
+    # Rounded up as the installer does: a kernel reports what is left after its own reservations.
+    ram_gb, swap_gb = -(-ram // _GB), round(swap / _GB)
+    if ram_gb + swap_gb >= BUILD_MEMORY_GB:
+        trace(f"Build memory: {ram_gb} GB and {swap_gb} GB of swap, enough for a build")
+        return None
+    info(f"Build memory: {ram_gb} GB and {swap_gb} GB of swap, under {BUILD_MEMORY_GB} GB — a build may run out")
+    swap_text = f"{swap_gb} GB of swap" if swap_gb else "no swap"
+    return (f"This machine has {ram_gb} GB of memory and {swap_text}. A build runs Claude Code and the test suite "
+            f"beside the server and may need more: with less than {BUILD_MEMORY_GB} GB it can run out of memory, "
+            f"which ends the build and can restart the server with it. More memory for the machine, or swap, "
+            f"avoids that.")
 
 
 def claude_status() -> ClaudeStatus:

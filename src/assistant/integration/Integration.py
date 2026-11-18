@@ -69,6 +69,13 @@ class Integration(SingletonMixin, ABC):
     # system the monitor never constructs it and lists a `MacOnlyIntegration` in its place.
     mac_only: bool = False
 
+    def enable_note(self) -> Optional[str]:
+        """What the owner should hear once, when the integration is switched on, about the
+        machine it runs on (too little memory for Self Improvement's builds): `enable_integration`
+        adds it to its answer. Not a health state: nothing is wrong with the integration, and a
+        warning shown at every check would ask for something a restart cannot give. None for nothing."""
+        return None
+
     def current_login_hint(self) -> str:
         """The login hint for the state the integration is in now; the class attribute unless
         the integration knows better at the moment."""
