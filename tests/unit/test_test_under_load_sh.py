@@ -72,6 +72,23 @@ class TestTestUnderLoad:
             time.sleep(0.002)
         assert not any(map(alive, loops)), "a busy loop outlived the script"
 
+    def test_without_an_override_the_load_is_several_loops_for_every_core(self, run, tmp_path):
+        """One loop per core passed a test that failed on a CI runner; the load follows the cores,
+        several times over. The cores are staged, so the test costs the same on any machine."""
+        def loops_on(cores: int) -> int:
+            stubs = tmp_path / f'cores_{cores}.bash'
+            stubs.write_text(f'getconf() {{ echo {cores}; }}\n')
+            out = tmp_path / f'out_{cores}'
+            result = run('1', str(out), LOAD_PROCESSES='', BASH_ENV=str(stubs), REPORT_PROCESSES='1')
+            assert result.returncode == 0, result.stderr
+            return len(field(out / 'run_1.txt', 'siblings').split())
+
+        one, two = loops_on(1), loops_on(2)
+        per_core = two - one
+        assert per_core > 1, "a single loop per core is the load that hid the failing test"
+        # procps' pgrep lists the suite's own process among the siblings, the Mac's leaves it out
+        assert one - per_core in (0, 1)
+
     def test_a_missing_run_count_is_refused_before_anything_starts(self, run, tmp_path):
         result = run(str(tmp_path / 'out'))
         assert result.returncode == 2

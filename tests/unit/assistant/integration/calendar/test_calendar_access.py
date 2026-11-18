@@ -216,6 +216,16 @@ class TestFetch:
         text = CalendarAccess([_household(), _Account("Broken", failing=True)]).coming_week()
         assert "(Broken: calendar could not be loaded)" in text
 
+    def test_one_account_down_among_several_is_one_error_that_names_it_whichever_reader_asks(self):
+        accounts = [_household(), _Account("Broken", failing=True), _Account("Work", failing=True)]
+        with patch("assistant.integration.calendar.CalendarAccess.error") as logged:
+            week = CalendarAccess(accounts).coming_week()
+            assert logged.call_count == 1, "one line for the two accounts, not one each"
+            message = logged.call_args.args[0]
+            assert "Broken" in message and "Work" in message and "iCloud" not in message
+            assert CalendarAccess(accounts).fetch(*WEEK).splitlines()[:3] == week.splitlines()[:3]
+            assert logged.call_count == 2
+
     def test_an_outage_of_every_account_is_one_error_and_only_for_the_reader_that_gets_the_placeholder(self):
         accounts = [_Account("Family", failing=True), _Account("Work", failing=True)]
         with patch("assistant.integration.calendar.CalendarAccess.error") as logged:
