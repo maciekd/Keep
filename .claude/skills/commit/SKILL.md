@@ -3,6 +3,7 @@ name: commit
 description: Commit and push all current changes with an auto-generated commit messages
 disable-model-invocation: false
 allowed-tools: Bash(git *)
+effort: medium
 argument-hint: "[why this change was made]"
 ---
 
