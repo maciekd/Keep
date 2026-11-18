@@ -176,7 +176,10 @@ class TestGating:
     @patch.object(cqm, "claude_path", return_value=None)
     def test_improve_code_reports_the_missing_cli(self, _path):
         pusher = GithubAccess(login="marcus", repo="marcus/keep", permission="WRITE")
+        # The branch is a name: read through the mocked git it was a Mock, the job's record of it
+        # never matched on the way back and was left for the next test as a job cut short.
         with patch.object(CodeQualityMaintainer, "_run_subprocess"), \
+                patch.object(CodeQualityMaintainer, "_current_branch", return_value="release"), \
                 patch.object(CodeQualityMaintainer, "_github_access", return_value=(pusher, None)), \
                 patch.object(CodeQualityMaintainer, "_version", return_value="v2026.10.1"), \
                 patch.object(CodeQualityMaintainer, "_trial_instructions", return_value=""):

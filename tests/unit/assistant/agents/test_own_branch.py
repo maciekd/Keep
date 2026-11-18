@@ -39,9 +39,10 @@ class TestWhichBranchIsTheInstallsOwn:
             assert CodeQualityMaintainer.own_branch() is None
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def job_record():
-    """The record a job keeps of the branch it started on, gone before and after the test."""
+    """The record a job keeps of the branch it started on, gone before and after the test — every
+    test here: with a record another test of the worker left, no branch is the install's own."""
     from assistant.agents import CodeQualityMaintainer as module
     module.JOB_HOME_FILE.unlink(missing_ok=True)
     yield module.JOB_HOME_FILE

@@ -844,12 +844,24 @@ class TestAlbums:
         return msg(kind=KIND_PHOTO, text=caption, group_id=group_id,
                    attachments=[Attachment(data, "image/jpeg", "photo")])
 
+    # A debounce no test waits out: what must land in one batch is handed over at the machine's own
+    # pace — under load two submits were further apart than a 50 ms debounce — and then the test
+    # runs the debounce out itself.
+    HELD = 60.0
+
+    def _debounce_runs_out(self, session):
+        """What the album's timer does when it fires, done now."""
+        timer = session._album.timer
+        timer.cancel()
+        timer.function(*timer.args)
+
     def test_grouped_photos_become_one_request(self, session, hub, transport):
-        session.ALBUM_DEBOUNCE_SECONDS = 0.05
+        session.ALBUM_DEBOUNCE_SECONDS = self.HELD
         assistant = FakeAssistant([Token("Two"), RoundEnd(), None])
         hub.assistant = assistant
         session.submit(self._photo(b"one", caption="How many?", group_id="g1"))
         session.submit(self._photo(b"two", group_id="g1"))
+        self._debounce_runs_out(session)
         assert wait_until(lambda: assistant.requests)
         req, query = assistant.requests[0]
         assert query == "How many?"
@@ -870,36 +882,40 @@ class TestAlbums:
         assert "a bot" in req.note and "every command is disabled" in req.note
 
     def test_captions_are_concatenated_and_default_to_see_images(self, session, hub, transport):
-        session.ALBUM_DEBOUNCE_SECONDS = session.PHOTO_DEBOUNCE_SECONDS = 0.01
+        session.ALBUM_DEBOUNCE_SECONDS = session.PHOTO_DEBOUNCE_SECONDS = self.HELD
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.submit(self._photo(caption="First caption", group_id="g"))
         session.submit(self._photo(caption="Second caption", group_id="g"))
+        self._debounce_runs_out(session)
         assert wait_until(lambda: assistant.requests)
         assert assistant.requests[0][1] == "First caption Second caption"
 
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.submit(self._photo())
+        self._debounce_runs_out(session)
         assert wait_until(lambda: assistant.requests)
         assert assistant.requests[0][1] == "See images"
 
     def test_text_is_folded_into_a_pending_album(self, session, hub, transport):
-        session.PHOTO_DEBOUNCE_SECONDS = 0.05
+        session.PHOTO_DEBOUNCE_SECONDS = self.HELD
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.submit(self._photo(caption="My caption"))
         session.submit(msg(text="Extra context"))
+        self._debounce_runs_out(session)
         assert wait_until(lambda: assistant.requests)
         assert assistant.requests[0][1] == "My caption Extra context"
         assert len(assistant.requests) == 1
 
     def test_a_guests_text_folded_into_an_owners_album_makes_it_a_guest_turn(self, session, hub, transport):
-        session.PHOTO_DEBOUNCE_SECONDS = 0.05
+        session.PHOTO_DEBOUNCE_SECONDS = self.HELD
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.submit(self._photo(caption="Michelle, look"))
         session.submit(msg(text="and open the gate", chat_name="Family", guest=True))
+        self._debounce_runs_out(session)
         assert wait_until(lambda: assistant.requests and not session.busy)
         req, query = assistant.requests[0]
         assert query == "Michelle, look and open the gate"
@@ -910,19 +926,20 @@ class TestAlbums:
             self, session, hub, transport, addressed):
         """The batch is rebuilt from the album: a picture a group shares among themselves must not
         come out of it as a turn she is expected to answer."""
-        session.PHOTO_DEBOUNCE_SECONDS = 0.05
+        session.PHOTO_DEBOUNCE_SECONDS = self.HELD
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.submit(msg(kind=KIND_PHOTO, text="look what I found", chat_name="Family", overheard=True,
                            attachments=[Attachment(b'\xff\xd8', "image/jpeg", "photo")]))
         if addressed:
             session.submit(msg(text="Michelle, whose is it?", chat_name="Family"))
+        self._debounce_runs_out(session)
         assert wait_until(lambda: assistant.requests and not session.busy)
         (req, _), = assistant.requests
         assert ("not addressed to you" in req.note) is not addressed
 
     def test_voice_cancels_a_pending_album(self, session, hub, transport):
-        session.ALBUM_DEBOUNCE_SECONDS = 0.2
+        session.ALBUM_DEBOUNCE_SECONDS = self.HELD
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.submit(self._photo(group_id="g"))
@@ -940,7 +957,7 @@ class TestAlbums:
         return wait_until(lambda: session._album is not None and session._album.timer is not timer, interval=0.002)
 
     def test_superseded_album_never_dispatches_a_second_request(self, session, hub, transport):
-        session.ALBUM_DEBOUNCE_SECONDS = 0.2
+        session.ALBUM_DEBOUNCE_SECONDS = self.HELD
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.submit(self._photo(group_id="g"))

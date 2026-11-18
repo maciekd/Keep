@@ -42,7 +42,8 @@ def config_file(tmp_path, monkeypatch):
     ConfigMigrations.take_note()
     path = tmp_path / "config.yaml"
     path.write_text(OLD)
-    return path
+    yield path
+    ConfigMigrations.take_note()   # process-wide: left behind, the launcher's next startup test posts it
 
 
 def _load(path):

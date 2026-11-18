@@ -101,28 +101,27 @@ def bystander():
 
 def run_on_a_terminal(command: list[str], env: dict) -> subprocess.CompletedProcess:
     """Run with a pseudo-terminal as stdout, so the script's `[ -t 1 ]` half runs; what it
-    printed there is the result's stdout."""
+    printed there is the result's stdout. The terminal stays open on this side until the script
+    has ended and everything it printed is read: a terminal whose last writer is gone drops what
+    was not read yet, and a busy machine got here only after the script had come and gone."""
     master, slave = os.openpty()
     try:
         process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=slave, stderr=subprocess.PIPE,
                                    close_fds=False)
+        shown = b''
+        ended = False
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            ready, _, _ = select.select([master], [], [], 0 if ended else 0.005)
+            if ready:
+                shown += os.read(master, 65536)
+            elif ended:
+                break
+            else:
+                ended = process.poll() is not None      # one more look then: its last lines are in the terminal
     finally:
         os.close(slave)
-    shown = b''
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        ready, _, _ = select.select([master], [], [], 0.05)
-        if ready:
-            try:
-                chunk = os.read(master, 65536)
-            except OSError:      # the last writer closed its end
-                break
-            if not chunk:
-                break
-            shown += chunk
-        elif process.poll() is not None:
-            break
-    os.close(master)
+        os.close(master)
     process.wait(timeout=30)
     return subprocess.CompletedProcess(command, process.returncode, shown.decode(errors='replace'),
                                        process.stderr.read().decode(errors='replace'))

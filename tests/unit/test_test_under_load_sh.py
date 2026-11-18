@@ -74,10 +74,14 @@ class TestTestUnderLoad:
 
     def test_without_an_override_the_load_is_several_loops_for_every_core(self, run, tmp_path):
         """One loop per core passed a test that failed on a CI runner; the load follows the cores,
-        several times over. The cores are staged, so the test costs the same on any machine."""
+        several times over. The cores are staged, so the test costs the same on any machine, and so
+        are the loops: a sleeper in a loop's place is a child of the script like the loop, and it
+        leaves the CPU to the suite — eighteen loops spinning beside the workers, with the script's
+        own niced steps queueing behind them, made this the slowest test of the suite."""
         def loops_on(cores: int) -> int:
             stubs = tmp_path / f'cores_{cores}.bash'
-            stubs.write_text(f'getconf() {{ echo {cores}; }}\n')
+            stubs.write_text(f'getconf() {{ echo {cores}; }}\n'
+                             'nice() { if [ "$3" = bash ]; then exec sleep 60; fi; command nice "$@"; }\n')
             out = tmp_path / f'out_{cores}'
             result = run('1', str(out), LOAD_PROCESSES='', BASH_ENV=str(stubs), REPORT_PROCESSES='1')
             assert result.returncode == 0, result.stderr

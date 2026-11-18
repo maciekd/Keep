@@ -249,11 +249,27 @@ class TestAccountLock:
     def test_commands_wanting_a_sign_in_at_once_share_the_one_that_runs(self, api):
         import threading
         service = _service([{"content": [_record("fmip-dad")]}] * 2)
+        both_asked = threading.Event()
 
-        def slow_signin(force_refresh=False):
-            time.sleep(0.02)
-        service.authenticate.side_effect = slow_signin
+        class SignInLock:
+            """The sign-in lock, saying when the second command has reached it."""
+            def __init__(self):
+                self._lock, self._asked = threading.Lock(), []
+
+            def __enter__(self):
+                self._asked.append(threading.get_ident())
+                if len(self._asked) >= 2:
+                    both_asked.set()
+                self._lock.acquire()
+
+            def __exit__(self, *exc):
+                self._lock.release()
+
+        def signin_that_lasts_until_the_other_command_waits(force_refresh=False):
+            assert both_asked.wait(5), "the second command never asked for the sign-in"
+        service.authenticate.side_effect = signin_that_lasts_until_the_other_command_waits
         api._api = service
+        api._find_my_signin_lock = SignInLock()
         outcomes = []
         threads = [threading.Thread(target=lambda: outcomes.append(api._sign_in_for_find_my("locate"))) for _ in range(2)]
         for t in threads:
