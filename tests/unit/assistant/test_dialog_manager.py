@@ -1413,7 +1413,7 @@ def test_a_reply_within_the_command_cap_is_read_to_its_end(monkeypatch):
     processor.command_queue.join()
 
     assert not stream.closed and stream.consumed == len(chunks)
-    assert "".join(output).strip() == "All done."
+    assert "".join(c for c in output if isinstance(c, str)).strip() == "All done."
     assert dm.llm_response_raw.endswith("All done.")
     processor.kill()
 
