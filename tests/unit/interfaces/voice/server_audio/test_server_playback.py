@@ -157,6 +157,19 @@ class TestAudioPlaybackWorker:
         stream.close.assert_called_once()
         assert playback.audio_stream is None
 
+    def test_a_round_that_never_speaks_closes_the_stream_without_an_error(
+            self, playback, mock_sd, mock_tui_console):
+        """A round of commands alone starts the worker at its first token and sends no audio."""
+        stream = mock_sd.OutputStream.return_value
+
+        with patch(f"{MOD}.FIRST_CHUNK_WAIT", 0.01), patch(f"{MOD}.error") as error:
+            self._run(playback)
+
+        error.assert_not_called()
+        stream.write.assert_not_called()
+        stream.close.assert_called_once()
+        assert playback.audio_stream is None
+
     def test_plays_chunks_then_closes_on_sentinel(
             self, playback, mock_sd, mock_tui_console):
         stream = mock_sd.OutputStream.return_value

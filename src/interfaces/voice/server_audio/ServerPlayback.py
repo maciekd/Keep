@@ -14,6 +14,8 @@ from common.logging import info, trace, note, error, fine
 from .DynamicServerVolumeController import DynamicServerVolumeController
 from .PlaySound import PlaySound
 
+FIRST_CHUNK_WAIT = 30.0     # the worker starts at the first token; this long without audio and it gives up
+
 
 class ServerPlayback:
     """Plays one reply's TTS chunks through the server speakers and mutes the local mics around it.
@@ -135,7 +137,13 @@ class ServerPlayback:
             trace(f"Audio stream setup+start: {(time.time() - t0) * 1000:.0f}ms (in background, before first chunk)")
 
             # Wait for first chunk
-            first_chunk = self.audio_queue.get(timeout=30.0)
+            try:
+                first_chunk = self.audio_queue.get(timeout=FIRST_CHUNK_WAIT)
+            except queue.Empty:
+                # A round that was only commands starts the worker and never speaks.
+                info(f"Audio playback worker: no audio within {FIRST_CHUNK_WAIT:.0f}s of the stream opening "
+                     f"— nothing was spoken, closing stream")
+                return
             if first_chunk is None:
                 trace("Audio playback worker: no first chunk (sentinel), closing stream")
                 return
