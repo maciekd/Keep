@@ -135,6 +135,9 @@ class KeepFormat(CommandFormat):
         name, params = call
         return (name, params, ", ".join(params)), rest
 
+    def text_after_quote(self, buffer: str, blocks_only: bool = False) -> str | None:
+        return self.parser.text_after_quote(buffer, blocks_only)
+
     def call_end(self, buffer: str) -> int:
         """The parser drops every code tag before it looks, so its rest has lost the ones the
         prose after the call may carry: only its length is used, counting past the tags of the
