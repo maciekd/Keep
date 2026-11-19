@@ -95,6 +95,12 @@ class Notifier(Protocol):
         there. Never blocks. False when no owner chat is reachable."""
         ...
 
+    def owner_channels(self) -> list[tuple[str, bool]]:
+        """What a push to the owner reaches now: each chat by its name ("Telegram", "Console")
+        and whether somebody can see it at the moment — a console nobody has open is on the
+        list and not attended."""
+        ...
+
     def receive_chat_message(self, source: str, conversation: Any, sender: str, text: str, *,
                              guest: bool = False, sender_is_bot: bool = False,
                              chat_name: Optional[str] = None) -> bool:
@@ -162,6 +168,9 @@ class NullNotifier:
     def open_conversation(self, query: str) -> bool:
         info(f"no notifier configured — conversation not opened: {query[:120]!r}")
         return False
+
+    def owner_channels(self) -> list[tuple[str, bool]]:
+        return []
 
 
 _notifier: Notifier = NullNotifier()

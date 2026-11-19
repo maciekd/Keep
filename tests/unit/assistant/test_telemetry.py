@@ -632,3 +632,46 @@ class TestErrorReports:
         t.stop()
         assert posts and not any(e["event"] == "$exception" for p in posts for e in p["batch"])
         assert t._queue.empty()
+
+
+class TestReactivationEvents:
+    """The property names are a contract with the PostHog insights built on them."""
+
+    def test_a_spent_step_goes_out_with_its_outcome_and_no_text(self, telemetry, sent):
+        telemetry.reactivation_nudge(step=3, kind="daily", outcome="sent", via=["chat"],
+                                     owner_channels=["Telegram", "Console"], inactive_hours=71.96)
+        telemetry.stop()
+
+        (event,) = _by_name(sent, "reactivation_nudge")
+        properties = {k: v for k, v in event["properties"].items() if k not in ("version", "$lib")}
+        assert properties == {"step": 3, "kind": "daily", "outcome": "sent", "via": ["chat"],
+                              "owner_channels": ["Telegram", "Console"], "inactive_hours": 72.0}
+
+    def test_a_return_after_messages_says_how_long_after_the_last_one(self, telemetry, sent):
+        telemetry.reactivation_return(inactive_hours=78.04, nudges_sent=2, last_step=3, hours_since_nudge=6.02,
+                                      source="Telegram")
+        telemetry.stop()
+
+        (event,) = _by_name(sent, "reactivation_return")
+        properties = {k: v for k, v in event["properties"].items() if k not in ("version", "$lib")}
+        assert properties == {"source": "Telegram", "inactive_hours": 78.0, "nudges_sent": 2, "last_step": 3,
+                              "hours_since_nudge": 6.0}
+
+    def test_a_return_nobody_was_written_to_for_carries_no_step(self, telemetry, sent):
+        telemetry.reactivation_return(inactive_hours=30, nudges_sent=0, last_step=None, hours_since_nudge=None,
+                                      source="Console")
+        telemetry.stop()
+
+        (event,) = _by_name(sent, "reactivation_return")
+        assert event["properties"]["nudges_sent"] == 0
+        assert "last_step" not in event["properties"] and "hours_since_nudge" not in event["properties"]
+
+    def test_an_opted_out_install_sends_neither(self, telemetry, settings, sent):
+        settings["telemetry.enabled"] = False
+        telemetry.reactivation_nudge(step=1, kind="daily", outcome="declined", via=[], owner_channels=[],
+                                     inactive_hours=23)
+        telemetry.reactivation_return(inactive_hours=30, nudges_sent=0, last_step=None, hours_since_nudge=None,
+                                      source="Console")
+        telemetry.stop()
+
+        assert not _by_name(sent, "reactivation_nudge") and not _by_name(sent, "reactivation_return")

@@ -229,6 +229,20 @@ class ChatHub(SingletonMixin):
                 error(f"{transport.name}: {'notification' if notifications else 'owner'}_conversations failed: {e}")
         return targets
 
+    def owner_channels(self) -> list[tuple[str, bool]]:
+        """Each transport a proactive push reaches, by its name, and whether somebody can see
+        it now — what `post_message` to `owner` amounts to at the moment."""
+        channels = []
+        for transport in self.transports:
+            try:
+                if transport.notification_conversations():
+                    channels.append((transport.name, bool(transport.attended())))
+                else:
+                    trace(f"{transport.name}: no notification conversation, not one of the owner's channels")
+            except Exception as e:
+                error(f"{transport.name}: could not say whether it reaches the owner: {e}")
+        return channels
+
     def send_message(self, text: str, disable_notification: bool = False,
                      disable_web_page_preview: bool = False, in_history: bool = False) -> bool:
         if not text or not text.strip():

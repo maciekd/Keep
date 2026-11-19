@@ -10,7 +10,7 @@ from .LongTermMemoryCurator import LongTermMemoryCurator
 from ..llm import create_llm, parse_llm_config, messages_contain_images, speed_override
 from ..llm.AbstractLLM import LLMRefusalError, Thinking
 from common.logging import trace, info, note, error, fine
-from assistant import Destinations, MemoryFile, Procedures, WatchList
+from assistant import Destinations, MemoryFile, Procedures, Reactivation, WatchList
 from assistant.Telemetry import Telemetry
 from common.Paths import CACHE_DIR
 from ..prompt.PromptManager import PromptManager
@@ -189,6 +189,8 @@ class AutonomousActionManager:
     _instance: Optional['AutonomousActionManager'] = None
     # The opening row the running check has still to leave in the history (`_mark_check_rows`)
     _check_opening: Optional[str] = None
+    # The command processor of the running check, for what a reactivation step leaves behind (`_close_nudge`)
+    _check_processor = None
 
     @classmethod
     def get_instance(cls, prompt_manager: PromptManager = None, test_mode: bool = False) -> 'AutonomousActionManager':
@@ -446,7 +448,9 @@ class AutonomousActionManager:
             next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
             self._write_last_check(time.time())
             try:
-                self.activity_check()
+                # Only this check writes to an owner who has gone quiet: a wake-up, a watch
+                # item's check and a caffeine check are about something else.
+                self.activity_check(nudge=Reactivation.due())
             except Exception as e:
                 # One failed check (the API out of credits, say) must not end the periodic
                 # loop: on 2026-10-04 it did, and no check ran again until the next restart.
@@ -492,13 +496,16 @@ class AutonomousActionManager:
 
     def activity_check(self, prompt: str | None = None, wakeup: dict | None = None,
                        due: list[tuple[WatchList.Item, datetime]] | None = None,
-                       started: float | None = None) -> str:
+                       started: float | None = None, nudge: Reactivation.Step | None = None) -> str:
         """One autonomous check. *wakeup* is the schedule-file entry when the check is a
         scheduled wake-up, *due* the watch items (with the moment each reached) when the due
         watcher runs it: the instruction says so (SCHEDULED_WAKEUP_NOTE, DUE_ITEMS_NOTE).
         *started* is when the check began logging (the due watcher's firing line comes before
         this call); the check's commands get it, so server_logs can tell the check's own lines
-        from what it searches for."""
+        from what it searches for. *nudge* is the step of the reactivation schedule the periodic
+        check carries when the owner has gone quiet (`Reactivation.note`); a check that gives
+        way to the user is retried without it — whoever spoke may have been the owner, and the
+        next periodic check asks again."""
         started = time.time() if started is None else started
         kind = "scheduled wake-up" if wakeup else "watch poll" if due else "check"
         if not self.activity_check_lock.acquire(timeout=ACTIVITY_CHECK_LOCK_TIMEOUT_SECONDS):
@@ -508,24 +515,46 @@ class AutonomousActionManager:
                   f"for the same minute queue up like this")
             return ""
         quiet = SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS if wakeup else USER_INTERACTION_QUIET_PERIOD_SECONDS
+        completed = False
         try:
             # The caller asked before the wait for the lock, which can be a whole check long.
             if self.is_user_interaction_active(quiet):
                 info(f"This {kind} gives way before it starts: a user request is in flight or recent "
                      f"({time.time() - started:.0f} s after it was fired) — it runs once the user is quiet")
             else:
-                return self._activity_check_inner(prompt, wakeup, due, started)
+                result = self._activity_check_inner(prompt, wakeup, due, started, nudge=nudge)
+                completed = True
+                return result
         except _UserTookOver as e:
             info(f"This {kind} gives way to the user {e} — it runs again, from a fresh history, "
                  f"once the user is quiet")
         finally:
+            self._close_nudge(nudge, completed)
             self._check_opening = None
             self.activity_check_lock.release()
         self._retry_when_quiet(prompt, wakeup, due, quiet)
         return ""
 
+    def _close_nudge(self, nudge: Reactivation.Step | None, completed: bool):
+        """What the check's reactivation step leaves behind: spent when the check ran to its
+        end (sent, or declined with a NO) or was cut short after it had posted; still due when
+        it gave way or failed before it wrote anything. Never raises — the check's lock is
+        released after it."""
+        processor, self._check_processor = self._check_processor, None
+        if nudge is None:
+            return
+        try:
+            executed = list(processor.executed_commands) if processor is not None else []
+            if not completed and not Reactivation.posted_kinds(executed):
+                info(f"Reactivation: the check ended before it wrote anything — step {nudge.number} stays due")
+                return
+            Reactivation.record(nudge, executed)
+        except Exception as e:
+            error(f"Reactivation: recording step {nudge.number} failed: {type(e).__name__}: {e}")
+
     @staticmethod
-    def _opening_note(wakeup: dict | None, due: list[tuple[WatchList.Item, datetime]] | None) -> str:
+    def _opening_note(wakeup: dict | None, due: list[tuple[WatchList.Item, datetime]] | None,
+                      nudge: Reactivation.Step | None = None) -> str:
         """The row that opens a check's rows in the history. A check's replies are stored as
         assistant rows like a chat reply, and without it the first of them read as the chat's
         own last turn: on 2026-11-16 a chat turn took a check's commands for its own and
@@ -534,6 +563,8 @@ class AutonomousActionManager:
             why = "a scheduled wake-up"
         elif due:
             why = "watch items due: " + ", ".join(item.name for item, _ in due)
+        elif nudge:
+            why = "periodic; " + Reactivation.opening(nudge)
         else:
             why = "periodic"
         return (f"[Autonomous check ({why}) at {time.strftime('%H:%M')}: the rows from here to the next "
@@ -573,18 +604,20 @@ class AutonomousActionManager:
 
     def _activity_check_inner(self, prompt: str | None, wakeup: dict | None = None,
                               due: list[tuple[WatchList.Item, datetime]] | None = None,
-                              started: float | None = None) -> str:
+                              started: float | None = None, nudge: Reactivation.Step | None = None) -> str:
             if wakeup:
                 info(f"Check for autonomous action (wake-up scheduled at "
                      f"{time.strftime('%H:%M', time.localtime(wakeup['scheduled_at']))})...")
             elif due:
                 info("Check for autonomous action (watch items reached their moment: "
                      + ", ".join(item.name for item, _ in due) + ")...")
+            elif nudge:
+                info(f"Check for autonomous action (the owner has gone quiet: {nudge.position})...")
             else:
                 info("Check for autonomous action...")
             is_real_run = prompt is None
             history_messages = []
-            self._check_opening = self._opening_note(wakeup, due)
+            self._check_opening = self._opening_note(wakeup, due, nudge)
             snapshot_at = time.time()   # what the user does from here on the check cannot see
             if is_real_run:
                 prompt = self.prompt_manager.prompt
@@ -613,6 +646,8 @@ class AutonomousActionManager:
                 MessageHistory.append_user_turn(messages, self._wakeup_note(wakeup))
             if due:
                 MessageHistory.append_user_turn(messages, self._due_note(due))
+            if nudge:
+                MessageHistory.append_user_turn(messages, Reactivation.note(nudge))
 
             if is_real_run:
                 self.prompt_manager.save_prompt_to_file(messages)
@@ -625,6 +660,7 @@ class AutonomousActionManager:
 
             from assistant.commands.CommandProcessor import CommandProcessor
             command_processor = CommandProcessor(self.test_mode)
+            self._check_processor = command_processor
             command_processor.turn_started = started
             stray = self._run_commands(result, command_processor)
             result = self._stored_form(result, command_processor)

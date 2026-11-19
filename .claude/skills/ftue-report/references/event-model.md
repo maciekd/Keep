@@ -12,6 +12,8 @@ the tester's config.yaml). Everything carries `version` (Keep release) and `sour
 | `tab_change` | a console tab opened | `tab`, `from`, `dwell` seconds on the tab left |
 | `status` | 5 min after start, then hourly if changed | `feeds` (items per running feed), `integrations`, `prompt_kb`, `prompt_sections` |
 | `memory_size` | a memory curation ran | `words`, `watch_items`, `procedures` |
+| `reactivation_nudge` | a step of the reactivation schedule was spent (`reactivation.enabled`, off by default) | `step` (1–7 daily, 8+ fortnightly), `kind` (`daily`, `backoff`, `fortnightly`), `outcome` (`sent`, `declined` — the model answered NO), `via` (kinds of the destinations written to: `chat`, `voice`, `group`), `owner_channels` (chats a push could reach), `inactive_hours` |
+| `reactivation_return` | the owner's first turn after a day or more of silence | `inactive_hours`, `nudges_sent` (0 = came back unprompted: the base rate), `last_step`, `hours_since_nudge`, `source` |
 
 ## Quirks to know before reading a transcript
 
@@ -32,6 +34,10 @@ the tester's config.yaml). Everything carries `version` (Keep release) and `sour
   trimmed; the assistant may then re-introduce itself as if meeting the user for the first time.
 - Vault values (API keys, passwords, Apple ID) are swapped for placeholders before sending, but
   a 2FA code typed into the chat is not; mask six-digit messages.
+- A `reactivation_nudge` carries no text: the message is the `assistant_turn` with `proactive: true`
+  of the same moment. The silence is counted from the owner's last turn (any source, the FTUE prompt
+  and other server-started turns excluded), so `reactivation_return` is the reliable "came back"
+  signal — it needs no guessing at which `user_turn` a human typed.
 - Timestamps are UTC. The scripts convert to Europe/Stockholm.
 
 ## Reading the FTUE
