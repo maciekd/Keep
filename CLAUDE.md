@@ -166,11 +166,12 @@ exercises the same code path. Use the standing cast and nothing from the real ho
   depends on
 
 **Tests not to write.** A test must assert something the author had to *derive*, never something copied from the
-line it checks. Do not write a test that:
+line it checks. Do NOT write a test that:
 - asserts a constant, default or attribute equals its own definition (`assert DEFAULT_X == "xxx"`, `SUPPORTS_Y is True`)
 - only checks a constructor stored its argument (`assert obj.llm is mock_llm`)
 - mocks the collaborator and then asserts the mock handed back what it was told to (mock config in → same literals out)
 - compares a user-facing string byte for byte (log lines, notices, help text) — assert the fact it carries, not the wording
+- depends on the real clock (a sleep or a short timeout before a positive assertion, an assertion on elapsed time) — run the thread's body or fire the timer yourself, fake the clock of the module under test, and bound a wait that has to be real with `FAILURE_BOUND` / `wait_until` from `tests/unit/waiting.py`, never a literal
 
 The exception is a value that is a contract with something outside the repo (a `config.yaml` key, a wire-format field
 an Outpost parses, a path another system reads): pin it, and say in the test name what it is a contract with.
