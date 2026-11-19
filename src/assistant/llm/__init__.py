@@ -52,7 +52,7 @@ def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool
 # NOTE that if you use the same model for several tiers the kv-cache will work nicely,
 # otherwise it will break.
 _TIER_DEFAULTS = {
-    'fast': ('GeminiLLM', "gemini-3.5-flash"),  # used when user is speaking (voice to voice), neets do be FAST for conversation to feel natural
+    'fast': ('ClaudeLLM', 'claude-opus-5-5'),  # used when user is speaking (voice to voice); the same model as smart, so the two share one prompt cache
     'smart': ('ClaudeLLM', 'claude-opus-5-5'),  # used when user is chatting with the AI (over Telegram for example), want the best possible AI here
     'vision': ('ClaudeLLM', 'claude-opus-5-5'),  # used when image processing is needed, overrides smart/fast in that case
     'video': ('GeminiLLM', 'gemini-3.8-flash'),  # describes videos (iMessage/Telegram/email); must be an LLM with native video input — Claude has none

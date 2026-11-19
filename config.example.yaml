@@ -33,7 +33,7 @@ api_keys:
   # https://platform.claude.com/settings/workspaces). A key with Scope Default workspace needs nothing here.
   anthropic_workspace: ""
   anthropic_admin: YOUR_ANTHROPIC_ADMIN_API_KEY_HERE  # For cost monitoring, create at console.anthropic.com > Settings > Admin Keys. Note that cost comes in with a days delay.
-  gemini: YOUR_GEMINI_API_KEY_HERE  # voice replies run on the ai.fast tier (Gemini by default): no key, no voice answers; also photos/video processing
+  gemini: YOUR_GEMINI_API_KEY_HERE  # video clips (the ai.video tier) and the cache auditor run on Gemini by default; without the key videos stay undescribed
   elevenlabs: YOUR_ELEVENLABS_API_KEY_HERE
   grok: YOUR_GROK_API_KEY_HERE
   openrouter: YOUR_API_KEY_HERE
@@ -315,7 +315,7 @@ interfaces:
   # Wi-Fi: there is no password, whoever reaches the address is the owner. Only on a network you trust.
   lan_access: false
   http:     { enabled: true }               # always on (the others register routes on it); port from argv
-  voice:    { enabled: false }              # VoiceToVoice, off unless set to true; on a Mac it needs mics and speakers on the server, an ElevenLabs API key and api_keys.gemini (the ai.fast tier).
+  voice:    { enabled: false }              # VoiceToVoice, off unless set to true; on a Mac it needs mics and speakers on the server, and an ElevenLabs API key. The replies come from the ai.fast tier (Claude by default, like ai.smart).
                                             # On a Linux server voice is the phone app's alone: the Keep app sends what it
                                             # heard and plays the spoken reply itself. The server opens no microphone and
                                             # no speaker there (those need a Mac), so it needs none.
