@@ -651,10 +651,16 @@ class CommandParser:
         (name, the line as written), in order. Opus 5.5 loses the head of a call now and then:
         `_act("35")` for `browse_act("35")`, `_load_toolkit("web")` — seven replies on the
         production server between 2026-10-20 and 2026-11-18, none before. A name with a dot
-        (`console.log(…)`) or a capital is code or prose, not a call somebody meant."""
+        (`console.log(…)`) or a capital is code or prose, not a call somebody meant, and so
+        is a plain word (`cos(x)`, `print(total)`): only a name shaped like a command's — an
+        underscore in it, or the last words of a real one (`eval` of `browse_eval`) — counts."""
         names = {name.lower() for name in self.possible_commands}
         return [(match.group(1), match.group(0).strip()) for match in self._CALL_LINE_RE.finditer(content)
-                if match.group(1) not in names]
+                if match.group(1) not in names and self._command_shaped(match.group(1), names)]
+
+    @staticmethod
+    def _command_shaped(name: str, names: set[str]) -> bool:
+        return "_" in name or any(command.endswith("_" + name) for command in names)
 
     def find_partial_command_tail(self, content: str, mid_line: bool = False) -> int:
         """Find position where the tail of content is a prefix of a known command name, or of

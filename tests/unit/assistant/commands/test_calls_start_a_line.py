@@ -225,6 +225,8 @@ HEADLESS = {
     "a stray underscore before a whole name": '_load_toolkit("web")',
     "a command that does not exist": 'switch_lamp("Kitchen lamp", "on")',
     "indented, after a line of prose": 'On it.\n  _act("35")',
+    "the last words of a command": 'and_play("Jazz")',
+    "the last word of a command, no underscore in it": 'phone("Marcus")',
     "a value over several lines": '_message("owner", """Dinner is ready.\nCome down (now).""")',
 }
 
@@ -236,6 +238,10 @@ NO_CALL_OF_ANYTHING = {
     "behind a bullet": '- _act("35")',
     "words after it on the line": '_act("35") did nothing',
     "no name at all": "(const lamp = 1; return lamp)",
+    "a function of mathematics": "cos(x)",
+    "a plain word and a remark": "lol(ok)",
+    "a line of code without a fence": "print(total)",
+    "the end of a command's name, not a word of it": "hone(x)",
 }
 
 
