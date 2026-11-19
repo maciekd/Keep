@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import Mock
 from assistant.llm.CachedLLM import CachedLLM
 from assistant.llm.AbstractLLM import AbstractLLM
+from assistant.commands.formats.InvokeFormat import render_call
 
 KITCHEN_GROUP = {
     "devices": ["Table Lamp (Kitchen)", "Island Lamp (Kitchen)", "Spots (Kitchen)", "Wall Spots (Kitchen)",
@@ -212,6 +213,17 @@ class TestCachedLLM:
 
         result = cached_llm.find_majority_commands(response_counts)
         assert result is None
+
+    def test_a_row_stored_as_an_invoke_block_votes_with_the_majority(self, cached_llm):
+        """The rows of 2026-10-21/22: Opus wrote the call as its native block, and the cache
+        read them as replies without commands, which vetoed the phrase for good"""
+        block = render_call("execute", [("scene_name", "LightTheKitchenUp")])
+        response_counts = [("execute(LightTheKitchenUp)", 3), (block, 1), ("turn_on(Spots (Kitchen))", 2)]
+
+        majority = cached_llm.find_majority_commands(response_counts)
+
+        assert majority == frozenset([("execute", "LightTheKitchenUp")])
+        assert block in cached_llm.filter_responses_by_commands([r for r, _ in response_counts], majority)
 
     def test_filter_responses_by_commands(self, cached_llm):
         """Should return only responses matching the target command set"""

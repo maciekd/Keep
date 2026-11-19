@@ -7,6 +7,7 @@ from common.ConfigManager import config
 from common.logging import note, trace, info
 from common.FloxyDatabase import FloxyDatabase
 from assistant.commands.formats.CommandFormats import CommandFormats
+from assistant.commands.formats.RescueFormat import RescueFormat
 
 
 class CachedLLM(AbstractLLM):
@@ -20,8 +21,10 @@ class CachedLLM(AbstractLLM):
     def __init__(self, llm: AbstractLLM):
         self.llm = llm
         self.db = FloxyDatabase.get_instance()
-        # Knows no command until update_command_list brings the real list
-        self.format = CommandFormats.active()([])
+        # Knows no command until update_command_list brings the real list. Read the way
+        # CommandProcessor reads a reply: a stored row the model wrote as a native block is
+        # a row with commands, not a commandless one that vetoes the phrase for good
+        self.format = RescueFormat.wrap(CommandFormats.active()([]))
         self.last_response_was_cached = False
         # The clean user utterance to key the cache on (e.g. "turn off the kitchen lights").
         # Set by the caller before each request; None means "do not cache this request".
@@ -233,7 +236,7 @@ class CachedLLM(AbstractLLM):
 
     def update_command_list(self, commands_list: list[str]):
         """Rebuild the format's parser with the actual list of available commands."""
-        self.format = CommandFormats.active()(commands_list)
+        self.format = RescueFormat.wrap(CommandFormats.active()(commands_list))
 
     def command_format(self):
         return self.llm.command_format()
