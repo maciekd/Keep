@@ -14,7 +14,7 @@ from assistant.commands.CommandProcessor import CommandProcessor
 from assistant.commands.formats.CommandFormats import CommandFormats
 from assistant.AssistantEvents import AssistantEvent, observers
 from assistant.ChannelProfile import profile_for
-from assistant.llm import create_llm, parse_llm_config, command_format_override, command_format_chooser, content_blocks_contain_images
+from assistant.llm import create_llm, parse_llm_config, command_format_override, command_format_chooser, content_blocks_contain_images, speed_override
 from assistant.llm.AbstractLLM import LLMRefusalError
 from assistant.llm.CachedLLM import CachedLLM
 from assistant.prompt.MessageHistory import MessageHistory
@@ -73,9 +73,11 @@ class DialogManager:
         smart_llm_name, smart_model = parse_llm_config('smart')
         vision_llm_name, vision_model = parse_llm_config('vision')
 
-        self.ai_fast = create_llm(fast_llm_name, fast_model, command_format=command_format_override('fast'))
+        self.ai_fast = create_llm(fast_llm_name, fast_model, command_format=command_format_override('fast'),
+                                  speed=speed_override('fast'))
         smart_format = command_format_override('smart')
-        self.ai_smart = create_llm(smart_llm_name, smart_model, prompt_cache=True, command_format=smart_format)
+        self.ai_smart = create_llm(smart_llm_name, smart_model, prompt_cache=True, command_format=smart_format,
+                                   speed=speed_override('smart'))
         # The chat tier's model decides the syntax every reply is parsed in — before the cached
         # wrappers and the command processor below build their parsers from it. A `command_format:`
         # key in the tier's `ai.smart` block, or FLOXY_COMMAND_FORMAT, overrides the class's choice.
@@ -84,7 +86,8 @@ class DialogManager:
         # Used whenever a request carries images — Opus 4.8 is much stronger at vision
         # than the 4.6 we run as smart. See select_ai (images always win).
         self.ai_vision = create_llm(vision_llm_name, vision_model, prompt_cache=True,
-                                    command_format=command_format_override('vision'))
+                                    command_format=command_format_override('vision'),
+                                    speed=speed_override('vision'))
 
         TTFTMonitor.get_instance().register_models(
             smart_model=self.ai_smart.model, fast_model=self.ai_fast.model

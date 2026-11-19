@@ -691,7 +691,7 @@ def test_smart_llm_constructed_with_prompt_cache_enabled(monkeypatch):
     monkeypatch.setattr('assistant.prompt.TimeOfDay.TimeOfDay.get_current', staticmethod(lambda: TimeOfDay.DAY))
 
     calls = []
-    def fake_create_llm(class_name, model=None, prompt_cache=None, command_format=None):
+    def fake_create_llm(class_name, model=None, prompt_cache=None, command_format=None, speed=None):
         calls.append({'class': class_name, 'model': model, 'prompt_cache': prompt_cache})
         fake = FakeAI([])
         fake.model = model or 'fake-model'  # DialogManager reads .model for TTFTMonitor

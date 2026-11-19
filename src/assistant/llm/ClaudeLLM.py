@@ -56,6 +56,11 @@ class ClaudeLLM(AbstractLLM):
     """
 
     FAST_MODE_BETA = "fast-mode-2026-02-01"
+    # The models Anthropic serves in fast mode (the claude-api reference of 2026-11-03): Opus 5 —
+    # a preview an account has to be let into —, Opus 5.5, Fable 5.2 and Mythos 5.2. Any other
+    # model answers a request that carries `speed` with an error.
+    FAST_MODE_MODEL_PREFIXES = ("claude-opus-5", "claude-fable-5-2", "claude-mythos-5-2")
+    _fast_mode_logged: set[tuple[str, bool]] = set()  # the pool builds one LLM per handler: say it once
     REFUSAL_FALLBACK_MODEL = "claude-opus-5"
     REFUSAL_FALLBACK_CACHE_TTL = "5m"
     # The families that think adaptively when the `thinking` parameter is omitted. Opus 4.x,
@@ -141,7 +146,7 @@ class ClaudeLLM(AbstractLLM):
     def __init__(self, model: str = "claude-sonnet-4-5", speed: str | None = None, prompt_cache: bool = True,
                  static_cache_ttl: str | None = None, history_cache_ttl: str | None = None):
         self.model = model
-        self.speed = speed
+        self.speed = speed if self._fast_mode_served(model, speed) else None
         self.prompt_cache = prompt_cache
         self.static_cache_ttl = static_cache_ttl or CLAUDE_STATIC_CACHE_TTL
         self.history_cache_ttl = history_cache_ttl or CLAUDE_HISTORY_CACHE_TTL
@@ -157,6 +162,19 @@ class ClaudeLLM(AbstractLLM):
         self._last_stop_reason = None
         self._usage = LLMUsage()
         self._cancelled = False
+
+    @classmethod
+    def _fast_mode_served(cls, model: str, speed: str | None) -> bool:
+        """Whether *speed* asks for fast mode on a model that has one. A model without it runs at
+        the ordinary speed instead of failing every request."""
+        if speed != "fast":
+            return False
+        served = model.startswith(cls.FAST_MODE_MODEL_PREFIXES)
+        if (model, served) not in cls._fast_mode_logged:
+            cls._fast_mode_logged.add((model, served))
+            info(f"Claude fast mode: {model} runs fast, at twice the price" if served else
+                 f"Claude fast mode: {model} has none — it runs at the ordinary speed")
+        return served
 
     def name(self) -> str:
         suffix = " (fast)" if self.speed == "fast" else ""

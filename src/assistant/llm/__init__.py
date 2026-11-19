@@ -8,7 +8,7 @@ from common.logging import error, info
 
 
 def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool | None = None,
-               command_format: str | None = None):
+               command_format: str | None = None, speed: str | None = None):
     """Create an LLM instance by class name (e.g. 'OllamaLLM') with optional model override,
     wrapped in a VaultLLM so secrets never reach the provider (a pass-through when the
     vault is disabled or empty).
@@ -16,7 +16,9 @@ def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool
     prompt_cache is forwarded only to LLMs whose constructor accepts it (e.g. ClaudeLLM);
     other backends silently ignore it. command_format — a format name, `keep` / `qwen` /
     `dsml` / `invoke` (see command_format_override) — makes the instance's `command_format()` return that
-    class instead of the backend's own; None leaves the backend's choice.
+    class instead of the backend's own; None leaves the backend's choice. speed — `fast`, see
+    speed_override — reaches a backend that has a fast mode (ClaudeLLM); any other runs as it does
+    and says so in the log.
     """
     from .VaultLLM import VaultLLM  # lazy: VaultLLM imports from this package
     try:
@@ -27,8 +29,13 @@ def create_llm(llm_class_name: str, model: str | None = None, prompt_cache: bool
     kwargs = {}
     if model:
         kwargs['model'] = model
-    if prompt_cache is not None and 'prompt_cache' in inspect.signature(cls.__init__).parameters:
+    parameters = inspect.signature(cls.__init__).parameters
+    if prompt_cache is not None and 'prompt_cache' in parameters:
         kwargs['prompt_cache'] = prompt_cache
+    if speed and 'speed' in parameters:
+        kwargs['speed'] = speed
+    elif speed:
+        _log_speed_once(f"{llm_class_name} has no fast mode — speed: {speed} is ignored")
     llm = cls(**kwargs)
     if command_format:
         fmt = CommandFormats.by_name(command_format)
@@ -159,6 +166,32 @@ def _command_format_choice(tier: str) -> tuple[str | None, str | None]:
               f"{', '.join(CommandFormats.BY_NAME)}); the LLM class's own format stands")
         return None, None
     return fmt.name, f"the ai.{tier} command_format override"
+
+
+_speed_logged: set[str] = set()   # the handler pool builds its LLMs once per handler: say it once
+
+
+def _log_speed_once(message: str):
+    if message not in _speed_logged:
+        _speed_logged.add(message)
+        info(message)
+
+
+def speed_override(tier: str) -> str | None:
+    """'fast' when the `ai.<tier>` block says `speed: fast` — Anthropic's fast mode: the same model
+    answering up to 2.5x faster at twice the price —, else None. No key and `standard` are the
+    ordinary speed, so nothing is fast unless a block asks for it; any other value is logged and
+    ignored, so a typo costs the speed, not the start."""
+    cfg = _tier_block(tier)
+    value = cfg.get('speed') if isinstance(cfg, dict) else None
+    if value is None:
+        return None
+    speed = str(value).strip().lower()
+    if speed == 'fast':
+        return speed
+    if speed != 'standard':
+        _log_speed_once(f"ai.{tier}.speed: '{value}' is neither fast nor standard — the tier runs at the ordinary speed")
+    return None
 
 
 def _tier_block(tier: str):

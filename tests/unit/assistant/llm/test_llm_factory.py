@@ -4,7 +4,7 @@ import types
 import pytest
 from unittest.mock import patch
 
-from assistant.llm import create_llm, parse_llm_config, command_format_override, command_format_chooser
+from assistant.llm import create_llm, parse_llm_config, command_format_override, command_format_chooser, speed_override
 from assistant.llm.VaultLLM import VaultLLM
 from common.vault.Vault import Vault
 
@@ -262,3 +262,44 @@ class TestCommandFormatOverride:
         setattr(module, class_name, cls)
         sys.modules[f"assistant.llm.{class_name}"] = module
         return module
+
+
+# ===========================================================================
+# speed — `speed: fast` in a tier's block is Anthropic's fast mode, at twice
+# the price: nothing runs fast unless a block asks for it, and a tier that
+# cannot (another model, another backend) runs as it did instead of failing.
+# ===========================================================================
+
+class TestTierSpeed:
+    def _tier_llm(self, tier_value):
+        def get(key, default=None):
+            if key == 'local_backend':
+                return 'none'
+            if key.startswith('ai.'):
+                return tier_value
+            return default
+        with patch('assistant.llm.config.get', side_effect=get):
+            name, model = parse_llm_config('smart')
+            return create_llm(name, model, speed=speed_override('smart'))
+
+    def test_a_tier_without_the_key_is_not_fast(self):
+        assert self._tier_llm({'llm': 'ClaudeLLM', 'model': 'claude-opus-5-5'}).speed is None
+        assert self._tier_llm('ClaudeLLM').speed is None
+        assert self._tier_llm(None).speed is None
+
+    def test_speed_fast_reaches_a_model_that_has_fast_mode(self):
+        for model in ('claude-opus-5-5', 'claude-fable-5-2'):
+            for value in ('fast', ' Fast '):
+                assert self._tier_llm({'llm': 'ClaudeLLM', 'model': model, 'speed': value}).speed == 'fast'
+
+    def test_standard_and_a_typo_are_the_ordinary_speed(self):
+        for value in ('standard', 'turbo', True, 2):
+            assert self._tier_llm({'llm': 'ClaudeLLM', 'model': 'claude-opus-5-5', 'speed': value}).speed is None
+
+    def test_a_model_without_fast_mode_runs_at_the_ordinary_speed(self):
+        for model in ('claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'):
+            assert self._tier_llm({'llm': 'ClaudeLLM', 'model': model, 'speed': 'fast'}).speed is None
+
+    def test_a_backend_without_fast_mode_is_built_all_the_same(self):
+        llm = self._tier_llm({'llm': 'OllamaLLM', 'model': 'gemma4:26b', 'speed': 'fast'})
+        assert llm.model == 'gemma4:26b'

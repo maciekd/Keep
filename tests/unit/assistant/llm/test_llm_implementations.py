@@ -438,7 +438,7 @@ class TestClaudeLLM:
     def test_create_message_uses_beta_when_fast(self, mock_config):
         mock_config.get_api_key.return_value = "k"
         from assistant.llm.ClaudeLLM import ClaudeLLM
-        llm = ClaudeLLM(speed="fast")
+        llm = ClaudeLLM("claude-opus-5-5", speed="fast")
         llm.client = Mock()
 
         api_params = {"model": "test", "messages": [], "max_tokens": 100, "stream": False}

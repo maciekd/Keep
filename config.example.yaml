@@ -629,6 +629,12 @@ local_backend: none
 #                           # (`invoke` on a Claude tier, say). The smart tier's
 #                           # format is the one every reply is parsed in and the prompt's command texts are
 #                           # rendered in; a name no format has is logged and ignored.
+#    # speed: fast            # Optional, the fast, smart, vision and autonomous_action tiers: Anthropic's fast
+#                           # mode — the same model answering up to 2.5x faster at twice the price. Unset, a
+#                           # tier runs at the ordinary speed. Only a ClaudeLLM tier on Opus 5.5 or Fable 5.2
+#                           # has it; any other model or class runs as it does and says so in the log. A fast
+#                           # request reads no prompt cache a standard one wrote, so tiers on one model go
+#                           # fast together.
 #  video:                   # describes video clips from iMessage / Telegram / email. Needs an LLM with native
 #    llm: GeminiLLM         # video input — Gemini is the only backend that has one; Claude/ChatGPT/Ollama
 #    # model: gemini-3.8-flash   # cannot take video and videos are then left undescribed ("[Video]")

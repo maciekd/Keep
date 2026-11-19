@@ -144,9 +144,9 @@ class ImageAnalyzer:
         if self._llm is None:
             with self._llm_lock:
                 if self._llm is None:
-                    from ..llm import create_llm, parse_llm_config
+                    from ..llm import create_llm, parse_llm_config, speed_override
                     name, model = parse_llm_config('vision')
-                    llm = create_llm(name, model)
+                    llm = create_llm(name, model, speed=speed_override('vision'))
                     llm.initialize()
                     self._llm = llm
                     trace(f"ImageAnalyzer: initialized {name} ({model}) for photo analysis")

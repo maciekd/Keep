@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from .LongTermMemoryCurator import LongTermMemoryCurator
-from ..llm import create_llm, parse_llm_config, messages_contain_images
+from ..llm import create_llm, parse_llm_config, messages_contain_images, speed_override
 from ..llm.AbstractLLM import LLMRefusalError, Thinking
 from common.logging import trace, info, note, error, fine
 from assistant import Destinations, MemoryFile, Procedures, WatchList
@@ -208,7 +208,7 @@ class AutonomousActionManager:
     def __init__(self, prompt_manager: PromptManager, test_mode: bool = False):
         info("Starting autonomous action manager...")
         llm_name, model = parse_llm_config('autonomous_action')
-        self.llm = create_llm(llm_name, model)
+        self.llm = create_llm(llm_name, model, speed=speed_override('autonomous_action'))
         self.llm.initialize()
         self.llm_vision = None  # lazily created when a check actually carries images
         self.prompt_manager = prompt_manager
@@ -242,7 +242,7 @@ class AutonomousActionManager:
     def _get_vision_llm(self):
         if self.llm_vision is None:
             name, model = parse_llm_config('vision')
-            llm = create_llm(name, model)
+            llm = create_llm(name, model, speed=speed_override('vision'))
             llm.initialize()
             self.llm_vision = llm
             info("AutonomousActionManager: initialized vision LLM for image-bearing check")
