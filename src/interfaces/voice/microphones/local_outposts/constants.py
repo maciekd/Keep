@@ -196,9 +196,9 @@ SILENCE = 0.4                      # trailing silence that ends an utterance (s)
 # 0.4 s endpoint untouched; the ones above are 9+ words, and the pauses inside a long
 # sentence measured 1.1–1.4 s — each of which the fixed 0.4 s used to end the utterance on,
 # so the reply to its first half started while the speaker was still going.
-SILENCE_LONG = 1.5                 # trailing silence that ends a long utterance (s)
+SILENCE_LONG = 2.0                 # trailing silence that ends a long utterance (s)
 PATIENCE_FROM = 4.5                # utterance seconds up to which SILENCE applies
-PATIENCE_FULL = 10.0               # utterance seconds from which SILENCE_LONG applies
+PATIENCE_FULL = 6.0                # utterance seconds from which SILENCE_LONG applies
 SPEC_SILENCE = 0.15                # trailing quiet before a speculative decode (s); must be < SILENCE.
                                    # Raised from 0.05 so a speculative only fires on a pause long enough
                                    # (>= ~0.2 s quiet) to plausibly be the utterance end — not on every
