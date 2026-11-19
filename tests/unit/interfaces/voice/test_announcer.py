@@ -101,15 +101,13 @@ class TestAnnounce:
         assert voice.lang == "en-US"
 
     def test_a_live_turn_makes_it_wait_and_then_speak(self):
-        state = {"busy": 2}
-
-        def busy(sender):
-            state["busy"] -= 1
-            return state["busy"] >= 0
-
-        announcer, playbacks, _ = make(busy=busy)
+        """The turn ends by the count of the questions, not by the clock: the wait is a minute,
+        so that on a busy machine two polls never outlast it."""
+        answers = iter([True, True, False])
+        announcer, playbacks, _ = make(busy=lambda sender: next(answers), wait=60, poll=0)
         assert announcer.announce("Hello") is True
         assert playbacks[0].chunks
+        assert next(answers, None) is None, "it spoke only once the house had gone quiet"
 
     def test_a_turn_that_never_ends_gives_up_without_playing(self):
         announcer, playbacks, voice = make(busy=lambda sender: True, wait=0.02)
