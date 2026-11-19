@@ -4,7 +4,6 @@ import logging
 from contextlib import contextmanager
 import pathlib
 import sys
-import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -547,10 +546,12 @@ class TestResumeConversation:
     def test_with_no_tui_client_the_turn_stops_waiting_and_a_late_intro_opens_no_second_one(self):
         console = self.FakeConsole()
         server = type("Server", (), {"interfaces": [console], "assistant": self.FakeAssistant()})()
-        with self.resume(server, wait=0.01) as opened:
-            deadline = time.monotonic() + 2
-            while not opened.called and time.monotonic() < deadline:
-                time.sleep(0.005)
+        # The test runs the wait out itself: a real timer's thread shells out to git for the
+        # version label on its way, and a stalled CI runner did not get there within 2 s.
+        with patch("threading.Timer") as timer, self.resume(server, wait=30.0) as opened:
+            waited, give_up = timer.call_args.args
+            assert waited == 30.0 and timer.return_value.start.called and not opened.called
+            give_up()
             opened.assert_called_once_with("the turn")
             console.waiting[0]()        # a TUI client connects hours later
             opened.assert_called_once()
