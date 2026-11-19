@@ -7,9 +7,9 @@ class docstring."""
 import numpy as np
 import pytest
 
-from interfaces.voice.microphones.local_outposts.Endpointer import Endpointer, STARTED, STOPPED
+from interfaces.voice.microphones.local_outposts.Endpointer import Endpointer, STARTED, STOPPED, patience
 from interfaces.voice.microphones.local_outposts.constants import (
-    FRAME, FRAME_DURATION, MAX_SEGMENT, PRE_ROLL, SILENCE,
+    FRAME, FRAME_DURATION, MAX_SEGMENT, PATIENCE_FROM, PATIENCE_FULL, PRE_ROLL, SILENCE, SILENCE_LONG,
 )
 
 SILENCE_FRAMES = int(np.ceil(SILENCE / FRAME_DURATION))
@@ -19,6 +19,23 @@ PRE_ROLL_FRAMES = max(1, int(PRE_ROLL / FRAME_DURATION))
 def frame(value=0.0):
     """One 100 ms frame; a distinct fill value tags it so audio() ordering is checkable."""
     return np.full(FRAME, value, np.float32)
+
+
+def frames_for(seconds):
+    return int(round(seconds / FRAME_DURATION))
+
+
+def quiet_frames_until_stop(ep, limit=100):
+    """Feed quiet frames until the utterance stops; how many it took."""
+    for count in range(1, limit + 1):
+        if ep.feed(frame(), loud=False) == STOPPED:
+            return count
+    raise AssertionError(f"no stop within {limit} quiet frames")
+
+
+def speak(ep, seconds):
+    for _ in range(frames_for(seconds)):
+        ep.feed(frame(), loud=True)
 
 
 def frame_values(audio):
@@ -118,3 +135,50 @@ class TestEndpointer:
         ep.clear_pre_roll()
         ep.feed(frame(1.0), loud=True)
         assert frame_values(ep.audio()) == [1.0]
+
+
+@pytest.mark.unit
+class TestPatience:
+    """The longer somebody has spoken, the longer a pause must be to end the utterance —
+    and a short command still ends on the short one."""
+
+    def test_a_short_command_ends_on_the_short_silence(self):
+        ep = Endpointer()
+        speak(ep, PATIENCE_FROM - 1.0)
+        assert quiet_frames_until_stop(ep) == SILENCE_FRAMES
+
+    def test_a_long_utterance_survives_a_pause_that_ends_a_short_one(self):
+        ep = Endpointer()
+        speak(ep, PATIENCE_FULL)
+        for _ in range(SILENCE_FRAMES * 2):
+            assert ep.feed(frame(), loud=False) is None
+        assert ep.feed(frame(), loud=True) is None       # the speaker went on: one utterance
+        assert ep.in_speech
+
+    def test_a_long_utterance_ends_on_the_long_silence(self):
+        ep = Endpointer()
+        speak(ep, PATIENCE_FULL + 2.0)
+        assert quiet_frames_until_stop(ep) == frames_for(SILENCE_LONG)
+
+    def test_the_wait_does_not_grow_while_it_is_waited_out(self):
+        # The quiet being measured is not speech: an utterance just under the point where
+        # patience starts must not talk itself into a longer wait by staying quiet.
+        ep = Endpointer()
+        speak(ep, PATIENCE_FROM)
+        assert quiet_frames_until_stop(ep) == SILENCE_FRAMES
+
+    def test_patience_grows_with_the_length_and_stays_within_its_bounds(self):
+        lengths = np.arange(0.0, PATIENCE_FULL + 5.0, 0.5)
+        waits = [patience(length) for length in lengths]
+        assert waits == sorted(waits)
+        assert min(waits) == SILENCE and max(waits) == pytest.approx(SILENCE_LONG)
+        halfway = patience((PATIENCE_FROM + PATIENCE_FULL) / 2)
+        assert halfway == pytest.approx((SILENCE + SILENCE_LONG) / 2)
+
+    def test_the_pre_roll_counts_towards_the_length(self):
+        # The thresholds were placed on production segments, which include the lead-in.
+        ep = Endpointer()
+        for _ in range(PRE_ROLL_FRAMES):
+            ep.feed(frame(), loud=False)
+        speak(ep, PATIENCE_FULL - PRE_ROLL + FRAME_DURATION)
+        assert quiet_frames_until_stop(ep) == frames_for(SILENCE_LONG)

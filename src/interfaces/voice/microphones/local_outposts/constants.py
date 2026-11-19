@@ -189,6 +189,16 @@ INITIAL_PROMPT = " ".join(INITIAL_PROMPT_PHRASES)
 
 # ── Endpointing ───────────────────────────────────────────────────────────────
 SILENCE = 0.4                      # trailing silence that ends an utterance (s)  make sure this is lower than whisper processing time and we should not introduce latency
+# The longer somebody has been speaking, the longer a pause has to be before it counts as
+# the end (Endpointer.patience): SILENCE up to PATIENCE_FROM seconds of utterance, growing
+# in a straight line to SILENCE_LONG at PATIENCE_FULL. Placed from a month of production
+# segments (pre-roll included, 535 wake-word commands): 93% end under 4.5 s and keep the
+# 0.4 s endpoint untouched; the ones above are 9+ words, and the pauses inside a long
+# sentence measured 1.1–1.4 s — each of which the fixed 0.4 s used to end the utterance on,
+# so the reply to its first half started while the speaker was still going.
+SILENCE_LONG = 1.5                 # trailing silence that ends a long utterance (s)
+PATIENCE_FROM = 4.5                # utterance seconds up to which SILENCE applies
+PATIENCE_FULL = 10.0               # utterance seconds from which SILENCE_LONG applies
 SPEC_SILENCE = 0.15                # trailing quiet before a speculative decode (s); must be < SILENCE.
                                    # Raised from 0.05 so a speculative only fires on a pause long enough
                                    # (>= ~0.2 s quiet) to plausibly be the utterance end — not on every
@@ -241,6 +251,7 @@ SPECULATIVE = True                 # overlap a speculative decode with the silen
 # cumulatively, as long as the next fragment begins within CONCAT_MAX_GAP of the
 # previous one ending. A longer gap is treated as a new, separate command. The total
 # tolerated mid-sentence pause ≈ SILENCE + CONCAT_MAX_GAP. See LocalOutpost._on_transcript.
+# A long utterance is rarely split at all: its endpoint waits longer (SILENCE_LONG above).
 CONCAT_MAX_GAP = 2.5               # max inter-fragment silence to treat segments as one utterance (s)
 
 # ── VAD ───────────────────────────────────────────────────────────────────────

@@ -20,7 +20,7 @@ import numpy as np
 
 from .constants import (
     SAMPLE_RATE, FRAME, FRAME_DURATION, AUDIO_QUEUE_TIMEOUT,
-    SPEC_SILENCE, SPEC_STALE_SPEECH_GRACE, MIN_SPEECH, MAX_SEGMENT,
+    SILENCE, SPEC_SILENCE, SPEC_STALE_SPEECH_GRACE, MIN_SPEECH, MAX_SEGMENT,
     SPECULATIVE, CONCAT_MAX_GAP,
     SCRIBE_DISAGREE_MAX_SIMILARITY, SCRIBE_DISAGREE_MAX_SCRIBE_CONF,
     SCRIBE_DISAGREE_MAX_WHISPER_CONF,
@@ -1061,6 +1061,13 @@ class LocalOutpost:
                 # offset decay; the silero run is the fallback for an utterance too soft
                 # for the energy gate to have heard at all.
                 quiet_run = max(silence_run, energy_quiet_run) if energy_heard else silence_run
+
+                # Once per pause, at the frame a short command would have ended on: a long
+                # utterance is given a longer pause before it counts as the end.
+                if event != STOPPED and SILENCE <= silence_run < SILENCE + FRAME_DURATION:
+                    fine(f"[{self.label}] … still listening after {silence_run:.2f}s of quiet — "
+                          f"{speech_secs - silence_run:.1f}s spoken, the utterance ends on "
+                          f"{ep.silence_needed:.2f}s")
 
                 if (SPECULATIVE and not spec_fired
                         and quiet_run >= SPEC_SILENCE
