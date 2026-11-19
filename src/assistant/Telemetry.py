@@ -1,6 +1,7 @@
 """Anonymous usage telemetry for the closed beta: an event when the user speaks, one when the
 assistant answers, one when an integration is switched on or off, one per TUI tab opened, the
-size of the memory after a curation, the install's status — what every running feed holds,
+size of the memory after a curation, the steps of the reactivation schedule and the owner's return
+after a silence (`assistant/Reactivation.py`), the install's status — what every running feed holds,
 which integrations are on and how big the prompt is, hourly when it changed —, a daily heartbeat,
 every error the server logs — and, for the install's first `TRANSCRIPT_DAYS`, the transcript itself.
 
@@ -125,7 +126,8 @@ def _post_http(payload: dict) -> None:
 
 class Telemetry:
     """The process-wide sink: `user_turn` / `assistant_turn` / `tab_change` /
-    `integration_switch` / `memory_size` / `heartbeat` enqueue, `feed_count` / `feed_stopped`
+    `integration_switch` / `memory_size` / `reactivation_nudge` / `reactivation_return` /
+    `heartbeat` enqueue, `feed_count` / `feed_stopped`
     keep the counts the worker thread's `status` reports — beside the prompt sizes it reads
     through the `prompt_stats` callable `start()` is given —, and that thread posts. Before
     `start()` (or when disabled) every call is a no-op."""
@@ -277,6 +279,33 @@ class Telemetry:
             return
         self._enqueue("memory_size", {"words": words, "chars": chars, "watch_items": watch_items,
                                       "procedures": procedures})
+
+    def reactivation_nudge(self, step: int, kind: str, outcome: str, via: list[str], owner_channels: list[str],
+                           inactive_hours: float):
+        """A step of the reactivation schedule was spent (`assistant/Reactivation.py`): which one,
+        whether the check wrote (*outcome*), the kinds of the destinations it wrote to — never
+        their names — and the chats the owner could be reached in. No text: the message itself
+        is the proactive `assistant_turn` of the same moment, under the transcript's own rule."""
+        if not self._on():
+            return
+        self._enqueue("reactivation_nudge", {"step": step, "kind": kind, "outcome": outcome, "via": list(via),
+                                             "owner_channels": list(owner_channels),
+                                             "inactive_hours": round(inactive_hours, 1)})
+
+    def reactivation_return(self, inactive_hours: float, nudges_sent: int, last_step: Optional[int],
+                            hours_since_nudge: Optional[float], source: Optional[str]):
+        """The owner's first turn after a silence of a day or more: how long it was, how many
+        reactivation messages went out in it and how long after the last one the owner came
+        back — *nudges_sent* 0 is the return nobody was written to for."""
+        if not self._on():
+            return
+        properties = {"source": source or "unknown", "inactive_hours": round(inactive_hours, 1),
+                      "nudges_sent": nudges_sent}
+        if last_step is not None:
+            properties["last_step"] = last_step
+        if hours_since_nudge is not None:
+            properties["hours_since_nudge"] = round(hours_since_nudge, 1)
+        self._enqueue("reactivation_return", properties)
 
     def error_report(self, message: str, exception: Optional[BaseException] = None, handled: bool = True,
                      outside: bool = False):

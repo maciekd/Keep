@@ -2352,3 +2352,119 @@ class TestBracketsSurviveInTheHistory:
         getattr(mgr, save)("[sighs] NO")
 
         pm.update_history.assert_not_called()
+
+
+class TestTheCheckWritesToAQuietOwner:
+    """The periodic check carries the reactivation step that is due (`assistant/Reactivation.py`)
+    and spends it: sent when the check posted a message, declined when it answered NO, and left
+    due when the check never got to write."""
+
+    @pytest.fixture(autouse=True)
+    def quiet_for_a_day(self, monkeypatch):
+        """The messages are on and the owner's last turn was 25 hours ago."""
+        import common.ConfigManager as config_module
+        from assistant import Reactivation
+        values = {Reactivation.ENABLED_KEY: True, "owner_name": "Marcus"}
+        monkeypatch.setattr(config_module.config, "get", lambda key, default=None: values.get(key, default))
+        Destinations.register(Destinations.Destination("owner", Destinations.KIND_CHAT, lambda text: True))
+        Reactivation.owner_spoke("Telegram", now=time.time() - 25 * 3600)
+        self.reactivation = Reactivation
+
+    def check(self, reply: str, executed: list[str], user_active=False):
+        """One check carrying the step that is due, whose reply ran *executed*; the prompt it
+        sent and the step it carried."""
+        pm = make_mock_prompt_manager()
+        saved = {}
+        pm.save_prompt_to_file.side_effect = lambda msgs: saved.update(m=list(msgs))
+        mgr, mock_llm = make_manager(prompt_manager=pm)
+        mock_llm.handles_thinking_internally.return_value = True
+        mock_llm.think_with_messages.return_value = reply
+        inst = Mock()
+        inst.command_queue = queue.Queue()
+        inst.command_being_processed = False
+        inst.command_running_in_background = False
+        inst.command_reply = None
+        inst.flush_buffer.return_value = None
+        inst.process.return_value = None
+        inst.executed_commands = executed
+        step = self.reactivation.due()
+        with patch('assistant.commands.CommandProcessor.CommandProcessor', return_value=inst), \
+                patch.object(mgr, 'is_user_interaction_active', return_value=user_active), \
+                patch.object(mgr, '_retry_when_quiet'):
+            mgr.activity_check(nudge=step)
+        return saved.get("m"), step
+
+    def test_the_note_follows_the_instruction_in_the_check_s_turn(self):
+        sent, step = self.check("NO", [])
+
+        last = sent[-1]["content"]
+        assert step.number == 1
+        assert last.index("AUTONOMOUS ACTION CHECK") < last.index("QUIET OWNER")
+        assert "Marcus" in last
+
+    def test_a_check_without_a_step_says_nothing_of_a_quiet_owner(self):
+        pm = make_mock_prompt_manager()
+        saved = {}
+        pm.save_prompt_to_file.side_effect = lambda msgs: saved.update(m=list(msgs))
+        mgr, mock_llm = make_manager(prompt_manager=pm)
+        mock_llm.think_with_messages.return_value = "NO"
+
+        mgr.activity_check()
+
+        assert "QUIET OWNER" not in saved["m"][-1]["content"]
+
+    def test_a_check_that_posted_spends_the_step(self):
+        self.check("post_message(owner, The photo index is done)\nNO", ["post_message(owner, The photo index is done)"])
+
+        assert self.reactivation.due() is None
+        assert self.reactivation._load()["spent"][0]["outcome"] == self.reactivation.OUTCOME_SENT
+
+    def test_a_check_that_answered_no_spends_the_step_as_declined(self):
+        self.check("NO", [])
+
+        assert self.reactivation.due() is None
+        assert self.reactivation._load()["spent"][0]["outcome"] == self.reactivation.OUTCOME_DECLINED
+
+    def test_a_check_that_gave_way_before_it_started_leaves_the_step_due(self):
+        sent, step = self.check("NO", [], user_active=True)
+
+        assert sent is None, "the check never ran"
+        assert self.reactivation.due().number == step.number
+
+    def test_a_check_whose_model_failed_leaves_the_step_due(self):
+        pm = make_mock_prompt_manager()
+        mgr, mock_llm = make_manager(prompt_manager=pm)
+        mock_llm.handles_thinking_internally.return_value = True
+        mock_llm.think_with_messages.side_effect = RuntimeError("API down")
+        step = self.reactivation.due()
+
+        with pytest.raises(RuntimeError):
+            mgr.activity_check(nudge=step)
+
+        assert self.reactivation.due().number == step.number
+        assert not mgr.activity_check_lock.locked()
+
+    def test_the_periodic_loop_hands_the_due_step_to_its_check(self):
+        mgr, _ = make_manager()
+        carried = []
+
+        def check_then_stop(**kwargs):
+            carried.append(kwargs.get("nudge"))
+            mgr.running = False
+            return ""
+
+        with patch('assistant.agents.AutonomousActionManager.time.sleep'), \
+                patch.object(mgr, '_run_memory_curation'), \
+                patch.object(mgr, '_nightly_curation_due', return_value=False), \
+                patch.object(mgr, 'activity_check', side_effect=check_then_stop):
+            mgr._run_periodic_check()
+        mgr.running = True
+
+        assert [step.number for step in carried] == [1]
+
+    def test_the_row_that_opens_the_check_s_rows_says_it_was_a_message_to_a_quiet_owner(self):
+        step = self.reactivation.due()
+
+        opening = AutonomousActionManager._opening_note(None, None, step)
+
+        assert self.reactivation.ENABLED_KEY in opening

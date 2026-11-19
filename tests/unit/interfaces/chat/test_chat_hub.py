@@ -980,3 +980,29 @@ class TestApprovalAnswerAndKillInOnePollWindow:
         closes = [c for c in transport.calls if c[0] == "close"]
         assert len(closes) == 1 and "ancelled" not in closes[0][3]
         assert hub.pending_approvals() == 0
+
+
+class TestOwnerChannels:
+    """What a push to the owner reaches, as the reactivation note tells the model."""
+
+    def test_each_chat_a_push_reaches_is_listed_with_whether_somebody_sees_it(self):
+        hub = ChatHub()
+        phone = FakeTransport(owners=[111], name="Telegram")
+        console = FakeTransport(owners=["console"], name="Console")
+        console.attended_now = False
+        own_account = FakeTransport(owners=[], name="iMessage")      # serves people, pushes to nobody
+        for transport in (phone, console, own_account):
+            hub.register(transport)
+
+        assert hub.owner_channels() == [("Telegram", True), ("Console", False)]
+        hub.stop()
+
+    def test_a_transport_that_cannot_say_is_left_out_and_the_rest_still_listed(self):
+        hub = ChatHub()
+        broken = FakeTransport(owners=[111], name="Telegram")
+        broken.notification_conversations = lambda: 1 / 0
+        hub.register(broken)
+        hub.register(FakeTransport(owners=["console"], name="Console"))
+
+        assert hub.owner_channels() == [("Console", True)]
+        hub.stop()

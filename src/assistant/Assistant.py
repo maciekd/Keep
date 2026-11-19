@@ -11,6 +11,7 @@ from itertools import chain
 from queue import Empty, Queue
 from typing import Callable, Iterator, List, Optional
 
+from assistant import Reactivation
 from assistant.RequestProcessor import RequestData, RequestProcessor
 from assistant.AssistantEvents import AssistantEvent, ObserverHub, UserIdentified, observers
 from assistant.AssistantRequest import SYSTEM_USER, RequestContext
@@ -231,6 +232,8 @@ class Assistant:
             self.kill_all(f"superseded by new request {req.user_input!r}")
             if not req.guest and req.user != SYSTEM_USER:
                 self.spoken_to = True
+                if not req.test:
+                    Reactivation.owner_spoke(req.source)
             try:
                 handler = self._pool.get(timeout=self.POOL_GET_TIMEOUT)
             except Empty:

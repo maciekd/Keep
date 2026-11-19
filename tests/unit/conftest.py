@@ -236,6 +236,15 @@ def first_run_files_stay_out_of_the_tree(tmp_path):
         yield
 
 
+@pytest.fixture(autouse=True)
+def reactivation_clock_stays_out_of_the_tree(tmp_path):
+    """cache/reactivation.json is the install's record of when its owner last spoke: every
+    request a test sends through the Assistant would overwrite it, so each test gets a scratch one."""
+    from assistant import Reactivation
+    with patch.object(Reactivation, "STATE_FILE", tmp_path / "reactivation.json"):
+        yield
+
+
 @pytest.fixture(autouse=True, scope="session")
 def isolated_vault_file(tmp_path_factory):
     """No unit test opens the developer's vault.bin (which the cheap key could not read anyway):

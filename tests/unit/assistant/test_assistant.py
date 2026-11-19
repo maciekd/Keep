@@ -226,6 +226,15 @@ class TestDispatch:
         a.stream(ctx(**who))
         assert a.spoken_to is spoken
 
+    @pytest.mark.parametrize("who, counted", [(dict(user="Marcus"), True), (dict(user="Bob", guest=True), False),
+                                              (dict(user="system"), False), (dict(user="Marcus", test=True), False)],
+                             ids=["an owner", "a guest", "a turn the server started", "a test suite's request"])
+    def test_only_an_owners_request_ends_the_silence_the_reactivation_counts(self, who, counted):
+        from assistant import Reactivation
+        a = make_assistant()
+        a.stream(ctx(**who))
+        assert Reactivation.STATE_FILE.exists() is counted
+
     def test_a_guest_request_runs_when_the_previous_one_is_over(self):
         # A handler stays in the running set after its turn until the next dispatch: that
         # must not count as in flight, or guests would be refused nearly always.
