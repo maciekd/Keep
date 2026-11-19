@@ -234,9 +234,12 @@ Every integration is off until you turn it on, and Keep walks you through the se
 <tr><td>🏠&nbsp;<b>Home</b></td><td>Home Assistant, Indigo, Philips Hue, Plejd and HomeKit (via HomeClaw) for lights, switches, locks, sensors, thermostats, covers and scenes</td></tr>
 <tr><td>📹&nbsp;<b>Cameras</b></td><td>Arlo, Ring and UniFi Protect</td></tr>
 <tr><td>🚗&nbsp;<b>Cars</b></td><td>Tesla, Volvo, Hyundai, Kia and Genesis; the whole family's cars as one fleet</td></tr>
+<tr><td>♨️&nbsp;<b>Heating</b></td><td>Heat pumps through a Husdata gateway: readings and setpoints</td></tr>
 <tr><td>🏊&nbsp;<b>Pool</b></td><td>Aseko pool units, through aseko.cloud</td></tr>
-<tr><td>🎵&nbsp;<b>Music</b></td><td>Sonos and Spotify</td></tr>
+<tr><td>🎵&nbsp;<b>Music</b></td><td>Sonos, HEOS (Denon, Marantz) and Spotify</td></tr>
+<tr><td>📁&nbsp;<b>Files</b></td><td>Dropbox and Google Drive, searched and read; Keep follows the edits of your Google Docs</td></tr>
 <tr><td>🌦️&nbsp;<b>Weather</b></td><td>YR forecasts and rain radar</td></tr>
+<tr><td>⛴️&nbsp;<b>Ferries</b></td><td>Trafikverket car ferry departures</td></tr>
 <tr><td>🌐&nbsp;<b>Web</b></td><td>Search, page reading, a real headless browser for sites that need clicking, and X</td></tr>
 <tr><td>💬&nbsp;<b>Chat</b></td><td>Telegram and WhatsApp; Keep follows the family's group chats and can send on your behalf</td></tr>
 <tr><td>🎙️&nbsp;<b>Voice</b></td><td>Fusion of local Whisper transcription and ElevenLabs, for <i>low latency</i> combined with <i>high accuracy</i></td></tr>
