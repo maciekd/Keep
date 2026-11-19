@@ -1437,6 +1437,19 @@ class TestWaitForNaturalTiming:
         full_handler.turn_gate.wait.assert_called_once_with(
             full_handler.request_context, "User: hello", 0.3, 0.5)
 
+    def test_a_typed_request_never_waits_at_the_gate(self, full_handler):
+        # Nobody is speaking in a text chat: the first command of a typed turn runs at once.
+        full_handler.turn_gate = Mock()
+        full_handler.request_context.text_only = True
+        assert full_handler.wait_so_that_response_timing_is_natural(0) is True
+        full_handler.turn_gate.wait.assert_not_called()
+
+    def test_a_typed_request_still_honours_kill(self, full_handler):
+        full_handler.turn_gate = Mock()
+        full_handler.request_context.text_only = True
+        full_handler.is_killed = True
+        assert full_handler.wait_so_that_response_timing_is_natural(0) is False
+
     def test_no_gate_is_immediate(self, full_handler):
         full_handler.turn_gate = None
         with patch("assistant.RequestProcessor.time.sleep") as mock_sleep:

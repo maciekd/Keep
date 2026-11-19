@@ -367,6 +367,11 @@ class RequestProcessor:
         if self.turn_gate is None:
             info("No voice turn gate — speaking immediately.")
             return not self.is_killed
+        if self.ctx is not None and self.ctx.text_only:
+            # The gate waits out somebody who may still be speaking; a typed message is
+            # whole when it arrives, and its first command (the caller here) must not wait.
+            trace("Typed request — nobody is speaking, no reply-timing wait.")
+            return not self.is_killed
         return self.turn_gate.wait(self.ctx, self.dialog_manager.reply_text,
                                    self.dialog_manager.time_to_first_token, chunk_time)
 
