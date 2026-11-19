@@ -8,6 +8,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import requests
 
 from interfaces.chat import RichText
 from interfaces.chat.ChatTypes import (KIND_DOCUMENT, KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
@@ -412,6 +413,17 @@ class TestLifecycle:
         t._thread.is_alive.return_value = True
         with patch(f'{MODULE}.requests.get', return_value=MagicMock(status_code=200)):
             assert t.check_health() is True
+
+
+    def test_a_request_that_fails_never_names_the_token(self):
+        """`requests` quotes the URL in its exception, and the token is in the URL's path."""
+        t = _make_transport(running=False)
+        t._bot_token = "424242:fictional-bot-secret"
+        failure = requests.ConnectionError(f"Max retries exceeded with url: /bot{t._bot_token}/getMe")
+        with patch(f'{MODULE}.requests.get', side_effect=failure), pytest.raises(Exception) as raised:
+            t.check_health()
+        assert "fictional-bot-secret" not in str(raised.value) and "ConnectionError" in str(raised.value)
+        assert raised.value.__cause__ is None and raised.value.__suppress_context__
 
 
 @pytest.mark.unit

@@ -2,6 +2,7 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
+from assistant.ErrorScrub import scrub_secrets
 from common import Platform
 from common.ConfigManager import ConfigManager, integration_key
 from .Feed import Feed
@@ -468,10 +469,12 @@ class IntegrationMonitor:
                 self._record_failure(integration, "Health check returned False")
         except HealthWarning as e:
             integration._last_check_time = time.time()
-            self._record_warning(integration, str(e))
+            self._record_warning(integration, scrub_secrets(str(e)))
         except Exception as e:
+            # An exception text quotes what it failed on — a URL with a bot token in its path:
+            # it goes to the log and to the last error the LLM reads, so never as raised.
             integration._last_check_time = time.time()
-            self._record_failure(integration, str(e))
+            self._record_failure(integration, scrub_secrets(str(e)))
 
     def _record_failure(self, integration: Integration, error_msg: str):
         if integration.state == IntegrationState.RATE_LIMITED:

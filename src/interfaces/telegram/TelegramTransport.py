@@ -299,7 +299,12 @@ class TelegramTransport(Integration, ChatTransport):
             # message reaches us. The monitor's restart is what brings it back.
             error("Telegram bot thread is dead while the bot should be running")
             return False
-        resp = requests.get(f"https://api.telegram.org/bot{self._bot_token}/getMe", timeout=10)
+        try:
+            resp = requests.get(f"https://api.telegram.org/bot{self._bot_token}/getMe", timeout=10)
+        except requests.RequestException as e:
+            # The exception's text holds the URL, and the token is in its path.
+            trace(f"Telegram getMe did not get through: {type(e).__name__}")
+            raise ConnectionError(f"Telegram API out of reach ({type(e).__name__})") from None
         return resp.status_code == 200
 
     @property

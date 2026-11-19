@@ -17,6 +17,12 @@ _TOKEN = re.compile(r"(?<![\w-])(?=[\w-]*\d)[\w-]{24,}(?![\w-])")
 _NUMBER = re.compile(r"\+?\d(?:[ -]?\d){6,}")
 
 
+def scrub_secrets(text: str) -> str:
+    """The text without what would let somebody in — for what stays on the machine (the log,
+    an integration's last error) and so keeps the address or the number that names the account."""
+    return _TOKEN.sub("<token>", text)
+
+
 def scrub(text: str) -> str:
     text = text.replace(_HOME, "~")
     text = _EMAIL.sub("<email>", text)

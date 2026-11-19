@@ -173,6 +173,18 @@ class TestStateTransitions:
         mock_config._check_integration(integration)
         assert "Connection refused" in integration.last_error
 
+    def test_a_token_the_exception_quotes_reaches_neither_the_log_nor_the_last_error(self, mock_config):
+        """The last error is what `list_integrations` shows the LLM, the log what `server_logs` reads."""
+        secret = "AAF1ctionalBotSecret0fThirtyFiveChars"
+        integration = FailingIntegration()
+        integration.check_health = Mock(side_effect=ConnectionError(f"Max retries exceeded with url: /bot424242:{secret}/getMe"))
+        mock_config._config_manager.get.return_value = "value"
+        mock_config.register(integration)
+        with patch("assistant.integration.IntegrationMonitor.info") as logged:
+            mock_config._check_integration(integration)
+        assert secret not in integration.last_error and "getMe" in integration.last_error
+        assert logged.called and secret not in str(logged.call_args_list)
+
     def test_false_health_check_records_failure(self, mock_config):
         integration = FakeIntegration(healthy=False)
         mock_config.register(integration)
