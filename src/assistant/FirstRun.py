@@ -122,8 +122,8 @@ toolkit has the warning that goes with it): say so when the user asks for the ap
 
 3. The home: lights, speakers, cameras, the car — ask what they have and set up what there is an integration for.
 
-4. iMessage, only when the household has a Mac that stays on: the messages are read through an iMessage satellite
-on that Mac (config_help("imessage") has the install). Skip it otherwise.
+4. WhatsApp (potentially iMessage: only when the household has a Mac that stays on: the messages are read through
+an iMessage satellite on that Mac (config_help("imessage") has the install)).
 
 Once you have a deep understanding of the user and his/her family/friends you will be able to be truly helpful and
 be truly intelligent. The messages, the mail and the calendar are important because you'll get loads of
