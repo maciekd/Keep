@@ -2,18 +2,36 @@
 an interactive arrival does to a background request that will not unwind, and the idle clock a
 background request waits on."""
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
 
 from assistant.llm.AbstractLLM import LLMPreempted
 from assistant.llm.BackgroundSlot import BackgroundSlot
+from tests.unit.waiting import FAILURE_BOUND
+
+
+class _RecordingCondition(threading.Condition):
+    """The slot's condition, recording the timeout of every wait on it."""
+
+    def __init__(self):
+        super().__init__()
+        self.waits, self.waits_for = [], []
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        return super().wait(timeout)
+
+    def wait_for(self, predicate, timeout=None):
+        self.waits_for.append(timeout)
+        return super().wait_for(predicate, timeout)
 
 
 @pytest.fixture
 def slot():
-    return BackgroundSlot("test-engine")
+    slot = BackgroundSlot("test-engine")
+    slot._cond = _RecordingCondition()
+    return slot
 
 
 def _run(target):
@@ -44,9 +62,8 @@ class TestInteractiveArrival:
         the user's turn goes to the engine after the unwind budget anyway, queued behind it."""
         monkeypatch.setattr(BackgroundSlot, "PREEMPT_UNWIND_TIMEOUT_S", 0.05)
         slot.acquire(idle_s=0)           # a background request holds the slot, no socket yet
-        t0 = time.monotonic()
         slot.interactive_begin()
-        assert time.monotonic() - t0 < 1
+        assert slot._cond.waits_for == [0.05], "it waited for the unwind once, within its budget"
         assert slot.abort is True and slot.interactive_active == 1
         assert slot.active is True       # the gate did not pretend the slot was freed
 
@@ -76,9 +93,8 @@ class TestInteractiveArrival:
         (a turn and the post-turn pre-heat) pass straight through, and the count never drops
         below zero when an end is reported twice."""
         slot.interactive_begin()
-        t0 = time.monotonic()
         slot.interactive_begin()
-        assert time.monotonic() - t0 < 0.05
+        assert slot._cond.waits == [] and slot._cond.waits_for == []
         assert slot.interactive_active == 2
         for _ in range(3):
             slot.interactive_end()
@@ -97,7 +113,7 @@ class TestIdleClock:
         clock.advance(slot, 19)
         assert not got.wait(0.02)               # a second short of the idle time is not enough
         clock.advance(slot, 1)
-        assert got.wait(1)
+        assert got.wait(FAILURE_BOUND)
         assert slot.wait_seconds() == 0.0       # the main thread queued nothing: the wait is per thread
 
     def test_an_end_that_does_not_reset_the_clock_lets_the_background_request_through(self, slot):
@@ -108,7 +124,7 @@ class TestIdleClock:
         slot.interactive_end(resets_idle=False)
         got = threading.Event()
         _run(lambda: (slot.acquire(idle_s=5), got.set()))
-        assert got.wait(1)
+        assert got.wait(FAILURE_BOUND)
         assert slot.active is True
 
     def test_a_released_slot_is_free_for_the_next_background_request_at_once(self, slot):
@@ -117,4 +133,4 @@ class TestIdleClock:
         _run(lambda: (slot.acquire(idle_s=0), got.set()))
         assert not got.wait(0.05)
         slot.release()
-        assert got.wait(1)
+        assert got.wait(FAILURE_BOUND)

@@ -7,6 +7,7 @@ import threading
 from assistant.integration.music.SpotifyAccount import SIGN_IN_REVOKED, SpotifyAccount
 from integrations.sonos.SonosIntegration import SonosIntegration
 from tests.unit.assistant.integration.music.spotify_fakes import install, make_account
+from tests.unit.waiting import FAILURE_BOUND
 
 
 ROOM_MAPPING = {"Kitchen Front": "Kitchen", "Kitchen Back": ""}
@@ -407,7 +408,7 @@ class TestRefreshCycle:
         pending = mm._refresh_timer
 
         mm._on_reset()
-        pending.join(timeout=1)
+        pending.join(timeout=FAILURE_BOUND)
         mm._refresh_tick()   # a tick that was already running when the integration was dropped
 
         assert not pending.is_alive()
@@ -437,7 +438,7 @@ class TestZoneStateParsingIsSerialised:
             thread = threading.Thread(target=parse, daemon=True)
             thread.start()
             assert not done.wait(0.05), "soco parsed a payload while another thread held the parsing lock"
-        assert done.wait(2), "soco never got to the payload after the lock was released"
+        assert done.wait(FAILURE_BOUND), "soco never got to the payload after the lock was released"
 
 
 class TestSpotifyUserPlaylists:

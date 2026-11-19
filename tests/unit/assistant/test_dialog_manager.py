@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from assistant.DialogManager import DialogManager
 from assistant.AssistantEvents import AssistantObserver, observers
@@ -712,12 +712,12 @@ def test_smart_llm_constructed_with_prompt_cache_enabled(monkeypatch):
 
 @pytest.mark.unit
 def test_kill_closes_every_built_voice_in_background(monkeypatch):
-    import threading
     dm, _ = make_dialog_manager(monkeypatch, [])
-    closed = threading.Event()
-    dm._voices["sv-SE"].close.side_effect = lambda: closed.set()
-    dm.kill()
-    assert closed.wait(timeout=2), "voice.close was not called in background"
+    with patch('assistant.DialogManager.threading.Thread') as thread:
+        dm.kill()
+    dm._voices["sv-SE"].close.assert_not_called()
+    thread.return_value.start.assert_called_once()
+    thread.call_args.kwargs["target"]()
     dm._voices["en-US"].close.assert_called()
     dm._voices["sv-SE"].close.assert_called()
 

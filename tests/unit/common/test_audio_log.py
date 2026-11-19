@@ -4,6 +4,7 @@ import wave
 
 from common import audio_log
 from common.audio_log import cleanup_audio_folder, read_wav_metadata, save_audio_file, save_pcm_wav
+from tests.unit.waiting import FAILURE_BOUND
 
 
 def _pcm(n_samples: int) -> bytes:
@@ -77,7 +78,7 @@ def test_save_pcm_wav_concurrent_same_name_never_overwrites(tmp_path):
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=5)
+        t.join(timeout=FAILURE_BOUND)
 
     assert len(paths) == 8
     assert len(set(paths)) == 8
@@ -184,7 +185,7 @@ def test_cleanup_queued_behind_another_pass_runs_instead_of_skipping(tmp_path):
         assert old.exists()
     finally:
         audio_log._cleanup_lock.release()
-    t.join(timeout=5)
+    t.join(timeout=FAILURE_BOUND)
     assert not t.is_alive()
     assert not old.exists()
     assert (tmp_path / "new.wav").exists()

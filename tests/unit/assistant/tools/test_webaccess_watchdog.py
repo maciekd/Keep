@@ -11,6 +11,7 @@ import pytest
 from unittest.mock import Mock, patch, AsyncMock
 
 from assistant.tools.WebAccess import WebAccess, BrowseWatchdogTimeout, _LoopThread
+from tests.unit.waiting import FAILURE_BOUND
 
 
 def make_wa(**overrides):
@@ -68,7 +69,7 @@ class TestSubmitWatchdog:
 
         with pytest.raises(BrowseWatchdogTimeout):
             loop_thread.submit(wedge(), timeout=0.05)
-        assert cancelled.wait(timeout=2), "watchdog did not cancel the abandoned coroutine"
+        assert cancelled.wait(timeout=FAILURE_BOUND), "watchdog did not cancel the abandoned coroutine"
 
     def test_coroutines_own_timeout_error_is_not_watchdog_expiry(self, loop_thread):
         # On 3.12 asyncio.TimeoutError IS the builtin TimeoutError that
@@ -79,7 +80,7 @@ class TestSubmitWatchdog:
             raise asyncio.TimeoutError("inner CDP wait expired")
 
         with pytest.raises(asyncio.TimeoutError):
-            loop_thread.submit(inner_timeout(), timeout=5)
+            loop_thread.submit(inner_timeout(), timeout=FAILURE_BOUND)
 
     def test_watchdog_exceeds_the_sum_of_stage_budgets(self):
         # Every stage inside a browse command is sanctioned to run this long; a
@@ -113,10 +114,10 @@ class TestBrowseLock:
             return "b"
 
         t = threading.Thread(
-            target=lambda: loop_thread.submit(wa._with_browse_lock(first()), timeout=5))
+            target=lambda: loop_thread.submit(wa._with_browse_lock(first()), timeout=FAILURE_BOUND))
         t.start()
-        assert first_started.wait(timeout=5)  # first() holds the lock before second() is submitted
-        result = loop_thread.submit(wa._with_browse_lock(second()), timeout=5)
+        assert first_started.wait(timeout=FAILURE_BOUND)  # first() holds the lock before second() is submitted
+        result = loop_thread.submit(wa._with_browse_lock(second()), timeout=FAILURE_BOUND)
         t.join()
 
         assert result == "b"
@@ -181,14 +182,15 @@ class TestSnapshotFrameBudget:
 
         async def slow_frame_eval(_self, target_id, _expr):
             visited.append(str(target_id))
-            await asyncio.sleep(0.06)
+            loop = asyncio.get_running_loop()
+            clock = loop.time
+            loop.time = lambda: clock() + WebAccess._SNAPSHOT_FRAME_BUDGET + 1   # it took the whole budget
             return {"records": []}
 
         collector_result = {"records": [{"label": "x"}], "crossOriginFrames": [], "context": None}
 
         async def go():
-            with patch.object(WebAccess, '_SNAPSHOT_FRAME_BUDGET', 0.04), \
-                    patch.object(WebAccess, '_async_sync_popup_targets', new=AsyncMock()), \
+            with patch.object(WebAccess, '_async_sync_popup_targets', new=AsyncMock()), \
                     patch.object(WebAccess, '_evaluate',
                                  new=AsyncMock(side_effect=[collector_result, "title"])), \
                     patch.object(WebAccess, '_async_list_frame_targets',

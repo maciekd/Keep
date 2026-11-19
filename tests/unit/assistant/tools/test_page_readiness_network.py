@@ -6,12 +6,12 @@ summarising the analytics JSON while the order arrived 0.4 s later."""
 import asyncio
 import threading
 import time
-from contextlib import contextmanager
 
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
 
 from assistant.tools.WebAccess import WebAccess
+from tests.unit.assistant.tools.virtual_time import virtual_time
 
 
 def run(coro):
@@ -30,38 +30,6 @@ def make_wa():
     wa._driver_ready.set()
     wa._clear_network_log()
     return wa
-
-
-class VirtualTime:
-    """The network stage's clock and sleep, driven by the sleeps themselves: a sleeper goes on once its
-    wake-up is the earliest one outstanding, and the clock then reads that moment. The order of what
-    happens is the one the scripted times give, however long the machine takes over a step."""
-
-    def __init__(self):
-        self.now = time.time()
-        self._wakes = []
-        self._yield = asyncio.sleep
-
-    def time(self):
-        return self.now
-
-    async def sleep(self, seconds):
-        wake = self.now + seconds
-        self._wakes.append(wake)
-        await self._yield(0)                # every other task first runs up to its own sleep
-        while min(self._wakes) < wake:
-            await self._yield(0)
-        self._wakes.remove(wake)
-        self.now = max(self.now, wake)
-
-
-@contextmanager
-def virtual_time():
-    """WebAccess reads the clock and polls through a VirtualTime, and so does the test's own script."""
-    clock = VirtualTime()
-    with patch("assistant.tools.WebAccess.time", Mock(wraps=time, time=clock.time)), \
-            patch("assistant.tools.WebAccess.asyncio.sleep", clock.sleep):
-        yield clock
 
 
 def pending(wa, rid, url='https://shop.example/api/order', kind='XHR', age=0.0):

@@ -9,6 +9,7 @@ from integrations.homeclaw.HomeClawClient import HomeClawUnavailable
 from integrations.homeclaw.HomeClawCommands import HomeClawCommands
 from integrations.homeclaw.HomeClawIntegration import HomeClawIntegration
 from integrations.homeclaw.HomeClawModel import Unresolved
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.fixture
@@ -21,7 +22,7 @@ def homeclaw():
 
 def _run(commands_instance, command, *params):
     commands_instance.run(command, list(params))
-    commands_instance.wait_for_background(timeout=5)
+    commands_instance.wait_for_background(timeout=FAILURE_BOUND)
     return commands_instance.command_processor.set_command_reply.call_args.args[0]
 
 

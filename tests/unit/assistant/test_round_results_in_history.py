@@ -11,6 +11,7 @@ from assistant.RequestProcessor import (_build_error_round_reply, _build_repeate
                                         _command_result_for_history)
 from assistant.commands.CommandProcessor import CommandProcessor
 from assistant.prompt.MessageHistory import MessageHistory
+from tests.unit.waiting import FAILURE_BOUND
 
 CAP = MessageHistory.COMMAND_RESULT_CHARS
 PAGE = "P" * (CAP * 3)
@@ -30,7 +31,7 @@ def run_round(processor, *results):
     for result in results:
         command = Mock(side_effect=result) if isinstance(result, Exception) else Mock(return_value=result)
         processor.commands.background_command(command, None)
-    assert processor.commands.wait_for_background(timeout=5)
+    assert processor.commands.wait_for_background(timeout=FAILURE_BOUND)
 
 
 def stored(result: str, parts: list[str]) -> str:

@@ -7,6 +7,7 @@ import requests
 import pytest
 from unittest.mock import patch, Mock, AsyncMock
 from assistant.tools.WebAccess import WebAccess
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.mark.unit
@@ -1367,7 +1368,7 @@ class TestLoopThread:
         try:
             async def add(a, b):
                 return a + b
-            assert lt.submit(add(2, 3), timeout=5) == 5
+            assert lt.submit(add(2, 3), timeout=FAILURE_BOUND) == 5
         finally:
             lt.stop()
 
@@ -1379,7 +1380,7 @@ class TestLoopThread:
             async def boom():
                 raise ValueError("nope")
             with pytest.raises(ValueError, match="nope"):
-                lt.submit(boom(), timeout=5)
+                lt.submit(boom(), timeout=FAILURE_BOUND)
         finally:
             lt.stop()
 
@@ -1689,12 +1690,13 @@ class TestMaybeRetryInit:
         async def raising_init(self):
             raise OSError(0, "Undefined error: 0")
 
+        before = time.time()
         with patch.object(WebAccess, '_async_initialize_driver', raising_init):
             asyncio.run(wa._async_maybe_retry_init())  # must not raise
         assert wa._browser is None
         assert wa._tab is None
         assert wa._init_in_progress is False
-        assert time.time() - wa._last_init_failure_ts < 5
+        assert before <= wa._last_init_failure_ts <= time.time()
 
 
 class TestBoilerplateGuard:

@@ -4,6 +4,7 @@ import queue
 import threading
 from datetime import datetime, timedelta
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import Mock, patch
 
@@ -17,8 +18,20 @@ from assistant.agents.AutonomousActionManager import (
     PERIODIC_CHECK_INTERVAL_MINUTES,
     PERIODIC_CHECK_INTERVAL_SECONDS,
     POSTPONED_CHECK_RETRY_SECONDS,
+    SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS,
     THINKING_TAG_INSTRUCTION,
+    USER_INTERACTION_QUIET_PERIOD_SECONDS,
 )
+from tests.unit.waiting import FAILURE_BOUND
+
+THREAD = 'assistant.agents.AutonomousActionManager.threading.Thread'
+
+
+def run_started_thread(thread):
+    """Run in the test the body of the one thread the manager started under *thread*, a patched
+    `threading.Thread`: a real one has to be joined within a bound a stalled CI runner can miss."""
+    thread.return_value.start.assert_called_once()
+    return thread.call_args.kwargs["target"]()
 
 # What a model without thinking of its own receives (a bare Mock LLM counts as one).
 FORMATTED_AUTONOMOUS_ACTION_PROMPT = AUTONOMOUS_ACTION_PROMPT.format(
@@ -453,10 +466,10 @@ class TestAutonomousActionManager:
             check_called.set()
             return "NO"
 
-        with patch.object(mgr, 'activity_check', side_effect=patched_activity_check):
+        with patch.object(mgr, 'activity_check', side_effect=patched_activity_check), patch(THREAD) as thread:
             mock_sleep.side_effect = lambda _: None  # Don't actually sleep
             mgr.schedule(5)
-            check_called.wait(timeout=2)
+            run_started_thread(thread)
 
         sleep_args = [call.args[0] for call in mock_sleep.call_args_list if call.args]
         assert any(abs(arg - 300) < 1 for arg in sleep_args), f"Expected sleep(~300), got {sleep_args}"
@@ -477,8 +490,9 @@ class TestAutonomousActionManager:
             # touching the wall clock: 2.5 min at 1-min ticks gives wakeups at 1.5 and
             # 0.5 min left, then the third tick finds the deadline passed.
             mock_sleep.side_effect = lambda seconds: setattr(mgr, '_caffeine_until', mgr._caffeine_until - seconds)
-            mgr.caffeinate(duration_minutes=2.5, interval_minutes=1)
-            mgr._caffeine_thread.join(timeout=2)
+            with patch(THREAD) as thread:
+                mgr.caffeinate(duration_minutes=2.5, interval_minutes=1)
+            run_started_thread(thread)
 
         assert len(calls) == 2
 
@@ -497,8 +511,9 @@ class TestAutonomousActionManager:
 
         with patch.object(mgr, 'activity_check', side_effect=lambda **kw: calls.append(1) or "NO"):
             mock_sleep.side_effect = sleep_and_stop
-            mgr.caffeinate(duration_minutes=10, interval_minutes=1)
-            mgr._caffeine_thread.join(timeout=2.0)
+            with patch(THREAD) as thread:
+                mgr.caffeinate(duration_minutes=10, interval_minutes=1)
+            run_started_thread(thread)
 
         assert calls == []
         mgr.running = True  # restore
@@ -739,27 +754,18 @@ class TestAutonomousActionManager:
         pm = make_mock_prompt_manager(night=True)
         mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
 
-        import threading
         check_called = threading.Event()
 
         def patched_activity_check(**kwargs):
             check_called.set()
             return "NO"
 
-        created = []
-        real_thread_cls = threading.Thread
-
-        def capture_thread(*args, **kwargs):
-            t = real_thread_cls(*args, **kwargs)
-            created.append(t)
-            return t
-
         with patch.object(mgr, 'activity_check', side_effect=patched_activity_check), \
              patch.object(mgr, '_remove_wakeup'), \
              patch('assistant.agents.AutonomousActionManager.time.sleep'), \
-             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
+             patch(THREAD) as thread:
             mgr._start_wakeup_thread({"at": time.time() + 0.01, "scheduled_at": time.time()})
-            created[0].join(timeout=2.0)
+            run_started_thread(thread)
 
         assert check_called.is_set(), "a scheduled wake-up fires in Night mode too"
 
@@ -799,27 +805,18 @@ class TestAutonomousActionManager:
         pm = make_mock_prompt_manager(prompt='stale "Night": true snapshot', night=False)
         mgr = AutonomousActionManager.get_instance(pm, test_mode=True)
 
-        import threading
         check_called = threading.Event()
 
         def patched_activity_check(**kwargs):
             check_called.set()
             return "NO"
 
-        created = []
-        real_thread_cls = threading.Thread
-
-        def capture_thread(*args, **kwargs):
-            t = real_thread_cls(*args, **kwargs)
-            created.append(t)
-            return t
-
         with patch.object(mgr, 'activity_check', side_effect=patched_activity_check), \
              patch.object(mgr, '_remove_wakeup'), \
              patch('assistant.agents.AutonomousActionManager.time.sleep'), \
-             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
+             patch(THREAD) as thread:
             mgr._start_wakeup_thread({"at": time.time() + 0.01, "scheduled_at": time.time()})
-            created[0].join(timeout=2.0)
+            run_started_thread(thread)
 
         assert check_called.is_set(), "wakeup must run when live state is not Night, even with stale prompt text"
 
@@ -1217,20 +1214,12 @@ class TestScheduledWakeupNote:
             seen.update(kwargs)
             return "NO"
 
-        created = []
-        real_thread_cls = threading.Thread
-
-        def capture_thread(*args, **kwargs):
-            t = real_thread_cls(*args, **kwargs)
-            created.append(t)
-            return t
-
         with patch.object(mgr, 'activity_check', side_effect=capture), \
              patch.object(mgr, '_remove_wakeup'), \
              patch('assistant.agents.AutonomousActionManager.time.sleep'), \
-             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
+             patch(THREAD) as thread:
             mgr._start_wakeup_thread(wakeup)
-            created[0].join(timeout=2.0)
+            run_started_thread(thread)
         assert seen["wakeup"] is wakeup
 
     @staticmethod
@@ -1615,25 +1604,26 @@ class TestUserInteractionGating:
         mgr.notify_user_interaction_ended()
         assert mgr.is_user_interaction_active(quiet_seconds=0) is False
 
-    def _run_scheduled_wakeup(self, mgr) -> list:
-        """Run one scheduled wake-up on a captured thread, returning the activity_check calls."""
-        created = []
-        real_thread_cls = threading.Thread
+    def _run_scheduled_wakeup(self, mgr, while_it_waits=lambda: None) -> tuple[list, list]:
+        """Run one scheduled wake-up's thread body in the test, on a clock its sleeps move;
+        returns the activity_check calls and the sleeps it took."""
+        clock = [time.time()]
+        slept = []
 
-        def capture_thread(*args, **kwargs):
-            t = real_thread_cls(*args, **kwargs)
-            created.append(t)
-            return t
+        def sleep(seconds):
+            slept.append(seconds)
+            clock[0] += seconds
+            while_it_waits()
 
         mgr.running = True
         mgr.prompt_manager.is_night_mode_active.return_value = False
         with patch.object(mgr, 'activity_check', return_value="") as check, \
              patch.object(mgr, '_remove_wakeup'), \
-             patch('assistant.agents.AutonomousActionManager.SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS', 0.01), \
-             patch('assistant.agents.AutonomousActionManager.threading.Thread', side_effect=capture_thread):
-            mgr._start_wakeup_thread({"at": time.time(), "scheduled_at": time.time()})
-            created[0].join(timeout=2.0)
-        return check.call_args_list
+             patch('assistant.agents.AutonomousActionManager.time', SimpleNamespace(time=lambda: clock[0], sleep=sleep)), \
+             patch(THREAD) as thread:
+            mgr._start_wakeup_thread({"at": clock[0], "scheduled_at": clock[0]})
+            run_started_thread(thread)
+        return check.call_args_list, slept
 
     def test_a_scheduled_wakeup_fires_inside_the_periodic_quiet_period(self):
         """"Wake me in 15 seconds" lands inside the minute the periodic checks stay quiet after a
@@ -1642,19 +1632,18 @@ class TestUserInteractionGating:
         mgr.notify_user_interaction_started()
         mgr.notify_user_interaction_ended()
         assert mgr.is_user_interaction_active() is True
-        assert len(self._run_scheduled_wakeup(mgr)) == 1
+        calls, slept = self._run_scheduled_wakeup(mgr)
+        assert len(calls) == 1 and sum(slept) < USER_INTERACTION_QUIET_PERIOD_SECONDS
 
     def test_a_scheduled_wakeup_waits_for_the_request_in_flight(self):
         """While the user's own request is still being answered, the wake-up holds — and fires
         once the request ends, not a minute later."""
         mgr, _ = make_manager()
         mgr.notify_user_interaction_started()
-        ended = threading.Timer(0.05, mgr.notify_user_interaction_ended)
-        ended.start()
-        started = time.time()
-        calls = self._run_scheduled_wakeup(mgr)
+        calls, slept = self._run_scheduled_wakeup(
+            mgr, while_it_waits=lambda: mgr._user_requests_in_flight and mgr.notify_user_interaction_ended())
         assert len(calls) == 1
-        assert time.time() - started < 1.0
+        assert slept == [SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS] * 2, "one wait while it runs, the short quiet after it"
 
     def test_ended_without_started_does_not_underflow(self):
         mgr, _ = make_manager()
@@ -2253,7 +2242,7 @@ class TestACheckThatGaveWayRunsAgain:
     def wait_for_retries():
         for thread in threading.enumerate():
             if thread.name == "CheckRetry":
-                thread.join(5)
+                thread.join(FAILURE_BOUND)
 
     @pytest.fixture(autouse=True)
     def no_real_waiting(self):

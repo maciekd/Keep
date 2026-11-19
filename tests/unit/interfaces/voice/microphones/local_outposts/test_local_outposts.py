@@ -26,6 +26,7 @@ from interfaces.voice.microphones.local_outposts.LocalOutpostManager import (
 from interfaces.voice.microphones.local_outposts.OutpostStreamClient import OutpostStreamClient
 from interfaces.voice.microphones.local_outposts.TextLanguageDetector import TextLanguageDetector
 from interfaces.voice.microphones.local_outposts.WhisperWorker import segment_metrics, metrics_risky, wake_word_hallucination_risky, normalize_loudness
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.fixture
@@ -1051,21 +1052,24 @@ class TestSttLatencyMeasurement:
     minus the trailing-silence wait), falling back to vad_stop_at for callers that
     don't provide it. The endpoint share travels separately as stt_wait_ms."""
 
-    def test_stt_ms_measured_from_speech_end_not_vad_stop(self):
-        outpost, client = make_outpost(awaiting_wakeword=False)
-        now = time.time()
-        outpost._on_transcript("turn on the lights", CLEAN, AUDIO,
-                               vad_stop_at=now - 0.4, speech_ended_at=now - 2.0)
-        stt_ms = client.send_query.call_args.kwargs["stt_ms"]
-        # ~2000ms from speech end; measuring from VAD stop would give ~400ms.
-        assert 2000 <= stt_ms < 3000
+    NOW = 1_700_000_000.0
 
-    def test_stt_ms_falls_back_to_vad_stop(self):
+    @pytest.fixture
+    def frozen(self, monkeypatch):
+        import interfaces.voice.microphones.local_outposts.LocalOutpost as mod
+        monkeypatch.setattr(mod, "time", SimpleNamespace(time=lambda: self.NOW, sleep=time.sleep))
+
+    def test_stt_ms_measured_from_speech_end_not_vad_stop(self, frozen):
         outpost, client = make_outpost(awaiting_wakeword=False)
         outpost._on_transcript("turn on the lights", CLEAN, AUDIO,
-                               vad_stop_at=time.time() - 0.4)
-        stt_ms = client.send_query.call_args.kwargs["stt_ms"]
-        assert 400 <= stt_ms < 1400
+                               vad_stop_at=self.NOW - 0.4, speech_ended_at=self.NOW - 2.0)
+        # 2000 ms from speech end; measuring from VAD stop would give 400 ms.
+        assert client.send_query.call_args.kwargs["stt_ms"] == 2000
+
+    def test_stt_ms_falls_back_to_vad_stop(self, frozen):
+        outpost, client = make_outpost(awaiting_wakeword=False)
+        outpost._on_transcript("turn on the lights", CLEAN, AUDIO, vad_stop_at=self.NOW - 0.4)
+        assert client.send_query.call_args.kwargs["stt_ms"] == 400
 
     def test_stt_wait_ms_is_endpoint_share_of_breakdown(self):
         # endpoint = decode submitted 0.5s after speech ended → stt_wait_ms == 500,
@@ -2192,23 +2196,30 @@ class TestKeepWarm:
     decode-idle, so the first real query of a quiet period doesn't pay Metal's
     idle-decay cold penalty. Never submitted while a mic is mid-utterance."""
 
+    NOW = 1_700_000_000.0
+
     def _worker(self):
         from interfaces.voice.microphones.local_outposts.WhisperWorker import WhisperWorker
         return WhisperWorker("repo", "en")
+
+    def _frozen(self, monkeypatch, mod):
+        """The worker's clock stopped: a decode's stamp then reads exactly 0 s of idle."""
+        monkeypatch.setattr(mod, "time", SimpleNamespace(time=lambda: self.NOW))
 
     def test_keepwarm_decodes_when_idle(self, monkeypatch):
         import interfaces.voice.microphones.local_outposts.WhisperWorker as mod
         calls = []
         monkeypatch.setattr(mod, "transcribe",
                             lambda *a, **k: calls.append(1) or ("", "en", 0.6, 1.0, 0.02, None))
+        self._frozen(monkeypatch, mod)
         w = self._worker()
-        w._last_decode_at = time.time() - 100
+        w._last_decode_at = self.NOW - 100
         assert w.submit_keepwarm() is True
         _, _, job = w._jobs.get_nowait()
         assert job.kind == "keepwarm"
         w._run_keepwarm()
         assert calls == [1]
-        assert w.idle_seconds() < 1              # decode stamped the idle clock
+        assert w.idle_seconds() == 0             # decode stamped the idle clock
         assert w._keepwarm_pending is False      # slot freed for the next cycle
         assert w.metrics()["keepwarm_total"] == 1
 
@@ -2338,7 +2349,7 @@ class TestKeepWarm:
         m._stop_recovery.set()                   # loop exits on its first wait
         m._start_recovery_loop()
         assert m._recovery_thread is not None
-        m._recovery_thread.join(timeout=2)
+        m._recovery_thread.join(timeout=FAILURE_BOUND)
         assert not m._recovery_thread.is_alive()
 
     def test_real_decodes_stamp_the_idle_clock(self, monkeypatch):
@@ -2349,14 +2360,15 @@ class TestKeepWarm:
         import interfaces.voice.microphones.local_outposts.WhisperWorker as mod
         monkeypatch.setattr(mod, "transcribe",
                             lambda *a, **k: ("hi", "en", 0.1, 1.0, 0.1, {"conf": 0.9}))
+        self._frozen(monkeypatch, mod)
         w = self._worker()
-        w._last_decode_at = time.time() - 100
+        w._last_decode_at = self.NOW - 100
         w._run_spec(mod._Job("spec", np.zeros(8000, np.float32), spec_id=1, label="m1"))
-        assert w.idle_seconds() < 1
-        w._last_decode_at = time.time() - 100
+        assert w.idle_seconds() == 0
+        w._last_decode_at = self.NOW - 100
         w._run_final(mod._Job("final", np.zeros(8000, np.float32),
                               on_result=lambda *a: None, label="m1"))
-        assert w.idle_seconds() < 1
+        assert w.idle_seconds() == 0
 
     def test_run_loop_dispatches_keepwarm(self, monkeypatch):
         # The gate tests call _run_keepwarm directly; this pins run()'s dispatch of the
@@ -2371,9 +2383,9 @@ class TestKeepWarm:
         w._last_decode_at = time.time() - 100
         w.submit_keepwarm()
         w.start()
-        assert decoded.wait(2.0)
+        assert decoded.wait(FAILURE_BOUND)
         w.stop()
-        w.join(2.0)
+        w.join(FAILURE_BOUND)
 
 
 @pytest.mark.unit

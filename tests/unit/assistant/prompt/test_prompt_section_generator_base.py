@@ -1,8 +1,8 @@
-import threading
-import time
 from unittest.mock import Mock, patch
 
 from assistant.prompt.PromptSectionGenerator import PromptSectionGenerator
+from tests.unit.assistant.prompt.parked_wait import ParkedEvent
+from tests.unit.waiting import FAILURE_BOUND
 
 
 class ConcreteSection(PromptSectionGenerator):
@@ -131,20 +131,19 @@ class SlowPollSection(ConcreteSection):
 
 class TestThreadLifecycle:
     """stop() joins with a 5 s timeout, so a loop that slid back to time.sleep would leak its
-    thread silently — nothing raises, the section just outlives Assistant.stop()."""
+    thread silently — nothing raises, the section just outlives Assistant.stop(). The loop waits on a
+    ParkedEvent, which only stop() ends."""
 
     @patch('assistant.prompt.PromptSectionGenerator.time.sleep')
     def test_stop_ends_a_thread_waiting_out_the_update_interval(self, mock_sleep):
         section = SlowPollSection(fetch_result="x")
+        section._stop_event = stop = ParkedEvent()
         section.start()
-        deadline = time.time() + 2
-        while section._fetch_count == 0 and time.time() < deadline:
-            time.sleep(0.01)
+        assert stop.waiting.wait(FAILURE_BOUND), "the loop never reached its interval wait"
         assert section.get_content() == "x"
-        started = time.time()
         section.stop()
+        section._thread.join(FAILURE_BOUND)
         assert not section._thread.is_alive(), "stop must end the loop mid-wait, not after the interval"
-        assert time.time() - started < 1
         assert section._fetch_count == 1
 
     def test_monitoring_is_restarted_after_a_failure(self):
@@ -177,16 +176,11 @@ class TestThreadLifecycle:
 
     def test_stop_ends_a_thread_sitting_in_the_retry_backoff(self):
         section = ConcreteSection()
-        failed = threading.Event()
-
-        def fail():
-            failed.set()
-            raise RuntimeError("boom")
-
-        section._start_monitoring = fail
+        section._stop_event = stop = ParkedEvent()
+        section._start_monitoring = Mock(side_effect=RuntimeError("boom"))
         section.start()
-        assert failed.wait(2)
-        started = time.time()
+        assert stop.waiting.wait(FAILURE_BOUND), "the failed loop never reached its backoff"
         section.stop()
+        section._thread.join(FAILURE_BOUND)
         assert not section._thread.is_alive()
-        assert time.time() - started < 1
+        assert section._start_monitoring.call_count == 1

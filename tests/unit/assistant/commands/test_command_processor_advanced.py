@@ -8,6 +8,7 @@ import pytest
 
 from assistant.commands.CommandProcessor import CommandProcessor
 from assistant.AssistantEvents import AssistantObserver, observers
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.mark.unit
@@ -150,7 +151,7 @@ class TestCommandProcessorAdvanced:
 
         processor.command_queue.join()
 
-        assert run_event.wait(timeout=1.0)
+        assert run_event.wait(timeout=FAILURE_BOUND)
 
         processor.kill()
 
@@ -186,7 +187,7 @@ class TestCommandProcessorAdvanced:
             processor.invoke_command("turn_on", ["kitchen"], dialog_manager)
             processor.command_queue.join()
 
-            assert notify_event.wait(timeout=1.0)
+            assert notify_event.wait(timeout=FAILURE_BOUND)
             assert captured['text'] == "Turning on kitchen"
             assert captured['ephemeral'] is False
 
@@ -220,7 +221,7 @@ class TestCommandProcessorAdvanced:
             processor.invoke_command("turn_on", ["kitchen"], dialog_manager)
             processor.command_queue.join()
 
-            assert notify_event.wait(timeout=1.0)
+            assert notify_event.wait(timeout=FAILURE_BOUND)
             assert captured['text'] == "Turning on kitchen"
             assert captured['ephemeral'] is True
 
@@ -254,7 +255,7 @@ class TestCommandProcessorAdvanced:
             processor.invoke_command("madeup", ["stuff"], dialog_manager)
             processor.command_queue.join()
 
-            assert notify_event.wait(timeout=1.0)
+            assert notify_event.wait(timeout=FAILURE_BOUND)
             assert captured['text'] == "madeup(stuff)"
 
         processor.kill()
@@ -776,7 +777,7 @@ class TestRepliesAcrossBatches:
     @staticmethod
     def run_batch(cp, result):
         cp.commands.background_command(lambda _: result, None)
-        assert cp.commands.wait_for_background(timeout=5)
+        assert cp.commands.wait_for_background(timeout=FAILURE_BOUND)
 
     def test_sync_error_between_two_batches(self, processor):
         self.run_batch(processor, "RESULT-A")
@@ -789,13 +790,13 @@ class TestRepliesAcrossBatches:
         gate = threading.Event()
 
         def slow(_):
-            gate.wait(5)
+            gate.wait(FAILURE_BOUND)
             return "RESULT-A"
 
         processor.commands.background_command(slow, None)
         processor.append_command_reply("SYNC-ERR")
         gate.set()
-        assert processor.commands.wait_for_background(timeout=5)
+        assert processor.commands.wait_for_background(timeout=FAILURE_BOUND)
         self.run_batch(processor, "RESULT-B")
         assert processor.command_reply == "SYNC-ERR\n\nRESULT-A\n\nRESULT-B"
 
@@ -804,7 +805,7 @@ class TestRepliesAcrossBatches:
             raise RuntimeError("boom")
 
         processor.commands.background_command(boom, None)
-        assert processor.commands.wait_for_background(timeout=5)
+        assert processor.commands.wait_for_background(timeout=FAILURE_BOUND)
         self.run_batch(processor, "RESULT-B")
         assert processor.command_reply == "Command failed: boom\n\nRESULT-B"
         assert processor.command_reply_contains_error is True
@@ -929,7 +930,7 @@ class TestCommandWorkerBehavior:
 
         def slow_run(cmd, params):
             execution_started.set()
-            can_continue.wait(timeout=2.0)
+            can_continue.wait(timeout=FAILURE_BOUND)
             return ""
 
         processor.commands.run = slow_run
@@ -937,7 +938,7 @@ class TestCommandWorkerBehavior:
 
         processor.invoke_command("turn_on", ["kitchen"], mock_dialog_manager)
 
-        execution_started.wait(timeout=2.0)
+        assert execution_started.wait(timeout=FAILURE_BOUND)
         assert processor.command_being_processed is True
 
         can_continue.set()
@@ -1137,7 +1138,7 @@ class TestCommandWorkerRaceConditions:
 
         def slow_run(cmd, params):
             execution_started.set()
-            kill_done.wait(timeout=2.0)
+            kill_done.wait(timeout=FAILURE_BOUND)
             return ""
 
         processor.commands.run = slow_run
@@ -1145,7 +1146,7 @@ class TestCommandWorkerRaceConditions:
 
         processor.invoke_command("turn_on", ["kitchen"], mock_dialog_manager)
 
-        execution_started.wait(timeout=2.0)
+        assert execution_started.wait(timeout=FAILURE_BOUND)
         processor.kill()
         kill_done.set()
 
@@ -1159,7 +1160,7 @@ class TestCommandWorkerRaceConditions:
         can_continue = threading.Event()
 
         def blocking_run(cmd, params):
-            can_continue.wait(timeout=5.0)
+            can_continue.wait(timeout=FAILURE_BOUND)
             return ""
 
         processor.commands.run = blocking_run
@@ -1921,7 +1922,7 @@ class TestWorkerLifecycle:
         processor = CommandProcessor(test_suite_mode=True)
         assert processor.worker_thread.is_alive()
         processor.kill()
-        processor.worker_thread.join(timeout=2)
+        processor.worker_thread.join(timeout=FAILURE_BOUND)
         assert not processor.worker_thread.is_alive()
 
     def test_stop_worker_is_idempotent_and_leaves_the_orphan_registry_alone(self):
@@ -1931,7 +1932,7 @@ class TestWorkerLifecycle:
         with patch.object(oc, "orphan_registry") as registry:
             processor._stop_worker()
             processor._stop_worker()
-        processor.worker_thread.join(timeout=2)
+        processor.worker_thread.join(timeout=FAILURE_BOUND)
         assert not processor.worker_thread.is_alive()
         assert processor.command_queue.qsize() == 0
         registry.assert_not_called()
@@ -1942,7 +1943,7 @@ class TestWorkerLifecycle:
         processor = CommandProcessor(test_suite_mode=True)
         processor.invoke_command("turn_on", ["kitchen"], dm)
         processor.kill()
-        processor.worker_thread.join(timeout=2)
+        processor.worker_thread.join(timeout=FAILURE_BOUND)
         assert not processor.worker_thread.is_alive()
 
     def test_commands_still_queued_when_the_kill_lands_are_dropped_and_the_queue_drains(self):
@@ -1957,18 +1958,18 @@ class TestWorkerLifecycle:
         def run(cmd, params):
             ran.append(cmd)
             started.set()
-            gate.wait(2)
+            gate.wait(FAILURE_BOUND)
 
         processor = CommandProcessor(test_suite_mode=False)
         processor.commands.run = run
         processor.invoke_command("turn_on", ["kitchen"], dm)
-        assert started.wait(2)
+        assert started.wait(FAILURE_BOUND)
         processor.invoke_command("turn_off", ["kitchen"], dm)
         processor.invoke_command("dim", ["kitchen", "50"], dm)
         processor.kill()
         gate.set()
         processor.command_queue.join()
-        processor.worker_thread.join(timeout=2)
+        processor.worker_thread.join(timeout=FAILURE_BOUND)
         assert ran == ["turn_on"]
         assert not processor.worker_thread.is_alive()
 
@@ -2062,7 +2063,7 @@ class TestCommandEchoLifecycle:
         with patch('assistant.Notifier._notifier', fake_bot):
             processor.invoke_command("turn_on", ["kitchen"], self._dialog_manager())
             processor.command_queue.join()
-            assert done.wait(timeout=2.0)
+            assert done.wait(timeout=FAILURE_BOUND)
         processor.kill()
 
         fake_bot.complete_command_notification.assert_called_once()

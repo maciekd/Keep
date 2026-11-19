@@ -8,6 +8,7 @@ import pytest
 from assistant.integration.Feed import FeedEntry
 from integrations.whatsapp import WhatsAppIntegration as mod
 from integrations.whatsapp.WhatsAppIntegration import WhatsAppIntegration
+from tests.unit.waiting import FAILURE_BOUND
 from . import fakes
 from .fakes import ALICE, BOB, GROUP, OWNER, FakeClient
 
@@ -168,13 +169,11 @@ class TestLink:
     def test_a_log_out_drops_the_session_file_and_fails_the_feed(self, integration):
         mod.SESSION_PATH.write_bytes(b"sqlite")
         mod.SESSION_PATH.with_name("whatsapp.session-wal").write_bytes(b"wal")
-        integration._on_logged_out(None, SimpleNamespace(OnConnect=False, Reason="removed on the phone"))
-        wal = mod.SESSION_PATH.with_name("whatsapp.session-wal")
-        for _ in range(200):
-            if not mod.SESSION_PATH.exists() and not wal.exists():
-                break
-            time.sleep(0.01)
-        assert not mod.SESSION_PATH.exists() and not wal.exists()
+        with patch.object(mod.threading, "Thread") as thread:
+            integration._on_logged_out(None, SimpleNamespace(OnConnect=False, Reason="removed on the phone"))
+        thread.return_value.start.assert_called_once()
+        thread.call_args.kwargs["target"](*thread.call_args.kwargs["args"])
+        assert not mod.SESSION_PATH.exists() and not mod.SESSION_PATH.with_name("whatsapp.session-wal").exists()
         assert integration.needs_2fa()
         with pytest.raises(RuntimeError, match="whatsapp_login"):
             integration.fetch(None, False)
@@ -287,16 +286,16 @@ class TestLink:
         answers = []
         with patch.object(integration, "_start_client", side_effect=start):
             assert integration.login("+46701740605")[1] is None
-            first = threading.Thread(target=lambda: answers.append(integration.wait_paired(timeout=5)))
+            first = threading.Thread(target=lambda: answers.append(integration.wait_paired(timeout=FAILURE_BOUND)))
             first.start()
-            assert entered.wait(1)
+            assert entered.wait(FAILURE_BOUND)
             assert integration.login("+46701740605")[1] is None
         integration._on_pair_status(None, SimpleNamespace(Error="", ID=fakes.jid(OWNER), Platform="android"))
         integration._connected.set()
-        first.join(1)
+        first.join(FAILURE_BOUND)
         assert answers == ["a newer whatsapp_login replaced this code"]
         assert integration._client is started[1] and not started[1].stopped
-        assert integration.wait_paired(timeout=1) is None
+        assert integration.wait_paired(timeout=FAILURE_BOUND) is None
 
     def test_open_feed_leaves_the_client_and_the_session_alone_while_a_code_is_out(self, integration, monkeypatch):
         mod.SESSION_PATH.write_bytes(b"sqlite")

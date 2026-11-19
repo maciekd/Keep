@@ -4,13 +4,16 @@ socket and takes the slot."""
 import json
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import patch, Mock
 
 import pytest
 
 from assistant.llm.AbstractLLM import AbstractLLM, LLMPreempted
 from assistant.llm.OllamaLLM import OllamaLLM
+from assistant.llm.BackgroundSlot import BackgroundSlot
 from assistant.llm.PrefillTracker import LogSource
+from tests.unit.waiting import FAILURE_BOUND, wait_until
 
 DONE = {"done": True, "prompt_eval_count": 1, "prompt_eval_duration": 1e9,
         "eval_count": 1, "eval_duration": 1e9, "total_duration": 2e9}
@@ -41,7 +44,7 @@ class FakeResponse:
     def readline(self):
         if self._lines:
             return self._lines.pop(0)
-        self._sock.shut.wait(timeout=2)
+        self._sock.shut.wait(FAILURE_BOUND)
         raise ConnectionResetError("socket shut")
 
     def read(self, n=-1):
@@ -111,41 +114,37 @@ class TestBackgroundCompletion:
         # an image payload must not become what the next chat turn's prefix diagnostics compare against
         assert OllamaLLM._last_payload == "the last chat payload"
 
-    def test_interactive_arrival_shuts_the_socket_and_preempts_the_caller(self):
+    def test_interactive_arrival_shuts_the_socket_and_preempts_the_caller(self, monkeypatch):
+        monkeypatch.setattr(BackgroundSlot, "PREEMPT_UNWIND_TIMEOUT_S", FAILURE_BOUND)
         FakeConn.lines = []          # the read blocks like a prefill in progress
         outcome = {}
 
         def bg():
-            t0 = time.monotonic()
             try:
                 _llm()._background_completion(MESSAGES)
             except LLMPreempted:
-                outcome["preempted_after"] = time.monotonic() - t0
+                outcome["preempted"] = True
         t = _run(bg)
-        deadline = time.monotonic() + 1
-        while OllamaLLM._slot.sock is None and time.monotonic() < deadline:
-            time.sleep(0.005)
+        assert wait_until(lambda: OllamaLLM._slot.sock is not None)
         sock = OllamaLLM._slot.sock
         OllamaLLM._interactive_begin()
         assert sock.shut.is_set()
         assert OllamaLLM._slot.active is False, "the interactive side waited for the background request to unwind"
-        t.join(timeout=1)
-        assert outcome["preempted_after"] < 1
+        t.join(FAILURE_BOUND)
+        assert outcome == {"preempted": True}
         OllamaLLM._interactive_end()
 
     def test_stands_down_when_preempted_before_the_request_is_sent(self):
         OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds())
         t = _run(OllamaLLM._interactive_begin)
-        deadline = time.monotonic() + 1
-        while not OllamaLLM._slot.abort and time.monotonic() < deadline:
-            time.sleep(0.005)
+        assert wait_until(lambda: OllamaLLM._slot.abort)
         conn = FakeConn("h", 1)
         conn.connect()
         with pytest.raises(LLMPreempted):
             OllamaLLM._slot.register_connection(conn)
         assert conn.closed
         OllamaLLM._slot.release()
-        t.join(timeout=1)
+        t.join(FAILURE_BOUND)
         assert not t.is_alive()
 
     def test_a_real_failure_is_not_reported_as_preemption(self):
@@ -171,7 +170,7 @@ class TestIdleGate:
         _run(lambda: (OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds()), acquired.set()))
         assert not acquired.wait(0.03)
         OllamaLLM._interactive_end()
-        assert acquired.wait(1)
+        assert acquired.wait(FAILURE_BOUND)
 
     def test_one_background_request_at_a_time(self):
         OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds())
@@ -179,19 +178,24 @@ class TestIdleGate:
         _run(lambda: (OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds()), acquired.set()))
         assert not acquired.wait(0.03)
         OllamaLLM._slot.release()
-        assert acquired.wait(1), "the second worker goes straight in — a background request does not restart the idle clock"
+        assert acquired.wait(FAILURE_BOUND), "the second worker goes straight in — a background request does not restart the idle clock"
 
     def test_the_caller_can_read_how_long_its_request_queued(self):
         OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds())
-        waits = {}
+        now, queued, waits = [1000.0], threading.Event(), {}
         def second():
             OllamaLLM._slot.acquire(OllamaLLM.background_idle_seconds())
             waits["s"] = _llm().background_wait_seconds()
-        t = _run(second)
-        time.sleep(0.04)
-        OllamaLLM._slot.release()
-        t.join(timeout=1)
-        assert 0.03 <= waits["s"] < 1
+        # The slot traces once, holding its lock, just before the second request first waits: the
+        # release cannot come ahead of that wait, and the wait is measured on the test's clock.
+        with patch('assistant.llm.BackgroundSlot.trace', side_effect=lambda _m: queued.set()), \
+             patch('assistant.llm.BackgroundSlot.time', SimpleNamespace(monotonic=lambda: now[0])):
+            t = _run(second)
+            assert queued.wait(FAILURE_BOUND)
+            now[0] += 0.5
+            OllamaLLM._slot.release()
+            t.join(FAILURE_BOUND)
+        assert waits["s"] == 0.5
         assert _llm().background_wait_seconds() == 0, "the wait is per thread — this one never queued"
 
     def test_the_post_turn_pre_heat_evicts_a_background_request(self):
@@ -204,9 +208,9 @@ class TestIdleGate:
              patch('assistant.llm.OllamaLLM.requests.post') as post:
             post.return_value.raise_for_status = Mock()
             t = _run(lambda: llm._pre_heat_raw_truncated([{"role": "user", "content": "x"}]))
-            assert conn.sock.shut.wait(1)
+            assert conn.sock.shut.wait(FAILURE_BOUND)
             OllamaLLM._slot.release()
-            t.join(timeout=1)
+            t.join(FAILURE_BOUND)
         assert OllamaLLM._slot.interactive_last_end > 0, "a pre-heat restarts the idle clock"
 
 

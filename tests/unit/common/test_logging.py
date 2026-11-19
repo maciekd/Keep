@@ -1,6 +1,9 @@
 import queue
+import threading
 
 import pytest
+
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.fixture
@@ -18,17 +21,15 @@ class TestLogWriter:
         monkeypatch.chdir(tmp_path)
         import common.logging as logging_mod
 
-        # Reset module-level state so we get a fresh writer in tmp_path
         old_queue = logging_mod._write_queue
         old_thread = logging_mod._writer_thread
         logging_mod._write_queue = queue.SimpleQueue()
-        logging_mod._writer_thread = None
+        logging_mod._writer_thread = object()   # never started: the writer's body runs here, in tmp_path
 
         try:
-            logging_mod._ensure_writer_started()
             logging_mod._write_queue.put(("plain INFO\n", "colored INFO\n", "INFO"))
             logging_mod._write_queue.put(None)  # sentinel to stop
-            logging_mod._writer_thread.join(timeout=5)
+            logging_mod._log_writer()           # the writer thread's body, run here
 
             assert (tmp_path / "log" / "floxy.log").read_text() == "plain INFO\n"
             assert (tmp_path / "log" / "verbose-floxy.out").read_text() == "colored INFO\n"
@@ -44,13 +45,12 @@ class TestLogWriter:
         old_queue = logging_mod._write_queue
         old_thread = logging_mod._writer_thread
         logging_mod._write_queue = queue.SimpleQueue()
-        logging_mod._writer_thread = None
+        logging_mod._writer_thread = object()
 
         try:
-            logging_mod._ensure_writer_started()
             logging_mod._write_queue.put(("plain FINE\n", "colored FINE\n", "FINE"))
             logging_mod._write_queue.put(None)
-            logging_mod._writer_thread.join(timeout=5)
+            logging_mod._log_writer()
 
             assert (tmp_path / "log" / "floxy.log").read_text() == "plain FINE\n"
             assert (tmp_path / "log" / "verbose-floxy.out").read_text() == "colored FINE\n"
@@ -68,13 +68,13 @@ class TestLogWriter:
         old_thread = logging_mod._writer_thread
         old_last = logging_mod.last_log_time
         logging_mod._write_queue = queue.SimpleQueue()
-        logging_mod._writer_thread = None
+        logging_mod._writer_thread = object()   # never started: the writer's body runs here
 
         try:
             logging_mod.disable_file_logging = False
             logging_mod.log("line one\nline two\nline three", Fore.WHITE, "INFO")
             logging_mod._write_queue.put(None)
-            logging_mod._writer_thread.join(timeout=5)
+            logging_mod._log_writer()
 
             plain_text = (tmp_path / "log" / "floxy.log").read_text()
             plain_lines = [l for l in plain_text.splitlines() if l.strip()]
@@ -102,6 +102,9 @@ class TestLogWriter:
 
         try:
             logging_mod._ensure_writer_started()
+            writer = logging_mod._writer_thread
+            # shutdown's join gives up after 5 s, which a stalled runner may need: only a broken drain fails
+            writer.join = lambda timeout=None: threading.Thread.join(writer, FAILURE_BOUND)
             logging_mod._write_queue.put(("line1\n", "cline1\n", "INFO"))
             logging_mod._write_queue.put(("line2\n", "cline2\n", "TRACE"))
             logging_mod.shutdown_logging()

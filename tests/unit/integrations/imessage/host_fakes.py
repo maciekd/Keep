@@ -6,8 +6,9 @@ from typing import Optional
 from common.imessage.MessagesHost import (Attachment, AttachmentData, Count, GroupChat, GroupList, HostHealth, Message,
                                           MessageBatch, MessagesHost, Recipient, SendResult, TypingResult)
 
-RECENT = time.time() - 5
-FUTURE = time.time() + 3600
+NOW = time.time()       # of the import — the integration reads it as the time (conftest.py)
+RECENT = NOW - 5
+FUTURE = NOW + 3600
 
 
 def received(rowid, text, sender="Alice", handle="+1234567890", chat_name=None, ts=RECENT, attachments=()):

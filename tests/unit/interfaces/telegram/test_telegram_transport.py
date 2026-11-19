@@ -5,6 +5,7 @@ covered in tests/unit/interfaces/chat."""
 import asyncio
 import threading
 import time
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 from interfaces.chat import RichText
 from interfaces.chat.ChatTypes import (KIND_DOCUMENT, KIND_PHOTO, KIND_REACTION, KIND_TEXT, KIND_VIDEO, KIND_VOICE,
                                        PHASE_COMMANDS, PHASE_PREFILL, PHASE_QUEUED, PHASE_THINKING, PHASE_WAITING, Progress)
+from tests.unit.waiting import wait_until
 
 MODULE = 'interfaces.telegram.TelegramTransport'
 
@@ -45,6 +47,20 @@ def _make_transport(allowed=(), token='test-token-123', running=True, link_previ
         t._loop = MagicMock()
         t._running = True
     return t
+
+
+@contextmanager
+def flood_sleeps():
+    """The code's `asyncio.sleep`, faked for the test's own thread alone. The patch reaches the
+    whole process: a stray thread's event loop (another test's bot) sleeping meanwhile was
+    counted as a second flood wait on a CI runner."""
+    real, test_thread, sleep = asyncio.sleep, threading.get_ident(), AsyncMock()
+
+    def routed(*args, **kwargs):
+        return (sleep if threading.get_ident() == test_thread else real)(*args, **kwargs)
+
+    with patch(f'{MODULE}.asyncio.sleep', routed):
+        yield sleep
 
 
 @pytest.fixture(autouse=True)
@@ -266,10 +282,7 @@ class TestLifecycle:
     def _start_and_stop(self, t, builder):
         with patch('telegram.ext.ApplicationBuilder', return_value=builder):
             t.start(MagicMock())
-            deadline = time.monotonic() + 5
-            while t._stop_event is None and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert t._stop_event is not None, "bot never reached its idle wait"
+            assert wait_until(lambda: t._stop_event is not None), "bot never reached its idle wait"
             t.stop()
 
     def test_link_previews_disabled_bot_wide_by_default(self):
@@ -295,10 +308,7 @@ class TestLifecycle:
         with patch('telegram.ext.ApplicationBuilder', return_value=builder), \
              patch(f'{MODULE}.error', lambda msg: errors.append(msg)):
             t.start(MagicMock())
-            deadline = time.monotonic() + 5
-            while t._stop_event is None and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert t._stop_event is not None, "bot never reached its idle wait"
+            assert wait_until(lambda: t._stop_event is not None), "bot never reached its idle wait"
             t.stop()
         assert not t._thread.is_alive()
         app.updater.stop.assert_awaited_once()
@@ -326,9 +336,7 @@ class TestLifecycle:
             assert t.send_text(100, "Server is up again") is True
             app.bot.send_message.assert_not_awaited()
             connected.set()
-            deadline = time.monotonic() + 5
-            while not app.bot.send_message.await_count and time.monotonic() < deadline:
-                time.sleep(0.005)
+            assert wait_until(lambda: app.bot.send_message.await_count)
             t.stop()
         assert app.bot.send_message.await_args.kwargs["chat_id"] == 100
         assert app.bot.send_message.await_args.kwargs["text"] == "Server is up again"
@@ -348,10 +356,7 @@ class TestLifecycle:
              patch(f'{MODULE}.error', lambda msg: errors.append(msg)):
             t.start(MagicMock())
             assert t.send_text(100, "Server is up again") is True
-            deadline = time.monotonic() + 5
-            while t._stop_event is None and time.monotonic() < deadline:
-                time.sleep(0.005)
-            assert t._stop_event is not None, "bot never came up"
+            assert wait_until(lambda: t._stop_event is not None), "bot never came up"
             t.stop()
         assert app.initialize.await_count == 2
         assert app.bot.send_message.await_args.kwargs["text"] == "Server is up again"
@@ -373,9 +378,7 @@ class TestLifecycle:
              patch.object(t, '_start_retry_seconds', return_value=0.02):
             t.start(MagicMock())
             assert t._schedule(coro(), "send") is True
-            deadline = time.monotonic() + 5
-            while not app.initialize.await_count and time.monotonic() < deadline:
-                time.sleep(0.005)
+            assert wait_until(lambda: app.initialize.await_count)
             t.stop()
         assert not t._thread.is_alive()
         assert ran == [] and t._held == []
@@ -969,7 +972,7 @@ class TestSendOrEdit:
     async def test_intermediate_edit_hitting_flood_control_is_dropped(self, t):
         from telegram.error import RetryAfter
         t._application.bot.edit_message_text = AsyncMock(side_effect=RetryAfter(60))
-        with patch(f'{MODULE}.asyncio.sleep', new_callable=AsyncMock) as sleep:
+        with flood_sleeps() as sleep:
             assert await t._send_or_edit_async(123, 42, "Updated") == (42, False)
         sleep.assert_not_called()
         assert t._flood_until[123] > time.time()
@@ -985,7 +988,7 @@ class TestSendOrEdit:
     async def test_final_edit_waits_out_flood_control(self, t):
         from telegram.error import RetryAfter
         t._application.bot.edit_message_text = AsyncMock(side_effect=[RetryAfter(5), None])
-        with patch(f'{MODULE}.asyncio.sleep', new_callable=AsyncMock) as sleep:
+        with flood_sleeps() as sleep:
             assert await t._send_or_edit_async(123, 42, "Final", is_final=True) == (42, True)
         sleep.assert_called_once_with(6)
         assert t._application.bot.edit_message_text.call_count == 2
@@ -1003,7 +1006,7 @@ class TestSendOrEdit:
     async def test_intermediate_send_hitting_flood_control_is_dropped(self, t):
         from telegram.error import RetryAfter
         t._application.bot.send_message = AsyncMock(side_effect=RetryAfter(60))
-        with patch(f'{MODULE}.asyncio.sleep', new_callable=AsyncMock) as sleep:
+        with flood_sleeps() as sleep:
             assert await t._send_or_edit_async(123, None, "Hello") == (None, False)
         sleep.assert_not_called()
         assert t._flood_until[123] > time.time()
@@ -1012,7 +1015,7 @@ class TestSendOrEdit:
     async def test_final_send_waits_out_flood_control(self, t):
         from telegram.error import RetryAfter
         t._application.bot.send_message = AsyncMock(side_effect=[RetryAfter(5), MagicMock(message_id=42)])
-        with patch(f'{MODULE}.asyncio.sleep', new_callable=AsyncMock) as sleep:
+        with flood_sleeps() as sleep:
             assert await t._send_or_edit_async(123, None, "Final answer", is_final=True) == (42, True)
         sleep.assert_called_once_with(6)
 
@@ -1020,7 +1023,7 @@ class TestSendOrEdit:
     async def test_final_edit_failure_after_flood_wait_falls_back_to_send(self, t):
         from telegram.error import RetryAfter
         t._application.bot.edit_message_text = AsyncMock(side_effect=RetryAfter(1))
-        with patch(f'{MODULE}.asyncio.sleep', new_callable=AsyncMock):
+        with flood_sleeps():
             assert await t._send_or_edit_async(123, 42, "Final text", is_final=True) == (42, True)
         t._application.bot.send_message.assert_called_once_with(chat_id=123, text="Final text", parse_mode="HTML")
 
@@ -1028,7 +1031,7 @@ class TestSendOrEdit:
     async def test_no_fallback_when_not_final(self, t):
         from telegram.error import RetryAfter
         t._application.bot.edit_message_text = AsyncMock(side_effect=RetryAfter(1))
-        with patch(f'{MODULE}.asyncio.sleep', new_callable=AsyncMock):
+        with flood_sleeps():
             assert await t._send_or_edit_async(123, 42, "Some text", is_final=False) == (42, False)
         t._application.bot.send_message.assert_not_called()
 
@@ -1037,7 +1040,7 @@ class TestSendOrEdit:
         from telegram.error import RetryAfter
         t._application.bot.edit_message_text = AsyncMock(
             side_effect=[ValueError("bad HTML"), ValueError("retry bad"), RetryAfter(2)])
-        with patch(f'{MODULE}.asyncio.sleep', new_callable=AsyncMock) as sleep:
+        with flood_sleeps() as sleep:
             assert await t._send_or_edit_async(123, 42, "text") == (42, False)
         sleep.assert_not_called()
         assert t._application.bot.edit_message_text.call_count == 3
@@ -1055,7 +1058,7 @@ class TestSendOrEdit:
         from telegram.error import RetryAfter
         t._application.bot.edit_message_text = AsyncMock(
             side_effect=[ValueError("bad HTML"), ValueError("retry bad"), RetryAfter(2), RuntimeError("still broken")])
-        with patch(f'{MODULE}.asyncio.sleep', new_callable=AsyncMock) as sleep:
+        with flood_sleeps() as sleep:
             assert await t._send_or_edit_async(123, 42, "Final", is_final=True) == (42, True)
         sleep.assert_called_once_with(3)
         assert t._application.bot.edit_message_text.call_count == 4
@@ -1415,7 +1418,7 @@ class TestOneShotSends:
     async def test_send_text_async_waits_out_flood_ban(self, transport):
         from telegram.error import RetryAfter
         transport._application.bot.send_message = AsyncMock(side_effect=[RetryAfter(3), MagicMock(message_id=2)])
-        with patch(f'{MODULE}.asyncio.sleep', new_callable=AsyncMock) as sleep:
+        with flood_sleeps() as sleep:
             await transport._send_text_async(111, "hi")
         sleep.assert_called_once_with(4)
         assert transport._application.bot.send_message.call_count == 2
@@ -2148,10 +2151,12 @@ class TestSplitPaste:
 
     @pytest.mark.asyncio
     async def test_a_long_text_alone_goes_on_after_the_wait(self, transport, hub):
-        with patch.object(self.cls, "SPLIT_PASTE_WAIT_SECONDS", 0.01):
+        with patch.object(asyncio.get_running_loop(), "call_later") as call_later:
             await transport._handle_message(_update(message_id=10, text=self.LONG), MagicMock())
-            hub.receive.assert_not_called()
-            await asyncio.sleep(0.04)
+        waited, release = call_later.call_args.args
+        assert waited == self.cls.SPLIT_PASTE_WAIT_SECONDS
+        hub.receive.assert_not_called()
+        await release()
         assert received(hub).text == self.LONG and transport._split_pastes == {}
 
     @pytest.mark.asyncio

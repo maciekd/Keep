@@ -14,6 +14,7 @@ from common.imessage.MessagesHost import (TYPING_BUSY, TYPING_FAILED, TYPING_NO_
 from common.imessage.TypingIndicator import (KEEPALIVE_SECONDS, MAX_NODES, MAX_WINDOWS, RETRY_SECONDS, TIMEOUT_SECONDS,
                                              VALUE, WINDOW_WAIT, TypingIndicator, names_row, same_name)
 
+from tests.unit.waiting import FAILURE_BOUND
 from .ax_fakes import Clock, FakeMessages, Node, Timers
 
 FAMILY, CHARLOTTE = "iMessage;+;chat-family", "iMessage;-;+46701740606"
@@ -485,7 +486,7 @@ class TestSeveralChatsAtOnce:
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join(timeout=2)
+            thread.join(timeout=FAILURE_BOUND)
         assert results[FAMILY].showing and results[CHARLOTTE].showing
         assert sorted(dots.mac.opened) == sorted([FAMILY_NAME, CHARLOTTE_NAME])
 

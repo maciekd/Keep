@@ -10,6 +10,7 @@ from integrations.plejd.PlejdModel import MANUFACTURER_ID
 from integrations.plejd.PlejdLink import NotConnected, PlejdLink, SiteChoice, WriteFailed, choose_site
 from pyplejd import AuthenticationError
 from pyplejd import ConnectionError as PlejdCloudUnreachable
+from tests.unit.waiting import FAILURE_BOUND
 
 MODULE = "integrations.plejd.PlejdLink"
 SITES = [{"siteId": "abc123", "title": "Villa Nyström", "deviceCount": 12},
@@ -423,7 +424,7 @@ class TestThread:
         link = PlejdLink("m@mlab.test", "wrong")
         with patch(f"{MODULE}.get_sites", refused):
             link.start()
-            link._thread.join(2)
+            link._thread.join(FAILURE_BOUND)
             assert not link._thread.is_alive()
         assert not link.wait_ready(0)
         assert "login refused" in link.error and "plejd.password" in link.error
@@ -436,7 +437,7 @@ class TestThread:
         link = PlejdLink("m@mlab.test", "secret")
         with patch(f"{MODULE}.get_sites", broken):
             link.start()
-            link._thread.join(2)
+            link._thread.join(FAILURE_BOUND)
             assert not link._thread.is_alive()
         assert not link.wait_ready(0)
         assert "Plejd stopped" in link.error and "ValueError" in link.error and "bad site data" in link.error

@@ -2726,7 +2726,6 @@ class TestOllamaLLM:
     def test_pre_heat_appends_stub_user_message_to_system_only_prompt(self):
         # Ollama 500s ("no user query found in messages") on a system-only
         # request, which is exactly what the prompt-assembled callback sends.
-        import time
         self._reset_preheat_state()
         try:
             llm = self._make_llm()
@@ -2735,19 +2734,16 @@ class TestOllamaLLM:
                 captured['messages'] = messages
                 return iter(())
             with patch.object(llm, 'create_streaming_completion', side_effect=fake_stream), \
-                 patch.object(llm, '_pre_heat_raw_truncated', return_value=False):
+                 patch.object(llm, '_pre_heat_raw_truncated', return_value=False), \
+                 patch('assistant.llm.OllamaLLM.threading.Thread') as thread:
                 llm.pre_heat_cache([{"role": "system", "content": "sys"}])
-                for _ in range(100):
-                    if 'messages' in captured:
-                        break
-                    time.sleep(0.01)
+                thread.call_args.kwargs["target"]()
             assert captured['messages'][0] == {"role": "system", "content": "sys"}
             assert captured['messages'][-1]["role"] == "user"
         finally:
             self._reset_preheat_state()
 
     def test_pre_heat_leaves_prompt_with_user_message_untouched(self):
-        import time
         self._reset_preheat_state()
         try:
             llm = self._make_llm()
@@ -2757,12 +2753,10 @@ class TestOllamaLLM:
                 captured['messages'] = messages
                 return iter(())
             with patch.object(llm, 'create_streaming_completion', side_effect=fake_stream), \
-                 patch.object(llm, '_pre_heat_raw_truncated', return_value=False):
+                 patch.object(llm, '_pre_heat_raw_truncated', return_value=False), \
+                 patch('assistant.llm.OllamaLLM.threading.Thread') as thread:
                 llm.pre_heat_cache(msgs)
-                for _ in range(100):
-                    if 'messages' in captured:
-                        break
-                    time.sleep(0.01)
+                thread.call_args.kwargs["target"]()
             assert captured['messages'] == msgs
         finally:
             self._reset_preheat_state()

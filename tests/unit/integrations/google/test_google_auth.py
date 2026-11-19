@@ -173,7 +173,8 @@ class TestToken:
         a = auth()
         assert a.signed_in() and a.signed_in_as() == "marcus@example.com"
         assert a.token() == "ya29.old" and google.token_posts() == []
-        assert 2990 < (a.expires_at().timestamp() - time.time()) <= 3000
+        on_file = json.loads(token_path("Personal").read_text())["expiry"]
+        assert a.expires_at().timestamp() == pytest.approx(on_file, abs=1e-3)
 
     def test_near_its_expiry_the_token_is_refreshed_with_the_refresh_token_and_the_file_updated(self, token_dir, google):
         self._signed_in(token_dir, expires_in=30)

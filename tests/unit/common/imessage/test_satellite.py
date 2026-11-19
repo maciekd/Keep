@@ -14,6 +14,7 @@ from common.imessage.MessagesHost import HostHealth, NO_ACCESS
 from common.imessage.Satellite import Satellite
 from common.imessage.SatelliteService import SatelliteService
 from tests.unit.integrations.imessage.host_fakes import FakeHost
+from tests.unit.waiting import FAILURE_BOUND
 
 from .satellite_fakes import TOKEN
 
@@ -196,16 +197,17 @@ class TestStayingUp:
         def blocked(readable):
             seen["readable"] = readable
             entered.set()
-            release.wait(5)
+            release.wait(FAILURE_BOUND)
+            seen["left"] = True
         host = FakeHost()
         satellite = Satellite(host, SatelliteService(host, TOKEN), "127.0.0.1", 8901)
         with patch("hypercorn.asyncio.serve", AsyncMock()), patch.object(satellite, "_install_signal_handlers"), \
                 patch.object(satellite_module, "stay_up", blocked):
             asyncio.run(satellite.serve())
-            served_while_blocked = entered.wait(5) and not release.is_set()
+            served_while_blocked = entered.wait(FAILURE_BOUND) and "left" not in seen
         release.set()
         assert served_while_blocked
-        assert seen == {"readable": True}, "the fake host's Messages is readable, and that is what the login item waits for"
+        assert seen["readable"] is True, "the fake host's Messages is readable, and that is what the login item waits for"
 
     def test_the_typing_dots_do_not_outlive_the_serving(self):
         """SIGTERM from start.sh or stop.sh ends the serving: the windows the dots opened close with it."""
@@ -230,7 +232,7 @@ class TestStayingUp:
             handlers = {call.args[0]: call.args[1:] for call in loop.add_signal_handler.call_args_list}
             handler, *arguments = handlers[sent]
             handler(*arguments)
-            await asyncio.wait_for(shutdown_trigger(), 1)
+            await asyncio.wait_for(shutdown_trigger(), FAILURE_BOUND)
 
         with patch("hypercorn.asyncio.serve", served), patch.object(satellite_module, "stay_up"), \
                 patch.object(satellite_module.asyncio, "get_running_loop", return_value=loop):

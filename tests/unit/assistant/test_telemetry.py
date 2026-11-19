@@ -2,6 +2,7 @@
 first start in which the turns carry their text."""
 import time
 import uuid
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -10,6 +11,7 @@ import assistant.Telemetry as telemetry_module
 import common.ConfigManager as config_module
 from assistant.Telemetry import Telemetry
 from common import ConfigStore
+from tests.unit.waiting import wait_until
 
 
 @pytest.fixture
@@ -66,9 +68,7 @@ class TestSwitches:
 
     def test_an_opt_out_while_running_holds_from_the_next_event_without_a_restart(self, settings, telemetry, sent):
         telemetry.user_turn("before", "console")
-        deadline = time.time() + 2
-        while not _by_name(sent, "user_turn") and time.time() < deadline:   # posted while it was on
-            time.sleep(0.001)
+        assert wait_until(lambda: _by_name(sent, "user_turn"))   # posted while it was on
         settings["telemetry.enabled"] = False
         telemetry.user_turn("after", "console")
         telemetry.assistant_turn("reply", "console")
@@ -178,13 +178,10 @@ class TestEvents:
     def test_the_heartbeat_repeats_on_its_interval_without_the_startup_flag(self, settings, sent, monkeypatch):
         """The daily heartbeat is what tells an uninstall from a quiet day; it has to keep
         coming after the one sent at start, and say it is not a start."""
-        import time
         monkeypatch.setattr(telemetry_module, "HEARTBEAT_INTERVAL", 0.002)
         t = Telemetry(post=sent.append, install_age_days=lambda: 2.0)
         t.start()
-        deadline = time.time() + 1.0
-        while time.time() < deadline and len(_by_name(sent, "heartbeat")) < 3:
-            time.sleep(0.002)
+        assert wait_until(lambda: len(_by_name(sent, "heartbeat")) >= 3)
         t.stop()
         beats = _by_name(sent, "heartbeat")
         assert len(beats) >= 3
@@ -274,12 +271,9 @@ class TestStatus:
         def reported() -> list[dict]:
             return [s["properties"]["feeds"] for s in _by_name(sent, "status")]
 
-        deadline = time.time() + 1.0
-        while time.time() < deadline and {"iMessage": 400} not in reported():
-            time.sleep(0.002)
+        assert wait_until(lambda: {"iMessage": 400} in reported())
         t.feed_count("iMessage", 410)
-        while time.time() < deadline and {"iMessage": 410} not in reported():
-            time.sleep(0.002)
+        assert wait_until(lambda: {"iMessage": 410} in reported())
         t.stop()
         feeds = reported()
         assert feeds.index({"iMessage": 400}) < feeds.index({"iMessage": 410})
@@ -482,7 +476,7 @@ class TestErrorReports:
         for _ in range(3):
             notices()
         clock = time.time()
-        monkeypatch.setattr(telemetry_module.time, "time", lambda: clock + telemetry_module.ERROR_INTERVAL + 1)
+        monkeypatch.setattr(telemetry_module, "time", SimpleNamespace(time=lambda: clock + telemetry_module.ERROR_INTERVAL + 1))
         notices()
         telemetry.stop()
         assert [e["properties"]["repeats"] for e in _by_name(sent, "problem")] == [0, 2]
@@ -525,7 +519,7 @@ class TestErrorReports:
         for _ in range(5):
             self._report(telemetry)
         clock = time.time()
-        monkeypatch.setattr(telemetry_module.time, "time", lambda: clock + telemetry_module.ERROR_INTERVAL + 1)
+        monkeypatch.setattr(telemetry_module, "time", SimpleNamespace(time=lambda: clock + telemetry_module.ERROR_INTERVAL + 1))
         self._report(telemetry)
         telemetry.stop()
         assert [e["properties"]["repeats"] for e in _by_name(sent, "$exception")] == [0, 4]

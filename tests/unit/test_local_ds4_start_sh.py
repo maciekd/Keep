@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.waiting import FAILURE_BOUND
+
 SCRIPT = Path(__file__).resolve().parents[2] / 'scripts' / 'local_ds4_start.sh'
 MODEL = 'gguf/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf'
 VISION = 'gguf/DeepSeek-V4.1-Flash-Vision.gguf'
@@ -37,10 +39,13 @@ class Ds4Harness:
         self.pid_out = tmp_path / 'pid'
         self.env_file = tmp_path / 'stubs.bash'
         # curl answers once the server has started (its arguments are on disk); lsof replays
-        # the pids staged for the port, none by default. The wait loop's sleep is short, not
-        # gone: the fork of the server takes longer than 600 instant iterations.
+        # the pids staged for the port, none by default. The wait loop's sleep lasts until the
+        # server ($!) has written its arguments or is gone: a count of short sleeps gave a
+        # stalled machine a few seconds to fork the server.
         self.env_file.write_text(
-            'sleep() { /bin/sleep 0.01; }\n'
+            f'sleep() {{ local end=$((SECONDS + {int(FAILURE_BOUND)})); '
+            f'while [ ! -f "{self.args_out}" ] && kill -0 $! 2>/dev/null && [ $SECONDS -lt $end ]; '
+            'do /bin/sleep 0.005; done; }\n'
             f'lsof() {{ cat "{tmp_path}/lsof_out" 2>/dev/null; return 0; }}\n'
             f'curl() {{ [ -f "{self.args_out}" ] && echo "{{}}"; }}\n')
 

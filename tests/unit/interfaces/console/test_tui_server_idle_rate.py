@@ -3,24 +3,18 @@ the picture has stood still for IDLE_AFTER, and comes back at once on a wake (a 
 or when a frame changes again."""
 import socket
 import threading
-import time
+from functools import partial
 
 import pytest
 
 from interfaces.console.framework import TUIServer as module
 from interfaces.console.framework.TUIServer import TUIServer
+from tests.unit import waiting
+from tests.unit.waiting import FAILURE_BOUND
 
 TICK = 0.002
 IDLE_TICK = 0.04
-
-
-def wait_until(predicate, timeout=0.5) -> bool:
-    deadline = time.perf_counter() + timeout
-    while time.perf_counter() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.001)
-    return predicate()
+wait_until = partial(waiting.wait_until, interval=0.001)   # polled at the loop's own pace
 
 
 class Picture:
@@ -52,13 +46,16 @@ def running(monkeypatch, idle_slot):
     srv.client_dimensions[server_end] = (20, 5)
     srv.client_terminals[server_end] = ""
     srv.running = True
+    srv.slots = []   # the slot each frame was given, as the loop handed it to `_next_frame`
+    next_frame = srv._next_frame
+    srv._next_frame = lambda due, interval: srv.slots.append(interval) or next_frame(due, interval)
     thread = threading.Thread(target=srv._animation_loop, daemon=True)
     thread.start()
     drain = threading.Thread(target=lambda: _drain(client_end), daemon=True)
     drain.start()
     yield srv, picture
     srv.stop()
-    thread.join(1.0)
+    thread.join(FAILURE_BOUND)
     server_end.close()
     client_end.close()
 
@@ -71,24 +68,29 @@ def _drain(sock):
         pass
 
 
-def frames_per_second(picture: Picture, seconds: float) -> float:
-    before = picture.frames
-    time.sleep(seconds)
-    return (picture.frames - before) / seconds
-
+# The rate is read off the slots the loop gives its frames, not counted against the real clock
+# (a stalled machine draws no frames meanwhile): how a slot is slept is TestFramePacing's.
 
 def test_a_still_picture_drops_the_loop_to_the_idle_rate(running):
     srv, picture = running
     assert wait_until(lambda: srv.idle), "the unchanged frames should have idled the loop"
-    assert frames_per_second(picture, 0.03) < 1 / TICK / 4, "idle frames come far slower than the full rate"
+    assert wait_until(lambda: srv.slots.count(IDLE_TICK) >= 2)
+    turned = srv.slots.index(IDLE_TICK)
+    assert set(srv.slots[:turned]) == {TICK} and set(srv.slots[turned:]) == {IDLE_TICK}, \
+        "full-rate slots until the picture has stood still, idle slots from then on"
 
 
 def test_a_changing_picture_keeps_the_full_rate_and_a_change_ends_an_idle(running):
     srv, picture = running
     assert wait_until(lambda: srv.idle)
+    assert wait_until(lambda: IDLE_TICK in srv.slots)
+    since_idle = srv.slots.index(IDLE_TICK)
     picture.moving = True
     assert wait_until(lambda: not srv.idle), "a frame with changes brings the full rate back"
-    assert frames_per_second(picture, 0.03) > 1 / IDLE_TICK, "and the frames come at the full rate again"
+    assert wait_until(lambda: srv.slots[since_idle:].count(TICK) >= 3)
+    back = since_idle + srv.slots[since_idle:].index(TICK)
+    assert set(srv.slots[since_idle:back]) == {IDLE_TICK} and set(srv.slots[back:]) == {TICK}, \
+        "and the frames come at the full rate again"
 
 
 def idle_at_each_log_from_now(srv, monkeypatch) -> list:
@@ -111,7 +113,7 @@ def test_a_wake_ends_an_idle_before_the_slot_is_up(running, monkeypatch):
     assert wait_until(lambda: srv.idle)
     states = idle_at_each_log_from_now(srv, monkeypatch)
     srv.wake()
-    assert wait_until(lambda: states, timeout=5), "the wake drew no frame: the loop sleeps its idle slot out"
+    assert wait_until(lambda: states), "the wake drew no frame: the loop sleeps its idle slot out"
     assert states[0] is False, "the woken frame runs at the full rate"
 
 
@@ -121,7 +123,7 @@ def test_a_key_wakes_the_loop(running, monkeypatch):
     assert wait_until(lambda: srv.idle)
     states = idle_at_each_log_from_now(srv, monkeypatch)
     srv._emit_key("x", ("test", 0))
-    assert wait_until(lambda: states, timeout=5), "the key drew no frame: the loop sleeps its idle slot out"
+    assert wait_until(lambda: states), "the key drew no frame: the loop sleeps its idle slot out"
     assert states[0] is False
 
 
@@ -145,5 +147,5 @@ def test_a_wake_landing_while_a_frame_is_being_finished_is_not_lost(running, mon
     def the_log_call_after_turning_idle():
         return idle_at_each_log[idle_at_each_log.index(True) + 1:] if True in idle_at_each_log else []
 
-    assert wait_until(the_log_call_after_turning_idle, timeout=5), "the wake was erased: the loop stayed idle"
+    assert wait_until(the_log_call_after_turning_idle), "the wake was erased: the loop stayed idle"
     assert the_log_call_after_turning_idle()[0] is False, "the first thing after turning idle is the woken frame"

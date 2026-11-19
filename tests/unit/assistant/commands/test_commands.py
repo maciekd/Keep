@@ -17,6 +17,7 @@ from assistant.agents.BuildPreflight import BuildPreflight, Unmet
 from assistant.agents.CodeQualityMaintainer import JobPullRequest, IssueDraft
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
 from assistant.tools.WebAccess import WebAccess
+from tests.unit.waiting import FAILURE_BOUND, wait_until
 
 
 def developer_install(on: bool = True):
@@ -140,7 +141,7 @@ class TestBrowseSnapshotAndClickAt:
     def test_click_at_rejoins_positional_coordinates(self, commands_instance):
         commands_instance.web_access.browse_click_at = Mock(return_value="Clicked")
         commands_instance.cmd_browse_click_at("412", " 583")
-        commands_instance.wait_for_background(timeout=5)
+        commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         commands_instance.web_access.browse_click_at.assert_called_once_with("412,583")
         assert "browse_click_at" in Commands.MULTI_PARAM_COMMANDS
         assert commands_instance.describe("browse_click_at", "412, 583") == "Clicking at 412, 583"
@@ -150,7 +151,7 @@ class TestBrowseWaitAndNetwork:
     def test_wait_rejoins_positional_args_so_a_comma_in_the_pattern_survives(self, commands_instance):
         commands_instance.web_access.browse_wait = Mock(return_value="MATCHED")
         commands_instance.cmd_browse_wait("pending", " complete", " 45")
-        commands_instance.wait_for_background(timeout=5)
+        commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         spec = commands_instance.web_access.browse_wait.call_args.args[0]
         assert WebAccess._parse_wait_spec(spec) == ("pending, complete", 45.0)
         assert "browse_wait" in Commands.MULTI_PARAM_COMMANDS
@@ -239,7 +240,7 @@ class TestBackgroundCommand:
     def test_queues_and_executes(self, commands_instance):
         fn = Mock(return_value="result_data")
         commands_instance.background_command(fn, "params")
-        commands_instance.wait_for_background(timeout=5)
+        commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         fn.assert_called_once_with("params")
         commands_instance.command_processor.set_command_reply.assert_called_once_with("result_data", contains_error=False, parts=ANY)
         commands_instance.command_processor.background_command_done.assert_called_once()
@@ -247,7 +248,7 @@ class TestBackgroundCommand:
     def test_worker_exception_publishes_with_error_flag(self, commands_instance):
         fn = Mock(side_effect=RuntimeError("boom"))
         commands_instance.background_command(fn, "params")
-        commands_instance.wait_for_background(timeout=5)
+        commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
             "Command failed: boom", contains_error=True, parts=ANY)
 
@@ -261,18 +262,18 @@ class TestBackgroundCommand:
 
         fn = Mock(return_value="weather data")
         commands_instance.background_command(fn, "params")
-        commands_instance.wait_for_background(timeout=5)
+        commands_instance.wait_for_background(timeout=FAILURE_BOUND)
 
         cp.set_command_reply.assert_called_once_with("weather data", contains_error=False, parts=ANY)
 
     def test_forget_batch_results_starts_the_next_publish_from_nothing(self, commands_instance):
         cp = commands_instance.command_processor
         commands_instance.background_command(Mock(side_effect=RuntimeError("boom")), None)
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         commands_instance.forget_batch_results()
 
         commands_instance.background_command(Mock(return_value="two"), None)
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         cp.set_command_reply.assert_called_with("two", contains_error=False, parts=ANY)
 
 
@@ -284,7 +285,7 @@ class TestBackgroundWorkerReplies:
     def test_bg_worker_skips_reply_on_all_empty(self, commands_instance):
         fn = Mock(return_value="")
         commands_instance.background_command(fn, "params")
-        commands_instance.wait_for_background(timeout=5)
+        commands_instance.wait_for_background(timeout=FAILURE_BOUND)
 
         commands_instance.command_processor.set_command_reply.assert_not_called()
         commands_instance.command_processor.background_command_done.assert_called_once()
@@ -295,7 +296,7 @@ class TestBackgroundWorkerReplies:
 
         commands_instance.background_command(fn_empty, None)
         commands_instance.background_command(fn_data, None)
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
 
         commands_instance.command_processor.set_command_reply.assert_called_once_with("weather data", contains_error=False, parts=ANY)
 
@@ -319,7 +320,7 @@ class _Gate:
         with self.lock:
             self.log.append(("start", self.name))
         self.started.set()
-        assert self.release.wait(timeout=5), f"{self.name} was never released"
+        assert self.release.wait(timeout=FAILURE_BOUND), f"{self.name} was never released"
         with self.lock:
             self.log.append(("end", self.name))
         return f"{self.name} result"
@@ -338,14 +339,14 @@ class TestBackgroundLanes:
         commands_instance.background_command(second, None)
 
         # Both are running before either has finished — that is the whole point.
-        assert first.started.wait(timeout=2)
-        assert second.started.wait(timeout=2)
+        assert first.started.wait(timeout=FAILURE_BOUND)
+        assert second.started.wait(timeout=FAILURE_BOUND)
         assert commands_instance.background_outstanding() == 2
         commands_instance.command_processor.background_command_done.assert_not_called()
 
         first.release.set()
         second.release.set()
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         assert log[:2] == [("start", "first"), ("start", "second")]
 
     def test_results_publish_in_emission_order_not_completion_order(self, commands_instance, journal):
@@ -353,18 +354,13 @@ class TestBackgroundLanes:
         slow, fast = _Gate("slow", log, lock), _Gate("fast", log, lock)
         commands_instance.background_command(slow, None)
         commands_instance.background_command(fast, None)
-        assert slow.started.wait(timeout=2) and fast.started.wait(timeout=2)
+        assert slow.started.wait(timeout=FAILURE_BOUND) and fast.started.wait(timeout=FAILURE_BOUND)
 
         fast.release.set()
         # Let the fast one finish first while the slow one is still held.
-        deadline = threading.Event()
-        for _ in range(50):
-            with lock:
-                if ("end", "fast") in log:
-                    break
-            deadline.wait(0.02)
+        assert wait_until(lambda: ("end", "fast") in log)
         slow.release.set()
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
 
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
             "slow result\n\nfast result", contains_error=False, parts=ANY)
@@ -375,21 +371,18 @@ class TestBackgroundLanes:
         for g in gates:
             commands_instance.background_command(g, None)
         for g in gates:
-            assert g.started.wait(timeout=2)
+            assert g.started.wait(timeout=FAILURE_BOUND)
         cp = commands_instance.command_processor
         cp.background_command_start.assert_called_once()
 
         gates[1].release.set()
         gates[2].release.set()
-        for _ in range(50):
-            if commands_instance.background_outstanding() == 1:
-                break
-            threading.Event().wait(0.02)
+        assert wait_until(lambda: commands_instance.background_outstanding() == 1)
         cp.background_command_done.assert_not_called()
         cp.set_command_reply.assert_not_called()
 
         gates[0].release.set()
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         cp.background_command_done.assert_called_once()
         cp.set_command_reply.assert_called_once()
 
@@ -399,18 +392,18 @@ class TestBackgroundLanes:
         submitted = threading.Event()
 
         def fine(_):
-            submitted.wait(timeout=2)
+            assert submitted.wait(timeout=FAILURE_BOUND)
             return "fine"
 
         def boom(_):
-            submitted.wait(timeout=2)
+            assert submitted.wait(timeout=FAILURE_BOUND)
             raise RuntimeError("boom")
 
         commands_instance.background_command(fine, None)
         commands_instance.background_command(boom, None)
         commands_instance.background_command(fine, None)
         submitted.set()
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
 
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
             "fine\n\nCommand failed: boom\n\nfine", contains_error=True, parts=ANY)
@@ -421,13 +414,13 @@ class TestBackgroundLanes:
         commands_instance.background_command(first, None, lane=Commands.BROWSER_LANE)
         commands_instance.background_command(second, None, lane=Commands.BROWSER_LANE)
 
-        assert first.started.wait(timeout=2)
+        assert first.started.wait(timeout=FAILURE_BOUND)
         # The second one must not start while the first still holds the tab.
         assert not second.started.wait(timeout=0.05)
         first.release.set()
-        assert second.started.wait(timeout=2)
+        assert second.started.wait(timeout=FAILURE_BOUND)
         second.release.set()
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         assert log == [("start", "first"), ("end", "first"), ("start", "second"), ("end", "second")]
 
     def test_browser_lane_does_not_hold_up_the_io_lane(self, commands_instance, journal):
@@ -436,11 +429,11 @@ class TestBackgroundLanes:
         commands_instance.background_command(page, None, lane=Commands.BROWSER_LANE)
         commands_instance.background_command(search, None)
 
-        assert page.started.wait(timeout=2)
-        assert search.started.wait(timeout=2)
+        assert page.started.wait(timeout=FAILURE_BOUND)
+        assert search.started.wait(timeout=FAILURE_BOUND)
         search.release.set()
         page.release.set()
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         commands_instance.command_processor.set_command_reply.assert_called_once_with(
             "page result\n\nsearch result", contains_error=False, parts=ANY)
 
@@ -449,12 +442,12 @@ class TestBackgroundLanes:
         gates = [_Gate(f"set{i}", log, lock) for i in range(3)]
         for gate in gates:
             commands_instance.background_command(gate, None, lane=Commands.CONFIG_LANE)
-        assert gates[0].started.wait(timeout=2)
+        assert gates[0].started.wait(timeout=FAILURE_BOUND)
         assert not gates[1].started.wait(timeout=0.05)
         for gate in gates:
             gate.release.set()
-            assert gate.started.wait(timeout=2)
-        assert commands_instance.wait_for_background(timeout=5)
+            assert gate.started.wait(timeout=FAILURE_BOUND)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         assert log == [(e, f"set{i}") for i in range(3) for e in ("start", "end")]
 
     def test_config_lane_does_not_wait_for_the_browser_lane(self, commands_instance, journal):
@@ -462,11 +455,11 @@ class TestBackgroundLanes:
         page, setting = _Gate("page", log, lock), _Gate("setting", log, lock)
         commands_instance.background_command(page, None, lane=Commands.BROWSER_LANE)
         commands_instance.background_command(setting, None, lane=Commands.CONFIG_LANE)
-        assert page.started.wait(timeout=2)
-        assert setting.started.wait(timeout=2)
+        assert page.started.wait(timeout=FAILURE_BOUND)
+        assert setting.started.wait(timeout=FAILURE_BOUND)
         setting.release.set()
         page.release.set()
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
 
     def test_config_commands_use_the_config_lane(self, commands_instance):
         commands_instance._current_context = Mock(source="Console", conversation="tui")
@@ -503,20 +496,20 @@ class TestBackgroundLanes:
             commands_instance.background_command(second, None)
             second.release.set()
             first.release.set()
-            assert commands_instance.wait_for_background(timeout=5)
+            assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         assert sorted(h for h, _ in echoes) == ["echo-1", "echo-2"]
         assert all("done" in d for _, d in echoes)
 
     def test_submit_after_publish_starts_a_new_batch_keeping_the_pending_reply(self, commands_instance):
         cp = commands_instance.command_processor
         commands_instance.background_command(Mock(return_value="one"), None)
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         cp.set_command_reply.assert_called_once_with("one", contains_error=False, parts=ANY)
         # The reply is still unconsumed: a real CommandProcessor would hold it.
         cp.command_reply = "one"
 
         commands_instance.background_command(Mock(return_value="two"), None)
-        assert commands_instance.wait_for_background(timeout=5)
+        assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
         assert cp.background_command_start.call_count == 2
         assert cp.background_command_done.call_count == 2
         cp.set_command_reply.assert_called_with("one\n\ntwo", contains_error=False, parts=["one", "two"])
@@ -1231,10 +1224,12 @@ class TestCmdSelfAnalysis:
 class TestCmdFindPhone:
     def test_fire_and_forget_exception_logged(self, commands_instance):
         mock_fn = Mock(side_effect=RuntimeError("boom"))
-        logged = threading.Event()
-        with patch("assistant.commands.Commands.error", side_effect=lambda *a, **k: logged.set()) as mock_error:
+        with patch("threading.Thread") as thread:
             commands_instance.fire_and_forget(mock_fn, "params")
-            assert logged.wait(timeout=2), "error() was not called in background thread"
+        thread.return_value.start.assert_called_once_with()
+        with patch("assistant.commands.Commands.error") as mock_error:
+            thread.call_args.kwargs["target"]()     # the thread's body, run here
+            mock_fn.assert_called_once_with("params")
             mock_error.assert_called_once()
             assert "boom" in str(mock_error.call_args)
 

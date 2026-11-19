@@ -4,7 +4,6 @@ grouped snapshot rendering, search-field hint, and redirect warning."""
 
 import asyncio
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -106,14 +105,16 @@ class TestWaitForPageReady:
     def test_hanging_evaluate_is_capped_and_soft(self):
         wa = make_wa(_PAGE_READY_EVAL_TIMEOUT=0.05)
 
+        finished = []
+
         async def hang(tab, expr, **kwargs):
             await asyncio.sleep(5)
+            finished.append(expr)
 
-        start = time.time()
         with patch.object(WebAccess, '_evaluate', new=AsyncMock(side_effect=hang)):
             status = run(wa._async_wait_for_page_ready(wa._tab))
         assert status == "soft-timeout:evaluate"
-        assert time.time() - start < 2
+        assert finished == [], "the gate gave up on the evaluate instead of waiting it out"
 
     def test_quiet_wait_still_runs_after_readystate_soft_timeout(self):
         wa = make_wa()

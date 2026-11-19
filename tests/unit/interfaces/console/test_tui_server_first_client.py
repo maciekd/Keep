@@ -4,7 +4,6 @@ except for a resize. Later clients get the setup straight away."""
 import select
 import socket
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -13,6 +12,7 @@ import pytest
 from interfaces.console.framework import Curtain
 from interfaces.console.framework.TUIServer import TUIServer, FRAME_INTERVAL, machine_name
 from interfaces.console.framework.TUIScreen import TUIScreen
+from tests.unit.waiting import FAILURE_BOUND, wait_until
 
 ADDR = ("test", 0)
 SETUP_START = (TUIScreen.BEGIN_SYNC + TUIScreen.ENTER_ALT_SCREEN).encode()
@@ -62,23 +62,20 @@ class TestFirstClient:
             yield srv
             srv.running = False
             srv.server_socket.close()
-            thread.join(timeout=3)
+            thread.join(timeout=FAILURE_BOUND)
 
     @staticmethod
     def connect(srv, dims=b"24 80\n"):
-        client = socket.create_connection(srv.server_socket.getsockname(), timeout=3)
+        client = socket.create_connection(srv.server_socket.getsockname(), timeout=FAILURE_BOUND)
         client.sendall(dims)
         return client
 
     @staticmethod
     def wait_for_clients(srv, count):
-        deadline = time.time() + 3
-        while time.time() < deadline:
+        def registered():
             with srv.clients_lock:
-                if len(srv.clients) == count:
-                    return
-            time.sleep(0.01)
-        raise AssertionError(f"{count} client(s) never registered")
+                return len(srv.clients) == count
+        assert wait_until(registered), f"{count} client(s) never registered"
 
     @staticmethod
     def drain(client) -> bytes:
@@ -113,7 +110,7 @@ class TestFirstClient:
 
         with patch.object(TUIServer, "_draw_curtains", draw):
             client = self.connect(server)
-            assert drawn.wait(3)
+            assert drawn.wait(FAILURE_BOUND)
             self.wait_for_clients(server, 1)
         assert registered_meanwhile == [0]
         client.close()
@@ -125,13 +122,13 @@ class TestFirstClient:
         def draw(self_, client_socket, *args):
             started.set()
             real(self_, client_socket, *args)
-            select.select([client_socket], [], [], 3)   # the curtains last until the type-ahead has arrived
+            select.select([client_socket], [], [], FAILURE_BOUND)   # the curtains last until the type-ahead has arrived
 
         with patch.object(TUIServer, "_draw_curtains", draw):
             client = self.connect(server)
             # Only once the dimensions are read: sent earlier, the type-ahead would land in
             # that same recv and the server would fall back to 80x24.
-            assert started.wait(3)
+            assert started.wait(FAILURE_BOUND)
             client.sendall(b"q\nRESIZE 30 100\n")
             self.wait_for_clients(server, 1)
         registered = next(iter(server.clients))
@@ -172,11 +169,9 @@ class TestTerminalProgram:
         thread = threading.Thread(target=srv._accept_clients, daemon=True)
         thread.start()
         try:
-            client = socket.create_connection(srv.server_socket.getsockname(), timeout=3)
+            client = socket.create_connection(srv.server_socket.getsockname(), timeout=FAILURE_BOUND)
             client.sendall(b"24 80 Apple_Terminal\n")
-            deadline = time.time() + 3
-            while time.time() < deadline and not srv.clients:
-                time.sleep(0.01)
+            assert wait_until(lambda: srv.clients)
             registered = next(iter(srv.clients))
             assert srv.client_dimensions[registered] == (80, 24)
             assert srv.client_terminals[registered] == "Apple_Terminal"
@@ -188,7 +183,7 @@ class TestTerminalProgram:
         finally:
             srv.running = False
             srv.server_socket.close()
-            thread.join(timeout=3)
+            thread.join(timeout=FAILURE_BOUND)
 
 
 class TestMachineName:

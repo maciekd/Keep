@@ -7,6 +7,7 @@ import pytest
 from assistant.commands import Toolkits
 from assistant.commands.Commands import Commands
 from assistant.commands.CommandProcessor import CommandProcessor
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.fixture
@@ -64,7 +65,7 @@ def test_cmd_goes_through_the_background_path(commands):
     its characters (the bug the first console request hit: unknown ['w', 'e', 'b'])."""
     with patch.object(Commands, "_prompt_manager", staticmethod(lambda: _prompt_manager({}))):
         assert commands.run("load_toolkit", ['"web"', "x"]) == ""
-        assert commands.wait_for_background(timeout=5)
+        assert commands.wait_for_background(timeout=FAILURE_BOUND)
     commands.command_processor.set_command_reply.assert_called_once()
     reply = commands.command_processor.set_command_reply.call_args.args[0]
     assert "# Toolkit: web\n" in reply and "# Toolkit: x\n" in reply

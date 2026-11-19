@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from interfaces.console.widgets.CrtCursor import CrtCursor
@@ -67,11 +68,12 @@ class TestInterpolation:
         # Cells from old (20) toward new (10), exclusive of new head.
         assert xs == [20, 19, 18, 17, 16, 15, 14, 13, 12, 11]
 
-    def test_interpolated_timestamps_are_oldest_at_old_end(self):
+    def test_interpolated_timestamps_are_oldest_at_old_end(self, monkeypatch):
         # Comet tail: cells closest to OLD position carry more age (fade first).
+        clock = iter([100.0, 100.01])   # a measurable age band for the interpolation
+        monkeypatch.setattr("interfaces.console.widgets.CrtCursor.time", SimpleNamespace(time=lambda: next(clock)))
         c = CrtCursor()
         c.update(0, 0)
-        time.sleep(0.01)  # produce a measurable age band for the interpolation
         c.update(10, 0)
         # Trail in record order: cells x=0,1,2,...,9 with timestamps:
         # x=0 (oldest, biggest age_offset) up to x=9 (freshest).

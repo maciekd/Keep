@@ -6,6 +6,7 @@ import pytest
 
 from common.RequestKilledException import RequestKilledException
 from interfaces.voice.server_audio.ServerPlayback import ServerPlayback
+from tests.unit.waiting import FAILURE_BOUND
 
 MOD = "interfaces.voice.server_audio.ServerPlayback"
 
@@ -208,7 +209,7 @@ class TestEnsureStarted:
             assert playback.audio_thread.daemon is True
             # Clean up
             playback.audio_queue.put(None)
-            playback.audio_thread.join(timeout=1)
+            playback.audio_thread.join(timeout=FAILURE_BOUND)
 
     def test_thread_alive_no_new_thread(self, playback):
         mock_thread = Mock()

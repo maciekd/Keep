@@ -13,6 +13,7 @@ from assistant.FirstRun import (CURATION_STEP_SECONDS, FULL_PHOTOS_BACKFILL_MONT
                                 PHOTOS_BACKFILL_KEY, PHOTOS_FEED, PLACEHOLDER_HEADING, CurationProgress, Pipeline,
                                 Stage, State)
 from assistant.integration.FeedRunner import FeedState
+from tests.unit.waiting import wait_until
 
 
 # --- State ---------------------------------------------------------------------------------
@@ -543,19 +544,13 @@ class TestThread:
         time.sleep(0.05)
         assert env.pipeline._thread.is_alive()
         env.state_at(Stage.SETUP)
-        deadline = time.time() + 5
-        while State.load(env.path).stage != Stage.INDEXING and time.time() < deadline:
-            time.sleep(0.01)
-        assert State.load(env.path).stage == Stage.INDEXING
+        assert wait_until(lambda: State.load(env.path).stage == Stage.INDEXING)
         env.pipeline.stop()
 
     def test_run_moves_through_a_stage_and_stops_on_request(self, env):
         env.state_at(Stage.SETUP)
         env.pipeline.start()
-        deadline = time.time() + 5
-        while State.load(env.path).stage != Stage.INDEXING and time.time() < deadline:
-            time.sleep(0.01)
-        assert State.load(env.path).stage == Stage.INDEXING
+        assert wait_until(lambda: State.load(env.path).stage == Stage.INDEXING)
         env.pipeline.stop()
         assert not env.pipeline._thread.is_alive()
 
@@ -568,10 +563,7 @@ class TestThread:
         assert env.pipeline._thread.is_alive()
         env.state_at(Stage.SETUP)
         env.enabled = ["Photos"]
-        deadline = time.time() + 5
-        while State.load(env.path).stage != Stage.INDEXING and time.time() < deadline:
-            time.sleep(0.01)
-        assert State.load(env.path).stage == Stage.INDEXING
+        assert wait_until(lambda: State.load(env.path).stage == Stage.INDEXING)
         env.pipeline.stop()
 
     def test_a_failing_step_does_not_kill_the_thread(self, env, monkeypatch):
@@ -587,9 +579,7 @@ class TestThread:
             return True
         monkeypatch.setattr(env.pipeline, "tick", tick)
         env.pipeline.start()
-        deadline = time.time() + 5
-        while len(attempts) < 2 and time.time() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: len(attempts) >= 2)
         env.pipeline.stop()
         assert len(attempts) == 2 and State.load(env.path).stage == Stage.DONE
 

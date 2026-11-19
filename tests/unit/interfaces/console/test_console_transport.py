@@ -15,6 +15,7 @@ from interfaces.console.ConsoleTransport import CONVERSATION, ConsoleDraft, Cons
 from interfaces.console.widgets.ChatPane import (KIND_APPROVAL, KIND_ASSISTANT, KIND_MEDIA, KIND_NOTICE,
                                                   KIND_THINKING, KIND_USER, ChatPane)
 from tests.unit.interfaces.chat.fakes import FakeAssistant, wait_until
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.fixture(autouse=True)
@@ -246,14 +247,14 @@ class TestApprovals:
         result = {}
 
         def ask():
-            result["decision"] = hub.request_approval("Unlock the door", "for Guest", timeout=5)
+            result["decision"] = hub.request_approval("Unlock the door", "for Guest", timeout=FAILURE_BOUND)
 
         t = threading.Thread(target=ask, daemon=True)
         t.start()
         assert wait_until(lambda: pane.pending_approval is not None)
         assert pane.entries[-1].kind == KIND_APPROVAL
         pane.handle_input('y')
-        t.join(timeout=5)
+        t.join(timeout=FAILURE_BOUND)
         assert result["decision"] == "approve"
         assert pane.pending_approval is None
         assert "Approved by console" in pane.entries[-1].body.text
@@ -280,14 +281,14 @@ class TestSecretPrompts:
             return "Stored as amex (•••• 1111)"
 
         t = threading.Thread(target=lambda: result.update(
-            d=hub.request_secret("Amex (card)", "", accept, timeout=5)), daemon=True)
+            d=hub.request_secret("Amex (card)", "", accept, timeout=FAILURE_BOUND)), daemon=True)
         t.start()
         assert wait_until(lambda: pane.pending_secret is not None)
         assert pane.entries[-1].kind == KIND_SECRET
         for ch in "4111 1111 1111 1111":
             pane.handle_input(ch)
         pane.handle_input('enter')
-        t.join(timeout=5)
+        t.join(timeout=FAILURE_BOUND)
         assert result["d"] == "accepted" and seen == ["4111 1111 1111 1111"]
         assert pane.pending_secret is None
         assert pane.entries[-1].body.text == "Amex (card) — Stored as amex (•••• 1111)"
@@ -298,11 +299,11 @@ class TestSecretPrompts:
     def test_escape_cancels_through_the_hub(self, hub, pane):
         result = {}
         t = threading.Thread(target=lambda: result.update(
-            d=hub.request_secret("Password", "", lambda v: "ok", timeout=5)), daemon=True)
+            d=hub.request_secret("Password", "", lambda v: "ok", timeout=FAILURE_BOUND)), daemon=True)
         t.start()
         assert wait_until(lambda: pane.pending_secret is not None)
         pane.handle_input('escape')
-        t.join(timeout=5)
+        t.join(timeout=FAILURE_BOUND)
         assert result["d"] == "cancel"
         assert "Cancelled by console" in pane.entries[-1].body.text
 

@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch, AsyncMock
 
 from assistant.integration.Integration import HealthWarning
 from assistant.tools.WebAccess import WebAccess
+from tests.unit.waiting import FAILURE_BOUND
 
 
 def run(coro):
@@ -500,7 +501,7 @@ class TestCdpWaitFor:
 
         async def arrive(self):
             self._release.set()
-            await asyncio.wait_for(self._settled.wait(), 5)
+            await asyncio.wait_for(self._settled.wait(), FAILURE_BOUND)
 
     def test_timeout_abandons_the_call_without_cancelling_it(self):
         reply = self.LateReply()

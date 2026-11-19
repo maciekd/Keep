@@ -9,6 +9,7 @@ import pytest
 
 from integrations.heos import HeosEvents as module
 from integrations.heos.HeosEvents import HeosEvents
+from tests.unit.waiting import FAILURE_BOUND
 
 HOST = "192.0.2.21"
 REGISTERED = {"heos": {"command": "system/register_for_change_events", "result": "success", "message": "enable=on"}}
@@ -145,7 +146,7 @@ def test_stop_ends_the_thread():
     with patch.object(module, "RETRY_MIN", 0.01), patch.object(module, "RETRY_MAX", 0.02):
         events.start()
         events.stop()
-        events._thread.join(timeout=2)
+        events._thread.join(FAILURE_BOUND)
     assert not events._thread.is_alive()
 
 

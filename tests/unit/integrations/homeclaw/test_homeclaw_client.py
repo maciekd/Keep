@@ -7,6 +7,8 @@ import tempfile
 import pytest
 
 from integrations.homeclaw.HomeClawClient import HomeClawClient, HomeClawError, HomeClawUnavailable
+from tests.unit.waiting import FAILURE_BOUND
+
 from .conftest import FakeHomeClaw, ok
 
 
@@ -63,7 +65,7 @@ def test_an_app_that_does_not_answer_in_time_is_an_error_not_the_app_missing():
     `control` with verify is a different thing and must not read as the app being gone."""
     import threading
     gate = threading.Event()
-    app = FakeHomeClaw({"control": lambda args: (gate.wait(1), b"")[1]})
+    app = FakeHomeClaw({"control": lambda args: (gate.wait(FAILURE_BOUND), b"")[1]})
     try:
         with pytest.raises(HomeClawError, match="did not answer control") as caught:
             HomeClawClient(app.path, timeout=0.02).call("control", id="x", characteristic="power", value="true")

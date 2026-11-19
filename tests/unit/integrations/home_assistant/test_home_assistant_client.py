@@ -11,6 +11,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 from integrations.home_assistant.HomeAssistantClient import HAError, HomeAssistantClient, NotConnected, websocket_url
+from tests.unit.waiting import FAILURE_BOUND, wait_until
 
 TOKEN = "good-token"
 
@@ -34,7 +35,7 @@ class FakeHA:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._started = threading.Event()
         self._thread.start()
-        self._started.wait(5)
+        self._started.wait(FAILURE_BOUND)
 
     def _run(self):
         asyncio.set_event_loop(self._loop)
@@ -101,31 +102,22 @@ class FakeHA:
                                                   "event": {"event_type": event_type, "data": data}}))
                     except ConnectionClosed:
                         pass    # a dropped socket whose handler has not wound down yet
-        asyncio.run_coroutine_threadsafe(_push(), self._loop).result(5)
+        asyncio.run_coroutine_threadsafe(_push(), self._loop).result(FAILURE_BOUND)
 
     def drop(self):
         async def _drop():
             for ws in list(self._sockets):
                 await ws.close()
-        asyncio.run_coroutine_threadsafe(_drop(), self._loop).result(5)
+        asyncio.run_coroutine_threadsafe(_drop(), self._loop).result(FAILURE_BOUND)
 
     def close(self):
         self.drop()
         self._loop.call_soon_threadsafe(self._server.close)
-        self._thread.join(5)
+        self._thread.join(FAILURE_BOUND)
 
     @property
     def url(self):
         return f"http://127.0.0.1:{self.port}"
-
-
-def wait_for(predicate, timeout=5.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.005)
-    return False
 
 
 @pytest.fixture
@@ -157,7 +149,7 @@ class TestUrl:
 class TestHandshake:
     def test_connects_authenticates_and_reports_the_version(self, server, client):
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         assert client.connected and client.ha_version == "2026.9.1"
         assert server.connections == 1
 
@@ -166,9 +158,9 @@ class TestHandshake:
         client.reconnect_min = 0.01
         client.start()
         thread = client._thread
-        assert wait_for(lambda: client.auth_failed)
+        assert wait_until(lambda: client.auth_failed)
         assert "token rejected" in client.last_error and "home_assistant.token" in client.last_error
-        thread.join(5)     # the connection loop is over, so no reconnect delay is running
+        thread.join(FAILURE_BOUND)     # the connection loop is over, so no reconnect delay is running
         assert not thread.is_alive()
         assert server.connections == 1
         with pytest.raises(NotConnected):
@@ -206,7 +198,7 @@ class TestBrokenHandshake:
         client.reconnect_min = 0.05
         client.start()
         try:
-            assert wait_for(lambda: server.connections >= 2)
+            assert wait_until(lambda: server.connections >= 2)
             assert not client.auth_failed and not client.connected
             assert expected in client.last_error
         finally:
@@ -217,7 +209,7 @@ class TestBrokenHandshake:
         """_refill is such a hook: a get_states that blows up must leave the socket usable."""
         client.on_connect(lambda: 1 / 0)
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         assert client.call("ping") is None
         assert server.connections == 1
 
@@ -226,7 +218,7 @@ class TestBrokenHandshake:
 class TestCalls:
     def test_ids_increase_and_results_are_correlated(self, server, client):
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         assert client.call("ping") is None
         assert client.call("get_states") == [{"entity_id": "light.a", "state": "on"}]
         ids = [m["id"] for m in server.received]
@@ -235,7 +227,7 @@ class TestCalls:
 
     def test_payload_goes_on_the_wire(self, server, client):
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         client.call("call_service", domain="light", service="turn_on", target={"entity_id": "light.a"},
                     service_data={"brightness_pct": 40})
         sent = server.received[-1]
@@ -244,7 +236,7 @@ class TestCalls:
 
     def test_a_failed_command_raises_with_the_servers_message(self, server, client):
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         with pytest.raises(HAError) as e:
             client.call("config/auth/list")
         assert e.value.code == "unauthorized" and e.value.message == "Unauthorized"
@@ -254,20 +246,20 @@ class TestCalls:
 
     def test_a_slow_answer_times_out(self, server, client):
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         with pytest.raises(TimeoutError):
             client.call("slow", timeout=0.05)
         assert client.call("ping") is None      # the connection is still fine
 
     def test_calls_from_several_threads_at_once(self, server, client):
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         results = []
         threads = [threading.Thread(target=lambda: results.append(client.call("get_states"))) for _ in range(5)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join(5)
+            t.join(FAILURE_BOUND)
         assert len(results) == 5 and all(r == [{"entity_id": "light.a", "state": "on"}] for r in results)
 
 
@@ -277,9 +269,9 @@ class TestSubscriptions:
         seen = []
         client.subscribe("state_changed", seen.append)
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         server.push("state_changed", {"entity_id": "light.a", "new_state": {"state": "off"}})
-        assert wait_for(lambda: seen)
+        assert wait_until(lambda: seen)
         assert seen[0]["event_type"] == "state_changed" and seen[0]["data"]["entity_id"] == "light.a"
 
     def test_a_refused_subscription_is_remembered_and_not_fatal(self, server, client):
@@ -287,7 +279,7 @@ class TestSubscriptions:
         client.subscribe("entity_registry_updated", lambda e: None)
         client.subscribe("state_changed", lambda e: None)
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         assert client.refused("entity_registry_updated") and not client.refused("state_changed")
 
     def test_a_handler_that_raises_does_not_break_the_others(self, server, client):
@@ -299,9 +291,9 @@ class TestSubscriptions:
         client.subscribe("state_changed", bad)
         client.subscribe("state_changed", seen.append)
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         server.push("state_changed", {"entity_id": "light.a"})
-        assert wait_for(lambda: seen)
+        assert wait_until(lambda: seen)
         assert client.connected
 
 
@@ -311,7 +303,7 @@ class TestHooksAndReconnect:
         states = []
         client.on_connect(lambda: states.append(client.call("get_states")))
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         assert states == [[{"entity_id": "light.a", "state": "on"}]]
 
     def test_a_drop_fails_pending_calls_reconnects_and_resubscribes(self, server, client):
@@ -320,19 +312,19 @@ class TestHooksAndReconnect:
         client.subscribe("state_changed", seen.append)
         client.on_connect(lambda: hooks.append(time.time()))
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         errors = []
-        t = threading.Thread(target=lambda: errors.append(_catch(lambda: client.call("slow", timeout=5))))
+        t = threading.Thread(target=lambda: errors.append(_catch(lambda: client.call("slow", timeout=FAILURE_BOUND))))
         t.start()
-        assert wait_for(lambda: any(m["type"] == "slow" for m in server.received))
+        assert wait_until(lambda: any(m["type"] == "slow" for m in server.received))
         server.drop()
-        t.join(5)
+        t.join(FAILURE_BOUND)
         assert isinstance(errors[0], NotConnected)
         assert client.disconnected_at is not None
-        assert wait_for(lambda: server.connections == 2 and client.wait_ready(0.1))
+        assert wait_until(lambda: server.connections == 2 and client.wait_ready(0.1))
         assert len(hooks) == 2
         server.push("state_changed", {"entity_id": "light.a"})
-        assert wait_for(lambda: seen)
+        assert wait_until(lambda: seen)
 
     def test_a_drop_during_the_subscribes_ends_the_session_and_reconnects(self, server, client):
         """A subscribe reply only ever comes through the reader: a socket dying between the
@@ -340,22 +332,22 @@ class TestHooksAndReconnect:
         server.drop_on_subscribe = 1
         client.subscribe("state_changed", lambda event: None)
         client.start()
-        assert wait_for(lambda: server.connections == 2 and client.wait_ready(0.1))
+        assert wait_until(lambda: server.connections == 2 and client.wait_ready(0.1))
         assert client.disconnected_at is not None
         assert client.call("ping") is None
 
     def test_stop_ends_the_thread(self, server, client):
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         client.stop()
         assert not client.connected
-        assert wait_for(lambda: not server._sockets)
+        assert wait_until(lambda: not server._sockets)
         with pytest.raises(NotConnected):
             client.call("ping")
 
     def test_start_is_idempotent(self, server, client):
         client.start()
-        assert client.wait_ready(5)
+        assert client.wait_ready(FAILURE_BOUND)
         client.start()
         time.sleep(0.05)
         assert server.connections == 1

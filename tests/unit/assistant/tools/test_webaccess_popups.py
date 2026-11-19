@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from assistant.tools.WebAccess import WebAccess
 from nodriver import cdp
+from tests.unit.assistant.tools.virtual_time import virtual_time
 
 
 class FakeTargetInfo:
@@ -181,7 +182,8 @@ class TestGatedAdoption:
                 await wa._async_sync_popup_targets()
             await task
 
-        run(scenario())
+        with virtual_time():
+            run(scenario())
         assert wa._tab is popup
         assert wa._popup_parents == [base]
         assert wa._pending_popup_targets == {}
@@ -204,7 +206,8 @@ class TestGatedAdoption:
             await wa._async_sync_popup_targets()
             await task
 
-        run(scenario())
+        with virtual_time():
+            run(scenario())
         assert wa._tab is base
         assert wa._pending_popup_targets == {}
         assert wa._pending_target_notes == []
@@ -226,7 +229,8 @@ class TestGatedAdoption:
             await wa._async_sync_popup_targets()
             await task
 
-        run(scenario())
+        with virtual_time():
+            run(scenario())
         assert wa._tab is base
         assert wa._pending_popup_targets == {}
         assert wa._pending_target_notes == []

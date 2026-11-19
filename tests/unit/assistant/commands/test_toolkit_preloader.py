@@ -12,6 +12,7 @@ from assistant.AssistantRequest import RequestContext
 from assistant.ChannelProfile import SOURCE_VOICE, TELEGRAM, VOICE_TO_VOICE
 from assistant.commands import ToolkitPreloader, Toolkits
 from assistant.RequestProcessor import RequestProcessor
+from tests.unit.waiting import FAILURE_BOUND
 
 DATA = '## LIGHTS\n"Lamp [Kök]": off'
 HOME_ONLY = replace(VOICE_TO_VOICE, preload_toolkits=("home",), fixed_toolkits=())
@@ -154,7 +155,7 @@ def _racing_prompt_manager(persist_started: threading.Event, release_persist: th
 
     def persist(text, cap=True, source=None):
         persist_started.set()
-        release_persist.wait(timeout=5)
+        release_persist.wait(timeout=FAILURE_BOUND)
         window[Toolkits.loaded_name(text.split("\n")[2])] = 1000.0
 
     pm.add_command_result.side_effect = persist
@@ -172,13 +173,13 @@ def test_two_requests_preloading_at_once_persist_one_row():
     results = {}
     first = threading.Thread(target=lambda: results.update(first=ToolkitPreloader.preload(pm, HOME_ONLY)))
     first.start()
-    assert persist_started.wait(timeout=5)
+    assert persist_started.wait(timeout=FAILURE_BOUND)
     second = threading.Thread(target=lambda: results.update(second=ToolkitPreloader.preload(pm, HOME_ONLY)))
     second.start()
     second.join(timeout=0.05)
     assert second.is_alive(), "the second preload must wait for the first's persist"
     release_persist.set()
-    first.join(timeout=5), second.join(timeout=5)
+    first.join(timeout=FAILURE_BOUND), second.join(timeout=FAILURE_BOUND)
     assert results == {"first": ["home"], "second": []}
     pm.add_command_result.assert_called_once()
 
@@ -194,14 +195,14 @@ def test_a_request_killed_while_waiting_for_its_turn_loads_nothing():
     killed = threading.Event()
     first = threading.Thread(target=lambda: ToolkitPreloader.preload(pm, HOME_ONLY))
     first.start()
-    assert persist_started.wait(timeout=5)
+    assert persist_started.wait(timeout=FAILURE_BOUND)
     results = {}
     second = threading.Thread(
         target=lambda: results.update(second=ToolkitPreloader.preload(pm, HOME_ONLY, is_killed=killed.is_set)))
     second.start()
     killed.set()
     release.set()
-    first.join(timeout=5), second.join(timeout=5)
+    first.join(timeout=FAILURE_BOUND), second.join(timeout=FAILURE_BOUND)
     assert results == {"second": []}
     pm.add_command_result.assert_called_once()
 

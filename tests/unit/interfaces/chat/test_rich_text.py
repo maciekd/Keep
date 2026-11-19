@@ -5,6 +5,7 @@ from html import unescape
 
 from interfaces.chat import RichText
 from interfaces.chat.RichText import markdown_to_html, safe_prefix_end, sanitize, split, strip_tags
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.mark.unit
@@ -73,7 +74,7 @@ class TestSplit:
         result = []
         worker = threading.Thread(target=lambda: result.append(split(text, max_length=10)), daemon=True)
         worker.start()
-        worker.join(timeout=3)
+        worker.join(FAILURE_BOUND)
         assert result, "split() did not terminate"
         chunks = result[0]
         assert "".join(chunks) == text

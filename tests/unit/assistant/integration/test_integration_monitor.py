@@ -8,6 +8,8 @@ import pytest
 from assistant.integration.Feed import Feed
 from assistant.integration.Integration import HealthWarning, Integration, IntegrationState
 from assistant.integration.IntegrationMonitor import IntegrationMonitor, DisabledIntegration
+from tests.unit.assistant.prompt.parked_wait import ParkedEvent
+from tests.unit.waiting import FAILURE_BOUND
 
 
 class FakeIntegration(Integration):
@@ -444,16 +446,17 @@ class TestRunLoop:
 
     def test_stop_wakes_the_loop_at_once(self):
         monitor = self._make_monitor()
+        monitor._stop_event = parked = ParkedEvent()   # only stop() ends the loop's wait
         monitor._running = True
         monitor._thread = threading.Thread(target=monitor._run_loop, daemon=True)
         monitor._thread.start()
         thread = monitor._thread
+        assert parked.waiting.wait(FAILURE_BOUND)
 
-        started = time.monotonic()
         monitor.stop()
 
+        thread.join(FAILURE_BOUND)
         assert not thread.is_alive()
-        assert time.monotonic() - started < 1
 
     def test_initial_check_skips_not_configured(self):
         monitor = self._make_monitor()

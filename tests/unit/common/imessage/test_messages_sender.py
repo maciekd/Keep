@@ -7,6 +7,7 @@ import pytest
 
 from common.imessage import MessagesSender as module
 from common.imessage.MessagesSender import CHAT_RATE_LIMIT_MAX, MessagesSender, SEND_RATE_LIMIT_MAX
+from tests.unit.waiting import FAILURE_BOUND
 
 
 def osascript(returncode=0, stdout="sent:imessage", stderr=""):
@@ -136,7 +137,7 @@ class TestRefusal:
             for thread in threads:
                 thread.start()
             for thread in threads:
-                thread.join(5)
+                thread.join(FAILURE_BOUND)
         assert len(reached) == 1, "one message reached Messages"
         assert sorted(bool(answer.error) for answer in answers) in ([False], [False, True])
         assert "rate limit" in sender.refusal("ping", chat=chat)

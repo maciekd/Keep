@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch, MagicMock, PropertyMock
 
 from integrations.icloud.ICloudIntegration import iCloudAPI, iCloudAPIError, iCloudAuthenticationError, iCloudConfigurationError, ICloudIntegration
 from assistant.integration.Integration import IntegrationState
+from tests.unit.waiting import FAILURE_BOUND
 
 
 VALID_CONFIG = {
@@ -802,7 +803,7 @@ class TestAutoSmsRequest:
         def slow_request():
             # Still in flight when the second worker asks: with the lock released before the
             # request, that worker would find nothing pending and send an SMS of its own.
-            assert both_asking.wait(5)
+            assert both_asking.wait(FAILURE_BOUND)
             api._sms_requested_at = time.time()
             return "•••05"
 

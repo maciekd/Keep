@@ -1,9 +1,11 @@
 import asyncio
+import threading
 from unittest.mock import patch, Mock
 
 import pytest
 
 from integrations.telegram_feed.TelegramFeedIntegration import TelegramFeedIntegration
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.fixture(autouse=True)
@@ -419,7 +421,7 @@ class TestFeed:
         m._client = client
         try:
             batch = m.fetch(repr(300.0), backfill=False)
-            m._reconnect.result(timeout=1)
+            m._reconnect.result(timeout=FAILURE_BOUND)
             assert batch.entries == [] and client.connected and attempts == [True]
             m.fetch(repr(300.0), backfill=False)
             assert attempts == [True]
@@ -432,18 +434,22 @@ class TestFeed:
         client.connected = False
         attempts = []
 
+        connect_may_end = threading.Event()
+
         async def connect():
             attempts.append(True)
-            await asyncio.sleep(0.03)
+            await asyncio.to_thread(connect_may_end.wait, FAILURE_BOUND)
             client.connected = True
         client.connect = connect
         m._client = client
         try:
             m.fetch(repr(300.0), backfill=False)
             m.fetch(repr(300.0), backfill=False)
-            m._reconnect.result(timeout=1)
+            connect_may_end.set()
+            m._reconnect.result(timeout=FAILURE_BOUND)
             assert attempts == [True] and client.connected
         finally:
+            connect_may_end.set()
             m.close_feed()
 
     def test_a_failed_reconnect_is_tried_again_at_the_next_fetch(self, feed_no_blacklist):
@@ -464,10 +470,10 @@ class TestFeed:
         try:
             m.fetch(repr(300.0), backfill=False)
             with pytest.raises(ConnectionError):
-                m._reconnect.result(timeout=1)
+                m._reconnect.result(timeout=FAILURE_BOUND)
             assert not client.connected
             m.fetch(repr(300.0), backfill=False)
-            m._reconnect.result(timeout=1)
+            m._reconnect.result(timeout=FAILURE_BOUND)
             assert attempts == [True, True] and client.connected
         finally:
             m.close_feed()

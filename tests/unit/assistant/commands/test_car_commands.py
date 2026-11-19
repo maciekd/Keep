@@ -6,6 +6,7 @@ import pytest
 
 from assistant.commands.Commands import Commands
 from assistant.integration.VehicleProvider import Fleet, Unsupported, VehicleError, VehicleSpec
+from tests.unit.waiting import FAILURE_BOUND
 
 MODULE = "assistant.commands.Commands.vehicles"
 
@@ -39,7 +40,7 @@ def fleet(tesla):
 
 def _run(commands_instance, name, params):
     result = commands_instance.run(name, params)
-    commands_instance.wait_for_background(timeout=5)
+    commands_instance.wait_for_background(timeout=FAILURE_BOUND)
     return result
 
 

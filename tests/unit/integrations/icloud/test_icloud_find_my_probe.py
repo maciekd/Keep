@@ -2,7 +2,6 @@
 rules since the lockouts of 2026-10-15/16: nothing reads Find My on a timer, a session Find My
 wants re-signed is idle, the one sign-in a command earns is deliberate and completed, and a
 refusal from Apple parks every sign-in — across restarts — until the user confirms."""
-import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -10,6 +9,7 @@ from pyicloud.exceptions import (PyiCloudAPIResponseException, PyiCloudAuthRequi
                                  PyiCloudFailedLoginException)
 
 from integrations.icloud.ICloudIntegration import iCloudAPI, _brief
+from tests.unit.waiting import FAILURE_BOUND
 
 CONFIG = {"apple_id": "m@mlab.test", "password": "secret",
           "devices": [{"id": "fmip-dad", "display_name": "dad"}]}
@@ -266,7 +266,7 @@ class TestAccountLock:
                 self._lock.release()
 
         def signin_that_lasts_until_the_other_command_waits(force_refresh=False):
-            assert both_asked.wait(5), "the second command never asked for the sign-in"
+            assert both_asked.wait(FAILURE_BOUND), "the second command never asked for the sign-in"
         service.authenticate.side_effect = signin_that_lasts_until_the_other_command_waits
         api._api = service
         api._find_my_signin_lock = SignInLock()

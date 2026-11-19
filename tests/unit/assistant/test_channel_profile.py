@@ -1,6 +1,7 @@
 """The ChannelProfile table and every call site that used to compare `source ==`."""
 from integrations.photos.PhotosCommands import MediaPayload
 from unittest.mock import Mock, patch
+from tests.unit.waiting import FAILURE_BOUND
 
 import pytest
 
@@ -12,7 +13,8 @@ class TestTable:
         assert profile_for(None) is AUTONOMOUS
 
     def test_unknown_source_is_text_chat_and_logged_once(self):
-        with patch("assistant.ChannelProfile.info") as info, patch("assistant.ChannelProfile.trace") as trace:
+        with patch("assistant.ChannelProfile.info") as info, patch("assistant.ChannelProfile.trace") as trace, \
+             patch("assistant.ChannelProfile._reported_unknown", set()):
             assert profile_for("NeverSeenBefore") is TEXT_CHAT
             assert profile_for("NeverSeenBefore") is TEXT_CHAT
         assert info.call_count == 1
@@ -139,7 +141,7 @@ class TestCommandProcessorReadsProfile:
         dm.web_request_handler.wait_so_that_response_timing_is_natural.return_value = True
         with patch("assistant.commands.CommandProcessor.LOCAL_DEVELOPMENT_MODE", False):
             p.invoke_command("turn_on", ["kitchen"], dm)
-            assert done.wait(timeout=2)
+            assert done.wait(timeout=FAILURE_BOUND)
         p.kill()
         assert seen["profile"] is VOICE_TO_VOICE
 

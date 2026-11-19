@@ -1,7 +1,7 @@
 """DropboxIntegration: the folders a read may touch, a document fetched once and served from
 the cache by its content hash, what is refused before any download, the health check and the
 sign-out."""
-import time
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -206,7 +206,7 @@ class TestDocument:
                 fake.route("/files/get_metadata", file_metadata(f"/{name}.txt", size=12, content_hash=name * 32))
                 fake.route("/files/download", raw=b"x" * 12)
                 integration.document(f"/{name}.txt")
-                time.sleep(0.01)
+                os.utime(tmp_path / "dropbox" / f"{name * 32}.txt", (number, number))
         kept = sorted(p.name for p in (tmp_path / "dropbox").glob("*.txt"))
         assert kept == [f"{'mid' * 32}.txt", f"{'new' * 32}.txt"]
 

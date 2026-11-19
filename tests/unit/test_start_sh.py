@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.waiting import wait_until
+
 from .process_table import OTHER_CHECKOUT, OTHER_USER, ProcessTable, stubs
 
 START_SH = Path(__file__).resolve().parents[2] / 'start.sh'
@@ -63,15 +65,8 @@ def spawn_orphan(cmd: str) -> int:
     return int(out.stdout.strip())
 
 
-def wait_dead(pid: int, timeout: float = 5.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        time.sleep(0.002)
-    return False
+def wait_dead(pid: int) -> bool:
+    return wait_until(lambda: not alive(pid), interval=0.002)
 
 
 def alive(pid: int) -> bool:
@@ -258,10 +253,7 @@ class TestStartSh:
         trap_ready = harness.dir / 'trap_ready'
         victim = spawn_orphan(
             f"""bash -c 'trap "" TERM; touch "{trap_ready}"; while :; do /bin/sleep 1; done'""")
-        deadline = time.time() + 5.0
-        while not trap_ready.exists() and time.time() < deadline:
-            time.sleep(0.005)
-        assert trap_ready.exists(), "victim never installed its TERM trap"
+        assert wait_until(trap_ready.exists), "victim never installed its TERM trap"
         result = harness.run(victim)
         assert result.returncode == 0
         assert wait_dead(victim), f"TERM-immune pid {victim} survived force-kill"
@@ -343,10 +335,7 @@ class TestCliStartSh:
         script.write_text(CLI_START_SH.read_text())
         subprocess.run(['bash', str(script)], env=dict(os.environ, KEEP_OS=MAC), capture_output=True, text=True,
                        timeout=30, check=True)
-        deadline = time.time() + 5.0
-        while not report.exists() and time.time() < deadline:
-            time.sleep(0.02)
-        assert report.exists(), "the fake server never ran"
+        assert wait_until(report.exists), "the fake server never ran"
         sid, pid, tty_seen_at_start = report.read_text().split()
         assert sid == pid, "the server is not a session leader of its own"
         assert sid != str(os.getsid(0))
@@ -946,10 +935,7 @@ class TestWhatALinuxStartNeeds:
         and the unit's server dies on it five times."""
         trap_ready = linux.dir / 'trap_ready'
         by_hand = spawn_orphan(f"""bash -c 'trap "" TERM; touch "{trap_ready}"; while :; do /bin/sleep 1; done'""")
-        deadline = time.time() + 5.0
-        while not trap_ready.exists() and time.time() < deadline:
-            time.sleep(0.005)
-        assert trap_ready.exists(), "the process never installed its TERM trap"
+        assert wait_until(trap_ready.exists), "the process never installed its TERM trap"
         linux.table.process(by_hand)
         linux.table.listener(8888, by_hand)
         with linux.env_file.open('a') as env:     # the port is free only once its holder is really gone

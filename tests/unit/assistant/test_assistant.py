@@ -1,7 +1,7 @@
 """Assistant facade: pool, dispatch lock, kill semantics and the event stream, with a
 fake handler standing in for RequestProcessor."""
+import itertools
 import threading
-import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -11,6 +11,7 @@ from assistant.RequestProcessor import RequestData
 from assistant.Assistant import Assistant, AssistantBusy, AssistantStream
 from assistant.AssistantEvents import Done, RoundEnd, Token, UserIdentified
 from assistant.AssistantRequest import RequestContext
+from tests.unit.waiting import FAILURE_BOUND, wait_until
 
 
 class FakeHandler:
@@ -106,17 +107,13 @@ class TestPool:
         a.REPLENISH_INTERVAL = 0.01
         first = a.running_handlers()  # empty; just exercising the API
         assert first == []
-        with patch("assistant.Assistant.TimeOfDay.get_current", side_effect=["day", "night", "night", "night"] + ["night"] * 50), \
+        with patch("assistant.Assistant.TimeOfDay.get_current", side_effect=itertools.chain(["day"], itertools.repeat("night"))), \
              patch.object(a, "drain_pool", wraps=a.drain_pool) as drain:
             t = threading.Thread(target=a._replenishment_loop, daemon=True)
             t.start()
-            deadline = time.time() + 2
-            while not (drain.called and a.pooled_handlers() == 1) and time.time() < deadline:
-                time.sleep(0.01)
-        assert drain.called
-        assert a.pooled_handlers() == 1
+            assert wait_until(lambda: drain.called and a.pooled_handlers() == 1)
         a._stop_event.set()
-        t.join(timeout=2)
+        t.join(timeout=FAILURE_BOUND)
         assert not t.is_alive(), "stop must end the loop mid-wait, not after the interval"
 
     def test_stop_ends_the_loop_kills_the_pool_and_stops_the_prompt_manager(self):
@@ -134,22 +131,27 @@ class TestPool:
 
     def test_stop_ends_a_loop_sitting_in_the_retry_backoff(self):
         # A failing replenish parks the loop for REPLENISH_RETRY_DELAY (5 s) — longer than
-        # stop()'s 2 s join, so a backoff on time.sleep would leave the thread alive.
+        # stop()'s 2 s join, so the backoff has to be a wait on the event stop() sets, not a sleep.
+        # The loop runs in the test: a wait on a set event ends at once, as it does when set mid-wait.
+        class RecordingEvent(threading.Event):
+            def __init__(self):
+                super().__init__()
+                self.waits = []
+
+            def wait(self, timeout=None):
+                self.waits.append(timeout)
+                return super().wait(timeout)
+
         a = make_assistant(pool_size=1)
-        failed = threading.Event()
+        a._stop_event = RecordingEvent()
 
         def broken():
-            failed.set()
+            a.stop()
             raise RuntimeError("factory down")
 
         a.replenish_pool = broken
-        a.start()
-        thread = a._replenish_thread
-        assert failed.wait(2)
-        started = time.time()
-        a.stop()
-        assert not thread.is_alive() and a._replenish_thread is None
-        assert time.time() - started < 1
+        a._replenishment_loop()
+        assert a._stop_event.waits == [a.REPLENISH_RETRY_DELAY]
 
     def test_start_launches_the_replenish_thread_once(self):
         a = make_assistant(pool_size=1)
@@ -279,7 +281,7 @@ class TestDispatch:
         a.stream(ctx())
         with pytest.raises(AssistantBusy):
             a.stream(ctx(user="Bob", guest=True))
-        assert a._dispatch_lock.acquire(timeout=0.05)
+        assert a._dispatch_lock.acquire(blocking=False)
         a._dispatch_lock.release()
 
     def test_pool_exhausted_raises_busy(self):
@@ -305,7 +307,7 @@ class TestDispatch:
         a.stream(ctx())
         with pytest.raises(AssistantBusy):
             a.stream(ctx())
-        assert a._dispatch_lock.acquire(timeout=0.1)
+        assert a._dispatch_lock.acquire(blocking=False)
         a._dispatch_lock.release()
 
 class TestKill:

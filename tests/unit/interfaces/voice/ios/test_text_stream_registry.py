@@ -2,6 +2,7 @@
 import pytest
 
 from interfaces.voice.ios.TextStreamRegistry import TextStreamRegistry
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.mark.unit
@@ -58,7 +59,7 @@ class TestOrphanTimers:
         timer = registry._timers["req-1"]
         assert timer.is_alive()
         registry.discard("req-1")
-        timer.join(timeout=1)
+        timer.join(timeout=FAILURE_BOUND)
         assert not timer.is_alive() and "req-1" not in registry._timers
 
     def test_reset_instance_cancels_every_pending_timer(self, registry):
@@ -67,5 +68,5 @@ class TestOrphanTimers:
         timers = list(registry._timers.values())
         TextStreamRegistry.reset_instance()
         for timer in timers:
-            timer.join(timeout=1)
+            timer.join(timeout=FAILURE_BOUND)
         assert not any(t.is_alive() for t in timers)

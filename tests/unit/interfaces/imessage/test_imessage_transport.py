@@ -24,6 +24,7 @@ from interfaces.imessage.ChatState import ChatState
 from interfaces.imessage.IMessageTransport import IMessageTransport, recipient_key
 from tests.unit.integrations.imessage.host_fakes import FakeHost
 from tests.unit.interfaces.chat.fakes import FakeAssistant, FakeTransport, wait_until
+from tests.unit.waiting import FAILURE_BOUND
 
 from .chat_fakes import (ALICE, CHARLOTTE, CHARLOTTES, CHESS, DIRECT, BOBS_KEEP, FAMILY, MARCUS, NOW, STRANGER, Clock,
                          FakeHub, configured, own, text)
@@ -122,6 +123,14 @@ class Chat:
     @property
     def turns(self):
         return self.hub.received
+
+
+@pytest.fixture(autouse=True)
+def dots_taken_away_before_a_bubble():
+    """A draft's end waits for the host to take the dots away, `TYPING_OFF_WAIT` at most: on a
+    stalled runner the real 2 s ran out and a bubble went out before the off."""
+    with patch.object(module, "TYPING_OFF_WAIT", FAILURE_BOUND):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -785,7 +794,7 @@ class SlowHost(AccountHost):
     def typing(self, chat, on):
         if (chat, on) in self.hold:
             self.entered.set()
-            self.release.wait(3)
+            self.release.wait(FAILURE_BOUND)
         return super().typing(chat, on)
 
 
@@ -839,7 +848,7 @@ class TestTheTypingDots:
             host.hold = {(DIRECT, True)}
             draft = chat.transport.begin_draft(DIRECT)
             draft.show_progress(Progress(phase="waiting"))      # returns while the host is still at it
-            assert host.entered.wait(2) and ("typing", DIRECT, True) not in host.calls
+            assert host.entered.wait(FAILURE_BOUND) and ("typing", DIRECT, True) not in host.calls
             host.release.set()
             draft.discard()
             chat.transport.stop()
@@ -850,7 +859,7 @@ class TestTheTypingDots:
             chat.host = chat.transport.host = host = SlowHost()
             host.hold = {(FAMILY, True)}
             chat.transport.begin_draft(FAMILY).show_progress(Progress(phase="waiting"))
-            assert host.entered.wait(2)             # the one thread that tells the host is busy with the group
+            assert host.entered.wait(FAILURE_BOUND)    # the one thread that tells the host is busy with the group
             quick = chat.transport.begin_draft(DIRECT)
             quick.show_progress(Progress(phase="waiting"))
             assert quick.finalize("Seven.") is True

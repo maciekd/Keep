@@ -3,7 +3,6 @@ over HTTP, the attachment as bytes, and every way the other end can fail — as 
 import base64
 import json
 import threading
-import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -20,6 +19,7 @@ from common.imessage.MessagesHost import (BAD_ANSWER, Count, GroupChat, HostHeal
                                           SatelliteStatus, SendResult, TYPING_FAILED, TYPING_SCREEN_LOCKED,
                                           TypingResult, UNREACHABLE)
 from common.imessage.RemoteMessagesHost import RemoteMessagesHost
+from tests.unit.waiting import FAILURE_BOUND, wait_until
 from tests.unit.integrations.imessage.host_fakes import FakeHost, photo, received, send_later, sent
 
 from .messages_fakes import ChatDb, GROUP, NOW, address_book
@@ -365,12 +365,13 @@ class TestEveryFailureIsAValue:
                 patch.object(remote_module, "READ_TIMEOUT", 1.0), patch.object(remote_module, "READ_TIMEOUTS", {}), \
                 patch.object(remote_module, "TRANSFER_SECONDS", -0.98):
             host = RemoteMessagesHost(address, TOKEN)
-            started = time.monotonic()
-            batch, sent_ = host.poll(8, None, 10), host.send("Alice", "hi")
-            took = time.monotonic() - started
+            batch = host.poll(8, None, 10)
+            assert host._abandoned, "the poll was given up at its 20 ms deadline, its exchange left to the peer"
+            before = list(host._abandoned)
+            sent_ = host.send("Alice", "hi")
+            assert host._abandoned and host._abandoned[-1] not in before, "and so was the send"
         assert batch.error and batch.cursor == 8 and host.away()
         assert "may have been sent" in sent_.error
-        assert took < 1.0, "each call was given 20 ms in all; the peer would have gone on for 40 s"
 
     def test_a_peer_that_never_finishes_costs_no_thread_per_call(self):
         """An exchange given up on still waits for its peer: after a few of them nothing more is sent."""
@@ -380,9 +381,7 @@ class TestEveryFailureIsAValue:
             host = RemoteMessagesHost(address, TOKEN)
             answers = [host.cursor_at(None) for _ in range(remote_module.MAX_ABANDONED + 4)]
             assert all(answer.error for answer in answers) and host.away()
-            waited = time.monotonic() + 2
-            while len(connections) < remote_module.MAX_ABANDONED and time.monotonic() < waited:
-                time.sleep(0.005)
+            wait_until(lambda: len(connections) >= remote_module.MAX_ABANDONED)
             assert len(connections) == remote_module.MAX_ABANDONED
 
     @pytest.mark.parametrize("body", [b"[" * 100_000 + b"]" * 100_000,
@@ -407,7 +406,7 @@ class TestEveryFailureIsAValue:
         seen_elsewhere = []
         other = threading.Thread(target=lambda: seen_elsewhere.extend([remote.health().ok, remote.away()]))
         other.start()
-        other.join(5)
+        other.join(FAILURE_BOUND)
         assert seen_elsewhere == [True, False]
         assert remote.away(), "this thread's poll is the one that found nobody there"
 

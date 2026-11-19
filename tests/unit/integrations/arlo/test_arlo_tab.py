@@ -35,11 +35,13 @@ class TestRateLimit:
         started = []
         tab = make_tab(api)
         tab._run = started.append
-        assert tab.handle_input('\x12')                     # Ctrl-R
-        assert started == []
-        assert tab._rate_limit_until > time.time() + 290
-        api.refresh_connection.assert_not_called()
-        assert tab._outcome().startswith("Rate limited")
+        with patch("integrations.arlo.ArloTab.time") as clock:
+            clock.time.return_value = 1_000.0
+            assert tab.handle_input('\x12')                     # Ctrl-R
+            assert started == []
+            assert tab._rate_limit_until == 1_300.0
+            api.refresh_connection.assert_not_called()
+            assert tab._outcome().startswith("Rate limited")
 
     def test_an_auth_error_with_a_cooldown_becomes_the_countdown_not_an_error_line(self):
         api = Mock(auth_cooldown_remaining=0)
@@ -49,9 +51,11 @@ class TestRateLimit:
         assert tab._status_message == "Auth error: locked out"
         assert tab._rate_limit_until == 0
         api.auth_cooldown_remaining = 60
-        tab._refresh()
-        assert tab._rate_limit_until > time.time() + 50
-        assert tab._outcome().startswith("Rate limited")
+        with patch("integrations.arlo.ArloTab.time") as clock:
+            clock.time.return_value = 1_000.0
+            tab._refresh()
+            assert tab._rate_limit_until == 1_060.0
+            assert tab._outcome().startswith("Rate limited")
 
     def test_a_successful_refresh_clears_an_expired_limit(self):
         api = Mock(auth_cooldown_remaining=0)

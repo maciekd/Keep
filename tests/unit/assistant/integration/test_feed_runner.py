@@ -9,6 +9,7 @@ import pytest
 from assistant.integration.Feed import Feed, FeedBatch, FeedEntry, FeedSourceAway, FEED_ROLE
 from assistant.integration.FeedRunner import FeedRunner, FeedState, Feeds, SECONDS_PER_MONTH, describe_feed_status
 from common.FloxyDatabase import FloxyDatabase
+from tests.unit.waiting import FAILURE_BOUND, wait_until
 
 
 @pytest.fixture
@@ -1082,10 +1083,7 @@ class TestThread:
         feed.poll_interval = 0.01
         runner = FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db)
         runner.start()
-        deadline = time.time() + 5
-        while runner.state != FeedState.LIVE and time.time() < deadline:
-            time.sleep(0.01)
-        assert runner.state == FeedState.LIVE
+        assert wait_until(lambda: runner.state == FeedState.LIVE)
         runner.stop()
         assert runner.state == FeedState.STOPPED
         assert feed.opened == 1
@@ -1104,7 +1102,7 @@ class TestWaitOpened:
         assert runner.wait_opened(0.01) is False
         runner.start()
         try:
-            assert runner.wait_opened(5) is True
+            assert runner.wait_opened(FAILURE_BOUND) is True
             assert feed.opened == 1
         finally:
             runner.stop()
@@ -1114,7 +1112,7 @@ class TestWaitOpened:
         refusing.open_feed = lambda: False
         runner = FeedRunner(refusing, RecordingHistory(), HORIZON, db=floxy_db)
         runner.start()
-        assert runner.wait_opened(5) is True
+        assert runner.wait_opened(FAILURE_BOUND) is True
         assert runner.state == FeedState.STOPPED
 
         def boom():
@@ -1123,24 +1121,18 @@ class TestWaitOpened:
         raising.open_feed = boom
         runner = FeedRunner(raising, RecordingHistory(), HORIZON, db=floxy_db)
         runner.start()
-        assert runner.wait_opened(5) is True
+        assert runner.wait_opened(FAILURE_BOUND) is True
         assert runner.state == FeedState.FAILED
 
 
 @pytest.mark.unit
 class TestPause:
-    def _wait(self, predicate, timeout=5.0):
-        deadline = time.time() + timeout
-        while not predicate() and time.time() < deadline:
-            time.sleep(0.01)
-        return predicate()
-
     def test_pause_holds_fetching_and_resume_carries_on(self, floxy_db):
         feed = ScriptedFeed([[HORIZON + 1]], live_polls=10 ** 6)
         feed.poll_interval = 0.01
         runner = FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db)
         runner.start()
-        assert self._wait(lambda: runner.state == FeedState.LIVE)
+        assert wait_until(lambda: runner.state == FeedState.LIVE)
         parked = threading.Event()
         wait_for_resume = runner._running.wait
 
@@ -1151,13 +1143,13 @@ class TestPause:
         runner._running.wait = park
         assert runner.pause() and runner.paused
         assert not runner.pause()   # already paused
-        assert parked.wait(5)       # the loop is idling on the resume, not fetching
+        assert parked.wait(FAILURE_BOUND)  # the loop is idling on the resume, not fetching
         calls_when_paused = len(feed.calls)
         assert runner.state == FeedState.LIVE
         assert runner.status()["paused"] is True
         assert runner.resume() and not runner.paused
         assert not runner.resume()  # not paused
-        assert self._wait(lambda: len(feed.calls) > calls_when_paused)
+        assert wait_until(lambda: len(feed.calls) > calls_when_paused)
         runner.stop()
 
     def test_stop_wakes_a_paused_runner(self, floxy_db):
@@ -1165,9 +1157,9 @@ class TestPause:
         feed.poll_interval = 0.01
         runner = FeedRunner(feed, RecordingHistory(), HORIZON, db=floxy_db)
         runner.start()
-        assert self._wait(lambda: runner.state == FeedState.LIVE)
+        assert wait_until(lambda: runner.state == FeedState.LIVE)
         runner.pause()
-        runner.stop(timeout=2.0)
+        runner.stop(timeout=FAILURE_BOUND)
         assert not runner._thread.is_alive()
         assert runner.state == FeedState.STOPPED
 

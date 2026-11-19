@@ -1,5 +1,4 @@
 import os
-import time
 import pytest
 from unittest.mock import patch
 
@@ -67,9 +66,9 @@ class TestStderrLogger:
 
     def test_timer_flushes_after_idle(self):
         logger = StderrLogger()
-        with patch('common.logging.info') as mock_info:
+        with patch('common.logging.info') as mock_info, patch('common.StderrLogger.threading.Timer') as timer:
             logger.write("delayed message")
-            deadline = time.monotonic() + 2.0
-            while not mock_info.called and time.monotonic() < deadline:
-                time.sleep(0.01)
+            idle, flush = timer.call_args.args
+            assert idle == 0.05 and timer.return_value.start.called and not mock_info.called
+            flush()
             mock_info.assert_called_once_with("delayed message")

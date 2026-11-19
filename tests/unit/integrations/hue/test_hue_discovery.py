@@ -9,6 +9,7 @@ import requests
 
 from integrations.hue import HueDiscovery
 from integrations.hue.HueDiscovery import cloud, discover, mdns, parse_answer
+from tests.unit.waiting import FAILURE_BOUND
 
 MODULE = "integrations.hue.HueDiscovery"
 
@@ -58,7 +59,9 @@ class TestParseAnswer:
 
 @pytest.fixture
 def udp():
-    """The query's socket faked: `replies` is what recvfrom hands back, then a timeout."""
+    """The query's socket faked: `replies` is what recvfrom hands back, then a timeout. It never
+    blocks, so a `wait` is only the deadline of the read loop — one that expects replies gets
+    FAILURE_BOUND, since a runner stalled past a short one never reads."""
     with patch(f"{MODULE}.socket.socket") as socket_cls:
         sock = socket_cls.return_value.__enter__.return_value
         sock.replies = []
@@ -78,11 +81,11 @@ class TestMdns:
     def test_the_addresses_in_the_answers_are_the_bridges_once_each(self, udp):
         udp.replies = [(_answer(), ("192.0.2.10", 5353)), (_answer(), ("192.0.2.10", 5353)),
                        (_answer(("192.0.2.11",)), ("192.0.2.11", 5353))]
-        assert mdns(wait=0.01) == ["192.0.2.10", "192.0.2.11"]
+        assert mdns(wait=FAILURE_BOUND) == ["192.0.2.10", "192.0.2.11"]
 
     def test_an_answer_without_an_a_record_falls_back_to_the_sender(self, udp):
         udp.replies = [(b"\x00" * 12, ("192.0.2.20", 5353))]
-        assert mdns(wait=0.01) == ["192.0.2.20"]
+        assert mdns(wait=FAILURE_BOUND) == ["192.0.2.20"]
 
     def test_no_answer_within_the_wait_is_an_empty_list(self, udp):
         assert mdns(wait=0.01) == []

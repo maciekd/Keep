@@ -26,6 +26,7 @@ import pytest
 from common import Role
 from common.ConfigManager import ConfigManager
 from common.imessage import Satellite
+from tests.unit.waiting import FAILURE_BOUND
 
 ROLE_SH = Path(__file__).resolve().parents[2] / 'scripts' / 'role.sh'
 BASH = shutil.which('bash')
@@ -285,7 +286,7 @@ class TestWhichProcessesAreThisCheckouts:
             assert own_processes(checkout, pattern, **self.WITHOUT_A_LOCALE) == [ours.pid]
         finally:
             ours.kill()
-            ours.wait(timeout=5)
+            ours.wait(timeout=FAILURE_BOUND)
 
     def test_the_same_command_line_from_another_folder_is_not_this_checkouts(self, tmp_path):
         """A test of its own: every process pgrep finds costs an lsof (~30 ms on this Mac's real one)."""
@@ -297,7 +298,7 @@ class TestWhichProcessesAreThisCheckouts:
             assert own_processes(checkout, pattern, **self.WITHOUT_A_LOCALE) == []
         finally:
             theirs.kill()
-            theirs.wait(timeout=5)
+            theirs.wait(timeout=FAILURE_BOUND)
 
     def test_a_checkout_reached_through_a_symlink_is_the_same_checkout(self, tmp_path):
         checkout, link = tmp_path / 'Keep', tmp_path / 'link'
@@ -308,4 +309,4 @@ class TestWhichProcessesAreThisCheckouts:
             assert own_processes(link, pattern, **self.WITHOUT_A_LOCALE) == [ours.pid]
         finally:
             ours.kill()
-            ours.wait(timeout=5)
+            ours.wait(timeout=FAILURE_BOUND)

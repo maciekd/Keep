@@ -1,6 +1,8 @@
 """ChatHub: transport registry, session routing, the Notifier fan-out and approvals."""
 import threading
 import time
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -9,6 +11,8 @@ from assistant.AssistantEvents import RoundEnd, Token
 from assistant.Notifier import Notifier
 from interfaces.chat.ChatHub import ChatHub
 from interfaces.chat.ChatTypes import IncomingMessage
+
+from tests.unit.waiting import FAILURE_BOUND
 
 from .fakes import FakeAssistant, FakeTransport, wait_until
 
@@ -63,7 +67,7 @@ class TestRegistry:
 
     @staticmethod
     def _slow_reply(hub, transport):
-        assistant = FakeAssistant([Token("Hel"), (5.0, Token("lo")), RoundEnd(), None])
+        assistant = FakeAssistant([Token("Hel"), threading.Event(), Token("lo"), RoundEnd(), None])
         hub.assistant = assistant
         hub.receive(transport, IncomingMessage(conversation=1, sender="A", text="x"))
         assert wait_until(lambda: transport.texts == ["Hel"])
@@ -374,7 +378,7 @@ class TestApprovals:
         result = {}
 
         def ask():
-            result["decision"] = hub.request_approval("Send a message", "hi", timeout=2.0)
+            result["decision"] = hub.request_approval("Send a message", "hi", timeout=FAILURE_BOUND)
 
         t = threading.Thread(target=ask, daemon=True)
         t.start()
@@ -382,7 +386,7 @@ class TestApprovals:
         token = next(c[2] for c in transport.calls if c[0] == "approval")
 
         assert hub.resolve_approval(token, "approve", who="alice") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["decision"] == "approve"
         assert ("close", 111, 101, "✅ Approved by alice") in transport.calls
         assert ("close", 9, "ref-9", "✅ Approved by alice") in other.calls
@@ -398,13 +402,13 @@ class TestApprovals:
         hub.register(other_telegram_chat)
         result = {}
         t = threading.Thread(target=lambda: result.update(
-            d=hub.request_approval("x", timeout=2.0, source="Console", conversation="tui")), daemon=True)
+            d=hub.request_approval("x", timeout=FAILURE_BOUND, source="Console", conversation="tui")), daemon=True)
         t.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in console.calls))
         assert transport.calls == [] and other_telegram_chat.calls == []
         token = next(c[2] for c in console.calls if c[0] == "approval")
         assert hub.resolve_approval(token, "approve") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "approve"
         assert transport.calls == [] and other_telegram_chat.calls == []
 
@@ -413,23 +417,24 @@ class TestApprovals:
         hub.register(console)
         result = {}
         t = threading.Thread(target=lambda: result.update(
-            d=hub.request_approval("x", timeout=2.0, source="Voice", conversation=None)), daemon=True)
+            d=hub.request_approval("x", timeout=FAILURE_BOUND, source="Voice", conversation=None)), daemon=True)
         t.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in console.calls)
                           and any(c[0] == "approval" for c in transport.calls))
         token = next(c[2] for c in transport.calls if c[0] == "approval")
         assert hub.resolve_approval(token, "approve") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "approve"
 
     def test_deny(self, hub, transport):
         result = {}
-        t = threading.Thread(target=lambda: result.update(d=hub.request_approval("x", timeout=2.0)), daemon=True)
+        t = threading.Thread(target=lambda: result.update(d=hub.request_approval("x", timeout=FAILURE_BOUND)),
+                             daemon=True)
         t.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
         token = next(c[2] for c in transport.calls if c[0] == "approval")
         hub.resolve_approval(token, "deny", who="<b>")
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "deny"
         assert ("close", 111, 101, "❌ Denied by &lt;b&gt;") in transport.calls
 
@@ -446,12 +451,13 @@ class TestApprovals:
         broken.send_approval_prompt = down
         hub.register(broken)
         result = {}
-        t = threading.Thread(target=lambda: result.update(d=hub.request_approval("x", timeout=2.0)), daemon=True)
+        t = threading.Thread(target=lambda: result.update(d=hub.request_approval("x", timeout=FAILURE_BOUND)),
+                             daemon=True)
         t.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
         token = next(c[2] for c in transport.calls if c[0] == "approval")
         assert hub.resolve_approval(token, "approve") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "approve"
         assert ("close", 111, 101, "✅ Approved by user") in transport.calls
 
@@ -460,11 +466,11 @@ class TestApprovals:
         hub.APPROVAL_POLL_SECONDS = 0.01
         result = {}
         t = threading.Thread(target=lambda: result.update(
-            d=hub.request_approval("x", timeout=5.0, cancelled=killed.is_set)), daemon=True)
+            d=hub.request_approval("x", timeout=FAILURE_BOUND, cancelled=killed.is_set)), daemon=True)
         t.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
         killed.set()
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "cancelled"
         closes = [c for c in transport.calls if c[0] == "close"]
         assert len(closes) == 1 and closes[0][1:3] == (111, 101) and "ancelled" in closes[0][3]
@@ -474,20 +480,20 @@ class TestApprovals:
         hub.APPROVAL_POLL_SECONDS = 0.01
         result = {}
         t = threading.Thread(target=lambda: result.update(
-            d=hub.request_approval("x", timeout=5.0, cancelled=lambda: False)), daemon=True)
+            d=hub.request_approval("x", timeout=FAILURE_BOUND, cancelled=lambda: False)), daemon=True)
         t.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
         token = next(c[2] for c in transport.calls if c[0] == "approval")
         assert hub.resolve_approval(token, "approve") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "approve"
 
     def test_a_tap_after_the_card_was_withdrawn_is_ignored(self, hub, transport):
         hub.APPROVAL_POLL_SECONDS = 0.01
-        t = threading.Thread(target=lambda: hub.request_approval("x", timeout=5.0, cancelled=lambda: True),
+        t = threading.Thread(target=lambda: hub.request_approval("x", timeout=FAILURE_BOUND, cancelled=lambda: True),
                              daemon=True)
         t.start()
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         token = next(c[2] for c in transport.calls if c[0] == "approval")
         assert hub.resolve_approval(token, "approve") is False
 
@@ -508,7 +514,8 @@ class TestApprovals:
         # Console and Telegram answering in the same instant: one wins, the rest are told
         # "not pending" — never an InvalidStateError from a second set_result.
         result = {}
-        asker = threading.Thread(target=lambda: result.update(d=hub.request_approval("x", timeout=2.0)), daemon=True)
+        asker = threading.Thread(target=lambda: result.update(d=hub.request_approval("x", timeout=FAILURE_BOUND)),
+                                 daemon=True)
         asker.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
         token = next(c[2] for c in transport.calls if c[0] == "approval")
@@ -527,21 +534,22 @@ class TestApprovals:
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=2)
-        asker.join(timeout=2)
+            t.join(FAILURE_BOUND)
+        asker.join(FAILURE_BOUND)
         assert outcomes.count(True) == 1
         assert outcomes.count(False) == len(answers) - 1, outcomes
         assert result["d"] in ("approve", "deny")
 
     def test_configured_timeout_is_used(self, transport):
-        from unittest.mock import patch
         with patch('interfaces.chat.ChatHub.config') as cfg:
             cfg.get = lambda key, default=None: {'chat.approval_timeout_seconds': 0.05}.get(key, default)
             hub = ChatHub()
         hub.register(transport)
-        start = time.monotonic()
-        assert hub.request_approval("x") == "timeout"
-        assert time.monotonic() - start < 1.0
+        # The clock reads the deadline is made of and checked against: the third is exactly 0.05 s
+        # later, so the configured wait has run out there — a longer one would ask for a fourth.
+        reads = iter([1000.0, 1000.0, 1000.0 + 0.05])
+        with patch("interfaces.chat.ChatHub.time", SimpleNamespace(time=lambda: next(reads))):
+            assert hub.request_approval("x") == "timeout"
 
 
 @pytest.mark.unit
@@ -549,7 +557,7 @@ class TestSecrets:
     """A value typed into a masked prompt goes to the requester's `accept` and nowhere else."""
 
     @staticmethod
-    def _ask(hub, accept, timeout=2.0, title="Amex (card)", details="Reply with the number", **origin):
+    def _ask(hub, accept, timeout=FAILURE_BOUND, title="Amex (card)", details="Reply with the number", **origin):
         result = {}
         t = threading.Thread(target=lambda: result.update(
             d=hub.request_secret(title, details, accept, timeout=timeout, **origin)), daemon=True)
@@ -585,10 +593,10 @@ class TestSecrets:
         console = FakeTransport(owners=["tui"], name="Console", source="Console")
         hub.register(console)
         t, result = self._ask(hub, lambda v: "ok", source="Console", conversation="tui")
-        wait_until(lambda: self._prompts(console))
+        assert wait_until(lambda: self._prompts(console))
         assert transport.calls == []
         assert hub.claim_secret(console, "tui", "4111") is True
-        t.join(2.0)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "accepted"
         assert self._closes(console) and not transport.calls
 
@@ -596,9 +604,9 @@ class TestSecrets:
         console = FakeTransport(owners=["tui"], name="Console", source="Console")
         hub.register(console)
         t, result = self._ask(hub, lambda v: "ok", source="SomeHttpClient", conversation=5)
-        wait_until(lambda: self._prompts(console) and self._prompts(transport))
+        assert wait_until(lambda: self._prompts(console) and self._prompts(transport))
         assert hub.claim_secret(transport, 111, "4111") is True
-        t.join(2.0)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "accepted"
 
     def test_unavailable_when_no_prompt_could_be_shown(self, hub, transport):
@@ -626,7 +634,7 @@ class TestSecrets:
         t, result = self._ask(hub, accept)
         assert wait_until(lambda: self._prompts(other))
         assert hub.claim_secret(other, 9, "4111 1111 1111 1111", who="alice") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "accepted"
         assert seen == ["4111 1111 1111 1111"]
         assert ("close_secret", 111, 101, "✅ Stored as amex (•••• 1111)") in transport.calls
@@ -640,7 +648,7 @@ class TestSecrets:
         assert wait_until(lambda: self._prompts(transport))
         assert hub.claim_secret(transport, 222, "secret") is False
         hub.cancel_secret(self._token(transport))
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
 
     def test_rejected_value_is_asked_again_with_the_reason(self, hub, transport):
         from assistant.Notifier import SecretRejected
@@ -664,7 +672,7 @@ class TestSecrets:
         assert again[2] == first_token and again[3] == "Amex (card)"
         assert again[4] == "Reply with the number\n⚠ card number must be 13-19 digits — try again (attempt 2 of 3)"
         assert hub.claim_secret(transport, 111, "4111 1111 1111 1111") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "accepted"
         assert self._closes(transport) == [("close_secret", 111, 101, "✅ Stored as visa")]
 
@@ -681,7 +689,7 @@ class TestSecrets:
             assert hub.claim_secret(transport, 111, "abc") is True
             if attempt < 2:   # the third rejection gives up instead of asking again
                 assert wait_until(lambda: len(self._prompts(transport)) == n + 1)
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "rejected"
         assert len(self._prompts(transport)) == 3
         assert self._closes(transport) == [("close_secret", 111, 101, "⚠ too short to vault safely (min 6) — giving up")]
@@ -692,7 +700,7 @@ class TestSecrets:
         assert wait_until(lambda: self._prompts(transport))
         token = self._token(transport)
         assert hub.cancel_secret(token, who="<b>") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "cancel"
         assert ("close_secret", 111, 101, "✖ Cancelled by &lt;b&gt;") in transport.calls
         assert hub.cancel_secret(token) is False
@@ -704,7 +712,7 @@ class TestSecrets:
         assert hub.request_secret("Another", "d", lambda v: "ok", timeout=1.0) == "unavailable"
         assert len(self._prompts(transport)) == 1
         hub.cancel_secret(self._token(transport))
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
 
     def test_the_value_is_never_logged_or_recorded(self, hub, transport, log_lines):
         from assistant.Notifier import SecretRejected
@@ -720,9 +728,9 @@ class TestSecrets:
         t, result = self._ask(hub, accept)
         assert wait_until(lambda: self._prompts(transport))
         hub.claim_secret(transport, 111, value)
-        wait_until(lambda: len(self._prompts(transport)) == 2)
+        assert wait_until(lambda: len(self._prompts(transport)) == 2)
         hub.claim_secret(transport, 111, value)   # the RuntimeError: its text carries the value
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "rejected"
         assert not any(value in line for line in log_lines), log_lines
         assert not any(value in c[-1] for c in self._closes(transport))
@@ -734,7 +742,7 @@ class TestSecrets:
 
         def accept(value):
             seen.append(value)
-            gate.wait(2)
+            gate.wait(FAILURE_BOUND)
             return "ok"
 
         t, result = self._ask(hub, accept)
@@ -744,8 +752,8 @@ class TestSecrets:
         assert wait_until(lambda: seen == ["one"])
         assert hub.claim_secret(transport, 111, "two") is True   # consumed, not handed to accept
         gate.set()
-        first.join(timeout=2)
-        t.join(timeout=2)
+        first.join(FAILURE_BOUND)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "accepted" and seen == ["one"]
 
     def test_a_transport_whose_prompt_raises_does_not_block_the_others(self, hub, transport):
@@ -758,7 +766,7 @@ class TestSecrets:
         t, result = self._ask(hub, lambda v: "ok")
         assert wait_until(lambda: self._prompts(transport))
         assert hub.claim_secret(transport, 111, "value") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "accepted"
 
 
@@ -770,13 +778,13 @@ class TestQuestionsAreTheOwnersToAnswer:
     def test_an_approval_from_a_non_owner_chat_is_asked_in_the_owner_chats(self, hub, transport):
         result = {}
         t = threading.Thread(target=lambda: result.update(d=hub.request_approval(
-            "send_email", timeout=2.0, source=transport.source, conversation=999)), daemon=True)
+            "send_email", timeout=FAILURE_BOUND, source=transport.source, conversation=999)), daemon=True)
         t.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
         assert [c[1] for c in transport.calls if c[0] == "approval"] == [111]
         token = next(c[2] for c in transport.calls if c[0] == "approval")
         hub.resolve_approval(token, "deny")
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "deny"
 
     def test_a_failing_owner_list_never_puts_the_question_in_the_requesters_chat(self, hub, transport):
@@ -788,14 +796,14 @@ class TestQuestionsAreTheOwnersToAnswer:
         transport.owner_conversations = down
         result = {}
         t = threading.Thread(target=lambda: result.update(d=hub.request_approval(
-            "send_email", timeout=2.0, source=transport.source, conversation=999)), daemon=True)
+            "send_email", timeout=FAILURE_BOUND, source=transport.source, conversation=999)), daemon=True)
         t.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in other.calls))
         assert [c[1] for c in other.calls if c[0] == "approval"] == [7]
         assert not any(c[0] == "approval" for c in transport.calls), "fail closed: the stranger is never asked"
         token = next(c[2] for c in other.calls if c[0] == "approval")
         hub.resolve_approval(token, "deny")
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "deny"
 
     def test_an_approval_with_no_owner_chat_at_all_is_unavailable(self, hub, transport):
@@ -805,12 +813,12 @@ class TestQuestionsAreTheOwnersToAnswer:
 
     def test_a_secret_prompt_from_a_non_owner_chat_opens_in_the_owner_chats(self, hub, transport):
         t = threading.Thread(target=lambda: hub.request_secret(
-            "t", "d", lambda v: "ok", timeout=2.0, source=transport.source, conversation=999), daemon=True)
+            "t", "d", lambda v: "ok", timeout=FAILURE_BOUND, source=transport.source, conversation=999), daemon=True)
         t.start()
         assert wait_until(lambda: any(c[0] == "secret" for c in transport.calls))
         assert [c[1] for c in transport.calls if c[0] == "secret"] == [111]
         assert hub.claim_secret(transport, 111, "4111") is True
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
 
 
 class TellingTransport(FakeTransport):
@@ -864,12 +872,12 @@ class TestTheAskingChatIsToldItWaits:
         phone.asked_elsewhere = broken
         answers = []
         asking = threading.Thread(target=lambda: answers.append(
-            hub.request_approval("send_email", timeout=2, source="Phone", conversation="chat-7")), daemon=True)
+            hub.request_approval("send_email", timeout=FAILURE_BOUND, source="Phone", conversation="chat-7")), daemon=True)
         asking.start()
         assert wait_until(lambda: any(c[0] == "approval" for c in transport.calls))
         token = next(c[2] for c in transport.calls if c[0] == "approval")
         assert hub.resolve_approval(token, "approve", who="marcus") is True
-        asking.join(timeout=2)
+        asking.join(FAILURE_BOUND)
         assert answers == ["approve"]
 
 
@@ -882,24 +890,26 @@ class TestQuestionsReachEveryOwner:
         transport.owners = [111, 222]
         transport.notify = [111]
         result = {}
-        t = threading.Thread(target=lambda: result.update(d=hub.request_approval("x", timeout=2.0)), daemon=True)
+        t = threading.Thread(target=lambda: result.update(d=hub.request_approval("x", timeout=FAILURE_BOUND)),
+                             daemon=True)
         t.start()
         assert wait_until(lambda: sum(c[0] == "approval" for c in transport.calls) == 2)
         assert sorted(c[1] for c in transport.calls if c[0] == "approval") == [111, 222]
         token = next(c[2] for c in transport.calls if c[0] == "approval")
         hub.resolve_approval(token, "approve")
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "approve"
 
     def test_secret_prompts_ignore_the_notification_route(self, hub, transport):
         transport.owners = [111, 222]
         transport.notify = [111]
-        t = threading.Thread(target=lambda: hub.request_secret("t", "d", lambda v: "ok", timeout=2.0), daemon=True)
+        t = threading.Thread(target=lambda: hub.request_secret("t", "d", lambda v: "ok", timeout=FAILURE_BOUND),
+                             daemon=True)
         t.start()
         assert wait_until(lambda: sum(c[0] == "secret" for c in transport.calls) == 2)
         assert sorted(c[1] for c in transport.calls if c[0] == "secret") == [111, 222]
         hub.claim_secret(transport, 222, "value")
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert not t.is_alive()
 
 
@@ -963,9 +973,9 @@ class TestApprovalAnswerAndKillInOnePollWindow:
 
         result = {}
         t = threading.Thread(target=lambda: result.update(
-            d=hub.request_approval("x", timeout=5.0, cancelled=tapped_then_killed)), daemon=True)
+            d=hub.request_approval("x", timeout=FAILURE_BOUND, cancelled=tapped_then_killed)), daemon=True)
         t.start()
-        t.join(timeout=2)
+        t.join(FAILURE_BOUND)
         assert result["d"] == "approve"
         closes = [c for c in transport.calls if c[0] == "close"]
         assert len(closes) == 1 and "ancelled" not in closes[0][3]

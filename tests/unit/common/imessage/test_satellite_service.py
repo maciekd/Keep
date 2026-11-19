@@ -11,6 +11,7 @@ import common.imessage.SatelliteService as service_module
 from common.imessage import Wire
 from common.imessage.MessagesHost import MessagesHost, Recipient
 from tests.unit.integrations.imessage.host_fakes import received
+from tests.unit.waiting import FAILURE_BOUND
 
 from .satellite_fakes import TOKEN
 
@@ -18,7 +19,7 @@ AUTHORIZED = {"Authorization": f"Bearer {TOKEN}", "X-Keep-Wire": str(Wire.WIRE_V
 
 
 def post(satellite, call, body=None, headers=AUTHORIZED, **kwargs):
-    return requests.post(f"{satellite.address}/messages/{call}", json=body, headers=headers, timeout=5, **kwargs)
+    return requests.post(f"{satellite.address}/messages/{call}", json=body, headers=headers, timeout=FAILURE_BOUND, **kwargs)
 
 
 @pytest.mark.unit
@@ -38,8 +39,8 @@ class TestNothingWithoutTheToken:
                    post(satellite, "send", {"recipient": "Alice", "body": "hi"}, headers),
                    post(satellite, "health", {}, headers),
                    post(satellite, "no_such_call", {}, headers),
-                   requests.get(f"{satellite.address}/messages/attachment/40", headers=headers, timeout=5),
-                   requests.get(f"{satellite.address}/", headers=headers, timeout=5)]
+                   requests.get(f"{satellite.address}/messages/attachment/40", headers=headers, timeout=FAILURE_BOUND),
+                   requests.get(f"{satellite.address}/", headers=headers, timeout=FAILURE_BOUND)]
         assert [a.status_code for a in answers] == [401] * 6
         assert fake.calls == [], "no call of the host ran"
         assert follower.notices == [], "a stranger cannot make the satellite update"
@@ -58,15 +59,15 @@ class TestNothingWithoutTheToken:
         """An upgrade never passes `before_request`: without a gate of its own it reached the
         routing, and the error handlers failed on it."""
         fake.files[40] = b"\xff\xd8 private photo"
-        stranger = requests.get(f"{satellite.address}{path}", headers=self.UPGRADE, timeout=5)
-        server = requests.get(f"{satellite.address}{path}", headers={**self.UPGRADE, **AUTHORIZED}, timeout=5)
+        stranger = requests.get(f"{satellite.address}{path}", headers=self.UPGRADE, timeout=FAILURE_BOUND)
+        server = requests.get(f"{satellite.address}{path}", headers={**self.UPGRADE, **AUTHORIZED}, timeout=FAILURE_BOUND)
         assert stranger.status_code == 401 and Wire.WIRE_HEADER not in stranger.headers
         assert server.status_code == 400
         assert fake.calls == [] and follower.notices == []
         assert b"private" not in stranger.content + server.content
 
     def test_the_token_in_the_url_opens_nothing(self, satellite, fake):
-        answer = requests.post(f"{satellite.address}/messages/scheduled?token={TOKEN}", json={}, timeout=5)
+        answer = requests.post(f"{satellite.address}/messages/scheduled?token={TOKEN}", json={}, timeout=FAILURE_BOUND)
         assert answer.status_code == 401 and fake.calls == []
 
     def test_the_comparison_takes_the_same_time_wherever_the_token_differs(self, satellite):
@@ -130,14 +131,14 @@ class TestWhatABodyMayBe:
     def test_only_a_json_object_of_the_calls_types_reaches_the_host(self, satellite, fake):
         url = f"{satellite.address}/messages/poll"
         answers = [
-            requests.post(url, data="after_rowid=0&limit=10", headers=AUTHORIZED, timeout=5),
-            requests.post(url, data='{"after_rowid": 0', headers={**AUTHORIZED, "Content-Type": "application/json"}, timeout=5),
+            requests.post(url, data="after_rowid=0&limit=10", headers=AUTHORIZED, timeout=FAILURE_BOUND),
+            requests.post(url, data='{"after_rowid": 0', headers={**AUTHORIZED, "Content-Type": "application/json"}, timeout=FAILURE_BOUND),
             requests.post(url, data='{"after_rowid": 0, "horizon_ts": null, "limit": 10}',
-                          headers={**AUTHORIZED, "Content-Type": "text/plain"}, timeout=5),
+                          headers={**AUTHORIZED, "Content-Type": "text/plain"}, timeout=FAILURE_BOUND),
             post(satellite, "poll", [0, None, 10]),
             post(satellite, "poll", {"after_rowid": "0 OR 1=1", "horizon_ts": None, "limit": 10}),
             post(satellite, "poll", {"after_rowid": 0, "horizon_ts": None}),
-            requests.post(url, headers=AUTHORIZED, timeout=5),
+            requests.post(url, headers=AUTHORIZED, timeout=FAILURE_BOUND),
         ]
         assert [a.status_code for a in answers] == [400] * 7
         assert all(a.headers["Content-Type"].startswith("application/json") and a.json()["error"] for a in answers)
@@ -160,21 +161,21 @@ class TestWhatABodyMayBe:
 
     def test_an_attachment_is_asked_for_by_number_only(self, satellite, fake):
         fake.files[40] = b"\xff\xd8 bytes"
-        get = lambda path: requests.get(f"{satellite.address}/messages/attachment/{path}", headers=AUTHORIZED, timeout=5)
+        get = lambda path: requests.get(f"{satellite.address}/messages/attachment/{path}", headers=AUTHORIZED, timeout=FAILURE_BOUND)
         good = get("40")
         assert (good.status_code, good.content, good.headers["Content-Type"]) == (200, b"\xff\xd8 bytes", "application/octet-stream")
         assert [get(path).status_code for path in ("-1", "40.5", "..%2F..%2Fetc%2Fpasswd", "40/extra", "abc")] == [404] * 5
-        assert requests.post(f"{satellite.address}/messages/attachment/40", headers=AUTHORIZED, timeout=5).status_code == 405
+        assert requests.post(f"{satellite.address}/messages/attachment/40", headers=AUTHORIZED, timeout=FAILURE_BOUND).status_code == 405
 
     def test_a_file_over_the_cap_is_refused_by_its_size_and_never_read(self, satellite, fake):
         """A video of gigabytes must not be loaded into the satellite's memory to learn that it
         is too large: were the file read, these few bytes would be the answer."""
         fake.files[40] = b"\xff\xd8 bytes"
         fake.sizes[40] = Wire.MAX_ATTACHMENT_BYTES + 1
-        answer = requests.get(f"{satellite.address}/messages/attachment/40", headers=AUTHORIZED, timeout=5)
+        answer = requests.get(f"{satellite.address}/messages/attachment/40", headers=AUTHORIZED, timeout=FAILURE_BOUND)
         assert answer.status_code == 413 and "40" in answer.json()["error"]
         fake.sizes[40] = Wire.MAX_ATTACHMENT_BYTES
-        assert requests.get(f"{satellite.address}/messages/attachment/40", headers=AUTHORIZED, timeout=5).content == b"\xff\xd8 bytes"
+        assert requests.get(f"{satellite.address}/messages/attachment/40", headers=AUTHORIZED, timeout=FAILURE_BOUND).content == b"\xff\xd8 bytes"
 
 
 @pytest.mark.unit
@@ -183,23 +184,25 @@ class TestTheServiceItself:
         """The host's calls run off the event loop: a send waiting for Messages.app must not make
         the feed's poll, or a health check, wait with it."""
         import threading
-        release, entered = threading.Event(), threading.Event()
+        release, entered, left = threading.Event(), threading.Event(), threading.Event()
 
         class Slow(type(satellite.service.host)):
             def send(self, recipient, body, owner=""):
                 entered.set()
-                release.wait(2)
+                release.wait(FAILURE_BOUND)
+                left.set()
                 return super().send(recipient, body, owner)
 
         satellite.service.host = Slow()
         sender = threading.Thread(target=post, args=(satellite, "send", {"recipient": "Alice", "body": "hi"}))
         sender.start()
         try:
-            assert entered.wait(2)
+            assert entered.wait(FAILURE_BOUND)
             assert post(satellite, "scheduled", {}).status_code == 200
+            assert not left.is_set(), "the next call was answered while the send still waited"
         finally:
             release.set()
-            sender.join(2)
+            sender.join(FAILURE_BOUND)
 
     @pytest.mark.parametrize("handler, failure, status", [
         (service_module.SatelliteService._refused, NotFound(), 404),

@@ -691,24 +691,30 @@ def test_re_enrolling_swaps_the_set_in_whole(mock_ml_globals):
 
 
 def test_a_reload_already_running_or_still_settling_is_not_started_again():
-    import threading, time
+    from types import SimpleNamespace
+    mod = sys.modules[SpeakerIdentifier.__module__]
+    now = 1_700_000_000.0
     si = make_speaker_identifier()
     si._enrollment_seen = ()
     si._reload_lock = threading.Lock()
-    si._enrollment_version = lambda: (("alice", int(time.time() * 1e9)),)
     si._enroll_users = Mock()
-    si._reload_if_changed()                      # changed a moment ago: still settling
+    thread = Mock()
+    with patch.object(mod, "time", SimpleNamespace(time=lambda: now)), \
+            patch.object(mod, "threading", SimpleNamespace(Thread=thread)):
+        si._enrollment_version = lambda: (("alice", int((now - si.RELOAD_SETTLE_S / 2) * 1e9)),)
+        si._reload_if_changed()                  # changed a moment ago: still settling
+        si._enrollment_version = lambda: (("alice", int((now - 60) * 1e9)),)
+        si._reload_lock.acquire()                # a reload is running on another thread
+        si._reload_if_changed()
+        thread.assert_not_called()
+        si._reload_lock.release()
+        si._reload_if_changed()
+    thread.assert_called_once()
+    thread.return_value.start.assert_called_once()
     si._enroll_users.assert_not_called()
-    si._enrollment_version = lambda: (("alice", int((time.time() - 60) * 1e9)),)
-    si._reload_lock.acquire()                    # a reload is running on another thread
-    si._reload_if_changed()
-    si._enroll_users.assert_not_called()
-    si._reload_lock.release()
-    si._reload_if_changed()
-    deadline = time.time() + 2
-    while not si._enroll_users.called and time.time() < deadline:
-        time.sleep(0.01)
+    thread.call_args.kwargs["target"]()          # the reload thread's body, run here
     si._enroll_users.assert_called_once()
+    assert not si._reload_lock.locked()
 
 
 class TestEnrollmentVersion:

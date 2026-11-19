@@ -10,10 +10,11 @@ One loop per run of the script, not one per core: the test is about the script, 
 import os
 import re
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
+
+from tests.unit.waiting import wait_until
 
 SCRIPT = Path(__file__).resolve().parents[2] / 'scripts' / 'test_under_load.sh'
 FAKE_PYTHON = Path(__file__).parent / 'data' / 'test_under_load_sh' / 'python'
@@ -67,10 +68,7 @@ class TestTestUnderLoad:
         assert int(field(output, 'niceness')) > os.nice(0)
         loops = [int(pid) for pid in field(output, 'siblings').split()]
         assert loops, "the script ran the suite with no busy loop beside it"
-        deadline = time.monotonic() + 2
-        while any(map(alive, loops)) and time.monotonic() < deadline:
-            time.sleep(0.002)
-        assert not any(map(alive, loops)), "a busy loop outlived the script"
+        assert wait_until(lambda: not any(map(alive, loops)), interval=0.002), "a busy loop outlived the script"
 
     def test_without_an_override_the_load_is_several_loops_for_every_core(self, run, tmp_path):
         """One loop per core passed a test that failed on a CI runner; the load follows the cores,

@@ -17,6 +17,7 @@ from integrations.arlo.ArloCameraIntegration import (
     ARLO_2FA_PATTERN,
 )
 from integrations.arlo.jpeg_freshness import looks_like_cached_thumbnail
+from tests.unit.waiting import FAILURE_BOUND
 
 VALID_CONFIG = {
     "username": "test@example.com",
@@ -120,10 +121,6 @@ class TestThreadingLock:
     def test_concurrent_ensure_connected_serialized(self, arlo):
         """Two threads calling _ensure_connected should not overlap."""
         call_log = []
-        barrier = threading.Barrier(2, timeout=5)
-
-        original_do_connect = arlo._do_connect
-
         connecting = threading.Event()
 
         def slow_do_connect():
@@ -137,10 +134,10 @@ class TestThreadingLock:
         t1 = threading.Thread(target=arlo._ensure_connected, name="T1")
         t2 = threading.Thread(target=arlo._ensure_connected, name="T2")
         t1.start()
-        assert connecting.wait(5)  # T1 holds the lock and is mid-connect when T2 arrives
+        assert connecting.wait(FAILURE_BOUND)  # T1 holds the lock and is mid-connect when T2 arrives
         t2.start()
-        t1.join(timeout=5)
-        t2.join(timeout=5)
+        t1.join(FAILURE_BOUND)
+        t2.join(FAILURE_BOUND)
 
         # Both should have entered and exited, but not overlapping
         enters = [e for e in call_log if e[0] == "enter"]
@@ -401,26 +398,22 @@ class TestOnNotConfigured:
 
 class TestOnNeeds2FA:
     def test_on_needs_2fa_starts_background_connect(self, arlo):
-        with patch.object(arlo, '_ensure_connected') as mock_connect:
+        with patch("threading.Thread") as thread, patch.object(arlo, '_ensure_connected') as mock_connect:
             arlo.on_needs_2fa()
-            arlo._auto_2fa_thread.join(timeout=2)
+            thread.return_value.start.assert_called_once()
+            mock_connect.assert_not_called()
+            thread.call_args.kwargs["target"]()
             mock_connect.assert_called_once()
 
     def test_on_needs_2fa_skips_if_thread_alive(self, arlo):
-        blocker = threading.Event()
-        call_count = [0]
-
-        def slow_connect():
-            call_count[0] += 1
-            blocker.wait(timeout=2)
-
-        with patch.object(arlo, '_ensure_connected', side_effect=slow_connect):
+        with patch("threading.Thread") as thread, patch.object(arlo, '_ensure_connected') as mock_connect:
+            thread.return_value.is_alive.return_value = True
             arlo.on_needs_2fa()
             arlo.on_needs_2fa()
             arlo.on_needs_2fa()
-            blocker.set()
-            arlo._auto_2fa_thread.join(timeout=2)
-        assert call_count[0] == 1
+            thread.assert_called_once()
+            thread.call_args.kwargs["target"]()
+        mock_connect.assert_called_once()
 
     def test_register_calls_on_needs_2fa_when_2fa_needed(self, tmp_path):
         from assistant.integration.IntegrationMonitor import IntegrationMonitor
@@ -504,7 +497,7 @@ class TestTfaHandler:
             t = threading.Thread(target=wait_for_code)
             t.start()
             handler.submit_code("123456")
-            t.join(timeout=2)
+            t.join(FAILURE_BOUND)
         assert result[0] == "123456"
 
 

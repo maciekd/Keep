@@ -1,10 +1,10 @@
 import os
 import sqlite3
-import threading
 import time
 import zipfile
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +18,35 @@ def _write_wav(path, mtime=None):
         f.write(b"RIFF....")
     if mtime is not None:
         os.utime(path, (mtime, mtime))
+
+
+def _hold_threads(monkeypatch):
+    """The threads and timers DebugCommands starts, held instead of started: the test runs each
+    one's body itself once the reply is out (`held()`), with no thread to wait for."""
+    pending = []
+
+    class Held:
+        def __init__(self, delay=None, target=None, args=(), kwargs=None, **_):
+            self.delay, self.target, self.args, self.kwargs = delay, target, args, kwargs or {}
+
+        def start(self):
+            pending.append(self)
+
+    monkeypatch.setattr(dc_mod, "threading", SimpleNamespace(
+        Thread=lambda target, **kw: Held(target=target, **kw),
+        Timer=lambda delay, function, args=(): Held(delay, function, args)))
+
+    def run():
+        while pending:
+            job = pending.pop(0)
+            job.target(*job.args, **job.kwargs)
+    run.pending = pending
+    return run
+
+
+@pytest.fixture
+def held(monkeypatch):
+    return _hold_threads(monkeypatch)
 
 
 def test_is_command():
@@ -134,7 +163,7 @@ def test_unknown_command_shows_help():
 # --- //wipe -------------------------------------------------------------------------------
 
 @pytest.fixture
-def wipe_env(tmp_path, monkeypatch):
+def wipe_env(tmp_path, monkeypatch, held):
     """A fake AIServer tree with every kind of user state, and the wipe wired to it."""
     root = tmp_path / "AIServer"
     cache = root / "cache"
@@ -174,19 +203,19 @@ def wipe_env(tmp_path, monkeypatch):
     monkeypatch.setattr(dc_mod, "external_targets", lambda: [(external / "token.cache", "Ring token")])
     monkeypatch.setattr(dc_mod, "integration_targets", lambda: [])
     monkeypatch.setattr(dc_mod, "_stop_server", lambda: stops.append(True))
-    monkeypatch.setattr(dc_mod, "STOP_DELAY_SECONDS", 0.0)
     return root, stops
 
 
-def _wait_for_stop(stops):
-    """The wipe's tail (browser close, profile delete, stop) runs on a timer thread."""
-    deadline = time.time() + 3
-    while not stops and time.time() < deadline:
-        time.sleep(0.01)
+def _fire_the_stop(held, stops):
+    """The wipe's tail (browser close, profile delete, stop) is a timer's, started after the
+    deletes: the test fires it."""
+    [timer] = held.pending
+    assert timer.delay == dc_mod.STOP_DELAY_SECONDS and stops == []
+    held()
     assert stops == [True]
 
 
-def test_restart_replies_first_then_pulls_and_restarts(monkeypatch):
+def test_restart_replies_first_then_pulls_and_restarts(monkeypatch, held):
     """The reply must be out before start.sh kills the process, so the pull and restart
     run on a timer; the outcome goes to the dialog as a system note, like restart_server."""
     from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
@@ -197,14 +226,13 @@ def test_restart_replies_first_then_pulls_and_restarts(monkeypatch):
     monkeypatch.setattr(CodeQualityMaintainer, "pull_and_restart",
                         staticmethod(lambda: calls.append(True) or "Update initiated (no new changes). Server is restarting..."))
     monkeypatch.setattr(sn_mod, "system_note", lambda source, text: notes.append((source, text)))
-    monkeypatch.setattr(dc_mod, "STOP_DELAY_SECONDS", 0.0)
 
     text = DebugCommands().handle("//restart")
 
     assert "Pulling release and restarting the server" in text
-    deadline = time.time() + 3
-    while not notes and time.time() < deadline:
-        time.sleep(0.01)
+    [timer] = held.pending
+    assert timer.delay == dc_mod.STOP_DELAY_SECONDS and calls == []
+    held()
     assert calls == [True]
     assert notes == [("server", "Server restart (//restart): Update initiated (no new changes). Server is restarting...")]
 
@@ -236,7 +264,7 @@ def test_wipe_without_confirm_only_shows_the_plan(wipe_env):
     assert stops == []
 
 
-def test_wipe_confirm_backs_up_deletes_resets_config_and_stops(wipe_env):
+def test_wipe_confirm_backs_up_deletes_resets_config_and_stops(wipe_env, held):
     root, stops = wipe_env
     text = DebugCommands().handle("//wipe confirm")
 
@@ -257,7 +285,7 @@ def test_wipe_confirm_backs_up_deletes_resets_config_and_stops(wipe_env):
 
     assert "Wiped 7 item(s)" in text and "writes a skeleton" in text and "Stopping the server" in text
     assert "Deleted once the browser is closed:" in text and "chrome_profile: browser profile" in text
-    _wait_for_stop(stops)
+    _fire_the_stop(held, stops)
     for gone in ("floxy.db", "floxy.db-shm", "vault.bin", "memory.md", "cache/icloud_session", "cache/chrome_profile"):
         assert not (root / gone).exists(), gone
     assert not (root.parent / "tmp" / "ring_floxy" / "token.cache").exists()
@@ -266,36 +294,30 @@ def test_wipe_confirm_backs_up_deletes_resets_config_and_stops(wipe_env):
     assert not list((root / "cache" / "wipe-backups").glob("*.snapshot"))
 
 
-def test_second_wipe_confirm_while_one_runs_is_refused(wipe_env, monkeypatch):
+def test_second_wipe_confirm_while_one_runs_is_refused(wipe_env, monkeypatch, held):
     """Two concurrent wipes once wrote into one shared database snapshot, zipping a torn
-    copy; the second must wait for the first's reply instead."""
+    copy; the second must wait for the first's reply instead. The second arrives while the
+    first is backing up."""
     root, stops = wipe_env
-    backing_up, release = threading.Event(), threading.Event()
     original = DebugCommands._backup
+    second = []
 
-    def slow_backup(self, targets):
-        backing_up.set()
-        assert release.wait(3)
+    def backup_meanwhile_asked_again(self, targets):
+        second.append(DebugCommands().handle("//wipe confirm"))
+        assert (root / "floxy.db").exists()
         return original(self, targets)
 
-    monkeypatch.setattr(DebugCommands, "_backup", slow_backup)
-    first = []
-    t = threading.Thread(target=lambda: first.append(DebugCommands().handle("//wipe confirm")))
-    t.start()
-    assert backing_up.wait(3)
-    second = DebugCommands().handle("//wipe confirm")
-    assert "already running" in second
-    assert (root / "floxy.db").exists()
-    release.set()
-    t.join(5)
-    assert "Wiped 7 item(s)" in first[0]
-    _wait_for_stop(stops)
+    monkeypatch.setattr(DebugCommands, "_backup", backup_meanwhile_asked_again)
+    first = DebugCommands().handle("//wipe confirm")
+    assert len(second) == 1 and "already running" in second[0]
+    assert "Wiped 7 item(s)" in first
+    _fire_the_stop(held, stops)
     zips = list((root / "cache" / "wipe-backups").glob("floxy-wipe-*.zip"))
     assert len(zips) == 1
     assert not list((root / "cache" / "wipe-backups").glob("*.snapshot"))
 
 
-def test_wipe_installs_the_dummy_config_when_there_is_one(wipe_env):
+def test_wipe_installs_the_dummy_config_when_there_is_one(wipe_env, held):
     root, stops = wipe_env
     (root / "config.dummy.yaml").write_text("api_keys:\n  anthropic: sk-dev\n")
     plan = DebugCommands().handle("//wipe")
@@ -303,14 +325,14 @@ def test_wipe_installs_the_dummy_config_when_there_is_one(wipe_env):
 
     text = DebugCommands().handle("//wipe confirm")
     assert "config.dummy.yaml is copied to config.yaml" in text and "writes a skeleton" not in text
-    _wait_for_stop(stops)
+    _fire_the_stop(held, stops)
     assert (root / "config.yaml").read_text() == "api_keys:\n  anthropic: sk-dev\n"
     assert (root / "config.dummy.yaml").exists()
     with zipfile.ZipFile(next((root / "cache" / "wipe-backups").glob("floxy-wipe-*.zip"))) as zf:
         assert zf.read("external/" + str(root / "config.yaml").lstrip("/")) == b"api_keys:\n  openai: sk-real\n"
 
 
-def test_the_wipe_backup_is_the_owners_alone_whatever_the_umask(wipe_env):
+def test_the_wipe_backup_is_the_owners_alone_whatever_the_umask(wipe_env, held):
     """The zip holds config.yaml and the vault: under Ubuntu's umask it would be readable by
     the group and everybody else, long after the files it copied are gone."""
     root, stops = wipe_env
@@ -319,12 +341,12 @@ def test_the_wipe_backup_is_the_owners_alone_whatever_the_umask(wipe_env):
         DebugCommands().handle("//wipe confirm")
     finally:
         os.umask(old)
-    _wait_for_stop(stops)
+    _fire_the_stop(held, stops)
     [backup] = (root / "cache" / "wipe-backups").glob("floxy-wipe-*.zip")
     assert backup.stat().st_mode & 0o077 == 0
 
 
-def test_wipe_carries_on_past_an_item_it_cannot_delete(wipe_env, monkeypatch):
+def test_wipe_carries_on_past_an_item_it_cannot_delete(wipe_env, monkeypatch, held):
     root, stops = wipe_env
     real_rmtree = dc_mod.shutil.rmtree
 
@@ -339,7 +361,7 @@ def test_wipe_carries_on_past_an_item_it_cannot_delete(wipe_env, monkeypatch):
     assert "Could not delete (see the log):" in text and "icloud_session" in text and "Directory not empty" in text
     assert (root / "cache" / "icloud_session").exists()
     assert not (root / "floxy.db").exists() and not (root / "config.yaml").exists()
-    _wait_for_stop(stops)
+    _fire_the_stop(held, stops)
 
 
 def test_wipe_backup_failure_deletes_nothing(wipe_env, monkeypatch):
@@ -356,10 +378,10 @@ def test_wipe_backup_failure_deletes_nothing(wipe_env, monkeypatch):
     assert stops == []
 
 
-def test_wipe_on_a_fresh_install(wipe_env):
+def test_wipe_on_a_fresh_install(wipe_env, held):
     root, stops = wipe_env
     DebugCommands().handle("//wipe confirm")
-    _wait_for_stop(stops)
+    _fire_the_stop(held, stops)
     stops.clear()
     text = DebugCommands().handle("//wipe confirm")
     assert text == "Nothing to wipe: the install is already fresh."
@@ -452,11 +474,10 @@ def test_feed_bad_input(feeds):
 # --- //memory_curate --------------------------------------------------------------------
 
 @pytest.fixture
-def curation(monkeypatch):
-    """Capture the span handed to the curator instead of running an LLM pass; the thread is
-    joined so the assertion sees the call."""
+def curation(monkeypatch, held):
+    """Capture the span handed to the curator instead of running an LLM pass; the held thread
+    is run so the assertion sees the call."""
     calls = []
-    threads = []
 
     histories = []
 
@@ -469,19 +490,10 @@ def curation(monkeypatch):
 
     import assistant.agents.LongTermMemoryCurator as curator_mod
     monkeypatch.setattr(curator_mod, "LongTermMemoryCurator", FakeCurator)
-    real_thread = dc_mod.threading.Thread
-
-    class JoinedThread(real_thread):
-        def start(self):
-            super().start()
-            threads.append(self)
-
-    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
 
     def run(query, history=None):
         reply = DebugCommands(history=history).handle(query)
-        for t in threads:
-            t.join(timeout=5)
+        held()
         return reply
     run.calls = calls
     run.histories = histories
@@ -521,32 +533,23 @@ def test_memory_curate_hands_the_history_to_the_curator(curation):
 # --- //memory_condense ------------------------------------------------------------------
 
 @pytest.fixture
-def condense(monkeypatch):
+def condense(monkeypatch, held):
     """A bank of a chosen size behind //memory_condense, the cut handed to the curator captured
-    instead of an LLM pass; the thread is joined so the assertion sees the call."""
+    instead of an LLM pass; the held thread is run so the assertion sees the call."""
     import assistant.agents.LongTermMemoryCurator as curator_mod
     from assistant import MemoryFile
-    calls, threads = [], []
+    calls = []
 
     def run_condense(cut, history=None):
         calls.append((cut, history))
         return {}
 
     monkeypatch.setattr(curator_mod.LongTermMemoryCurator, "run_condense", staticmethod(run_condense))
-    real_thread = dc_mod.threading.Thread
-
-    class JoinedThread(real_thread):
-        def start(self):
-            super().start()
-            threads.append(self)
-
-    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
 
     def run(query, words: int, history=None):
         monkeypatch.setattr(MemoryFile, "read", lambda path=None: "# Memory\n" + " ".join(["w"] * (words - 2)))
         reply = DebugCommands(history=history).handle(query)
-        for t in threads:
-            t.join(timeout=5)
+        held()
         return reply
     run.calls = calls
     return run
@@ -676,7 +679,7 @@ def test_first_run_reset_deletes_the_state(first_run_state):
     assert not first_run_state.exists()
 
 
-def test_wipe_logs_the_telegram_session_out_before_deleting_it(wipe_env, monkeypatch):
+def test_wipe_logs_the_telegram_session_out_before_deleting_it(wipe_env, monkeypatch, held):
     """Telethon's log-out deletes the file itself; the listing still names it. A failed
     log-out is noted and the file deleted anyway. The session is the Telegram folder's own
     wipe target, gathered by discovery."""
@@ -698,7 +701,7 @@ def test_wipe_logs_the_telegram_session_out_before_deleting_it(wipe_env, monkeyp
     assert "telegram_feed.session: Telegram feed login — logged out on Telegram" in text
     assert "Wiped 8 item(s)" in text
     assert not session.exists()
-    _wait_for_stop(stops)
+    _fire_the_stop(held, stops)
 
     session.write_bytes(b"sqlite")
     stops.clear()
@@ -706,7 +709,7 @@ def test_wipe_logs_the_telegram_session_out_before_deleting_it(wipe_env, monkeyp
         text = DebugCommands().handle("//wipe confirm")
     assert "telegram_feed.session: Telegram feed login — not logged out on Telegram (OSError: no network)" in text
     assert not session.exists()
-    _wait_for_stop(stops)
+    _fire_the_stop(held, stops)
 
 
 def test_wipe_without_a_telegram_session_never_touches_the_integration(wipe_env):
@@ -800,27 +803,19 @@ def test_memory_split_apply_takes_the_latest_proposal(monkeypatch, tmp_path):
     assert "split_20260302_090000" in reply and "3" in reply and "school-portal-login" in reply
 
 
-def test_memory_split_writes_its_proposal_in_the_background(monkeypatch, tmp_path):
+def test_memory_split_writes_its_proposal_in_the_background(monkeypatch, tmp_path, held):
     import assistant.agents.LongTermMemoryCurator as curator_mod
     monkeypatch.setattr(dc_mod, "MEMORY_LOG_DIR", tmp_path)
-    targets, threads = [], []
+    targets = []
 
     class FakeCurator:
         def propose_split(self, target):
             targets.append(target)
 
     monkeypatch.setattr(curator_mod, "LongTermMemoryCurator", FakeCurator)
-    real_thread = dc_mod.threading.Thread
-
-    class JoinedThread(real_thread):
-        def start(self):
-            super().start()
-            threads.append(self)
-
-    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
     reply = DebugCommands().handle("//memory_split")
-    for t in threads:
-        t.join(timeout=5)
+    assert targets == [], "the proposal is written in the background, after the reply"
+    held()
     assert len(targets) == 1 and targets[0].parent == tmp_path and targets[0].name.startswith("split_")
     assert str(targets[0]) in reply
 
@@ -830,20 +825,12 @@ def test_memory_split_writes_its_proposal_in_the_background(monkeypatch, tmp_pat
 def _nightly(monkeypatch, query, unavailable=None):
     """Runs the query with the run itself recorded instead of executed; returns (reply, runs)."""
     import assistant.agents.CodeQualityMaintainer as cqm
-    runs, threads = [], []
+    runs = []
     monkeypatch.setattr(cqm.CodeQualityMaintainer, "unavailable_reason", staticmethod(lambda: unavailable))
     monkeypatch.setattr(cqm.CodeQualityMaintainer, "_execute_nightly_run", lambda self, **kw: runs.append(kw))
-    real_thread = dc_mod.threading.Thread
-
-    class JoinedThread(real_thread):
-        def start(self):
-            super().start()
-            threads.append(self)
-
-    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
+    run_held = _hold_threads(monkeypatch)
     reply = DebugCommands().handle(query)
-    for t in threads:
-        t.join(timeout=5)
+    run_held()
     return reply, runs
 
 
@@ -882,10 +869,10 @@ def test_voice_discover_without_a_discovery_says_so(monkeypatch):
     assert "not running" in reply
 
 
-def test_voice_discover_runs_the_handed_over_run_and_leaves_the_summary_in_the_history(monkeypatch):
+def test_voice_discover_runs_the_handed_over_run_and_leaves_the_summary_in_the_history(monkeypatch, held):
     """The voice interface hands its run over; the command runs it on a thread and the summary
     lands in the dialog as a system row. A second call after the first finished runs again."""
-    runs, rows, threads = [], [], []
+    runs, rows = [], []
 
     def run():
         runs.append(1)
@@ -895,68 +882,45 @@ def test_voice_discover_runs_the_handed_over_run_and_leaves_the_summary_in_the_h
         def add_context_message(self, role, text, when, source=None):
             rows.append((role, text, source))
 
-    real_thread = dc_mod.threading.Thread
-
-    class JoinedThread(real_thread):
-        def start(self):
-            super().start()
-            threads.append(self)
-
-    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
     monkeypatch.setattr(DebugCommands, "voice_discovery", staticmethod(run))
     commands = DebugCommands(history=History())
     reply = commands.handle("//voice_discover")
-    for t in threads:
-        t.join(timeout=5)
-    assert "background" in reply and runs == [1]
+    assert "background" in reply and runs == []
+    held()
+    assert runs == [1]
     assert rows and rows[0][0] == "system" and "'filed': 4" in rows[0][1]
     commands.handle("//voice_discover")
-    for t in threads:
-        t.join(timeout=5)
+    held()
     assert runs == [1, 1]
 
 
-def test_voice_discover_runs_one_at_a_time_and_a_failed_run_frees_the_slot(monkeypatch):
+def test_voice_discover_runs_one_at_a_time_and_a_failed_run_frees_the_slot(monkeypatch, held):
     """A second //voice_discover while the first is still embedding is refused, not queued —
     two runs would cluster the same clips twice. A run that raises leaves the failure in the
     dialog and the slot free, so the next call runs again instead of being refused for good."""
-    started, release = threading.Event(), threading.Event()
-    runs, rows, threads = [], [], []
+    runs, rows = [], []
 
     def run():
         runs.append(1)
-        started.set()
-        release.wait(timeout=5)
         raise RuntimeError("no clips this week")
 
     class History:
         def add_context_message(self, role, text, when, source=None):
             rows.append(text)
 
-    real_thread = dc_mod.threading.Thread
-
-    class JoinedThread(real_thread):
-        def start(self):
-            super().start()
-            threads.append(self)
-
-    monkeypatch.setattr(dc_mod.threading, "Thread", JoinedThread)
     monkeypatch.setattr(DebugCommands, "voice_discovery", staticmethod(run))
     commands = DebugCommands(history=History())
     try:
         commands.handle("//voice_discover")
-        assert started.wait(timeout=5)
         second = commands.handle("//voice_discover")
-        assert runs == [1], "the run in progress was not started again"
+        assert len(held.pending) == 1, "the run in progress was not started again"
         assert "progress" in second
     finally:
-        release.set()
-    for t in threads:
-        t.join(timeout=5)
+        held()
+    assert runs == [1]
     assert len(rows) == 1 and "failed" in rows[0]
     third = commands.handle("//voice_discover")
-    for t in threads:
-        t.join(timeout=5)
+    held()
     assert runs == [1, 1] and "progress" not in third
 
 

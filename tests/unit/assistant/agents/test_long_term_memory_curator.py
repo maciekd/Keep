@@ -10,6 +10,7 @@ from assistant.agents.LongTermMemoryCurator import (CONDENSE_PASSES, CONDENSE_TR
                                                     MEMORY_WORD_LIMIT, LongTermMemoryCurator)
 from assistant.commands.Commands import is_reference_result
 from common.FloxyDatabase import NO_INTERACTIONS
+from tests.unit.waiting import FAILURE_BOUND
 
 
 def _no_events():
@@ -505,17 +506,17 @@ class TestRun:
 
         def curate(*_):
             started.set()
-            release.wait(5)
+            release.wait(FAILURE_BOUND)
             return "bank", {'interaction_count': 0, 'new_memory_size': 4}
         slow.curate_memory.side_effect = curate
         first = threading.Thread(target=LongTermMemoryCurator.run, kwargs={'curator': slow})
         first.start()
-        assert started.wait(5)
+        assert started.wait(FAILURE_BOUND)
         try:
             assert LongTermMemoryCurator.run(curator=_mock_curator()) is None
         finally:
             release.set()
-            first.join(5)
+            first.join(FAILURE_BOUND)
         assert slow.save_memory.called
 
     def test_lock_is_released_after_a_failure(self):
@@ -743,19 +744,19 @@ class TestRunSpan:
 
         def curate(*_):
             started.set()
-            release.wait(5)
+            release.wait(FAILURE_BOUND)
             return "bank", {'interaction_count': 0, 'new_memory_size': 4}
         slow.curate_memory.side_effect = curate
         first = threading.Thread(target=LongTermMemoryCurator.run_span,
                                  args=(self.START, self.END), kwargs={'curator': slow})
         first.start()
-        assert started.wait(5)
+        assert started.wait(FAILURE_BOUND)
         try:
             assert LongTermMemoryCurator.run_span(self.START, self.END, curator=_span_curator()) is None
             assert LongTermMemoryCurator.run(curator=_mock_curator()) is None
         finally:
             release.set()
-            first.join(5)
+            first.join(FAILURE_BOUND)
         assert slow.curate_memory.call_count == 3
 
 

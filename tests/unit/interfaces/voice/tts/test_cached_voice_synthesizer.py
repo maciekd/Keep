@@ -3,10 +3,18 @@ import os
 import tempfile
 import shutil
 import struct
+import threading
 from unittest.mock import Mock
 from interfaces.voice.tts.CachedVoiceSynthesizer import CachedVoiceSynthesizer
 from interfaces.voice.tts.VoiceSynthesizer import VoiceSynthesizer
 from assistant.integration.Integration import Integration
+from tests.unit.waiting import FAILURE_BOUND
+
+LONG_AGO = 1_700_000_000.0
+
+
+def accessed_at(path, seconds):
+    os.utime(path, (seconds, seconds))
 
 
 class _CloudEngine(VoiceSynthesizer, Integration):
@@ -229,12 +237,9 @@ class TestCachedVoiceSynthesizer:
         cache_file = os.path.join(temp_cache_dir, "test.wav")
         synth._save_to_cache(cache_file, b"test")
 
-        # Get original access time
+        accessed_at(cache_file, LONG_AGO)
         orig_atime = os.path.getatime(cache_file)
 
-        # Wait a bit and touch
-        import time
-        time.sleep(0.01)
         synth._touch_cache_file(cache_file)
 
         # Check access time updated
@@ -263,18 +268,17 @@ class TestCachedVoiceSynthesizer:
         """Should delete oldest files (LRU) when over limit"""
         synth.cache_size_gb = 0.000001  # Very small limit (1 byte)
 
-        # Create files with delays to ensure different access times
-        import time
         file1 = os.path.join(temp_cache_dir, "old.wav")
         synth._save_to_cache(file1, b"x" * 1000)
-        time.sleep(0.01)
+        accessed_at(file1, LONG_AGO)
 
         file2 = os.path.join(temp_cache_dir, "newer.wav")
         synth._save_to_cache(file2, b"y" * 1000)
-        time.sleep(0.01)
+        accessed_at(file2, LONG_AGO + 10)
 
         file3 = os.path.join(temp_cache_dir, "newest.wav")
         synth._save_to_cache(file3, b"z" * 1000)
+        accessed_at(file3, LONG_AGO + 20)
 
         # Run cleanup
         synth._cleanup_cache_if_needed()
@@ -287,17 +291,17 @@ class TestCachedVoiceSynthesizer:
         # Set limit to allow 1 file (44 header + 1000 data = 1044 bytes)
         synth.cache_size_gb = 2000 / (1024 * 1024 * 1024)  # 2000 bytes in GB
 
-        import time
         file1 = os.path.join(temp_cache_dir, "file1.wav")
         synth._save_to_cache(file1, b"x" * 1000)
-        time.sleep(0.01)
+        accessed_at(file1, LONG_AGO)
 
         file2 = os.path.join(temp_cache_dir, "file2.wav")
         synth._save_to_cache(file2, b"y" * 1000)
-        time.sleep(0.01)
+        accessed_at(file2, LONG_AGO + 10)
 
         file3 = os.path.join(temp_cache_dir, "file3.wav")
         synth._save_to_cache(file3, b"z" * 1000)
+        accessed_at(file3, LONG_AGO + 20)
 
         synth._cleanup_cache_if_needed()
 
@@ -308,14 +312,13 @@ class TestCachedVoiceSynthesizer:
         """Should use LRU based on access time (touch updates access time)"""
         synth.cache_size_gb = 0.000001  # Very small limit
 
-        import time
         old_file = os.path.join(temp_cache_dir, "old.wav")
         synth._save_to_cache(old_file, b"x" * 1000)
-        time.sleep(0.01)
+        accessed_at(old_file, LONG_AGO)
 
         new_file = os.path.join(temp_cache_dir, "new.wav")
         synth._save_to_cache(new_file, b"y" * 1000)
-        time.sleep(0.01)
+        accessed_at(new_file, LONG_AGO + 10)
 
         # Touch old file to make it "recent"
         synth._touch_cache_file(old_file)
@@ -444,14 +447,17 @@ class TestCachedVoiceSynthesizer:
         def text_stream():
             yield text
 
-        # Simulate realistic API latency - audio generation takes time
-        # This gives the cache check time to complete first
-        def delayed_audio_generator():
-            import time
-            time.sleep(0.1)  # Simulate network/API call latency
+        # The engine is slower than the cache lookup: its audio comes once the cache was hit,
+        # not after a fixed delay the lookup thread may not have kept on a stalled machine.
+        hit = threading.Event()
+        touch = synth._touch_cache_file
+        synth._touch_cache_file = lambda path: (touch(path), hit.set())
+
+        def audio_after_the_cache_hit():
+            hit.wait(FAILURE_BOUND)
             yield b"should not use this"
 
-        mock_impl.start.return_value = delayed_audio_generator()
+        mock_impl.start.return_value = audio_after_the_cache_hit()
 
         # Run synthesizer
         result_audio = b''.join(synth.start(text_stream()))

@@ -1,7 +1,27 @@
 import pytest
-import time
 import threading
+from interfaces.voice.microphones.speech_analysis import SpeechAnalyzer as module
 from interfaces.voice.microphones.speech_analysis.SpeechAnalyzer import SpeechAnalyzer, Phrase
+
+
+class FakeClock:
+    """The analyzer's clock, moved on by the test: a phrase's age is what the test says."""
+
+    def __init__(self):
+        self.now = 1_700_000_000.0
+
+    def time(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = FakeClock()
+    monkeypatch.setattr(module, "time", fake)
+    return fake
 
 
 @pytest.mark.unit
@@ -106,10 +126,10 @@ class TestSpeechAnalyzer:
 
     # ===== get_best_match() tests =====
 
-    def test_get_best_match_returns_highest_score(self, analyzer):
+    def test_get_best_match_returns_highest_score(self, analyzer, clock):
         """Should return phrase with highest score"""
         analyzer.add_phrase("low score", "")
-        time.sleep(0.02)
+        clock.advance(0.02)
         analyzer.add_phrase("high score", "")
         analyzer.add_phrase("high score", "")
         analyzer.add_phrase("high score", "")
@@ -117,7 +137,7 @@ class TestSpeechAnalyzer:
         best = analyzer.get_best_match()
         assert best == "high score"
 
-    def test_longer_cumulative_phrase_beats_shorter_prefix_with_more_votes(self, analyzer):
+    def test_longer_cumulative_phrase_beats_shorter_prefix_with_more_votes(self, analyzer, clock):
         """The split-fragment regression: the prefix "what is the" arrives first (two
         mics → 2 votes), then the re-joined cumulative "what is the kitchen temperature"
         (1 vote). The longer, more recent, more complete phrase must win despite fewer
@@ -125,7 +145,7 @@ class TestSpeechAnalyzer:
         the extra early vote (see score_for_phrase)."""
         analyzer.add_phrase("what is the", "", 0.50)
         analyzer.add_phrase("what is the", "", 0.50)                       # 2nd mic → 2 votes
-        time.sleep(0.02)
+        clock.advance(0.02)
         analyzer.add_phrase("what is the kitchen temperature", "", 0.50)   # cumulative, 1 vote
         assert analyzer.get_best_match() == "what is the kitchen temperature"
 
@@ -153,7 +173,7 @@ class TestSpeechAnalyzer:
         assert result is False  # collapses to a vote, no second reply
         assert analyzer.num_votes("goodnight") >= 1
 
-    def test_is_best_transcription_competing_phrase_reclaims_running_slot(self, analyzer):
+    def test_is_best_transcription_competing_phrase_reclaims_running_slot(self, analyzer, clock):
         """A later corroborating vote for an earlier-accepted phrase must be able to
         reclaim the running slot from a wrong phrase that narrowly won it.
 
@@ -169,12 +189,12 @@ class TestSpeechAnalyzer:
         # Garbled phrase arrives newer + higher confidence and wins the slot. (In prod it
         # won on a razor-thin margin helped by an age penalty on the older correct phrase;
         # here a clear confidence edge flips it deterministically without a slow sleep.)
-        time.sleep(0.02)
+        clock.advance(0.02)
         assert analyzer.is_best_transcription("lost the outdoor temperature", False, 0.60, "CODEC1", "whisper") is True
         assert analyzer.last_accepted_phrase == "lost the outdoor temperature"
 
         # A corroborating vote for the correct phrase (2nd mic/engine) must now reclaim it.
-        time.sleep(0.02)
+        clock.advance(0.02)
         result = analyzer.is_best_transcription("what's the outdoor temperature", False, 0.55, "CODEC2scribe", "scribe")
         assert result is True
         assert analyzer.last_accepted_phrase == "what is the outdoor temperature"
@@ -208,12 +228,12 @@ class TestSpeechAnalyzer:
 
     # ===== Helper Methods =====
 
-    def test_latest_phrase_returns_newest(self, analyzer):
+    def test_latest_phrase_returns_newest(self, analyzer, clock):
         """Should return most recently added phrase"""
         analyzer.add_phrase("first", "")
-        time.sleep(0.01)
+        clock.advance(0.01)
         analyzer.add_phrase("second", "")
-        time.sleep(0.01)
+        clock.advance(0.01)
         analyzer.add_phrase("third", "")
 
         latest = analyzer.latest_phrase()
@@ -335,16 +355,16 @@ class TestSpeechAnalyzer:
 
     # ===== Phrase Class Tests =====
 
-    def test_phrase_update(self):
+    def test_phrase_update(self, clock):
         """Should update count and source"""
         phrase = Phrase("test", "source1")
         old_time = phrase.timestamp
-        time.sleep(0.01)
+        clock.advance(0.01)
         phrase.update("source2")
 
         assert phrase.count == 2
         assert phrase.source == "source2"
-        assert phrase.timestamp > old_time
+        assert phrase.timestamp == old_time + 0.01
 
     def test_best_mic_is_highest_confidence_not_most_recent(self):
         """A low-confidence straggler mic must not displace the mic that actually

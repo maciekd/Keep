@@ -3,7 +3,6 @@ gate left RequestProcessor (Phase 3). Assertions are unchanged; only the fixture
 `handler` is now a small stand-in carrying the request context, a mocked dialog manager
 and the gate, and `wait()` maps the old wait_so_that_response_timing_is_natural(chunk_time)
 call onto VoiceTurnGate.wait(ctx, reply_text, time_to_first_token, chunk_time)."""
-import time
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -40,10 +39,36 @@ def mock_tui_console():
     return observer
 
 
+class GateClock:
+    """The gate module's `time`: a clock that moves only when the gate sleeps, each sleep
+    recorded in `sleeps` (a Mock a test may give a side effect). Patched on the module alone:
+    a patch of `time.sleep` itself is every thread's, and a stray thread's sleep would count."""
+
+    def __init__(self):
+        self.now = 1_000_000.0
+        self.sleeps = Mock()
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.sleeps(seconds)
+
+    def slept(self) -> list[float]:
+        return [c.args[0] for c in self.sleeps.call_args_list]
+
+
+@pytest.fixture(autouse=True)
+def clock():
+    fake = GateClock()
+    with patch("interfaces.voice.VoiceTurnGate.time", fake):
+        yield fake
+
+
 @pytest.fixture
-def mock_sleep():
-    with patch("interfaces.voice.VoiceTurnGate.time.sleep") as m:
-        yield m
+def mock_sleep(clock):
+    return clock.sleeps
 
 
 class TestBeginTurn:
@@ -93,15 +118,15 @@ class TestWaitSoThatResponseTimingIsNatural:
             sleep_val = mock_sleep.call_args[0][0]
             assert sleep_val > 1.0
 
-    def test_killed_mid_sleep_returns_false(self, handler, mock_tui_console):
+    def test_killed_mid_sleep_returns_false(self, handler, mock_tui_console, mock_sleep):
         handler.dialog_manager.reply_to_llm = "Hello"
         handler.dialog_manager.reply_text = "Hello"
 
         def kill_on_sleep(_):
             handler.is_killed = True
 
-        with patch("interfaces.voice.VoiceTurnGate.time.sleep", side_effect=kill_on_sleep), \
-             patch("interfaces.voice.VoiceTurnGate.FloxyDatabase"), \
+        mock_sleep.side_effect = kill_on_sleep
+        with patch("interfaces.voice.VoiceTurnGate.FloxyDatabase"), \
              patch("interfaces.voice.VoiceTurnGate.SentenceCompletenessDetector"):
             handler.dialog_manager.time_to_first_token = 0.1
             result = wait(handler, 0.1)
@@ -155,14 +180,15 @@ class TestWaitSoThatResponseTimingIsNatural:
             wait(handler, 0.2)
             mock_scd.is_complete.assert_called_once_with("result: the lights are now off")
 
-    def test_speech_end_anchor_skips_sleep_when_pause_already_elapsed(self, handler, mock_tui_console, mock_sleep):
+    def test_speech_end_anchor_skips_sleep_when_pause_already_elapsed(self, handler, mock_tui_console, mock_sleep,
+                                                                      clock):
         # The pause guards against talking over the user, so it must be measured from when
         # they stopped speaking. An outpost's STT endpointing (0.4s silence) + decode means
         # ~1s has usually already passed by reply time — no additional sleep is owed, even
         # when the reply itself was instant (cached LLM + cached voice).
         handler.request_context = RequestContext(
             user_input="turn off the kitchen lights", engine="whisper",
-            speech_end_epoch=time.time() - 1.0)
+            speech_end_epoch=clock.now - 1.0)
         handler.dialog_manager.time_to_first_token = 0.0
         with patch("interfaces.voice.VoiceTurnGate.FloxyDatabase"), \
              patch("interfaces.voice.VoiceTurnGate.SentenceCompletenessDetector"):
@@ -170,18 +196,15 @@ class TestWaitSoThatResponseTimingIsNatural:
             assert result is True
             mock_sleep.assert_not_called()
 
-    def test_speech_end_anchor_sleeps_only_the_remainder(self, handler, mock_tui_console, mock_sleep):
+    def test_speech_end_anchor_sleeps_only_the_remainder(self, handler, mock_tui_console, mock_sleep, clock):
         # Speech ended 0.2s ago against a 0.6s target -> only ~0.4s remains to sleep,
-        # regardless of how fast the LLM/TTS were. The clock is frozen so the remainder
-        # doesn't shrink when the suite runs slowly under load.
-        now = 1_000_000.0
+        # regardless of how fast the LLM/TTS were.
         handler.request_context = RequestContext(
             user_input="turn off the kitchen lights", engine="whisper",
-            speech_end_epoch=now - 0.2)
+            speech_end_epoch=clock.now - 0.2)
         handler.dialog_manager.time_to_first_token = 0.0
         with patch("interfaces.voice.VoiceTurnGate.FloxyDatabase"), \
-             patch("interfaces.voice.VoiceTurnGate.SentenceCompletenessDetector"), \
-             patch("interfaces.voice.VoiceTurnGate.time.time", return_value=now):
+             patch("interfaces.voice.VoiceTurnGate.SentenceCompletenessDetector"):
             result = wait(handler, 0.0)
             assert result is True
             assert mock_sleep.called
@@ -201,7 +224,7 @@ class TestWaitSoThatResponseTimingIsNatural:
             sleep_val = mock_sleep.call_args[0][0]
             assert sleep_val == pytest.approx(0.4, abs=0.01)
 
-    def test_live_more_speech_signal_overrides_stale_anchor(self, handler, mock_tui_console):
+    def test_live_more_speech_signal_overrides_stale_anchor(self, handler, mock_tui_console, mock_sleep, clock):
         # Branch order matters: when the user has started speaking again, the
         # still-speaking hold must govern even though the (now stale) end-of-speech
         # anchor says the pause was paid long ago. A refactor hoisting the anchor above
@@ -209,20 +232,14 @@ class TestWaitSoThatResponseTimingIsNatural:
         # most damaging.
         handler.request_context = RequestContext(
             user_input="turn off the kitchen lights", engine="whisper",
-            speech_end_epoch=time.time() - 5.0)
-        handler.gate.more_speech_is_incoming = time.time()
-        sleeps = []
-
-        def sleep_side_effect(s):
-            sleeps.append(s)
-            handler.gate.more_speech_is_incoming = None
-
-        with patch("interfaces.voice.VoiceTurnGate.time.sleep", side_effect=sleep_side_effect), \
-             patch("interfaces.voice.VoiceTurnGate.FloxyDatabase"), \
+            speech_end_epoch=clock.now - 5.0)
+        handler.gate.more_speech_is_incoming = clock.now
+        mock_sleep.side_effect = lambda s: setattr(handler.gate, "more_speech_is_incoming", None)
+        with patch("interfaces.voice.VoiceTurnGate.FloxyDatabase"), \
              patch("interfaces.voice.VoiceTurnGate.SentenceCompletenessDetector"):
             result = wait(handler, 0.0)
         assert result is True
-        assert sleeps and sleeps[0] == pytest.approx(1.0, abs=0.1)
+        assert clock.slept() == [1.0]
 
 
 class TestWaitForScribeVerdict:
@@ -314,12 +331,12 @@ class TestWaitForScribeVerdict:
         assert "superseded by new request" in message
         assert "veto" not in message
 
-    def test_cap_elapses_speaks_on_whisper_alone(self, handler, scribe_running, mock_tui_console):
+    def test_cap_elapses_speaks_on_whisper_alone(self, handler, scribe_running, mock_tui_console, clock):
         self._wake_word_whisper(handler)
         handler.gate.speech_analyzer.scribe_has_settled.return_value = False
-        # Real sleep, but a tiny cap so the test is fast: Scribe never settles → speak anyway.
-        with patch.object(VoiceTurnGate, "MAX_WAIT_FOR_SCRIBE_VERDICT", 0.05):
-            assert handler.gate._wait_for_scribe_verdict(handler.request_context) is True
+        # Scribe never settles → the hold runs the cap out and speaks anyway.
+        assert handler.gate._wait_for_scribe_verdict(handler.request_context) is True
+        assert sum(clock.slept()) == pytest.approx(VoiceTurnGate.MAX_WAIT_FOR_SCRIBE_VERDICT, abs=0.02)
 
 
 class TestMoreSpeechWaitSignal:
@@ -327,86 +344,61 @@ class TestMoreSpeechWaitSignal:
     a phantom onset (multi-mic echo, room noise) that never grows the transcript cannot
     escalate to the full hold the way a confirmed length-growth signal does."""
 
-    def test_confirmed_signal_drives_full_hold(self, handler):
-        handler.gate.more_speech_is_incoming = time.time()
+    def test_confirmed_signal_drives_full_hold(self, handler, clock):
+        handler.gate.more_speech_is_incoming = clock.now
         active, _, target = handler.gate._more_speech_wait()
         assert active is True
         assert target == VoiceTurnGate.SECONDS_TO_WAIT_BEFORE_SPEAKING_IF_SENTENCE_INCOMPLETE
 
-    def test_onset_within_grace_holds_tentatively(self, handler):
-        handler.gate.speech_onset_at = time.time()
+    def test_onset_within_grace_holds_tentatively(self, handler, clock):
+        handler.gate.speech_onset_at = clock.now - VoiceTurnGate.SPEECH_ONSET_GRACE / 2
         active, elapsed, target = handler.gate._more_speech_wait()
         assert active is True
         assert target == VoiceTurnGate.SPEECH_ONSET_GRACE
-        assert elapsed < VoiceTurnGate.SPEECH_ONSET_GRACE
+        assert elapsed == VoiceTurnGate.SPEECH_ONSET_GRACE / 2
 
-    def test_onset_past_grace_is_inactive(self, handler):
-        handler.gate.speech_onset_at = time.time() - VoiceTurnGate.SPEECH_ONSET_GRACE - 0.1
+    def test_onset_past_grace_is_inactive(self, handler, clock):
+        handler.gate.speech_onset_at = clock.now - VoiceTurnGate.SPEECH_ONSET_GRACE - 0.1
         active, _, _ = handler.gate._more_speech_wait()
         assert active is False
 
-    def test_confirmed_wins_over_onset(self, handler):
-        handler.gate.speech_onset_at = time.time()
-        handler.gate.more_speech_is_incoming = time.time()
+    def test_confirmed_wins_over_onset(self, handler, clock):
+        handler.gate.speech_onset_at = clock.now
+        handler.gate.more_speech_is_incoming = clock.now
         active, _, target = handler.gate._more_speech_wait()
         assert active is True
         assert target == VoiceTurnGate.SECONDS_TO_WAIT_BEFORE_SPEAKING_IF_SENTENCE_INCOMPLETE
 
-    def _fake_clock(self):
-        # A controllable monotonic clock so grace/deadline are deterministic with instant
-        # (mocked) sleeps — time advances only when the code under test sleeps.
-        clock = [1000.0]
-
-        def now():
-            return clock[0]
-
-        def sleep(s):
-            clock[0] += s
-
-        return clock, now, sleep
-
-    def test_single_phantom_onset_proceeds_without_looping(self, handler, mock_tui_console):
+    def test_single_phantom_onset_proceeds_without_looping(self, handler, mock_tui_console, clock):
         # One onset ping that never grows into a longer transcript holds at most the base
         # wait, then speaks — it must not enter the escalating hold loop.
         handler.dialog_manager.reply_to_llm = "Hello"
         handler.dialog_manager.reply_text = "Hello"
-        clock, now, sleep = self._fake_clock()
-        handler.gate.speech_onset_at = now()
-        slept = []
+        handler.gate.speech_onset_at = clock.now
 
-        with patch("interfaces.voice.VoiceTurnGate.time.time", side_effect=now), \
-             patch("interfaces.voice.VoiceTurnGate.time.sleep", side_effect=lambda s: (slept.append(s), sleep(s))), \
-             patch("interfaces.voice.VoiceTurnGate.FloxyDatabase") as mock_db_cls, \
+        with patch("interfaces.voice.VoiceTurnGate.FloxyDatabase") as mock_db_cls, \
              patch("interfaces.voice.VoiceTurnGate.SentenceCompletenessDetector"):
             mock_db_cls.get_instance.return_value.is_query_common.return_value = False
             handler.dialog_manager.time_to_first_token = 0.1
             result = wait(handler, 0.1)
             assert result is True
             # Slept once past the grace, then the onset aged out → no further holding.
-            assert sum(slept) < VoiceTurnGate.MAX_TOTAL_WAIT_FOR_MORE_SPEECH
+            assert sum(clock.slept()) < VoiceTurnGate.MAX_TOTAL_WAIT_FOR_MORE_SPEECH
 
-    def test_sustained_phantom_onset_capped_not_infinite(self, handler, mock_tui_console):
+    def test_sustained_phantom_onset_capped_not_infinite(self, handler, mock_tui_console, clock, mock_sleep):
         # A noisy room re-arming the onset every sleep keeps the tentative signal live, but
         # it can only ramp to the grace ceiling, so the absolute MAX_TOTAL_WAIT cap ends it
         # rather than it holding the reply forever.
         handler.dialog_manager.reply_to_llm = "Hello"
         handler.dialog_manager.reply_text = "Hello"
-        clock, now, sleep = self._fake_clock()
-        handler.gate.speech_onset_at = now()
-        slept = []
+        handler.gate.speech_onset_at = clock.now
+        mock_sleep.side_effect = lambda s: setattr(handler.gate, "speech_onset_at", clock.now)  # noise keeps firing onsets
 
-        def re_arming_sleep(s):
-            slept.append(s)
-            sleep(s)
-            handler.gate.speech_onset_at = now()  # noise keeps firing onsets
-
-        with patch("interfaces.voice.VoiceTurnGate.time.time", side_effect=now), \
-             patch("interfaces.voice.VoiceTurnGate.time.sleep", side_effect=re_arming_sleep), \
-             patch("interfaces.voice.VoiceTurnGate.FloxyDatabase") as mock_db_cls, \
+        with patch("interfaces.voice.VoiceTurnGate.FloxyDatabase") as mock_db_cls, \
              patch("interfaces.voice.VoiceTurnGate.SentenceCompletenessDetector"):
             mock_db_cls.get_instance.return_value.is_query_common.return_value = False
             handler.dialog_manager.time_to_first_token = 0.1
             result = wait(handler, 0.1)
             assert result is True
             # Total hold lands at the cap (within one grace step), never unbounded.
-            assert sum(slept) <= VoiceTurnGate.MAX_TOTAL_WAIT_FOR_MORE_SPEECH + VoiceTurnGate.SPEECH_ONSET_GRACE
+            assert sum(clock.slept()) <= VoiceTurnGate.MAX_TOTAL_WAIT_FOR_MORE_SPEECH + VoiceTurnGate.SPEECH_ONSET_GRACE

@@ -3,7 +3,6 @@ server is idle, streams over a raw connection of its own, and a user request arr
 mid-image shuts that socket and takes the slot."""
 import json
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
@@ -13,6 +12,7 @@ from assistant.llm.AbstractLLM import LLMPreempted
 from assistant.llm.Ds4LLM import Ds4LLM
 from assistant.llm.Ds4Replay import ReplayStore
 from assistant.llm.PrefillTracker import LogSource
+from tests.unit.waiting import FAILURE_BOUND, wait_until
 
 MESSAGES = [{"role": "system", "content": "analyst"}, {"role": "user", "content": "describe"}]
 _IDLE_SECONDS = Ds4LLM.background_idle_seconds   # bound before the fixture patches it away
@@ -50,7 +50,7 @@ class FakeResponse:
     def readline(self):
         if self._lines:
             return self._lines.pop(0)
-        self._sock.shut.wait(timeout=2)
+        self._sock.shut.wait(FAILURE_BOUND)
         raise ConnectionResetError("socket shut")
 
     def read(self, n=-1):
@@ -139,28 +139,25 @@ class TestBackgroundImageRequest:
         outcome = {}
 
         def bg():
-            t0 = time.monotonic()
             try:
                 _llm().create_completion_with_images(MESSAGES, [JPEG], background=True)
             except LLMPreempted:
-                outcome["preempted_after"] = time.monotonic() - t0
+                outcome["preempted"] = True
         # One config patch around both threads: `patch` swaps the shared config's `get` and puts
         # back what it found, so two patches of it unwound in the other order (the preempted
         # thread leaves its block first) left a mock behind for the rest of the worker — the
         # owner name then read "user" in whatever chat test ran next.
         with _config({}):
             t = _run(bg)
-            deadline = time.monotonic() + 1
-            while Ds4LLM._slot.sock is None and time.monotonic() < deadline:
-                time.sleep(0.005)
+            assert wait_until(lambda: Ds4LLM._slot.sock is not None)
             sock = Ds4LLM._slot.sock
             llm = _llm()
             llm.client.chat.completions.create.return_value = iter([
                 SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi", tool_calls=None), finish_reason=None)], usage=None)])
             assert list(llm.create_streaming_completion([{"role": "user", "content": "hello"}])) == ["hi"]
             assert sock.shut.is_set()
-            t.join(timeout=1)
-        assert outcome["preempted_after"] < 1
+            t.join(FAILURE_BOUND)
+        assert outcome == {"preempted": True}
         assert Ds4LLM._slot.interactive_active == 0, "the chat turn released the gate"
 
     def test_an_interactive_image_request_evicts_a_background_one_too(self):
@@ -171,7 +168,7 @@ class TestBackgroundImageRequest:
         llm = _llm()
         llm.client.chat.completions.create.return_value = SimpleNamespace(
             choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content="a cat"))])
-        _run(lambda: (conn.sock.shut.wait(1), Ds4LLM._slot.release()))
+        _run(lambda: (conn.sock.shut.wait(FAILURE_BOUND), Ds4LLM._slot.release()))
         with _config({}):
             assert llm.create_completion_with_images(MESSAGES, [JPEG]) == "a cat"
         assert conn.sock.shut.is_set()
@@ -183,7 +180,7 @@ class TestBackgroundImageRequest:
         _run(lambda: (Ds4LLM._slot.acquire(0.0), acquired.set()))
         assert not acquired.wait(0.03)
         Ds4LLM._slot.interactive_end()
-        assert acquired.wait(1)
+        assert acquired.wait(FAILURE_BOUND)
 
     def test_a_real_failure_is_not_reported_as_preemption(self):
         FakeConn.lines = [b"data: not json\n"]
@@ -205,14 +202,19 @@ class TestBackgroundImageRequest:
 
     def test_the_wait_is_per_thread_and_readable_by_the_caller(self):
         Ds4LLM._slot.acquire(0.0)
-        waits = {}
+        now, queued, waits = [1000.0], threading.Event(), {}
 
         def second():
             Ds4LLM._slot.acquire(0.0)
             waits["s"] = _llm().background_wait_seconds()
-        t = _run(second)
-        time.sleep(0.04)
-        Ds4LLM._slot.release()
-        t.join(timeout=1)
-        assert 0.03 <= waits["s"] < 1
+        # The slot traces once, holding its lock, just before the second request first waits: the
+        # release cannot come ahead of that wait, and the wait is measured on the test's clock.
+        with patch('assistant.llm.BackgroundSlot.trace', side_effect=lambda _m: queued.set()), \
+             patch('assistant.llm.BackgroundSlot.time', SimpleNamespace(monotonic=lambda: now[0])):
+            t = _run(second)
+            assert queued.wait(FAILURE_BOUND)
+            now[0] += 0.5
+            Ds4LLM._slot.release()
+            t.join(FAILURE_BOUND)
+        assert waits["s"] == 0.5
         assert _llm().background_wait_seconds() == 0

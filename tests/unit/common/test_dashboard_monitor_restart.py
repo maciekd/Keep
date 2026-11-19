@@ -12,6 +12,7 @@ from common.CacheHitLogMonitor import CacheHitLogMonitor
 from common.GpuMonitor import GpuMonitor
 from common.MemoryLogMonitor import MemoryLogMonitor
 from common.TempMonitor import TempMonitor
+from tests.unit.waiting import FAILURE_BOUND
 
 MONITORS = [(GpuMonitor, "_update_metrics"), (AnthropicCostMonitor, "_fetch_cost_data"),
             (MemoryLogMonitor, "_scan"), (TempMonitor, "_sample"), (CacheHitLogMonitor, "_scan")]
@@ -28,7 +29,7 @@ def stuck(request, monkeypatch):
         samples.append(threading.current_thread())
         if len(samples) == 1:
             entered.set()
-            release.wait(5)
+            release.wait(FAILURE_BOUND)
 
     monkeypatch.setattr(monitor, sample_method, sample)
     if hasattr(monitor, "_lower_priority"):
@@ -37,7 +38,7 @@ def stuck(request, monkeypatch):
         # test would not reach its first sample within the wait below.
         monkeypatch.setattr(monitor, "_lower_priority", lambda: None)
     monitor.start()
-    assert entered.wait(5)
+    assert entered.wait(FAILURE_BOUND)
     yield monitor, release, samples
     release.set()
     monitor.stop()
@@ -52,7 +53,7 @@ def test_stop_does_not_wait_for_a_loop_that_is_mid_sample(stuck, monkeypatch):
     monitor.stop()
     assert not waited.called, "stop waited for the loop on the caller's thread"
     release.set()
-    join(5)
+    join(FAILURE_BOUND)
     assert not first.is_alive(), "the stopped loop never ended"
 
 
@@ -64,7 +65,7 @@ def test_a_start_while_the_stopped_loop_is_still_sampling_leaves_a_loop_running(
     monitor.start()
     second = monitor._thread
     release.set()
-    first.join(5)
+    first.join(FAILURE_BOUND)
     assert not first.is_alive(), "the stopped loop was revived by the restart"
     assert second is not first and second.is_alive(), "no loop is left running after the restart"
 

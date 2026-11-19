@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch, MagicMock
 import pytest
 
 from common.FloxyDatabase import FloxyDatabase
+from tests.unit.waiting import FAILURE_BOUND
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +521,7 @@ class TestPhotoProcessorUuidDedup:
 
         def slow_inner(self_ref, r):
             llm_started.set()
-            llm_proceed.wait(timeout=5)
+            llm_proceed.wait(timeout=FAILURE_BOUND)
             return original_inner(self_ref, r)
 
         with patch.object(PhotoProcessor, '_process_one_inner', slow_inner), \
@@ -540,23 +541,15 @@ class TestPhotoProcessorUuidDedup:
             def run_a():
                 results["a"] = processor_a._process_one(row)
 
-            def run_b():
-                llm_started.wait(timeout=5)
-                results["b"] = processor_b._process_one(row)
-
             t_a = threading.Thread(target=run_a)
-            t_b = threading.Thread(target=run_b)
             t_a.start()
-            t_b.start()
-
-            t_b.join(timeout=5)
-            assert results.get("b") is False
+            assert llm_started.wait(timeout=FAILURE_BOUND)
+            assert processor_b._process_one(row) is False
 
             llm_proceed.set()
-            t_a.join(timeout=5)
+            t_a.join(timeout=FAILURE_BOUND)
 
         assert "a" in results
-        assert results["b"] is False
 
     @pytest.mark.unit
     def test_uuid_released_after_processing(self):
@@ -611,10 +604,8 @@ class TestPhotoProcessorUuidDedup:
                  "creation_ts": 1700000001.0, "latitude": None, "longitude": None,
                  "kind_subtype": 0, "cloud_master_guid": None, "cloud_asset_guid": "LLM-FAIL-GUID"}
 
-        both_running = threading.Barrier(2, timeout=5)
+        both_running = threading.Barrier(2, timeout=FAILURE_BOUND)
         results = {}
-
-        original_inner = PhotoProcessor._process_one_inner
 
         def barrier_inner(self_ref, r):
             both_running.wait()
@@ -628,8 +619,8 @@ class TestPhotoProcessorUuidDedup:
             t_b = threading.Thread(target=run, args=("b", row_b))
             t_a.start()
             t_b.start()
-            t_a.join(timeout=5)
-            t_b.join(timeout=5)
+            t_a.join(timeout=FAILURE_BOUND)
+            t_b.join(timeout=FAILURE_BOUND)
 
         assert results.get("a") is False
         assert results.get("b") is False
@@ -2381,7 +2372,7 @@ class TestPhotoProcessorBulkVideoThrottle:
             with lock:
                 in_flight.append(row["uuid"])
                 peak[0] = max(peak[0], len(in_flight))
-            both_slots_taken.wait(5)    # each clip stays in flight until a second one is, too
+            both_slots_taken.wait(FAILURE_BOUND)    # each clip stays in flight until a second one is, too
             with lock:
                 in_flight.remove(row["uuid"])
             return False

@@ -14,6 +14,7 @@ from assistant.prompt.sections.MusicLibrarySectionGenerator import MusicLibraryS
 from assistant.prompt.sections.MusicZonesSectionGenerator import MusicZonesSectionGenerator
 from tests.unit.assistant.integration.music.music_fakes import FakeSpeakers, OtherSpeakers
 from tests.unit.assistant.integration.music.spotify_fakes import install, make_account
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.fixture
@@ -192,16 +193,28 @@ class TestLibraryMonitoring:
         remove.assert_called_once_with(section._on_library_reload)
 
 
+def waiting(section):
+    """The section waiting an hour on a thread of its own; the function returned joins it and gives
+    what the wait returned — nothing while it is still waiting, so only a wake ends it in time."""
+    done = []
+    waiter = threading.Thread(target=lambda: done.append(section._wait(3600)), daemon=True)
+    waiter.start()
+
+    def ended():
+        waiter.join(FAILURE_BOUND)
+        return done
+    return ended
+
+
 @pytest.mark.unit
 class TestLibraryWake:
     def test_a_reloaded_library_ends_the_wait_early_and_only_once(self):
         section = MusicLibrarySectionGenerator(None)
         SpotifyAccount.add_library_listener(section._on_library_reload)
         try:
-            threading.Timer(0.02, make_account()._notify_library_listeners).start()
-            started = real_time.monotonic()
-            assert section._wait(section.CHECK_INTERVAL) is False, "woken, not stopped"
-            assert real_time.monotonic() - started < 2
+            ended = waiting(section)
+            make_account()._notify_library_listeners()
+            assert ended() == [False], "woken, not stopped"
         finally:
             SpotifyAccount.remove_library_listener(section._on_library_reload)
 
@@ -211,10 +224,9 @@ class TestLibraryWake:
 
     def test_stop_ends_the_wait_as_well(self):
         section = MusicLibrarySectionGenerator(None)
-        threading.Timer(0.02, section.stop).start()
-        started = real_time.monotonic()
-        assert section._wait(section.CHECK_INTERVAL) is True
-        assert real_time.monotonic() - started < 2
+        ended = waiting(section)
+        section.stop()
+        assert ended() == [True]
 
 
 class PushingSpeakers(FakeSpeakers):
@@ -244,12 +256,9 @@ class TestZonesFollowTheChanges:
         section = MusicZonesSectionGenerator(None)
         music.add_zone_listener(section._on_zones_changed)
         try:
-            done = []
-            waiter = threading.Thread(target=lambda: done.append(section._wait(30)))
-            waiter.start()
+            ended = waiting(section)
             music.zones_changed("Fake Speakers")
-            waiter.join(timeout=2)
-            assert not waiter.is_alive() and done == [False]
+            assert ended() == [False]
         finally:
             music.remove_zone_listener(section._on_zones_changed)
 

@@ -15,6 +15,8 @@ from interfaces.chat.ChatTypes import (KIND_DOCUMENT, KIND_PHOTO, KIND_REACTION,
                                        PHASE_COMMANDS, PHASE_PREFILL, PHASE_QUEUED, PHASE_THINKING, PHASE_WAITING, Attachment,
                                        IncomingMessage)
 
+from tests.unit.waiting import FAILURE_BOUND
+
 from .fakes import FakeAssistant, FakeStream, FakeTransport, wait_until
 
 CONV = 123
@@ -427,15 +429,14 @@ class TestAssistantBridge:
 
     def test_cancelling_mid_stream_discards_the_draft(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
-        assistant = FakeAssistant([Token("Hel"), (5.0, Token("lo")), RoundEnd(), None])
+        assistant = FakeAssistant([Token("Hel"), threading.Event(), Token("lo"), RoundEnd(), None])
         hub.assistant = assistant
         request = _Request()
-        import threading
         worker = threading.Thread(target=session._reply, args=(request, "hi", "Anna", None, False), daemon=True)
         worker.start()
         assert wait_until(lambda: transport.texts == ["Hel"])
         request.cancel()
-        worker.join(timeout=3)
+        worker.join(FAILURE_BOUND)
         assert not worker.is_alive()
         assert assistant.stream_obj.killed
         assert transport.drafts[0].discarded
@@ -632,12 +633,12 @@ class TestIntake:
 
         def slow_stt(data, mime_type):
             entered.set()
-            release.wait(3)
+            release.wait(FAILURE_BOUND)
             return "hi"
 
         with patch('interfaces.chat.MediaIntake.transcribe_voice', side_effect=slow_stt):
             session.submit(msg(kind=KIND_VOICE, text="", attachments=[Attachment(b'\x00', "audio/ogg", "voice")]))
-            assert entered.wait(3)
+            assert entered.wait(FAILURE_BOUND)
             session.submit(msg(text="never mind"))
             assert wait_until(lambda: assistant.requests)
             release.set()
@@ -762,7 +763,7 @@ class TestIntake:
         # The guard in Assistant.stream refuses the guest's request, but _start had already
         # cancelled the owner's turn by then; the guest must be dropped before that.
         session.SPINNER_TICK_SECONDS = 0.01
-        owner = FakeAssistant([Token("Hel"), (5.0, Token("lo")), RoundEnd(), None])
+        owner = FakeAssistant([Token("Hel"), threading.Event(), Token("lo"), RoundEnd(), None])
         hub.assistant = owner
         assert session.submit(msg(text="first")) is True
         assert wait_until(lambda: transport.texts == ["Hel"])
@@ -964,7 +965,7 @@ class TestAlbums:
         debounce = session._album.timer
         session.submit(msg(kind=KIND_VIDEO, text="", attachments=[]))  # any non-text kind drops the batch
         assert wait_until(lambda: transport.sent_texts)  # the video path apologised, i.e. it ran
-        debounce.join(5)  # cancelled, it ends at once; a stale one would fire first
+        debounce.join(FAILURE_BOUND)  # cancelled, it ends at once; a stale one would fire first
         assert not debounce.is_alive()
         assert assistant.requests == []
         assert session._album is None
@@ -1022,7 +1023,7 @@ class TestAlbums:
 
     def test_new_message_supersedes_the_running_reply(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
-        first = FakeAssistant([Token("Hel"), (5.0, Token("lo")), RoundEnd(), None])
+        first = FakeAssistant([Token("Hel"), threading.Event(), Token("lo"), RoundEnd(), None])
         hub.assistant = first
         session.submit(msg(text="first"))
         assert wait_until(lambda: transport.texts == ["Hel"])
@@ -1038,11 +1039,11 @@ class TestAlbums:
         # slot, the third message would not cancel the second and two replies would stream
         # into the chat at once.
         session.SPINNER_TICK_SECONDS = 0.01
-        first = FakeAssistant([Token("One"), (5.0, Token("…")), RoundEnd(), None])
+        first = FakeAssistant([Token("One"), threading.Event(), RoundEnd(), None])
         hub.assistant = first
         session.submit(msg(text="first"))
         assert wait_until(lambda: transport.texts == ["One"])
-        second = FakeAssistant([Token("Two"), (5.0, Token("…")), RoundEnd(), None])
+        second = FakeAssistant([Token("Two"), threading.Event(), RoundEnd(), None])
         hub.assistant = second
         session.submit(msg(text="second"))
         assert wait_until(lambda: transport.calls.count(("reply_finished", CONV)) == 1)  # first wound down

@@ -15,6 +15,7 @@ from integrations.google.GoogleDocsIntegration import GoogleDocsIntegration
 from integrations.google.GoogleDrive import BASE_URL, DOC_MIME_TYPE
 from integrations.google.GoogleIntegration import GoogleIntegration, account_scopes
 from assistant.prompt.MessageHistory import MessageHistory
+from tests.unit.waiting import FAILURE_BOUND
 
 from .google_fakes import Call, FakeGoogle, FakeResponse, token_file
 
@@ -286,7 +287,7 @@ class TestFetch:
             result = []
             worker = threading.Thread(target=lambda: result.extend(feed._run(step)), daemon=True)
             worker.start()
-            worker.join(timeout=2)
+            worker.join(FAILURE_BOUND)
             assert not worker.is_alive(), "the run deadlocked on the feed's own lock"
             note, = result
             assert "now tracked" in note.content and doc.cached_text() == "One\nTwo"

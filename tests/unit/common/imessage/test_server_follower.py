@@ -10,6 +10,7 @@ from common.Updater import Update, Updater
 from common.imessage import Wire
 from common.imessage.ServerFollower import FOLLOWED_BRANCHES, MIN_INTERVAL_SECONDS, RETRY_SECONDS, ServerFollower
 from tests.unit.common.test_updater import FakeCheckout
+from tests.unit.waiting import FAILURE_BOUND
 
 BOOT, NEWER, NEWEST = "b0" * 20, "c1" * 20, "d2" * 20
 
@@ -328,4 +329,4 @@ class TestOverTheRealUpdater:
         updater.update.side_effect = lambda target, boot: (ran_on.append(threading.current_thread()), done.set(),
                                                            Update(target, pull_failure="x"))[2]
         ServerFollower("release", BOOT, updater, relaunch=Mock()).notice("release", NEWER)
-        assert done.wait(2) and ran_on[0] is not threading.current_thread() and ran_on[0].daemon
+        assert done.wait(FAILURE_BOUND) and ran_on[0] is not threading.current_thread() and ran_on[0].daemon

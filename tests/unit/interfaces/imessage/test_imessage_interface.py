@@ -15,6 +15,7 @@ from interfaces.imessage import IMessageTransport as module
 from interfaces.imessage.IMessageInterface import IMessageInterface
 from interfaces.imessage.IMessageTransport import IMessageTransport
 from tests.unit.integrations.imessage.host_fakes import FakeHost
+from tests.unit.waiting import FAILURE_BOUND
 
 from .chat_fakes import configured
 
@@ -42,7 +43,7 @@ def started(tmp_path):
     with configured(interfaces__imessage__enabled=True) as keys, \
             patch.object(module.Hosts, "build", return_value=host), \
             patch.object(module.ChatState, "__init__", _state_in(tmp_path)), \
-            patch.object(IMessageTransport, "_run", lambda self: self._stop.wait(5)):
+            patch.object(IMessageTransport, "_run", lambda self: self._stop.wait(FAILURE_BOUND)):
         IntegrationMonitor.get_instance()._config_manager = config
         interface = IMessageInterface()
         yield interface, keys, host

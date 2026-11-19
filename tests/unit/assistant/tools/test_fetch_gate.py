@@ -8,6 +8,7 @@ import pytest
 
 from assistant.tools.WebAccess import WebAccess
 from tests.unit.assistant.tools.test_page_readiness import make_wa, run, scripted_evaluate
+from tests.unit.assistant.tools.virtual_time import virtual_time
 
 
 @pytest.mark.unit
@@ -22,7 +23,7 @@ class TestNetworkStageSkipped:
         net = AsyncMock(return_value='idle')
         with patch.object(WebAccess, '_evaluate', new=AsyncMock(side_effect=scripted_evaluate(ready_states, dommon_values))), \
                 patch.object(WebAccess, '_async_wait_for_dynamic_content', new=AsyncMock()), \
-                patch.object(WebAccess, '_async_wait_for_network_idle', new=net):
+                patch.object(WebAccess, '_async_wait_for_network_idle', new=net), virtual_time():
             assert run(wa._async_wait_for_page_ready(wa._tab, quiet_timeout=0.01, network=False)) == status
         net.assert_not_awaited()
 

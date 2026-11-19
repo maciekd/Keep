@@ -3,13 +3,13 @@ the LLM already saw: the page is watched through its text signature — the chan
 before the readiness gate, the settle wait, the one-retry on an unchanged page, and the
 NOTE when the page really did not move."""
 import asyncio
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from assistant.tools.WebAccess import WebAccess
+from tests.unit.assistant.tools.virtual_time import virtual_time
 
 
 def make_wa(url='https://shop.example/kassa'):
@@ -32,12 +32,16 @@ def run(coro):
 
 @pytest.fixture(autouse=True)
 def fast_waits(monkeypatch):
+    """The caps and polls count the virtual clock's seconds: on the real one, a machine that
+    stalled 40 ms between two probes had used the settle cap up before the page was steady."""
     monkeypatch.setattr(WebAccess, "_POPUP_SETTLE_S", 0)
     monkeypatch.setattr(WebAccess, "_ACTION_CHANGE_TIMEOUT", 0.05)
     monkeypatch.setattr(WebAccess, "_ACTION_CHANGE_POLL", 0.005)
     monkeypatch.setattr(WebAccess, "_ACTION_UNCHANGED_RETRY_S", 0)
     monkeypatch.setattr(WebAccess, "_SETTLE_TIMEOUT", 0.05)
     monkeypatch.setattr(WebAccess, "_SETTLE_POLL", 0.005)
+    with virtual_time() as clock:
+        yield clock
 
 
 def probe(state='complete', sig='u#10:1', busy=False):
@@ -57,12 +61,11 @@ def probes(*seq):
 @pytest.mark.unit
 class TestActionMark:
 
-    def test_records_the_moment_of_the_action(self):
+    def test_records_the_moment_of_the_action(self, fast_waits):
         wa = make_wa()
         with probes(probe()):
-            before = time.time()
             mark = run(wa._async_action_mark())
-        assert before <= mark['net_ts'] <= time.time()
+        assert mark['net_ts'] == fast_waits.now
 
     def test_records_the_text_signature(self):
         wa = make_wa()

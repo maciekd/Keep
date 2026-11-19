@@ -5,6 +5,7 @@ from typing import Optional
 
 from assistant.Assistant import AssistantBusy
 from interfaces.chat.ChatTransport import ChatTransport
+from tests.unit.waiting import wait_until   # re-exported: the chat tests import it from here
 
 
 class FakeDraft:
@@ -205,12 +206,3 @@ class FakeAssistant:
             raise AssistantBusy(self.busy)
         self.stream_obj = FakeStream(self.events)
         return self.stream_obj
-
-
-def wait_until(predicate, timeout=3.0, interval=0.01) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(interval)
-    return predicate()

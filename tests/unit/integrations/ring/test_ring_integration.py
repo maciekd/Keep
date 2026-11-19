@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from integrations.ring.RingIntegration import RingIntegration, RingCameraError, RingAuthenticationError, _RingTfaHandler
+from tests.unit.waiting import FAILURE_BOUND
 
 
 @pytest.fixture(autouse=True)
@@ -230,7 +231,7 @@ class TestRingTfaHandler:
         handler = _RingTfaHandler()
         handler.start()
         handler.submit_code("123456")
-        assert handler.get(timeout=1) == "123456"
+        assert handler.get(timeout=FAILURE_BOUND) == "123456"
 
     def test_get_returns_none_on_timeout(self):
         handler = _RingTfaHandler()
@@ -307,7 +308,7 @@ class TestAutoTfa:
         blocker = threading.Event()
 
         def block():
-            blocker.wait(timeout=5)
+            blocker.wait(timeout=FAILURE_BOUND)
 
         cam._auto_2fa_thread = threading.Thread(target=block, daemon=True)
         cam._auto_2fa_thread.start()
@@ -317,7 +318,7 @@ class TestAutoTfa:
             assert cam._auto_2fa_thread is first_thread
         finally:
             blocker.set()
-            cam._auto_2fa_thread.join(timeout=2)
+            cam._auto_2fa_thread.join(timeout=FAILURE_BOUND)
 
 
 class TestAuto2faTelegramNotification:

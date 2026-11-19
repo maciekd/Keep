@@ -15,6 +15,7 @@ import threading
 
 from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer, JobPullRequest, WORKING_DIR, CLAUDE_PATH, GIT_TIMEOUT, GENERATE_TESTS_PROMPT, SLOW_TEST_MS, TEST_HEALTH_RUNS, ClaudeNotLoggedInError, ClaudeRunFailedError, ClaudeUsageLimitError, ClaudeStatus, API_KEY_ENV, CUSTOM_HEADERS_ENV, NOT_LOGGED_IN_MESSAGE, NIGHTLY_OFF_MESSAGE, DISABLED_MESSAGE, api_key_cost_note, NIGHTLY_FIX_LABEL, GH_NOT_LOGGED_IN_MESSAGE, NIGHTLY_STEPS, LOG_TRIAGE_HOURS, gh_not_installed_message, GithubAccess, IssueDraft, PREFILL_URL_LIMIT, ISSUE_LABEL
 from assistant.agents.CodeQualityMaintainer import COMMIT_AUTHOR_RULE
+from tests.unit.waiting import FAILURE_BOUND
 
 _REAL_NIGHTLY_SKIP_REASON = CodeQualityMaintainer.nightly_skip_reason   # the autouse fixture below patches it
 
@@ -1229,7 +1230,7 @@ class TestRunClaude:
         stderr_read = threading.Event()
 
         def stdout_lines():
-            assert stderr_read.wait(2), "stderr is only read after stdout ends — a full pipe deadlocks"
+            assert stderr_read.wait(FAILURE_BOUND), "stderr is only read after stdout ends — a full pipe deadlocks"
             yield '{"type": "result", "result": "done"}\n'
 
         proc = _mock_popen()

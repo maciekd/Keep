@@ -3,7 +3,6 @@ connection (the OpenAI shape — `data: {chunk}` lines, `data: [DONE]` last), wh
 chunks feed the prefill bar and whose closing usage makes the cache report."""
 import json
 import threading
-import time
 from unittest.mock import patch
 
 import pytest
@@ -11,6 +10,7 @@ import pytest
 from assistant.llm.AbstractLLM import LLMPreempted
 from assistant.llm.OpenAICompatibleLLM import OpenAICompatibleLLM
 from assistant.llm.PrefillTracker import LogSource
+from tests.unit.waiting import FAILURE_BOUND, wait_until
 
 MESSAGES = [{"role": "system", "content": "analyst"},
             {"role": "user", "content": [{"type": "text", "text": "describe"},
@@ -58,7 +58,7 @@ class FakeResponse:
     def readline(self):
         if self._lines:
             return self._lines.pop(0)
-        self._sock.shut.wait(timeout=2)
+        self._sock.shut.wait(FAILURE_BOUND)
         raise ConnectionResetError("socket shut")
 
     def read(self, n=-1):
@@ -236,11 +236,8 @@ class TestPreemption:
 
         t = threading.Thread(target=bg, daemon=True)
         t.start()
-        deadline = time.monotonic() + 1
-        while OpenAICompatibleLLM._slot.sock is None and time.monotonic() < deadline:
-            time.sleep(0.005)
-        assert OpenAICompatibleLLM._slot.sock is not None, "the connection was put under the gate"
+        assert wait_until(lambda: OpenAICompatibleLLM._slot.sock is not None), "the connection was put under the gate"
         OpenAICompatibleLLM._slot.interactive_begin()
-        t.join(timeout=1)
+        t.join(FAILURE_BOUND)
         OpenAICompatibleLLM._slot.interactive_end()
         assert outcome == {"preempted": True}, "the socket error after an eviction is the eviction, not a failure"

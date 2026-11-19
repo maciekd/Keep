@@ -2,6 +2,7 @@
 tabs. The keys arrive as TUIFloxyConsole._parse_key names them: Enter is '\\r', Backspace
 '\\x7f', Escape 'escape'."""
 import time
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -417,9 +418,10 @@ class TestArloBoard:
         assert any(l.strip() == "● Driveway" for l in lines) and any(l.strip() == "● Garden" for l in lines)
         assert not any("Rate limited" in l for l in lines)
 
-    def test_a_cooldown_gets_a_tile_counting_it_down(self):
+    def test_a_cooldown_gets_a_tile_counting_it_down(self, monkeypatch):
+        monkeypatch.setattr("integrations.arlo.ArloTab.time", SimpleNamespace(time=lambda: 1000.0))
         tab = self.make()
-        tab._rate_limit_until = time.time() + 125.5
+        tab._rate_limit_until = 1000.0 + 125.5
         line = row_with([l for l in rows(draw(tab, width=120, height=40)) if "Cameras" in l], "Rate limited")
         assert "02:05" in line
 

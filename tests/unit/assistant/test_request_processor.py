@@ -12,6 +12,7 @@ from assistant.RequestProcessor import RequestProcessor, RequestKilledException,
 from assistant.AssistantEvents import AudioChunk, CommandRan, Done, Notice, RoundEnd, Thinking, Token
 from assistant.prompt.PromptManager import PromptManager
 from assistant.tools.MessageFormatter import MessageFormatter
+from tests.unit.waiting import FAILURE_BOUND
 
 
 # ---------------------------------------------------------------------------
@@ -2121,18 +2122,15 @@ class TestIterUntilKilled:
         def hung_gen():
             yield "first"
             started.set()
-            release.wait(timeout=10)  # simulates audio_queue.get() that never returns
+            release.wait(timeout=FAILURE_BOUND)  # simulates audio_queue.get() that never returns
             yield "second"
 
         out = []
-        t0 = time.time()
         gen = handler._iter_until_killed(hung_gen())
         out.append(next(gen))            # "first"
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=FAILURE_BOUND)
         handler.is_killed = True          # supersede the request
-        assert list(gen) == []            # consumer stops, doesn't wait for "second"
-        elapsed = time.time() - t0
-        assert elapsed < 2.0, f"consumer hung for {elapsed:.2f}s after kill"
+        assert list(gen) == []            # consumer stops while the producer still hangs: "second" never comes
         release.set()                     # let the abandoned daemon unwind
 
     def test_propagates_producer_exception(self, handler):
