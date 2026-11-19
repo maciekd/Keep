@@ -29,13 +29,16 @@ Talks to you by chat, terminal and voice, and integrates with your life: shoppin
 
 <b>Refined over two years of daily use in real homes.</b>
 
-### Claude
+### Claude…
 By default, Keep runs on an <b>Opus + Fable hybrid</b>. Keep stores everything on your machine but thinks on Anthropic’s servers. Passwords and card numbers go in the Keep Vault, encrypted on your machine: the model never sees them. Read the [privacy section](#privacy) before you install.
 
 Estimated Anthropic API <b>cost</b> is $80-200 / month. On a Claude Max, Ultra or Team plan you get <b>$100–500 of free</b> API credits.
 
-### 100% local AI
+### …or 100% local AI
 **[Keep also works great with local AI](docs/local-ai.md)**
+
+### Safety
+Keep has <b>no shell access</b>, only dedicated toolkits for what it needs (home, mail, calendar and so on). Sensitive commands, such as sending an email, need <b>your approval</b> first. Safe by design, not by promise.
 
 ### Requirements
 <b>4 GB RAM</b> and a <b>Mac or Linux</b> (Ubuntu/Debian). A Mac that listens through its own microphones needs <b>16 GB</b>.
