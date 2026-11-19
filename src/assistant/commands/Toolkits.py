@@ -258,6 +258,9 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
              "microsoft_login", "google_login",
              "google_login_code", "icloud_login_code", "volvo_login", "volvo_login_code", "spotify_login",
              "spotify_login_code", "hue_pair")),
+    Toolkit("backup", "back up everything that makes you this assistant (config, keys, memory, history, sign-ins) "
+                      "to one file, list the backups, restore one",
+            ("backup", "list_backups", "restore_backup")),
     Toolkit("developer", "study your own code or the machine you run on (network, disk, updates): analyse a bug or a "
                          "question, fix or build an integration as a PR, report an issue to the developers; see "
                          "where your LLM costs went; read your own log, restart the server",
@@ -279,7 +282,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
 # The order of the index, which is part of the prompt: a toolkit keeps its place wherever its
 # file lives. A toolkit not named here (a new folder's) comes after these, by name.
 INDEX_ORDER = ("home", "cameras", "web", "browser", "x", "email", "imessage", "whatsapp", "telegram", "music", "photos", "dropbox", "google_drive", "location", "calendar",
-               "reminders", "weather", "timers", "watch", "cars", "husdata", "ferry", "history", "vault", "setup", "developer",
+               "reminders", "weather", "timers", "watch", "cars", "husdata", "ferry", "history", "vault", "setup", "backup", "developer",
                "homeclaw", "home_assistant",
                "local_integrations", "self_improvement", "voice")
 

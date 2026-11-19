@@ -17,7 +17,7 @@ from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess, NETWORK_LOG_HEADER
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
-from assistant import Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
+from assistant import Backups, Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
 from common.logging import trace, info, note, error, fine
 from assistant.agents.BuildPreflight import BuildPreflight
 from assistant.agents.CodeQualityMaintainer import (CodeQualityMaintainer, IssueDraft, JobPullRequest,
@@ -120,7 +120,7 @@ class Commands:
     `approve_guarded_commands` is true.
     """
     SENSITIVE_COMMANDS = frozenset({"send_email", "restart_server", "try_pull_request", "leave_own_branch",
-                                    "report_issue", "pr_feedback", "improve_local_integration"})
+                                    "report_issue", "pr_feedback", "improve_local_integration", "restore_backup"})
     # The browser actions that can submit a form or run a script on a site. Off by default
     # because a card per click would make a multi-step browsing task unusable and the
     # autonomous check, which has no approval channel, could not browse at all (PR #148).
@@ -1507,6 +1507,31 @@ class Commands:
 
         self.fire_and_forget(_run, parameter_string)
 
+    def cmd_backup(self, parameter_string: str = ""):
+        self.background_command(Backups.create, ())
+
+    def cmd_list_backups(self, parameter_string: str = "") -> str:
+        return Backups.listing()
+
+    def cmd_restore_backup(self, parameter_string: str) -> str:
+        """`restore_backup(file)`: the zip is checked and staged in the background, then the server
+        relaunches and the start puts it in place (common/Backup.py)."""
+        name = self._first_argument(parameter_string)
+        path = Backups.resolve(name)
+        if path is None:
+            info(f"restore_backup: no backup '{name}'")
+            return f"restore_backup failed: no backup '{name}'. {Backups.listing()}"
+
+        def _run(_params):
+            problem = Backups.restore(path)
+            if problem:
+                system_note("server", f"The restore of {path.name} did not start: {problem}.")
+                return
+            CodeQualityMaintainer.restart(f"restoring the backup {path.name}", resumes_conversation=True)
+
+        self.fire_and_forget(_run, parameter_string)
+        return f"Restoring {path.name}: the current state is backed up first, then the server restarts."
+
     def cmd_try_pull_request(self, parameter_string: str):
         """`try_pull_request(number)`: run one of the install's own open PRs as a trial. The
         vetting answers at once (a refusal is the command result); the fetch, the pip sync and
@@ -2746,6 +2771,11 @@ class Commands:
             else f"Working on the local {name} integration"
     def describe_report_issue(self, p):           return "Reporting an issue to the developers"
     def describe_restart_server(self, p):         return "Restarting server"
+    def describe_backup(self, p):                 return "Making a backup"
+    def describe_list_backups(self, p):           return "Listing the backups"
+    # Also the approval card's title, the one line the owner reads before saying yes.
+    def describe_restore_backup(self, p):
+        return f"Restoring the backup {self._first_argument(p) or '?'}: replaces config, memory and history, then restarts"
     def describe_leave_own_branch(self, p):       return "Leaving your branch and restarting server"
     def describe_try_pull_request(self, p):       return f"Trying PR #{p.strip().lstrip('#').strip() or '?'}"
     def describe_pr_feedback(self, p):            return f"Posting feedback on PR #{self._first_argument(p).lstrip('#') or '?'}"

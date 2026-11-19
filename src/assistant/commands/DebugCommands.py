@@ -28,21 +28,18 @@ import os
 import re
 import shutil
 import signal
-import sqlite3
 import threading
 import time
-import zipfile
-from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
 from assistant import FirstRun
-from assistant.integration.music.SpotifyAuth import TOKEN_PATH as SPOTIFY_TOKEN_PATH
+from assistant.Backups import STATE as WIPE_TARGETS, integration_targets
 from assistant.prompt.PromptManager import CURRENT_PROMPT_FILE
+from common import Backup
 from common.logging import info, error
-from common.Paths import (AISERVER_DIR, CACHE_DIR, CONFIG_PATH, DUMMY_CONFIG_PATH, ICLOUD_SESSION_DIR, LOG_DIR,
-                          MEMORY_DIR, MEMORY_LOG_DIR, VAULT_PATH)
+from common.Paths import AISERVER_DIR, CACHE_DIR, CONFIG_PATH, DUMMY_CONFIG_PATH, LOG_DIR, MEMORY_LOG_DIR
 
 # Anchored on common.Paths so cwd doesn't matter.
 AUDIO_DIR = str(LOG_DIR / "audio")
@@ -55,27 +52,10 @@ TRUE_POSITIVE_DIR = str(CACHE_DIR / "stt_samples" / "en")
 RECENT_AUDIO_COUNT = 10
 
 # --- //wipe -----------------------------------------------------------------------------
-# Everything a returning user has that a fresh install hasn't. Files and directories
-# alike; a missing one is skipped. Each is zipped into BACKUP_DIR before it is deleted.
+# What is wiped is the state a backup holds (assistant/Backups.py), each item zipped into
+# BACKUP_DIR before it is deleted.
 DATABASE_PATH = AISERVER_DIR / "floxy.db"
 BACKUP_DIR = CACHE_DIR / "wipe-backups"
-# The sessions an integration keeps in the tree (the Telegram feed's, WhatsApp's) are the
-# integration's own `wipe_targets`, gathered by integration_targets().
-WIPE_TARGETS = [
-    (DATABASE_PATH, "database: dialog history, usage stats, photo index, feeds"),
-    (CONFIG_PATH, "config.yaml (the next start writes a skeleton and asks for the required keys)"),
-    (VAULT_PATH, "vault"),
-    (MEMORY_DIR, "long-term memory: bank, procedures, watch list"),
-    (AISERVER_DIR / "memory.md", "long-term memory bank of an install from before memory/"),
-    (FirstRun.STATE_FILE, "first-run pipeline state"),
-    (ICLOUD_SESSION_DIR, "iCloud session, trust token and cookies"),
-    (SPOTIFY_TOKEN_PATH, "Spotify sign-in (refresh token) — the account every speaker system shares"),
-    (CACHE_DIR / "config-backups", "config backups (hold the old credentials)"),
-    (CACHE_DIR / "last_startup.json", "startup tracker"),
-    (CACHE_DIR / "tui_state.json", "TUI state"),
-    (CACHE_DIR / "audio_restarts.json", "audio recovery state"),
-    (CACHE_DIR / "last_autonomous_check.json", "when the last periodic check ran"),
-]
 # Deleted without a backup: too big to zip, and rebuilt by logging in again. Deleted
 # only once the browser is closed: Chrome writes into its profile as long as it runs,
 # so an rmtree of a live profile ends in "Directory not empty".
@@ -90,16 +70,6 @@ STOP_DELAY_SECONDS = 2.0
 # zipping (a 270 MB database takes ~30 s with no visible progress) used to run alongside
 # it and write into the same database snapshot the first was zipping: a torn backup.
 _wipe_lock = threading.Lock()
-
-
-def integration_targets() -> list[tuple[Path, str]]:
-    """The signed-in state the integration folders keep in the tree, each folder's own
-    `Integration.wipe_targets`, in discovery order."""
-    from assistant.integration.bootstrap import integration_classes
-    targets = []
-    for cls in integration_classes():
-        targets += cls.wipe_targets()
-    return targets
 
 
 def external_targets() -> list[tuple[Path, str]]:
@@ -712,41 +682,9 @@ class DebugCommands:
         return "Without config.yaml it writes a skeleton and asks for the anthropic and gemini keys."
 
     def _backup(self, targets) -> Path:
-        """One zip of every target, the database as a consistent copy made by SQLite's
-        backup API (other threads keep writing while we zip)."""
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        zip_path = BACKUP_DIR / f"floxy-wipe-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
-        info(f"//wipe: backing up {len(targets)} item(s) to {zip_path}")
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for path, _ in targets:
-                if path == DATABASE_PATH:
-                    self._backup_database(zf, path, zip_path.with_suffix(".snapshot"))
-                elif path.is_dir():
-                    for f in sorted(p for p in path.rglob("*") if p.is_file()):
-                        zf.write(f, self._arcname(f))
-                else:
-                    zf.write(path, self._arcname(path))
-        os.chmod(zip_path, 0o600)   # it holds config.yaml and the vault: the owner's alone, whatever the umask
-        info(f"//wipe: backup written, {zip_path.stat().st_size / 1e6:.1f} MB")
-        return zip_path
-
-    def _backup_database(self, zf: zipfile.ZipFile, path: Path, snapshot: Path):
-        """`snapshot` is this backup's own scratch file, named after its zip: two backups
-        must never share one."""
-        snapshot.unlink(missing_ok=True)
-        try:
-            with closing(sqlite3.connect(path)) as src, closing(sqlite3.connect(snapshot)) as dst:
-                src.backup(dst)
-            zf.write(snapshot, self._arcname(path))
-        finally:
-            snapshot.unlink(missing_ok=True)
-
-    @staticmethod
-    def _arcname(path: Path) -> str:
-        try:
-            return str(path.relative_to(AISERVER_DIR))
-        except ValueError:
-            return "external/" + str(path).lstrip("/")
+        """One zip of every target, the same zip a `backup` writes (common/Backup.py)."""
+        return Backup.write(BACKUP_DIR / f"floxy-wipe-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip",
+                            [path for path, _ in targets])
 
     @staticmethod
     def _display(path: Path) -> str:

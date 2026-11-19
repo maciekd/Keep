@@ -2679,6 +2679,40 @@ class TestRestartServerNote:
         note.assert_not_called()
 
 
+class TestRestoreBackup:
+    def _run(self, commands_instance, tmp_path, problem=""):
+        archive = tmp_path / "keep-backup-20261101-120000.zip"
+        archive.write_bytes(b"")
+        with patch.object(commands_instance, 'fire_and_forget', side_effect=lambda fn, p: fn(p)), \
+             patch("assistant.commands.Commands.CodeQualityMaintainer") as cqm, \
+             patch("assistant.commands.Commands.system_note") as note, \
+             patch("assistant.commands.Commands.Backups.restore", return_value=problem) as restore:
+            result = commands_instance.cmd_restore_backup(f'"{archive}"')
+        return result, archive, cqm, note, restore
+
+    def test_a_staged_backup_restarts_the_server_and_resumes_the_conversation(self, commands_instance, tmp_path):
+        _, archive, cqm, note, restore = self._run(commands_instance, tmp_path)
+        restore.assert_called_once_with(archive)
+        assert cqm.restart.call_args.kwargs == {"resumes_conversation": True}
+        note.assert_not_called()
+
+    def test_a_backup_that_cannot_be_staged_restarts_nothing_and_says_why(self, commands_instance, tmp_path):
+        _, _, cqm, note, _ = self._run(commands_instance, tmp_path, problem="it is not a readable zip")
+        cqm.restart.assert_not_called()
+        assert "it is not a readable zip" in note.call_args.args[1]
+
+    def test_an_unknown_backup_is_refused_before_anything_runs(self, commands_instance, tmp_path):
+        with patch.object(commands_instance, 'fire_and_forget') as background, \
+             patch("assistant.commands.Commands.Backups.DIRECTORY", tmp_path):
+            result = commands_instance.cmd_restore_backup('"keep-backup-19990101-000000.zip"')
+        background.assert_not_called()
+        assert "failed" in result
+
+    def test_the_user_approves_a_restore_first(self, commands_instance):
+        assert commands_instance.is_sensitive("restore_backup")
+        assert not commands_instance.is_sensitive("backup") and not commands_instance.is_sensitive("list_backups")
+
+
 class TestLeaveOwnBranch:
     def _run(self, commands_instance, own):
         with patch.object(commands_instance, 'fire_and_forget', side_effect=lambda fn, p: fn(p)), \
