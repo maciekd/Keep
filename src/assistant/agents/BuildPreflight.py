@@ -136,6 +136,7 @@ class BuildPreflight:
     never picks one: `COMMIT_AUTHOR_RULE`) — and the machine's memory, which is said and
     refuses nothing (`build_memory_warning`)."""
     unmet: tuple[Unmet, ...] = ()
+    on_api_key: bool = False   # no login, api_keys.anthropic pays for the runs: in nobody's way, a health warning
 
     @staticmethod
     def check(pull_request: bool = True, credits_max_age: float = CREDITS_AGE_FOR_A_BUILD) -> "BuildPreflight":
@@ -167,7 +168,7 @@ class BuildPreflight:
         memory = cqm.build_memory_warning()
         if memory:
             unmet.append(Unmet("memory", memory, blocks=False))
-        found = BuildPreflight(tuple(unmet))
+        found = BuildPreflight(tuple(unmet), on_api_key=status.api_key)
         if unmet:
             info(f"Build preflight ({'a pull request' if pull_request else 'no pull request'}): "
                  f"{len(found.blocking)} item(s) in the way [{', '.join(u.key for u in found.blocking) or 'none'}], "

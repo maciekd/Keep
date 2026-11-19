@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from assistant.integration.Integration import HealthWarning, Integration
 from assistant.agents.BuildPreflight import BuildPreflight, CREDITS_AGE_FOR_HEALTH, forget_credits
-from assistant.agents.CodeQualityMaintainer import build_memory_warning
+from assistant.agents.CodeQualityMaintainer import ON_THE_KEY_SHORT, build_memory_warning
 from common.logging import info, trace
 
 
@@ -31,7 +31,9 @@ class SelfImprovementIntegration(Integration):
     login or access to the repository missing the analyses still run, so the state is a
     warning that never becomes an error. A login takes precedence over the key
     (the key is only handed to the CLI when there is no login, since the environment variable
-    would shadow a login and move its billing to the key). A machine with too little memory for
+    would shadow a login and move its billing to the key), and the key standing in is a warning
+    too: everything runs, at the per-token price, and a login that went away would otherwise
+    show only under the next run's report (#211). A machine with too little memory for
     a build is said when the integration is switched on (`enable_note`) and when a build starts,
     and is no health state."""
 
@@ -52,10 +54,16 @@ class SelfImprovementIntegration(Integration):
 
     def check_health(self) -> bool:
         preflight = BuildPreflight.check(credits_max_age=CREDITS_AGE_FOR_HEALTH)
-        if not preflight.blocking:
-            trace("Self Improvement: nothing a build needs is missing")
-            return True
         if preflight.claude_down:
             raise RuntimeError(preflight.health_text())
-        info("Self Improvement: Claude Code runs, a build would not start")
-        raise HealthWarning("no build can start: " + preflight.health_text())
+        warnings = []
+        if preflight.blocking:
+            info("Self Improvement: Claude Code runs, a build would not start")
+            warnings.append("no build can start: " + preflight.health_text())
+        if preflight.on_api_key:
+            trace("Self Improvement: Claude Code has no login, the API key pays for its runs")
+            warnings.append(ON_THE_KEY_SHORT)
+        if warnings:
+            raise HealthWarning("; ".join(warnings))
+        trace("Self Improvement: nothing a build needs is missing")
+        return True

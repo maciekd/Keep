@@ -94,6 +94,9 @@ NOT_INSTALLED_SHORT = ("Claude Code CLI not found: install it on the server mach
                        "else is needed")
 NOT_LOGGED_IN_SHORT = (f"Claude Code has no credentials: set {API_KEY_CONFIG_KEY} in config.yaml, or run `claude` "
                        "in a terminal on the server machine itself (not over SSH) and complete /login")
+# The health warning while the key stands in for a login: a login that went away used to show only
+# under the next run's report, after it was paid for (#211).
+ON_THE_KEY_SHORT = f"Claude Code is not logged in: its runs are billed per token to {API_KEY_CONFIG_KEY}"
 DISABLED_MESSAGE = (
     'The "Self Improvement" integration is disabled, so Claude Code is not used. '
     'enable_integration("Self Improvement") turns it on; Claude Code must be installed on the server '

@@ -45,6 +45,13 @@ def machine():
 
 @pytest.mark.unit
 class TestCheck:
+    def test_the_key_standing_in_for_a_login_is_found_and_blocks_nothing(self, machine):
+        """The health check warns on it (#211); a login, or a machine without the CLI, is not on the key."""
+        assert not check().on_api_key
+        machine.status.return_value = ON_THE_KEY
+        found = check()
+        assert found.on_api_key and not found.unmet
+
     def test_everything_missing_is_found_in_one_pass(self, machine):
         """An install found its gaps one build at a time: no gh, no login, no usage, too little
         memory, no git author — eleven builds (2026-11-17)."""

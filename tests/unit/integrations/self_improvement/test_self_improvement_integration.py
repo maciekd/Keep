@@ -133,13 +133,14 @@ class TestSelfImprovementIntegration:
     NO_GH = Unmet("github", "The GitHub CLI (gh) is not logged in.")
     NO_AUTHOR = Unmet("git_author", "git has no author on the server machine.")
 
-    def _checked(self, *unmet):
+    def _checked(self, *unmet, on_api_key=False):
         """On a machine that lacks *unmet*: the integration's state after each of as many checks
         as turn a failure into an error, its health text, and the preflight as it was asked."""
         monitor = IntegrationMonitor.get_instance()
         integration = SelfImprovementIntegration.get_instance()
         monitor.register(integration)
-        with patch.object(BuildPreflight, "check", return_value=BuildPreflight(tuple(unmet))) as check:
+        found = BuildPreflight(tuple(unmet), on_api_key=on_api_key)
+        with patch.object(BuildPreflight, "check", return_value=found) as check:
             states = [monitor.check_now("Self Improvement") for _ in range(IntegrationMonitor.FAILURE_THRESHOLD)]
         return states, integration.last_error or "", check
 
@@ -164,6 +165,16 @@ class TestSelfImprovementIntegration:
         states, said, _ = self._checked(self.NO_GH, self.NO_AUTHOR)
         assert set(states) == {IntegrationState.WARNING}
         assert self.NO_GH.text in said and self.NO_AUTHOR.text in said
+
+    def test_the_key_standing_in_for_a_login_is_a_warning_that_never_becomes_an_error(self):
+        """A login that went away was billed per token for three days before a report said so (#211)."""
+        states, said, _ = self._checked(on_api_key=True)
+        assert set(states) == {IntegrationState.WARNING}
+        assert "not logged in" in said and cqm.API_KEY_CONFIG_KEY in said
+
+    def test_the_key_standing_in_is_said_beside_what_a_build_lacks(self):
+        _, said, _ = self._checked(self.NO_GH, on_api_key=True)
+        assert self.NO_GH.text in said and "not logged in" in said
 
     def test_the_health_check_asks_for_usage_once_a_day_and_not_at_every_check(self):
         """The check runs every 15 minutes around the clock and a test request costs about a cent."""
