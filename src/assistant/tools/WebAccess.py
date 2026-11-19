@@ -5594,6 +5594,13 @@ class WebAccess(Integration):
             return err
 
         body = (js or '').strip()
+        # Every other command takes a long value as a triple-quoted block, so a multi-line script
+        # comes in one too, and the quotes reached the page as JavaScript ("Invalid or unexpected
+        # token"). Nothing valid begins with three double quotes: run what the block holds, verbatim.
+        block = len(body) >= 6 and body.startswith('"""') and body.endswith('"""')
+        if block:
+            note("browse_eval: the source is a triple-quoted block — running what the block holds")
+            body = body[3:-3].strip()
         if not body:
             return "ERROR: browse_eval needs a JavaScript expression."
 
@@ -5615,6 +5622,7 @@ class WebAccess(Integration):
         quoted_note = ''
         if quoted:
             note("browse_eval: the source is one quoted string — running what is inside the quotes")
+        if quoted or block:
             quoted_note = ("NOTE: the source arrived wrapped in quotes, which on its own only hands the "
                            "text back — what is inside the quotes was run instead. Pass the source bare.\n")
         body_json = json.dumps(body)

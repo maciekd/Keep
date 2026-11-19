@@ -1190,6 +1190,35 @@ class TestBrowseEval:
         with patch.object(WebAccess, '_evaluate', new=AsyncMock(return_value="x")):
             assert wa.browse_eval(source) == "x"
 
+    def _page_script_and_result(self, source):
+        wa = self._make_wa()
+        with patch.object(WebAccess, '_evaluate', new=AsyncMock(return_value="len 3")) as evaluate:
+            out = wa.browse_eval(source)
+        return evaluate.await_args.args[1], out
+
+    @pytest.mark.parametrize("block", ['"""{}"""', '"""\n{}\n"""'])
+    def test_triple_quoted_block_runs_what_it_holds_and_says_so(self, block):
+        script = ("const inputs=[...document.querySelectorAll('input')];\n"
+                  "if(!inputs.length) return 'notfound';\n"
+                  "return 'len '+inputs.length+document.title.replace(/\\s+/g, ' ');")
+        bare_page, bare_out = self._page_script_and_result(script)
+        block_page, block_out = self._page_script_and_result(block.format(script))
+        assert block_page == bare_page
+        assert bare_out == 'len 3'
+        assert block_out.startswith('NOTE') and block_out.endswith('len 3')
+
+    @pytest.mark.parametrize("source", [
+        'return \'"""\'.length',
+        '"""const n = 1;\nreturn n',
+        'return 1 // """',
+        '"""',
+    ])
+    def test_source_with_triple_quotes_but_not_wrapped_in_them_is_run_as_written(self, source):
+        import json
+        page, out = self._page_script_and_result(source)
+        assert json.dumps(source) in page
+        assert out == 'len 3'
+
     def test_dict_returned_as_json(self):
         wa = self._make_wa()
         async def fake_eval(_tab, _expr):
