@@ -3747,7 +3747,27 @@ class WebAccess(Integration):
     _SEARCH_FIELD_HINT = (' (search field: filling does not submit — '
                           'fill with trailing \\n or browse_key("Enter") to submit)')
 
-    def _format_snapshot_line(self, idx: int, rec: dict) -> str:
+    # A link's href past this many characters is cut: a search page's result links run to
+    # 1,200 characters of percent-encoded parameters each, and two such pages put 177k tokens
+    # into one request (prod 2026-11-20). browse_inspect("N,href") still gives the whole one.
+    _SNAPSHOT_HREF_MAX = 120
+    _SNAPSHOT_HREF_CUT = '…'
+
+    def _snapshot_href(self, idx: int, href: str, shown: dict | None) -> str:
+        """The href as the snapshot shows it: a reference to the first link that showed the same
+        one (a result's thumbnail, title and caption are three links to one address), else the
+        href itself, cut at _SNAPSHOT_HREF_MAX. `shown` maps each href already rendered to the
+        index that carried it; None renders the line on its own."""
+        first = idx if shown is None else shown.setdefault(href, idx)
+        if first != idx:
+            reference = f'same as [{first}]'
+            if len(reference) < len(href):
+                return reference
+        if len(href) > self._SNAPSHOT_HREF_MAX:
+            return href[:self._SNAPSHOT_HREF_MAX] + self._SNAPSHOT_HREF_CUT
+        return href
+
+    def _format_snapshot_line(self, idx: int, rec: dict, shown_hrefs: dict | None = None) -> str:
         tag = rec.get('tag', '')
         type_ = rec.get('type', '')
         role = rec.get('role', '')
@@ -3775,8 +3795,7 @@ class WebAccess(Integration):
             return f'[{idx}] button "{label_}"'
 
         if tag == 'a' or role == 'link':
-            href = rec.get('href', '')
-            return f'[{idx}] link "{label_}" -> {href}'
+            return f'[{idx}] link "{label_}" -> {self._snapshot_href(idx, rec.get("href", ""), shown_hrefs)}'
 
         if rec.get('contenteditable') or role == 'textbox':
             v = rec.get('value', '')
@@ -3821,9 +3840,12 @@ class WebAccess(Integration):
         footer/aside groups after a separator, large groups collapsed to one line.
 
         Purely display-order — indices are the records' positions exactly as the
-        collector tagged them, so _browse_snapshot_frame_ids/_labels stay aligned."""
+        collector tagged them, so _browse_snapshot_frame_ids/_labels stay aligned.
+        A repeated href refers to the line that showed it first, in this display order."""
+        shown_hrefs: dict[str, int] = {}
+
         def line_for(i):
-            line = self._format_snapshot_line(i, records[i])
+            line = self._format_snapshot_line(i, records[i], shown_hrefs)
             src = records[i].get('source')
             if src:
                 line += f'  [in {src}]'
@@ -3857,7 +3879,18 @@ class WebAccess(Integration):
                         kind = self._collapsed_item_kind(records[i])
                         items.append(f'[{i}] {kind + " " if kind else ""}{label}')
                     lines.append(f'{region}: {len(idxs)} items — ' + ', '.join(items))
+        self._trace_href_savings(lines, shown_hrefs)
         return lines
+
+    def _trace_href_savings(self, lines: list[str], shown_hrefs: dict[str, int]):
+        repeated = sum(1 for line in lines if ' -> same as [' in line)
+        cut = sum(1 for href in shown_hrefs if len(href) > self._SNAPSHOT_HREF_MAX)
+        if not repeated and not cut:
+            trace("snapshot: no href cut or repeated")
+            return
+        whole = sum(len(href) for href in shown_hrefs)
+        trace(f"snapshot: {cut} href(s) cut at {self._SNAPSHOT_HREF_MAX} chars, {repeated} repeated one(s) "
+              f"shown as a reference ({len(shown_hrefs)} distinct, {whole} chars whole)")
 
     @staticmethod
     def _collapsed_item_kind(rec: dict) -> str:

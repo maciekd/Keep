@@ -445,6 +445,46 @@ class TestSnapshotRendering:
         group_lines = [l.split(':')[0] for l in lines if ': 6 items' in l]
         assert group_lines == ['header', 'nav', 'footer']
 
+    def test_a_long_href_is_cut_and_marked(self):
+        href = '/images/search?view=detail&mediaurl=' + 'a%2f' * 300
+        line, = self._wa()._render_snapshot_lines([{'tag': 'a', 'label': 'Tree', 'href': href}])
+        shown = line.split(' -> ')[1]
+        assert shown.endswith('…')
+        assert href.startswith(shown[:-1])
+        assert len(shown) < len(href) / 5
+
+    def test_a_short_href_is_shown_whole(self):
+        line, = self._wa()._render_snapshot_lines([{'tag': 'a', 'label': 'Cart', 'href': '/cart?step=2'}])
+        assert line == '[0] link "Cart" -> /cart?step=2'
+
+    def test_links_to_one_address_refer_to_the_first_that_showed_it(self):
+        href = '/product/advent-candle-holder-brass'
+        records = [{'tag': 'a', 'label': 'Thumbnail', 'href': href},
+                   {'tag': 'button', 'label': 'Save'},
+                   {'tag': 'a', 'label': 'Advent candle holder', 'href': href},
+                   {'tag': 'a', 'label': 'Other', 'href': href + '-steel'}]
+        lines = self._wa()._render_snapshot_lines(records)
+        assert lines[0].endswith(f'-> {href}')
+        assert lines[2] == '[2] link "Advent candle holder" -> same as [0]'
+        assert lines[3].endswith(f'-> {href}-steel')
+
+    def test_a_reference_names_the_line_shown_first_not_the_lowest_index(self):
+        href = '/collections/winter-jackets'
+        records = [{'tag': 'a', 'label': 'Footer link', 'href': href, 'region': 'footer'},
+                   {'tag': 'a', 'label': 'Jackets', 'href': href}]
+        lines = self._wa()._render_snapshot_lines(records)
+        assert lines[0] == f'[1] link "Jackets" -> {href}'
+        assert lines[-1] == '[0] link "Footer link" -> same as [1]'
+
+    def test_an_href_shorter_than_its_reference_is_repeated(self):
+        records = [{'tag': 'a', 'label': 'Home', 'href': '/'}, {'tag': 'a', 'label': 'Logo', 'href': '/'}]
+        lines = self._wa()._render_snapshot_lines(records)
+        assert lines == ['[0] link "Home" -> /', '[1] link "Logo" -> /']
+
+    def test_a_line_formatted_alone_never_refers_to_another(self):
+        line = self._wa()._format_snapshot_line(4, {'tag': 'a', 'label': 'Jackets', 'href': '/collections/winter'})
+        assert line == '[4] link "Jackets" -> /collections/winter'
+
 
 @pytest.mark.unit
 class TestPageContextHeader:

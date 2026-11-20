@@ -50,7 +50,8 @@ with `browse_eval` — synthetic JS events are untrusted and most sites ignore t
       values truncated).
     - `"3,href"` — targeted mode: the full untruncated value of that attribute. Special names: `outerHTML`,
       `innerHTML`, `textContent`, `value`.
-Read-only — no fresh snapshot. Use it when the snapshot label/href isn't enough (a custom-protocol URL like
+Read-only — no fresh snapshot. A snapshot href ending in `…` is cut at 120 characters; `"3,href"` gives it whole.
+Use it when the snapshot label/href isn't enough (a custom-protocol URL like
 `bankid://`, a `data-qrcode` payload, a hidden auth link). JS handlers attached via `addEventListener` are not
 visible — only inline `onclick="..."` attributes show up.
 
