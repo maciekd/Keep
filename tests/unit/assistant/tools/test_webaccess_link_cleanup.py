@@ -32,6 +32,19 @@ class TestCleanLink:
         lookalike = f"https://mybooking.com/x?{query}"
         assert WebAccess.clean_link(lookalike) == lookalike
 
+    def test_a_google_result_link_keeps_the_search_and_loses_its_session_tokens(self):
+        url = ("https://www.google.com/search?q=advent+candles&sca_esv=66aa&sxsrf=AKtok:17&udm=2"
+               "&fbs=ACAtok&start=10&ei=O6Xs&sstk=AYtok&ved=2ahUKE")
+        assert WebAccess.clean_link(url) == "https://www.google.com/search?q=advent+candles&udm=2&start=10"
+
+    def test_a_bing_image_link_keeps_what_opens_the_image(self):
+        url = ("https://www.bing.com/images/search?view=detailV2&ccid=6nSH&id=62E6A0&thid=OIP.abc"
+               "&mediaurl=https%3A%2F%2Fphotos.example%2Ftree.jpg"
+               "&cdnurl=https%3A%2F%2Fth.bing.com%2Fth%2Fid%2FR.1"
+               "&exph=800&expw=1200&q=tree&FORM=IRPRST&ck=044F&selectedIndex=0&itb=0")
+        assert WebAccess.clean_link(url) == ("https://www.bing.com/images/search?view=detailV2&id=62E6A0"
+                                             "&mediaurl=https%3A%2F%2Fphotos.example%2Ftree.jpg&q=tree")
+
     def test_a_blank_value_survives(self):
         assert WebAccess.clean_link("https://example.com/p?flag=&utm_x=1") == "https://example.com/p?flag="
 
@@ -56,6 +69,14 @@ class TestExtractedLinks:
         assert text.count('](/h?id=5)') == 1
         assert "SEK 35,622" in text
         assert '[Other](/other)' in text
+
+    def test_links_that_differ_in_a_click_token_alone_are_one_link(self):
+        text = WebAccess.extract_text_with_links(
+            _page('<a href="/images/search?view=detailV2&id=62E6&FORM=IRPRST">Tree</a> '
+                  '<a href="/images/search?view=detailV2&id=62E6&FORM=IMGCAP">A tree in snow</a>'),
+            "https://www.bing.com/images/search?q=tree")
+        assert text.count('](') == 1
+        assert "A tree in snow" in text
 
     def test_distinct_links_are_all_kept(self):
         text = WebAccess.extract_text_with_links(

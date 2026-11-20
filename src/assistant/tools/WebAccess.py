@@ -1678,6 +1678,14 @@ class WebAccess(Integration):
             'ref_fsid', 'ref_search_session_id', 'federated_search_id', 'search_session_id',
             'source_impression_id', 'previous_page_section_name',
         }),
+        # A results page's session and click tokens: 400 chars a link on a Google page read
+        # through open_url, a fifth to a third of the page (prod 2026-11-05).
+        'google.com': frozenset({'ved', 'sxsrf', 'sca_esv', 'fbs', 'sstk', 'ei'}),
+        # An image result opens on view, id, mediaurl and q; cdnurl is Bing's own copy of
+        # the address mediaurl already gives.
+        'bing.com': frozenset({
+            'cdnurl', 'ck', 'thid', 'ccid', 'exph', 'expw', 'selectedIndex', 'itb', 'FORM', 'form',
+        }),
     }
 
     @classmethod
