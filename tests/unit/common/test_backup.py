@@ -2,12 +2,14 @@
 
 Every install here is a tmp_path tree laid out like the repository root; nothing touches the
 real checkout."""
+import json
 import os
 import sqlite3
 import stat
 import zipfile
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -230,6 +232,138 @@ class TestStaging:
         Backup.apply_pending(new)
         assert sorted(p.name for p in (new / "memory").rglob("*") if p.is_file()) == ["bank.md", "boat.md"]
         assert not (new / "memory.md.bak").exists() and not (new / "config.yaml").exists()
+
+
+class TestAMarkerIsForItsOwnRelaunch:
+    def test_a_marker_whose_relaunch_never_came_is_not_applied_by_a_later_start(self, made):
+        """The relaunch failed and the server lived on: a start days later must not roll the
+        install back to the zip."""
+        archive, new = made
+        Backup.stage(archive, state_of(new), new)
+        staged = Backup.time.time()
+        with patch.object(Backup.time, "time", return_value=staged + Backup.STAGED_FOR_SECONDS + 60):
+            assert archive.name in Backup.apply_pending(new)
+            assert (new / "config.yaml").read_text() == "owner_name: Frances\n"
+            assert history_rows(new / "floxy.db") == ["hello Frances"]
+            assert Backup.apply_pending(new) is None
+
+    def test_a_marker_that_says_no_time_is_not_applied(self, made):
+        archive, new = made
+        Backup.stage(archive, state_of(new), new)
+        marker = new / Backup.PENDING
+        plan = json.loads(marker.read_text())
+        del plan["staged"]
+        marker.write_text(json.dumps(plan))
+        Backup.apply_pending(new)
+        assert (new / "config.yaml").read_text() == "owner_name: Frances\n"
+
+    def test_a_restore_taken_back_is_not_applied(self, made):
+        archive, new = made
+        Backup.stage(archive, state_of(new), new)
+        assert Backup.unstage(new) is True
+        assert Backup.apply_pending(new) is None
+        assert (new / "config.yaml").read_text() == "owner_name: Frances\n"
+        assert Backup.unstage(new) is False
+
+
+def tree(root: Path) -> dict:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+class TestAFailedRestoreChangesNothing:
+    def test_an_extraction_that_fails_midway_leaves_the_install_as_it_was(self, made):
+        """The disk fills up after the first files: the config, the memory and the database
+        are the install's own still, and no half-unpacked folder is left behind."""
+        archive, new = made
+        before = tree(new)
+        real = zipfile.ZipFile.extractall
+
+        def half(zf, path=None, members=None, pwd=None):
+            real(zf, path, members[:2], pwd)
+            raise OSError(28, "No space left on device")
+
+        Backup.stage(archive, state_of(new), new)
+        with patch.object(zipfile.ZipFile, "extractall", half):
+            assert "No space left" in Backup.apply_pending(new)
+        assert tree(new) == before
+        assert history_rows(new / "floxy.db") == ["hello Frances"]
+
+    @pytest.mark.parametrize("failing_move", [1, 2, 3, 4, 5, 6])
+    def test_a_swap_that_fails_at_any_move_puts_the_state_back(self, made, failing_move):
+        archive, new = made
+        (new / "floxy.db-wal").write_text("the old install's wal")
+        before = tree(new)
+        real, calls = Backup._move, []
+
+        def move(source, target):
+            calls.append(source)
+            if len(calls) == failing_move:
+                raise OSError("the volume went away")
+            real(source, target)
+
+        Backup.stage(archive, state_of(new), new)
+        with patch.object(Backup, "_move", move):
+            assert "the volume went away" in Backup.apply_pending(new)
+        assert tree(new) == before
+
+    def test_a_swap_that_cannot_be_undone_keeps_the_replaced_state_and_says_where(self, made):
+        """The volume fails at a move and at the first move back: what was moved aside is in
+        no other place, so the work folder stays and the answer names it."""
+        archive, new = made
+        before = tree(new)
+        real, calls = Backup._move, []
+
+        def move(source, target):
+            calls.append(source)
+            if len(calls) in (3, 4):
+                raise OSError("the volume went away")
+            real(source, target)
+
+        Backup.stage(archive, state_of(new), new)
+        with patch.object(Backup, "_move", move):
+            said = Backup.apply_pending(new)
+        [work] = new.glob(Backup.WORK_PREFIX + "*")
+        assert str(work / "old") in said
+        kept = tree(work / "old")
+        assert kept and all(before[name] == content for name, content in kept.items())
+        assert Backup.apply_pending(new) is None
+
+    def test_a_folder_whose_copy_fails_midway_leaves_the_install_as_it_was(self, unpacked, tmp_path):
+        _, _, folder = unpacked
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        before = tree(new)
+        real, copied = Backup.shutil.copyfile, []
+
+        def copy(source, target):
+            if copied:
+                raise OSError(28, "No space left on device")
+            copied.append(source)
+            return real(source, target)
+
+        Backup.stage(folder, state_of(new), new)
+        with patch.object(Backup.shutil, "copyfile", copy):
+            assert "No space left" in Backup.apply_pending(new)
+        assert tree(new) == before
+
+    def test_a_restore_leaves_no_work_folder(self, made):
+        archive, new = made
+        restore(archive, new)
+        assert not list(new.glob(Backup.WORK_PREFIX + "*"))
+
+    def test_a_file_listed_beside_its_folder_is_restored_with_it(self, tmp_path):
+        """An install's state names `cache/oauth` and a token inside it both."""
+        old, new = tmp_path / "old", tmp_path / "new"
+        for root, token in ((old, "Marcus's token"), (new, "Frances's token")):
+            (root / "cache" / "oauth").mkdir(parents=True)
+            (root / "cache" / "oauth" / "spotify.json").write_text(token)
+            (root / "cache" / "oauth" / "volvo.json").write_text(token)
+        state = lambda root: [root / "cache" / "oauth" / "spotify.json", root / "cache" / "oauth"]
+        archive = Backup.write(tmp_path / "keep.zip", state(old), old)
+        Backup.stage(archive, state(new), new)
+        assert archive.name in Backup.apply_pending(new)
+        assert (new / "cache" / "oauth" / "spotify.json").read_text() == "Marcus's token"
+        assert (new / "cache" / "oauth" / "volvo.json").read_text() == "Marcus's token"
 
 
 class TestOnlyTheStateIsWritten:

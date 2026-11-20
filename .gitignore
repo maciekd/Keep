@@ -18,6 +18,7 @@ first_run.json
 voice_id/
 cache/
 .cache/
+.restore-*/
 log/
 logs/
 *.log

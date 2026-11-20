@@ -23,7 +23,7 @@ from assistant.agents.BuildPreflight import BuildPreflight
 from assistant.agents.CodeQualityMaintainer import (CodeQualityMaintainer, IssueDraft, JobPullRequest,
                                                     build_model_refusal)
 from common.ConfigManager import ConfigManager
-from common import ConfigSchema, ConfigStore, FullDiskAccess, IntegrationDirs, Platform, Watchdog
+from common import Backup, ConfigSchema, ConfigStore, FullDiskAccess, IntegrationDirs, Platform, Watchdog
 from common.ConfigStore import ConfigStoreError
 from common.DevelopmentConfig import PREPEND_USER_QUERY_KEY
 from assistant.ChannelProfile import AUTONOMOUS
@@ -1528,7 +1528,13 @@ class Commands:
             if problem:
                 system_note("server", f"The restore of {path.name} did not start: {problem}.")
                 return
-            CodeQualityMaintainer.restart(f"restoring the backup {path.name}", resumes_conversation=True)
+            try:
+                CodeQualityMaintainer.restart(f"restoring the backup {path.name}", resumes_conversation=True)
+            except Exception as e:
+                # The marker must not outlive the relaunch it was staged for: a later start would apply it.
+                error(f"restore_backup: the restart failed, taking the staged restore back: {type(e).__name__}: {e}")
+                Backup.unstage()
+                system_note("server", f"The restore of {path.name} did not start: the server could not restart ({e}).")
 
         self.fire_and_forget(_run, parameter_string)
         return f"Restoring {path.name}: the current state is backed up first, then the server restarts."
