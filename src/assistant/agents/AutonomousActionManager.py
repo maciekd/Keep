@@ -515,7 +515,7 @@ class AutonomousActionManager:
                   f"for the same minute queue up like this")
             return ""
         quiet = SCHEDULED_WAKEUP_QUIET_PERIOD_SECONDS if wakeup else USER_INTERACTION_QUIET_PERIOD_SECONDS
-        completed = False
+        answered = False
         try:
             # The caller asked before the wait for the lock, which can be a whole check long.
             if self.is_user_interaction_active(quiet):
@@ -523,30 +523,34 @@ class AutonomousActionManager:
                      f"({time.time() - started:.0f} s after it was fired) — it runs once the user is quiet")
             else:
                 result = self._activity_check_inner(prompt, wakeup, due, started, nudge=nudge)
-                completed = True
+                # An empty reply is a model that refused the check (`_think`) or said nothing,
+                # not its NO.
+                answered = bool(result and result.strip())
                 return result
         except _UserTookOver as e:
             info(f"This {kind} gives way to the user {e} — it runs again, from a fresh history, "
                  f"once the user is quiet")
         finally:
-            self._close_nudge(nudge, completed)
+            self._close_nudge(nudge, answered)
             self._check_opening = None
             self.activity_check_lock.release()
         self._retry_when_quiet(prompt, wakeup, due, quiet)
         return ""
 
-    def _close_nudge(self, nudge: Reactivation.Step | None, completed: bool):
-        """What the check's reactivation step leaves behind: spent when the check ran to its
-        end (sent, or declined with a NO) or was cut short after it had posted; still due when
-        it gave way or failed before it wrote anything. Never raises — the check's lock is
-        released after it."""
+    def _close_nudge(self, nudge: Reactivation.Step | None, answered: bool):
+        """What the check's reactivation step leaves behind: spent when the model answered
+        (sent, or declined with a NO) or the check was cut short after it had posted; still
+        due when it gave way, failed or got no answer from the model — a refusal is not a NO,
+        and the next periodic check asks again. Never raises — the check's lock is released
+        after it."""
         processor, self._check_processor = self._check_processor, None
         if nudge is None:
             return
         try:
             executed = list(processor.executed_commands) if processor is not None else []
-            if not completed and not Reactivation.posted_kinds(executed):
-                info(f"Reactivation: the check ended before it wrote anything — step {nudge.number} stays due")
+            if not answered and not Reactivation.posted_kinds(executed):
+                info(f"Reactivation: the check ended without an answer of the model's and wrote nothing — "
+                     f"step {nudge.number} stays due")
                 return
             Reactivation.record(nudge, executed)
         except Exception as e:
