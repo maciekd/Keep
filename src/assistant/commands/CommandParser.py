@@ -643,8 +643,11 @@ class CommandParser:
         return found
 
     # A line that is a call and nothing else: a lowercase name, its parentheses (a
-    # triple-quoted value may run over lines), the line's end.
-    _CALL_LINE_RE = re.compile(r'^[ \t]*([a-z_][a-z0-9_]*)\((?:"""[\s\S]*?"""|[^\n])*\)[ \t]*$', re.M)
+    # triple-quoted value may run over lines), the line's end. A block is atomic and a quote
+    # that opens one is never a plain character: a block ends at the first closing quotes and
+    # nowhere else, or the engine tries every pairing of the quotes that follow — exponential
+    # in their number, with the GIL held.
+    _CALL_LINE_RE = re.compile(r'^[ \t]*([a-z_][a-z0-9_]*)\((?:(?>"""[\s\S]*?""")|[^\n"]|"(?!""))*\)[ \t]*$', re.M)
 
     def unknown_calls(self, content: str) -> list[tuple[str, str]]:
         """The lines of a complete reply that are a call of something that is no command, as
