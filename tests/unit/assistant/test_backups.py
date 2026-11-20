@@ -5,6 +5,7 @@ import os
 import zipfile
 from datetime import datetime, timedelta
 from itertools import count
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,6 +34,8 @@ def install(tmp_path, monkeypatch):
     monkeypatch.setattr(Backups, "state", lambda: state)
     monkeypatch.setattr(Backups.Backup, "write", lambda path, paths, real=Backup.write: real(path, paths, root))
     monkeypatch.setattr(Backups.Backup, "stage", lambda path, paths, real=Backup.stage: real(path, paths, root))
+    monkeypatch.setattr(Backups.Backup, "write_folder",
+                        lambda folder, paths, real=Backup.write_folder, **kw: real(folder, paths, root, **kw))
     return root
 
 
@@ -173,3 +176,127 @@ def test_a_token_listed_by_name_under_a_directory_of_the_state_is_backed_up_once
     with zipfile.ZipFile(archive) as zf:
         names = zf.namelist()
     assert sorted(names) == ["cache/oauth/car.json", "cache/oauth/music.json", "config.yaml"]
+
+
+class Config:
+    def __init__(self, values):
+        self.values = values
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+
+@pytest.fixture
+def night(install, monkeypatch):
+    """The nightly folder on at 03:45, a clock the test sets, and every error and info line."""
+    values = {Backups.NIGHTLY_FOLDER_KEY: True, Backups.NIGHTLY_TIME_KEY: "03:45"}
+    clock = [datetime(2026, 11, 1, 3, 45)]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    errors, infos = [], []
+    monkeypatch.setattr(Backups, "datetime", Clock)
+    monkeypatch.setattr(Backups, "ConfigManager", lambda: Config(values))
+    monkeypatch.setattr(Backups, "error", lambda text, *a, **kw: errors.append(text))
+    monkeypatch.setattr(Backups, "info", lambda text: infos.append(text))
+    monkeypatch.setattr(Backups.NightlyFolder, "failing", "")
+
+    def at(*when) -> datetime:
+        clock[0] = datetime(*when)
+        return clock[0]
+
+    return SimpleNamespace(config=values, errors=errors, infos=infos, at=at)
+
+
+def test_the_folder_is_written_once_a_night_from_its_time_on(night):
+    nightly = Backups.NightlyFolder()
+    assert not nightly.tick(night.at(2026, 11, 1, 3, 44))
+    assert not Backups.folder().exists()
+    assert nightly.tick(night.at(2026, 11, 1, 3, 45))
+    assert Backup.verify_folder(Backups.folder())
+    assert not nightly.tick(night.at(2026, 11, 1, 3, 46))
+    assert nightly.tick(night.at(2026, 11, 2, 3, 47))
+
+
+def test_a_server_down_at_the_time_writes_the_folder_when_it_comes_up_and_a_restart_does_not_again(night):
+    assert Backups.NightlyFolder().tick(night.at(2026, 11, 1, 9, 30))
+    assert not Backups.NightlyFolder().tick(night.at(2026, 11, 1, 11, 0))      # a restart that morning
+
+
+def test_the_folder_is_off_unless_turned_on(night):
+    night.config[Backups.NIGHTLY_FOLDER_KEY] = False
+    assert not Backups.NightlyFolder().tick(night.at(2026, 11, 1, 4, 0))
+    assert not Backups.folder().exists()
+
+
+def test_a_time_that_does_not_read_falls_back_to_the_default(night):
+    night.config[Backups.NIGHTLY_TIME_KEY] = "quarter to four"
+    assert not Backups.NightlyFolder().tick(night.at(2026, 11, 1, 3, 0))
+    assert Backups.NightlyFolder().tick(night.at(2026, 11, 1, 3, 45))
+
+
+def test_the_folder_holds_the_state_with_the_version_and_time_it_was_written(night, monkeypatch):
+    import json
+    monkeypatch.setattr(Backups.Version, "version", lambda: "v2026.11.7")
+    Backups.NightlyFolder().tick(night.at(2026, 11, 1, 3, 45))
+    manifest = json.loads((Backups.folder() / Backup.MANIFEST).read_text())
+    assert manifest["keep_version"] == "v2026.11.7"
+    assert datetime.fromisoformat(manifest["created"]) == datetime(2026, 11, 1, 3, 45)
+    assert sorted(e["path"] for e in manifest["files"]) == ["config.yaml", "memory/bank.md"]
+
+
+def test_a_failure_that_lasts_is_one_error_and_a_success_clears_it(night, monkeypatch):
+    def disk_full(folder, paths, **kw):
+        raise OSError("No space left on device")
+
+    real = Backups.Backup.write_folder
+    monkeypatch.setattr(Backups.Backup, "write_folder", disk_full)
+    for day in (1, 2, 3):
+        assert Backups.NightlyFolder().tick(night.at(2026, 11, day, 3, 45))
+    assert len(night.errors) == 1 and "No space left" in night.errors[0]
+    assert "No space left" in Backups.listing()
+
+    monkeypatch.setattr(Backups.Backup, "write_folder", real)
+    Backups.NightlyFolder().tick(night.at(2026, 11, 4, 3, 45))
+    assert Backups.NightlyFolder.failing == "" and "No space left" not in Backups.listing()
+    monkeypatch.setattr(Backups.Backup, "write_folder", disk_full)
+    Backups.NightlyFolder().tick(night.at(2026, 11, 5, 3, 45))
+    assert len(night.errors) == 2       # the failure came back after a recovery: an error again
+
+
+def test_the_folder_is_no_part_of_the_kept_zips(night, monkeypatch):
+    monkeypatch.setattr(Backups, "KEPT", 1)
+    Backups.NightlyFolder().tick(night.at(2026, 11, 1, 3, 45))
+    Backups.create()
+    Backups.create()
+    assert len(Backups.backups()) == 1
+    assert Backup.verify_folder(Backups.folder())
+    assert Backups.FOLDER_NAME in Backups.listing()
+
+
+def test_the_folder_or_a_copy_brought_back_elsewhere_restores_after_the_current_state_is_backed_up(night, install, tmp_path):
+    import shutil
+    Backups.NightlyFolder().tick(night.at(2026, 11, 1, 3, 45))
+    brought_back = tmp_path / "restic-restore" / "current"
+    shutil.copytree(Backups.folder(), brought_back)
+    assert Backups.resolve("current") == Backups.folder()
+    assert Backups.resolve(str(brought_back)) == brought_back
+    (install / "config.yaml").write_text("owner_name: Frances\n")
+    assert Backups.restore(brought_back) == ""
+    [undo] = Backups.backups()
+    with zipfile.ZipFile(undo) as zf:
+        assert zf.read("config.yaml") == b"owner_name: Frances\n"
+    Backup.apply_pending(install)
+    assert (install / "config.yaml").read_text() == "owner_name: Marcus\n"
+
+
+def test_a_tampered_folder_restores_nothing_and_leaves_no_undo_backup(night, install):
+    Backups.NightlyFolder().tick(night.at(2026, 11, 1, 3, 45))
+    (Backups.folder() / "config.yaml").write_text("owner_name: Dave\n")
+    problem = Backups.restore(Backups.folder())
+    assert "config.yaml" in problem
+    assert Backups.backups() == []
+    assert Backup.apply_pending(install) is None

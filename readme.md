@@ -275,6 +275,20 @@ On the default cloud setup:
 > **Telemetry.** Keep sends usage events to the cloud: a random install id, whether the install succeeded (or the step it failed in), the Keep version, which interface and integrations are in use, the names of the commands a turn ran — never their arguments, prompt size, etc. For the first 7 days after install the events also carry your queries and Keep's replies, so we can see where the first steps trip people up; after that they never do. Vault secrets are placeholders in the transcript. Turn it all off with `telemetry.enabled: false` in `config.yaml`. To have your data deleted, send us the `telemetry.id` from your `config.yaml`.
 <br>
 
+## Backups
+
+Ask Keep for a backup and it writes one zip of everything that makes it *your* assistant to `~/KeepBackups` (config, vault, memory, history, voice ids, sign-ins); ask it to restore one and it does, after backing up the current state first.
+
+**With restic or Time Machine.** A zip is new bytes every time, so a file-level backup tool cannot dedupe it, and copying Keep's live databases can catch them mid-write. Set `backup.nightly_folder: true` in `config.yaml` instead. Every night at `backup.nightly_time` (03:45 by default) Keep writes the same content uncompressed to `~/KeepBackups/current`:
+
+- the databases are consistent copies, never caught mid-write;
+- `manifest.json` lists every file's size and sha256;
+- the folder is swapped in whole, so your tool never sees half of one.
+
+Schedule your tool after that time and back up `~/KeepBackups/current`. You can exclude Keep's own `floxy.db` and `*.session` files, since the folder already holds safe copies. To go back, restore the folder to any directory (`restic restore latest --target /tmp/keep-restore`, or Time Machine), then ask Keep to restore the `current` folder inside it by its path. It checks every file against the manifest before anything is touched, and refuses a folder that does not match. The folder is not encrypted, so keep your backup repository private.
+
+<br>
+
 ## License
 
 Keep is free software under the [GNU Affero General Public License v3.0](https://github.com/maciekd/Keep/blob/master/LICENSE). You may run, study, change and

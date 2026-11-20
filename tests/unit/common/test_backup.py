@@ -257,3 +257,163 @@ class TestOnlyTheStateIsWritten:
         Backup.stage(archive, state_of(new) + [outside], new)
         Backup.apply_pending(new)
         assert outside.read_text() == "ring"
+
+
+def sha256(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def manifest_of(folder: Path) -> dict:
+    import json
+    return json.loads((folder / Backup.MANIFEST).read_text())
+
+
+@pytest.fixture
+def unpacked(tmp_path):
+    """An install and its unpacked backup folder."""
+    old = tmp_path / "old"
+    state = make_install(old)
+    folder = Backup.write_folder(tmp_path / "backups" / "current", state, old, "v2026.11.7", "2026-11-01T03:45:00")
+    return old, state, folder
+
+
+class TestFolder:
+    def test_the_manifest_names_every_file_once_with_its_size_and_sha256(self, unpacked):
+        old, _, folder = unpacked
+        manifest = manifest_of(folder)
+        assert manifest["keep_version"] == "v2026.11.7" and manifest["created"] == "2026-11-01T03:45:00"
+        listed = {e["path"]: e for e in manifest["files"]}
+        on_disk = sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*")
+                         if p.is_file() and p.name != Backup.MANIFEST)
+        assert sorted(listed) == on_disk == ["config.yaml", "floxy.db", "memory/bank.md", "memory/procedures/sauna.md"]
+        for rel, entry in listed.items():
+            assert entry["size"] == (folder / rel).stat().st_size
+            assert entry["sha256"] == sha256(folder / rel)
+        assert (folder / "config.yaml").read_bytes() == (old / "config.yaml").read_bytes()
+        assert history_rows(folder / "floxy.db") == ["hello Marcus"]
+
+    def test_the_folder_is_uncompressed_and_the_owners_alone(self, unpacked):
+        _, _, folder = unpacked
+        assert (folder / "memory" / "bank.md").read_text() == "Marcus likes the sauna at 80 degrees.\n"
+        for path in [folder, *folder.rglob("*")]:
+            mode = stat.S_IMODE(path.stat().st_mode)
+            assert mode & 0o077 == 0, path
+
+    def test_a_file_named_on_its_own_and_inside_a_named_directory_is_in_the_folder_once(self, tmp_path):
+        root = tmp_path / "Keep"
+        oauth = root / "cache" / "oauth"
+        oauth.mkdir(parents=True)
+        (oauth / "music.json").write_text('{"refresh_token": "r-1"}')
+        folder = Backup.write_folder(tmp_path / "current", [oauth / "music.json", oauth], root)
+        assert [e["path"] for e in manifest_of(folder)["files"]] == ["cache/oauth/music.json"]
+
+    def test_a_new_folder_replaces_the_old_whole_and_leaves_nothing_beside_it(self, unpacked):
+        old, state, folder = unpacked
+        (old / "memory" / "procedures" / "sauna.md").unlink()
+        (old / "config.yaml").write_text("owner_name: Frances\n")
+        Backup.write_folder(folder, state, old)
+        assert (folder / "config.yaml").read_text() == "owner_name: Frances\n"
+        assert not (folder / "memory" / "procedures" / "sauna.md").exists()
+        assert sorted(p.name for p in folder.parent.iterdir()) == ["current"]
+
+    def test_a_write_that_fails_midway_leaves_the_previous_folder_as_it_was(self, unpacked, monkeypatch):
+        old, state, folder = unpacked
+        before = {p.relative_to(folder): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+        (old / "config.yaml").write_text("owner_name: Frances\n")
+        copied = []
+        real = Backup._copy_file
+
+        def full_after_one(source, target):
+            copied.append(source)
+            if len(copied) > 1:
+                raise OSError("No space left on device")
+            real(source, target)
+
+        monkeypatch.setattr(Backup, "_copy_file", full_after_one)
+        with pytest.raises(OSError):
+            Backup.write_folder(folder, state, old)
+        assert {p.relative_to(folder): p.read_bytes() for p in folder.rglob("*") if p.is_file()} == before
+        assert sorted(p.name for p in folder.parent.iterdir()) == ["current"]
+
+    def test_a_crash_between_the_two_renames_is_healed_by_the_next_write(self, unpacked):
+        """The old folder moved aside, the new one not yet in its place: the folder is gone for
+        that moment, but the aside copy is whole and comes back."""
+        old, state, folder = unpacked
+        aside = folder.with_name("current.old")
+        folder.rename(aside)
+        Backup._put_back(folder, aside)
+        assert Backup.verify_folder(folder) and not aside.exists()
+        folder.rename(aside)
+        (folder.with_name("current.tmp")).mkdir()       # the half-written tree of the crashed run
+        Backup.write_folder(folder, state, old)
+        assert Backup.verify_folder(folder)
+        assert sorted(p.name for p in folder.parent.iterdir()) == ["current"]
+
+    def test_a_database_copied_while_another_connection_is_writing_holds_what_was_committed(self, tmp_path):
+        """The server keeps writing the history while the night's copy runs: the copy is a
+        whole database with the committed rows, never a page of the write in flight."""
+        root = tmp_path / "Keep"
+        state = make_install(root)
+        with closing(sqlite3.connect(root / "floxy.db", isolation_level=None)) as writer:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("INSERT INTO history VALUES ('committed before the copy')")
+            writer.execute("BEGIN IMMEDIATE")
+            writer.executemany("INSERT INTO history VALUES (?)", [(f"in flight {i}",) for i in range(500)])
+            folder = Backup.write_folder(tmp_path / "current", state, root)
+            writer.execute("COMMIT")
+        copy = folder / "floxy.db"
+        with closing(sqlite3.connect(copy)) as conn:
+            assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert history_rows(copy) == ["hello Marcus", "committed before the copy"]
+        assert not any(p.name.endswith(Backup.SIDECARS) for p in folder.rglob("*"))
+        assert Backup.verify_folder(folder)
+
+
+class TestFolderRestore:
+    def test_a_folder_restores_like_a_zip(self, unpacked, tmp_path):
+        _, _, folder = unpacked
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        assert Backup.stage(folder, state_of(new), new) == 4
+        assert "current" in Backup.apply_pending(new)
+        assert (new / "config.yaml").read_text() == "owner_name: Marcus\n"
+        assert history_rows(new / "floxy.db") == ["hello Marcus"]
+        assert stat.S_IMODE((new / "config.yaml").stat().st_mode) == 0o600
+
+    @pytest.mark.parametrize("tamper", ["changed byte", "missing file", "no manifest", "escaping path"])
+    def test_a_folder_that_does_not_match_its_manifest_is_refused_and_nothing_is_staged(self, unpacked, tmp_path, tamper):
+        import json
+        _, _, folder = unpacked
+        if tamper == "changed byte":
+            bank = folder / "memory" / "bank.md"
+            bank.write_bytes(bank.read_bytes().replace(b"80", b"90"))     # same size, other content
+        elif tamper == "missing file":
+            (folder / "memory" / "procedures" / "sauna.md").unlink()
+        elif tamper == "no manifest":
+            (folder / Backup.MANIFEST).unlink()
+        else:
+            manifest = manifest_of(folder)
+            manifest["files"].append({"path": "memory/../../start.sh", "size": 1, "sha256": "0" * 64})
+            (folder / Backup.MANIFEST).write_text(json.dumps(manifest))
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        with pytest.raises(BackupError) as refused:
+            Backup.stage(folder, state_of(new), new)
+        if tamper == "changed byte":
+            assert "memory/bank.md" in str(refused.value)
+        if tamper == "missing file":
+            assert "sauna.md" in str(refused.value)
+        assert Backup.apply_pending(new) is None
+        assert (new / "config.yaml").read_text() == "owner_name: Frances\n"
+
+    def test_a_folder_changed_after_staging_is_refused_at_the_start_with_the_state_untouched(self, unpacked, tmp_path):
+        _, _, folder = unpacked
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        Backup.stage(folder, state_of(new), new)
+        (folder / "config.yaml").write_text("owner_name: Dave\n")
+        assert "failed" in Backup.apply_pending(new)
+        assert (new / "config.yaml").read_text() == "owner_name: Frances\n"
+        assert history_rows(new / "floxy.db") == ["hello Frances"]
+        assert Backup.apply_pending(new) is None

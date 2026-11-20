@@ -9,20 +9,31 @@ is undone by restoring that zip, and is put in place by the next start. Moving t
 is the same thing: install Keep there, copy the zip over and ask for it by its path. Left out:
 the browser profile (too big; a login brings it back), the logs and whatever lives outside the
 install.
+
+`NightlyFolder` (`backup.nightly_folder`, off by default) also writes the same state unpacked
+to `~/KeepBackups/current` every night at `backup.nightly_time`, for restic or Time Machine to
+pick up: one folder, replaced whole each night and no part of the KEPT zips. A restore takes
+that folder, or a copy of it a restic restore made, as well as a zip.
 """
+import json
 import threading
-from datetime import datetime
+from datetime import datetime, time as clock_time
 from pathlib import Path
 from typing import Optional
 
 from assistant import FirstRun
 from assistant.integration.music.SpotifyAuth import TOKEN_PATH as SPOTIFY_TOKEN_PATH
-from common import Backup
+from common import Backup, Version
+from common.ConfigManager import ConfigManager
 from common.logging import info, error
 from common.Paths import AISERVER_DIR, CACHE_DIR, CONFIG_PATH, ICLOUD_SESSION_DIR, MEMORY_DIR, VAULT_PATH, VOICE_ID_DIR
 
 DIRECTORY = Path.home() / "KeepBackups"
 KEPT = 10
+FOLDER_NAME = "current"
+NIGHTLY_FOLDER_KEY = "backup.nightly_folder"
+NIGHTLY_TIME_KEY = "backup.nightly_time"
+DEFAULT_NIGHTLY_TIME = "03:45"
 # One zip at a time: a reply that asks for two backups would have both write the same file.
 _writing = threading.Lock()
 
@@ -75,6 +86,26 @@ def _write(kind: str) -> Path:
         return Backup.write(DIRECTORY / f"keep-{kind}-{datetime.now():%Y%m%d-%H%M%S}.zip", state())
 
 
+def folder() -> Path:
+    """The unpacked backup the nightly run writes."""
+    return DIRECTORY / FOLDER_NAME
+
+
+def write_folder() -> Path:
+    """The unpacked backup, written now over the previous one (common/Backup.write_folder)."""
+    with _writing:
+        return Backup.write_folder(folder(), state(), keep_version=Version.version(),
+                                   created=datetime.now().isoformat(timespec="seconds"))
+
+
+def _folder_written() -> Optional[datetime]:
+    """When the folder was written, by its manifest; None without a readable one."""
+    try:
+        return datetime.fromisoformat(json.loads((folder() / Backup.MANIFEST).read_text())["created"])
+    except Exception:
+        return None
+
+
 def create() -> str:
     """Makes a backup now and deletes the ones beyond the newest KEPT; the answer for the LLM."""
     try:
@@ -89,20 +120,24 @@ def create() -> str:
 
 
 def listing() -> str:
-    found = backups()
-    if not found:
+    lines = [f"  {p.name}: {datetime.fromtimestamp(p.stat().st_mtime):%Y-%m-%d %H:%M}, {p.stat().st_size / 1e6:.0f} MB"
+             for p in backups()]
+    if (written := _folder_written()) is not None:
+        lines.append(f"  {FOLDER_NAME}/: unpacked, replaced every night, written {written:%Y-%m-%d %H:%M}")
+    if NightlyFolder.failing:
+        lines.append(f"The last nightly backup folder failed: {NightlyFolder.failing}")
+    if not lines:
         info(f"Backups: none in {DIRECTORY}")
         return f"No backups in {DIRECTORY}."
-    return "\n".join([f"Backups in {DIRECTORY}, newest first:"] + [
-        f"  {p.name}: {datetime.fromtimestamp(p.stat().st_mtime):%Y-%m-%d %H:%M}, {p.stat().st_size / 1e6:.0f} MB"
-        for p in found])
+    return "\n".join([f"Backups in {DIRECTORY}, newest first:"] + lines)
 
 
 def resolve(name: str) -> Optional[Path]:
-    """The zip *name* means: a backup of the folder by its name, or a path."""
+    """The backup *name* means: a zip of the folder by its name, the unpacked folder, or the
+    path of either (a folder restic or Time Machine brought back)."""
     path = Path(name).expanduser()
     path = path if path.is_absolute() else DIRECTORY / path
-    return path if name and path.is_file() else None
+    return path if name and (path.is_file() or path.is_dir()) else None
 
 
 def restore(path: Path) -> str:
@@ -120,3 +155,82 @@ def restore(path: Path) -> str:
         undo.unlink(missing_ok=True)
         return str(e)
     return ""
+
+
+class NightlyFolder:
+    """Writes the unpacked backup folder once a night, at `backup.nightly_time`, while
+    `backup.nightly_folder` is on (both read at every check, so neither needs a restart).
+
+    It runs once per date at or after that time: a server that was down then writes it when it
+    comes up later that day, and a restart after the night's folder is written does not write
+    it again (the manifest's time says). A failure that lasts is said the way the integration
+    monitor and the calendar say one: an error once, when it starts or its reason changes, info
+    on every night after, and info when a write succeeds again. `failing` is what
+    `list_backups` shows meanwhile."""
+    CHECK_SECONDS = 60
+    failing: str = ""     # the process's: the reason last reported, "" once a write worked
+
+    def __init__(self):
+        self._stop = threading.Event()
+        self._thread = None
+        self._tried_on = None
+
+    def start(self):
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="NightlyBackupFolder", daemon=True)
+        self._thread.start()
+        info("Starting NightlyBackupFolder...")
+
+    def stop(self):
+        self._stop.set()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                self.tick(datetime.now())
+            except Exception as e:
+                error(f"NightlyBackupFolder error: {e}")
+            self._stop.wait(self.CHECK_SECONDS)
+
+    def tick(self, now: datetime) -> bool:
+        """Writes the folder when it is due at *now*; whether it tried."""
+        config = ConfigManager()
+        if not config.get(NIGHTLY_FOLDER_KEY, False):
+            return False
+        at = _nightly_time(config.get(NIGHTLY_TIME_KEY, DEFAULT_NIGHTLY_TIME))
+        if now.time() < at or self._tried_on == now.date():
+            return False
+        self._tried_on = now.date()
+        due_since = datetime.combine(now.date(), at)
+        written = _folder_written()
+        if written is not None and written >= due_since:
+            info(f"Backups: the nightly folder was written at {written:%H:%M} today, nothing to do")
+            return False
+        info(f"Backups: the nightly folder is due since {at:%H:%M}, writing {folder()}")
+        try:
+            write_folder()
+        except Exception as e:
+            self._report_failure(f"{type(e).__name__}: {e}")
+            return True
+        if NightlyFolder.failing:
+            info(f"Backups: the nightly folder {folder()} is written again")
+        NightlyFolder.failing = ""
+        return True
+
+    @staticmethod
+    def _report_failure(reason: str):
+        text = (f"Backups: the nightly folder {folder()} could not be written ({reason}); "
+                f"the previous one is left as it was")
+        if reason == NightlyFolder.failing:
+            info(f"{text} — as already reported")
+            return
+        NightlyFolder.failing = reason
+        error(text, outside=True)
+
+
+def _nightly_time(value) -> clock_time:
+    try:
+        return clock_time.fromisoformat(str(value))
+    except ValueError:
+        info(f"Backups: {NIGHTLY_TIME_KEY} '{value}' is not a time like 03:45, using {DEFAULT_NIGHTLY_TIME}")
+        return clock_time.fromisoformat(DEFAULT_NIGHTLY_TIME)

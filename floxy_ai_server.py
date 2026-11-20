@@ -384,6 +384,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
     integration_monitor = None
     startup_announcement = None
     if not running_as_testsuite:
+        from assistant.Backups import NightlyFolder
         from assistant.agents.AutonomousActionManager import AutonomousActionManager
         from assistant.agents.CacheAuditor import CacheAuditor
         from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
@@ -391,7 +392,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
         _register_llm_pre_heat(prompt_manager)
         autonomous = AutonomousActionManager.get_instance(prompt_manager)
         startup_announcement = _post_startup_message(prompt_manager)
-        agents = [CacheAuditor(), CodeQualityMaintainer()]
+        agents = [CacheAuditor(), CodeQualityMaintainer(), NightlyFolder()]
         for agent in agents:
             agent.start()
         agents.append(autonomous)  # its constructor already started it; stopped with the rest

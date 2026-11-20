@@ -396,6 +396,18 @@ is_developer: false
 # changes on a restart_server. Read at each fire, no restart needed.
 nightly_update: true
 
+# An unpacked copy of the backup for a file-level backup tool (restic, Time Machine), which
+# dedupes it file by file where every zip is new bytes. true: every night at nightly_time the
+# state a backup zip holds is written uncompressed to ~/KeepBackups/current — the databases as
+# consistent copies, never caught mid-write, and manifest.json with every file's sha256. The
+# folder is replaced whole (written beside it, then renamed), so a backup tool never sees half
+# of one, and it is no part of the 10 kept zips. Schedule the tool after nightly_time and point
+# it at ~/KeepBackups/current. restore_backup takes the folder, or a copy a restore of the tool
+# brought back, after checking every file against the manifest. Read at each check, no restart needed.
+backup:
+  nightly_folder: false
+  nightly_time: "03:45"
+
 # macOS only: on Linux systemd restarts a dead server by itself (the keep.service user unit) and the key is not read.
 # Relaunch the server when it dies. true: a launchd agent of your account opens "Keep Autostart.app"
 # (the login item) every 5 minutes, and its script starts the server through start.sh unless one is
