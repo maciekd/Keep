@@ -34,7 +34,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from assistant import FirstRun
+from assistant import FirstRun, Reactivation
 from assistant.Backups import STATE as WIPE_TARGETS, integration_targets
 from assistant.prompt.PromptManager import CURRENT_PROMPT_FILE
 from common import Backup
@@ -611,7 +611,12 @@ class DebugCommands:
 
         notes = self._log_out(present)
         deleted, failed = [], []
-        for path, desc in present + [(p, "database sidecar") for p in DATABASE_SIDECARS]:
+        # Deleted with the state and in no backup: the sidecars' content is in the database's
+        # copy, and the reactivation clock is a measurement of this install — put back by a
+        # restore, it would have the assistant write to an owner who has just been there.
+        unsaved = [(p, "database sidecar") for p in DATABASE_SIDECARS] + [
+            (Reactivation.STATE_FILE, "when the owner last spoke (the reactivation clock)")]
+        for path, desc in present + unsaved:
             note = f" — {notes[path]}" if path in notes else ""
             if not path.exists():
                 if note:    # Telethon's log-out deletes the file itself

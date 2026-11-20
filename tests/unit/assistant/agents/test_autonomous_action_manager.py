@@ -2425,6 +2425,28 @@ class TestTheCheckWritesToAQuietOwner:
         assert self.reactivation.due() is None
         assert self.reactivation._load()["spent"][0]["outcome"] == self.reactivation.OUTCOME_DECLINED
 
+    def test_a_check_the_model_refused_leaves_the_step_due(self):
+        # a safety refusal without a fallback comes back from `_think` as an empty reply
+        pm = make_mock_prompt_manager()
+        mgr, mock_llm = make_manager(prompt_manager=pm)
+        mock_llm.handles_thinking_internally.return_value = True
+        mock_llm.think_with_messages.side_effect = LLMRefusalError("refused")
+        mock_llm.refusal_fallback.return_value = None
+        telemetry = Mock()
+        step = self.reactivation.due()
+
+        with patch.object(self.reactivation.Telemetry, "get_instance", return_value=telemetry):
+            mgr.activity_check(nudge=step)
+
+        assert self.reactivation.due().number == step.number
+        telemetry.reactivation_nudge.assert_not_called()
+
+    def test_a_refusal_after_the_check_posted_does_not_take_the_message_back(self):
+        _, step = self.check("", ["post_message(owner, The photo index is done)"])
+
+        assert self.reactivation.due() is None
+        assert self.reactivation._load()["spent"][0]["outcome"] == self.reactivation.OUTCOME_SENT
+
     def test_a_check_that_gave_way_before_it_started_leaves_the_step_due(self):
         sent, step = self.check("NO", [], user_active=True)
 

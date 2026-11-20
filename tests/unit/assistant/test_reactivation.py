@@ -117,7 +117,29 @@ class TestWhenAStepIsDue:
         assert Reactivation.due(at + 60) is None, "the three before it are not sent after it"
 
     def test_the_back_off_comes_on_the_seventh_day_however_few_went_out_before_it(self, quiet_owner):
+        spend(Reactivation.due(LAST_TURN + 2 * DAY), LAST_TURN + 2 * DAY)      # the only one of the six
+
         assert Reactivation.due(LAST_TURN + 9 * DAY).kind == Reactivation.KIND_BACKOFF
+
+    def test_the_seventh_calls_nothing_off_for_an_owner_who_was_never_written_to(self, quiet_owner):
+        # the key switched on a week into the silence, or a server that was down for it
+        step = Reactivation.due(LAST_TURN + 9 * DAY)
+
+        assert (step.number, step.kind) == (Reactivation.DAILY_STEPS, Reactivation.KIND_DAILY)
+        assert Reactivation.BACKOFF not in Reactivation.note(step)
+
+    def test_steps_the_model_declined_are_no_messages_to_call_off(self, quiet_owner):
+        for day in range(1, Reactivation.DAILY_STEPS):
+            spend(Reactivation.due(LAST_TURN + day * DAY), LAST_TURN + day * DAY, posted=False)
+
+        assert Reactivation.due(LAST_TURN + Reactivation.DAILY_STEPS * DAY).kind == Reactivation.KIND_DAILY
+
+    def test_the_message_after_an_unannounced_seventh_is_still_fourteen_days_on(self, quiet_owner):
+        at = LAST_TURN + Reactivation.DAILY_STEPS * DAY
+        spend(Reactivation.due(at), at)
+
+        assert Reactivation.due(at + 13 * DAY) is None
+        assert Reactivation.due(at + 14 * DAY).kind == Reactivation.KIND_FORTNIGHTLY
 
     def test_a_step_waits_while_the_one_before_it_was_spent_within_the_gap(self, quiet_owner):
         late = LAST_TURN + DAY + 20 * HOUR        # step 1 went out 20 hours late
@@ -243,34 +265,26 @@ class TestWhatIsReported:
 
 
 class TestTheNote:
-    def test_it_says_who_has_been_quiet_which_message_this_is_and_what_owner_reaches(self, quiet_owner):
+    def test_it_says_who_has_been_quiet_for_how_long_and_how_to_write_to_them(self, quiet_owner):
         note = Reactivation.note(Reactivation.due(LAST_TURN + 3 * DAY))
 
         assert "Marcus" in note
-        assert f"3 of {Reactivation.DAILY_STEPS}" in note
-        assert "Telegram" in note and "Console" in note
+        assert "3 d" in note
         assert "post_message" in note
 
-    def test_a_chat_nobody_has_open_is_told_apart_from_one_somebody_sees(self, quiet_owner, chats):
-        step = Reactivation.due(LAST_TURN + DAY)
-        unattended = Reactivation.note(step)
-        chats.owner_channels.return_value = [("Telegram", True), ("Console", True)]
+    def test_an_install_without_an_owner_name_still_says_who(self, quiet_owner, settings):
+        del settings["owner_name"]
 
-        assert Reactivation.note(step) != unattended
+        assert "{" not in Reactivation.note(Reactivation.due(LAST_TURN + DAY))
 
     def test_the_seventh_says_that_the_daily_messages_stop_and_what_follows(self, quiet_owner):
-        daily = Reactivation.note(Reactivation.due(LAST_TURN + 6 * DAY))
+        sixth = Reactivation.due(LAST_TURN + 6 * DAY)
+        daily = Reactivation.note(sixth)
+        spend(sixth, LAST_TURN + 6 * DAY)
         back_off = Reactivation.note(Reactivation.due(LAST_TURN + 7 * DAY))
 
         assert Reactivation.BACKOFF in back_off and Reactivation.BACKOFF not in daily
         assert f"every {Reactivation.FORTNIGHT_DAYS} days" in back_off
-
-    def test_with_no_chat_connected_the_note_says_so_instead_of_an_empty_list(self, quiet_owner, chats):
-        chats.owner_channels.return_value = []
-
-        note = Reactivation.note(Reactivation.due(LAST_TURN + DAY))
-
-        assert "`owner` reaches: ." not in note and "`owner` reaches: \n" not in note
 
     def test_the_history_row_names_the_key_that_turns_the_messages_off(self, quiet_owner):
         # what a later chat turn has to go by when the owner says "stop writing to me"

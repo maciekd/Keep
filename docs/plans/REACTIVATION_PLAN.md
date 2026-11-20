@@ -43,6 +43,11 @@ feeds' rows beside the dialog's, so the last turn cannot be read back out of it,
 must not claim a silence nobody measured. An owner who went quiet before this release is
 therefore out of its reach.
 
+A `//wipe` deletes the file, and no backup holds it: the clock is a measurement of the running
+install, and one a restore brought back would count a silence the restore itself had ended —
+the assistant would write within the hour to an owner who had just been there. A restore leaves
+the clock the install has, which is the turn that asked for it.
+
 ### 2. The schedule
 
 Counted from the owner's last turn and due an hour ahead of it (`LEAD`), so each message is there
@@ -52,7 +57,7 @@ is early on average:
 | Step | Due after | Note |
 |---|---|---|
 | 1 – 6 | 1, 2, … 6 days, less an hour | the daily note |
-| 7 | 7 days, less an hour | the back-off note: the last daily one |
+| 7 | 7 days, less an hour | the back-off note: the last daily one — the daily note when none of the six went out |
 | 8, 9, … | 21, 35, … days (every 14), less an hour | the fortnightly note, for as long as the server runs |
 
 - A step is noticed by the first periodic check after its time, so up to 55 minutes late: the
@@ -62,7 +67,10 @@ is early on average:
   the morning.
 - One message per check and none within 12 hours of the last: after a server that was down for
   days, the steps that passed meanwhile are one message, and its step is the newest that is due —
-  the back-off comes on day 7 by the calendar, however many of the six before it went out.
+  the back-off comes on day 7 by the calendar, however few of the six before it went out.
+- The back-off calls the daily messages off, so it needs one that went out: when none did (the
+  key switched on a week into a silence, a server that was down, six steps the model declined)
+  step 7 carries the daily note and is reported as `daily`. The next message is still 14 days on.
 - A turn of the owner's ends it: the schedule starts again from that turn.
 - Only the periodic check carries the note — not a wake-up, a watch item's check or a caffeine
   check — and a check that gave way to the user is retried without it (the owner just spoke).
@@ -74,48 +82,34 @@ The model decides. The check's instruction already lists the destinations `post_
 room's speakers, a group), and the note asks for the one where the message is most likely to be
 seen and welcome. No code picks a channel and no code holds a step back for want of one.
 
-What the model cannot see today is what `owner` amounts to at the moment — Telegram on a phone, or
-a console pane nobody has open. The note says so: `Notifier.owner_channels()` — on the `ChatHub`,
-each transport with a notification conversation by its name, and whether somebody can see it now
-(`ChatTransport.attended()`) — rendered as one line, "`owner` reaches: Telegram; the console
-(nobody has it open)". With nothing but an unattended console the model may still post there (the
-line waits for the owner in the pane) or answer NO; either is its call.
+The note does not say what `owner` amounts to at the moment — Telegram on a phone, or a console
+pane nobody has open. A first draft did, in a line built from `Notifier.owner_channels()` (on the
+`ChatHub`, each transport with a notification conversation by its name, and whether somebody can
+see it now); it went with the rest of the long note (see 4). The lookup stays for the telemetry.
 
 The delivery stays within `post_message`. A mail or an iMessage sent *as the owner* to the owner
 is not a way to reach them: those commands act on the owner's own accounts and wait for an
 approval that would itself land in the chat nobody reads.
 
-### 4. The notes
+### 4. The note
 
 Appended to the check's instruction as a turn of its own, like `DUE_ITEMS_NOTE`, and written by
-the format-neutral rules (a command is its bare backticked name). Drafts:
-
-**Daily (steps 1 – 6)**
+the format-neutral rules (a command is its bare backticked name). It is the fact and the ask,
+and the model works out the rest. A longer draft — what to look for, how the message must not
+read, how to choose the destination, what `owner` reaches — was cut on 2026-11-20:
 
 > ## QUIET OWNER
 >
-> {name} last wrote {duration} ago. This is message {n} of 7 daily ones.
+> {name} last wrote {duration} ago.
 >
-> Send them one message with `post_message` that gives them a reason to come back. Find
-> something that is relevant to them now: a thread of the conversation left open, a setup step
-> that is waiting and what it unlocks, something you noticed in what you can see. This is not a
-> reactivation push and must not read like one: no "we miss you", no guilt, no reminder that you
-> exist. One point, a few lines, and not what you wrote before in this silence — those messages
-> are in the history.
->
-> Where it goes is yours to decide: the destination where they are most likely to see it and
-> glad to. `owner` reaches: {owner_channels}. A group that others read is rarely the place. One
+> Send them one message with `post_message` that gives them a reason to come back. One
 > destination, one message. If the history or the calendar says why they are away and a message
 > would be unwelcome now, or nothing listed would reach them, answer NO.
 
-**Back-off (step 7)** — the same opening, then:
-
-> This is the last daily message; after it you write once every 14 days. Say so in your own
-> voice: the daily messages do not seem to be what they need, so you stop them, and you are
-> there when they want you. Light, no guilt, and still one thing worth coming back for.
-
-**Fortnightly (step 8 on)** — the daily text, opened with "You write to them once every 14 days
-now; this is one of those."
+Where the schedule stands is the one thing the model cannot work out, so the back-off (step 7,
+when a daily message went out before it) adds a sentence after the first: this is the last
+daily message, after it one every 14 days, and the message says so. The daily and the
+fortnightly messages carry no position.
 
 The row that opens the check's rows in the history (`_opening_note`) says what the check was:
 "reactivation message 3 of 7, the owner has been quiet for 3 d; the config key
@@ -128,9 +122,12 @@ After the check, the step is recorded with what came of it — `sent` when a `po
 the check, `declined` when the model answered NO — and is spent either way: a declined step is
 not asked again 55 minutes later. Any `post_message` of the check counts: a check that carries
 the note and posts a watch item's reminder has written to the owner, which is what the step is
-for. A check that gave way to the user or failed before it posted leaves the step due; one that
-was cut short after it posted has spent it. A step found due before the owner spoke and recorded
-after is reported and not kept — the schedule it belonged to is gone.
+for. A check that gave way to the user or failed before it posted leaves the step due, and so
+does one the model gave no answer to — a safety refusal comes back as an empty reply, which is
+not a NO, and counted as `declined` it would cost the day's message and blur the one number
+that says how often the model chooses silence. One that was cut short after it posted has spent
+it. A step found due before the owner spoke and recorded after is reported and not kept — the
+schedule it belonged to is gone.
 
 ### 6. Telemetry
 
@@ -139,7 +136,7 @@ Two events, neither carrying text (the message itself is the `assistant_turn` wi
 
 | Event | When | Properties |
 |---|---|---|
-| `reactivation_nudge` | a step was spent | `step`, `kind` (`daily` / `backoff` / `fortnightly`), `outcome` (`sent` / `declined`), `via` (the kinds of the destinations posted to — `chat`, `voice`, `group` — never a name), `owner_channels` (the transports' names, as the note listed them), `inactive_hours` |
+| `reactivation_nudge` | a step was spent | `step`, `kind` (`daily` / `backoff` / `fortnightly`), `outcome` (`sent` / `declined`), `via` (the kinds of the destinations posted to — `chat`, `voice`, `group` — never a name), `owner_channels` (the names of the transports a push to `owner` reaches), `inactive_hours` |
 | `reactivation_return` | the owner's first turn after a silence of a day or more | `inactive_hours`, `nudges_sent`, `last_step`, `hours_since_nudge` (absent without a nudge), `source` |
 
 `reactivation_return` goes out with `nudges_sent: 0` too — the key off, every step declined, a
@@ -160,12 +157,13 @@ return after a message to a phone against one after a line in the console.
 - `Assistant.stream` — the `owner_spoke` call beside `spoken_to`.
 - `AutonomousActionManager` — `_run_periodic_check` asks `Reactivation.due()` and hands the step to
   `activity_check`; the note, the opening row, the record after the check.
-- `Notifier` / `ChatHub` — `owner_channels` (the `NullNotifier` answers with none).
+- `Notifier` / `ChatHub` — `owner_channels`, for the telemetry (the `NullNotifier` answers with none).
 - `Telemetry` — the two events; `.claude/skills/ftue-report/references/event-model.md` lists them.
 - `config.example.yaml` — the key.
+- `DebugCommands._wipe` — deletes the clock with the state; it is not in `Backups.STATE`.
 - Tests in `tests/unit/assistant/test_reactivation.py` (the schedule over a fake clock: the hour
   of each step, the 12-hour gap, the collapse after a gap, the reset on a turn), plus
-  the check carrying the note with the channels line and recording the outcome and the kinds
+  the check carrying the note and recording the outcome and the kinds
   posted to, the hub's `owner_channels` with an unattended console, and the two events'
   properties as a contract with PostHog.
 

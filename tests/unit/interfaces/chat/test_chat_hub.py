@@ -983,7 +983,7 @@ class TestApprovalAnswerAndKillInOnePollWindow:
 
 
 class TestOwnerChannels:
-    """What a push to the owner reaches, as the reactivation note tells the model."""
+    """What a push to the owner reaches, as the reactivation telemetry reports it."""
 
     def test_each_chat_a_push_reaches_is_listed_with_whether_somebody_sees_it(self):
         hub = ChatHub()

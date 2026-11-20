@@ -5,16 +5,20 @@ called by `Assistant.stream` for every request that is neither a guest's nor one
 started — and runs whether the key is on or not, in `cache/reactivation.json`, so a restart does
 not start it over and switching the key on finds a clock that is true. An install without the
 file has no clock until the owner's next turn: nothing here claims a silence it did not measure.
+The file goes with a `//wipe` and is in no backup — restored, it would count a silence the
+restore itself had ended.
 
 The schedule is counted from that turn and each step is due `LEAD_SECONDS` ahead of it, so a
 message is there a little before the time of day the owner was last active (the periodic check
 notices a step up to its own interval late): one a day for `DAILY_STEPS` days, the last of them
-saying that the daily ones stop, then one every `FORTNIGHT_DAYS`. The periodic check asks `due()`
-and carries the step's `note()`; the model writes the message and picks where it goes, among the
-`post_message` destinations. `record()` then spends the step — sent, or declined when the model
-answered NO — so it is not asked again. One message per check and none within `MIN_GAP_SECONDS`
-of the last: the steps that passed while the server was down are one message, the newest that
-is due. A turn of the owner's starts the schedule over.
+saying that the daily ones stop — when one of them went out: for an owner nobody has written to
+in this silence it is a message like the others —, then one every `FORTNIGHT_DAYS`. The periodic
+check asks `due()` and carries the step's `note()`; the model writes the message and picks where
+it goes, among the `post_message` destinations. `record()` then spends the step — sent, or
+declined when the model answered NO — so it is not asked again; a check the model gave no
+answer to (a refusal) leaves it due. One message per check and none within `MIN_GAP_SECONDS` of
+the last: the steps that passed while the server was down are one message, the newest that is
+due. A turn of the owner's starts the schedule over.
 
 Telemetry: `reactivation_nudge` for every step spent, `reactivation_return` for the owner's
 first turn after a silence of `RETURN_AFTER_SECONDS` or more — with no message sent meanwhile
@@ -56,15 +60,12 @@ UNKNOWN_DESTINATION = "unknown"
 NOTE = """
 ## QUIET OWNER
 
-{name} last wrote {quiet} ago. {position}
+{name} last wrote {quiet} ago.{backoff}
 
-Send them one message with `post_message` that gives them a reason to come back. Find something that is relevant to them now: a thread of the conversation left open, a setup step that is waiting and what it unlocks, something you noticed in what you can see. This is not a reactivation push and must not read like one: no "we miss you", no guilt, no reminder that you exist. One point, a few lines, and not what you wrote before in this silence — those messages are in the history.{backoff}
+Send them one message with `post_message` that gives them a reason to come back. One destination, one message. If the history or the calendar says why they are away and a message would be unwelcome now, or nothing listed would reach them, answer NO."""
 
-Where it goes is yours to decide: the destination where they are most likely to see it and glad to. `owner` reaches: {channels}. A group that others read is rarely the place. One destination, one message. If the history or the calendar says why they are away and a message would be unwelcome now, or nothing listed would reach them, answer NO."""
-
-BACKOFF = """
-
-This is the last daily message: say so in your own voice — the daily messages do not seem to be what they need, so you stop them, and you are there when they want you. Light, no guilt, and still with the one thing worth coming back for."""
+# The one thing of the schedule the model cannot work out for itself.
+BACKOFF = f" This is the last daily message, after it you write once every {FORTNIGHT_DAYS} days: say so in it."
 
 _lock = threading.Lock()
 
@@ -75,16 +76,20 @@ class Step:
     number: int             # 1 … DAILY_STEPS are the daily ones, the fortnightly ones count on from there
     since: float            # the owner's last turn the schedule is counted from
     quiet_seconds: float    # how long the owner had been quiet when the step was found due
+    sent_before: int        # the messages that went out earlier in this silence
 
     @property
     def kind(self) -> str:
-        if self.number < DAILY_STEPS:
-            return KIND_DAILY
-        return KIND_BACKOFF if self.number == DAILY_STEPS else KIND_FORTNIGHTLY
+        if self.number > DAILY_STEPS:
+            return KIND_FORTNIGHTLY
+        # The last daily one calls the daily ones off, and there is nothing to call off for an
+        # owner who got none: the key switched on a week into a silence, a server that was
+        # down, six steps the model declined.
+        return KIND_BACKOFF if self.number == DAILY_STEPS and self.sent_before else KIND_DAILY
 
     @property
     def position(self) -> str:
-        """Where the step stands in the schedule, as the note and the history row say it."""
+        """Where the step stands in the schedule, as the history row says it."""
         if self.kind == KIND_DAILY:
             return f"message {self.number} of {DAILY_STEPS} daily ones"
         if self.kind == KIND_BACKOFF:
@@ -189,14 +194,15 @@ def due(now: Optional[float] = None) -> Optional[Step]:
         trace(f"Reactivation: step {number} is due, but the last one was spent {_describe(now - last_spent)} ago "
               f"— it waits until {MIN_GAP_SECONDS // 3600} h have passed")
         return None
-    step = Step(number=number, since=last_turn, quiet_seconds=quiet)
+    step = Step(number=number, since=last_turn, quiet_seconds=quiet,
+                sent_before=sum(s["outcome"] == OUTCOME_SENT for s in spent))
     info(f"Reactivation: the owner has been quiet for {_describe(quiet)} — step {number} is due ({step.position})")
     return step
 
 
 def _channels() -> list[tuple[str, bool]]:
-    """What `owner` reaches now: each chat a proactive push goes to, and whether somebody can
-    see it at the moment."""
+    """What `owner` reaches now, for the telemetry: each chat a proactive push goes to, and
+    whether somebody can see it at the moment."""
     try:
         return list(notifier().owner_channels())
     except Exception as e:
@@ -205,15 +211,10 @@ def _channels() -> list[tuple[str, bool]]:
 
 
 def note(step: Step) -> str:
-    """What the check that carries *step* is told, as a turn after its instruction."""
-    channels = _channels()
-    reaches = "; ".join(name if attended else f"{name} (nobody has it open)" for name, attended in channels)
-    name = config.get("owner_name") or "The owner"
-    position = step.position
-    return NOTE.format(
-        name=name, quiet=_describe(step.quiet_seconds), position=f"This is {position}.",
-        backoff=BACKOFF if step.kind == KIND_BACKOFF else "",
-        channels=reaches or "nothing at the moment, no chat is connected")
+    """What the check that carries *step* is told, as a turn after its instruction: the fact
+    and the ask. What to write and where it goes are the model's to work out."""
+    return NOTE.format(name=config.get("owner_name") or "The owner", quiet=_describe(step.quiet_seconds),
+                       backoff=BACKOFF if step.kind == KIND_BACKOFF else "")
 
 
 def opening(step: Step) -> str:

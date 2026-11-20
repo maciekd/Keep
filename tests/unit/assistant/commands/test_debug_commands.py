@@ -378,6 +378,20 @@ def test_wipe_backup_failure_deletes_nothing(wipe_env, monkeypatch):
     assert stops == []
 
 
+def test_wipe_takes_the_reactivation_clock_and_leaves_it_out_of_the_backup(wipe_env, held):
+    # restored, the clock would count a silence the restore itself had ended
+    from assistant import Reactivation
+    root, stops = wipe_env
+    Reactivation.owner_spoke("Console")
+    assert Reactivation.STATE_FILE.exists()
+
+    DebugCommands().handle("//wipe confirm")
+
+    assert not Reactivation.STATE_FILE.exists()
+    with zipfile.ZipFile(next((root / "cache" / "wipe-backups").glob("floxy-wipe-*.zip"))) as zf:
+        assert not any(Reactivation.STATE_FILE.name in name for name in zf.namelist())
+
+
 def test_wipe_on_a_fresh_install(wipe_env, held):
     root, stops = wipe_env
     DebugCommands().handle("//wipe confirm")
