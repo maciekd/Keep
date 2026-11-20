@@ -86,6 +86,18 @@ Always add `info()` / `trace()` calls for important operations, decision points,
 outcomes (e.g., empty query results, skipped items). We are aiming for a system that's very easy to debug - good logging
 helps with this!
 
+## Prompt texts
+
+Whatever the assistant's LLM reads — `res/prompt.md`, a toolkit, a section, a note appended to a
+check, a command's result — is SHORT. The reader is an Opus-class model or better, and long
+context makes it less intelligent, not more.
+
+- **Write only what the model cannot know**: a fact of this install or this moment (who, how
+  long, what state), the command to use, the outcome wanted, a limit the code enforces.
+- **Leave out what it works out itself**: how to do the thing well, what to look for, tone, what
+  to avoid, examples, reasons, anything the history or the rest of the prompt already says.
+- **The test for every sentence**: could the model have written it? Then cut it.
+
 ## Development Commands
 
 **Working directory**: the repository root — the server runs from it and cwd-relative names (`log/…`, `res/…`) assume it
