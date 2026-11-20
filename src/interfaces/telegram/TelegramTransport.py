@@ -22,7 +22,7 @@ from html import escape
 from typing import Any, List, Optional
 
 import requests
-from telegram.error import RetryAfter, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 
 from assistant import Destinations, FirstRun
 from assistant.ChannelProfile import SOURCE_TELEGRAM
@@ -1278,12 +1278,31 @@ class TelegramTransport(Integration, ChatTransport):
             except Exception as e2:
                 error(f"Failed to send Telegram message to {chat_id}: {e2}")
 
+    # Seconds before each retry of an upload that failed on Telegram's side or on the way there.
+    SEND_RETRY_DELAYS = (1.0, 2.0, 4.0)
+
+    async def _retrying(self, what: str, chat_id: int, send):
+        """The result of `send()`, called again after each of SEND_RETRY_DELAYS while it fails
+        on Telegram's side or on the network (a 500, a dropped connection, a timeout). The last
+        failure is raised, and so is at once an error a retry cannot change (a request Telegram
+        refuses)."""
+        for delay in (*self.SEND_RETRY_DELAYS, None):
+            try:
+                return await send()
+            except NetworkError as e:
+                if delay is None or isinstance(e, BadRequest):
+                    raise
+                error(f"Telegram: sending a {what} to {chat_id} failed ({e}), trying again in {delay:.0f}s")
+                await asyncio.sleep(delay)
+
     def send_photo(self, conversation, data: bytes, caption: str = "") -> bool:
         return self._schedule(self._send_photo_async(conversation, data, caption), "photo send")
 
     async def _send_photo_async(self, chat_id: int, photo_bytes: bytes, caption: str):
         try:
-            await self._application.bot.send_photo(chat_id=chat_id, photo=photo_bytes, caption=caption[:1024])
+            await self._retrying("photo", chat_id, lambda: self._application.bot.send_photo(
+                chat_id=chat_id, photo=photo_bytes, caption=caption[:1024]))
+            info(f"Telegram [{chat_id}]: sent photo ({len(photo_bytes)} bytes)")
         except Exception as e:
             error(f"Failed to send Telegram photo to {chat_id}: {e}")
 
@@ -1295,7 +1314,9 @@ class TelegramTransport(Integration, ChatTransport):
         media = [InputMediaPhoto(media=photo_bytes, caption=caption[:1024] if i == 0 else None)
                  for i, (photo_bytes, caption) in enumerate(photos)]
         try:
-            await self._application.bot.send_media_group(chat_id=chat_id, media=media)
+            await self._retrying("photo album", chat_id, lambda: self._application.bot.send_media_group(
+                chat_id=chat_id, media=media))
+            info(f"Telegram [{chat_id}]: sent album of {len(media)} photos")
         except Exception as e:
             error(f"Failed to send Telegram photo album to {chat_id}: {e}")
 

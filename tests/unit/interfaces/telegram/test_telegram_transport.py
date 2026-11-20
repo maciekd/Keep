@@ -1431,6 +1431,39 @@ class TestOneShotSends:
         assert kwargs["chat_id"] == 111 and kwargs["photo"] == b"\xff\xd8" and len(kwargs["caption"]) == 1024
 
     @pytest.mark.asyncio
+    async def test_photo_is_sent_again_after_a_server_error(self, transport):
+        from telegram.error import NetworkError
+        transport._application.bot.send_photo = AsyncMock(
+            side_effect=[NetworkError("Internal Server Error"), NetworkError("Internal Server Error"), MagicMock()])
+        with flood_sleeps() as sleep:
+            await transport._send_photo_async(111, b"\xff\xd8", "front door")
+        assert transport._application.bot.send_photo.call_count == 3 and sleep.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_photo_is_given_up_after_three_retries(self, transport):
+        from telegram.error import TimedOut
+        transport._application.bot.send_photo = AsyncMock(side_effect=TimedOut())
+        with flood_sleeps():
+            await transport._send_photo_async(111, b"\xff\xd8", "front door")
+        assert transport._application.bot.send_photo.call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_a_refused_photo_is_not_sent_again(self, transport):
+        from telegram.error import BadRequest
+        transport._application.bot.send_photo = AsyncMock(side_effect=BadRequest("PHOTO_INVALID_DIMENSIONS"))
+        with flood_sleeps() as sleep:
+            await transport._send_photo_async(111, b"\xff\xd8", "front door")
+        assert transport._application.bot.send_photo.call_count == 1 and not sleep.called
+
+    @pytest.mark.asyncio
+    async def test_album_is_sent_again_after_a_server_error(self, transport):
+        from telegram.error import NetworkError
+        transport._application.bot.send_media_group = AsyncMock(side_effect=[NetworkError("Bad Gateway"), MagicMock()])
+        with flood_sleeps():
+            await transport._send_photo_album_async(111, [(b"1", "Cap1"), (b"2", "Cap2")])
+        assert transport._application.bot.send_media_group.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_album_only_first_photo_gets_caption(self, transport):
         transport._application.bot.send_media_group = AsyncMock()
         await transport._send_photo_album_async(111, [(b"1", "x" * 2000), (b"2", "Cap2"), (b"3", "Cap3")])
