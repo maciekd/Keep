@@ -143,3 +143,33 @@ def test_the_state_is_inside_the_install_and_holds_what_makes_the_assistant():
         assert path.is_relative_to(AISERVER_DIR)
         assert not marker.is_relative_to(path)
         assert path.relative_to(AISERVER_DIR).parts[0] not in ("src", "scripts", "res", "tests", ".git", ".venv")
+
+
+def test_no_path_of_the_state_lies_inside_another_yet_every_listed_one_is_held():
+    """The Spotify and Volvo tokens are listed by name and lie under `cache/oauth/`, which a
+    backup holds whole: listed twice, they went into every zip twice."""
+    state = Backups.state()
+    for path in state:
+        assert not any(other != path and path.is_relative_to(other) for other in state)
+    listed = [path for path, _ in Backups.STATE + Backups.integration_targets()] + Backups.BACKUP_ONLY
+    for path in listed:
+        if path.is_relative_to(AISERVER_DIR):
+            assert any(path.is_relative_to(held) for held in state)
+
+
+def test_a_token_listed_by_name_under_a_directory_of_the_state_is_backed_up_once(monkeypatch, tmp_path):
+    root = tmp_path / "Keep"
+    oauth = root / "cache" / "oauth"
+    oauth.mkdir(parents=True)
+    (root / "config.yaml").write_text("owner_name: Marcus\n")
+    (oauth / "music.json").write_text('{"refresh_token": "r-1"}')
+    (oauth / "car.json").write_text('{"refresh_token": "r-2"}')
+    monkeypatch.setattr(Backups, "AISERVER_DIR", root)
+    monkeypatch.setattr(Backups, "STATE", [(root / "config.yaml", "config"), (oauth / "music.json", "music sign-in")])
+    monkeypatch.setattr(Backups, "BACKUP_ONLY", [oauth])
+    monkeypatch.setattr(Backups, "integration_targets", lambda: [(oauth / "car.json", "car sign-in")])
+    assert Backups.state() == [root / "config.yaml", oauth]
+    archive = Backup.write(tmp_path / "keep.zip", Backups.state(), root)
+    with zipfile.ZipFile(archive) as zf:
+        names = zf.namelist()
+    assert sorted(names) == ["cache/oauth/car.json", "cache/oauth/music.json", "config.yaml"]

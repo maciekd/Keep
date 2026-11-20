@@ -102,6 +102,29 @@ class TestRoundTrip:
         assert not (tmp_path / "keep.zip").exists()
 
 
+class TestEachFileOnce:
+    def test_a_file_named_on_its_own_and_inside_a_named_directory_is_in_the_zip_once(self, tmp_path):
+        """A sign-in token listed by its integration and again under the oauth directory a
+        backup holds whole."""
+        root = tmp_path / "Keep"
+        oauth = root / "cache" / "oauth"
+        oauth.mkdir(parents=True)
+        (oauth / "music.json").write_text('{"refresh_token": "r-1"}')
+        (oauth / "car.json").write_text('{"refresh_token": "r-2"}')
+        archive = Backup.write(tmp_path / "keep.zip", [oauth / "music.json", oauth, oauth / "car.json"], root)
+        with zipfile.ZipFile(archive) as zf:
+            names = zf.namelist()
+        assert sorted(names) == ["cache/oauth/car.json", "cache/oauth/music.json"]
+
+    def test_a_database_named_twice_is_copied_once(self, tmp_path):
+        root = tmp_path / "Keep"
+        state = make_install(root)
+        archive = Backup.write(tmp_path / "keep.zip", state + [root / "floxy.db", root], root)
+        with zipfile.ZipFile(archive) as zf:
+            names = zf.namelist()
+        assert len(names) == len(set(names)) and names.count("floxy.db") == 1
+
+
 class TestDatabase:
     def test_a_database_in_wal_mode_comes_back_whole_and_without_sidecars(self, tmp_path):
         old = tmp_path / "old"
