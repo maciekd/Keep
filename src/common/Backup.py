@@ -10,9 +10,12 @@ is new bytes; a restore takes either.
 
 A restore cannot happen under a running server, which holds the database open and writes its
 state back: `stage` checks the backup and leaves a marker, and `apply_pending` — the first thing
-`floxy_ai_server.py` runs, ahead of the config — removes the state the install has and puts
-the backup's in its place. Only files under a path of the state are put there, so a backup
-never writes anywhere else in the tree.
+`floxy_ai_server.py` runs, ahead of the config — puts the backup's files beside the state the
+install has and then swaps the two, so a restore that fails leaves the install as it was. Only
+files under a path of the state are put there, so a backup never writes anywhere else in the
+tree. The marker is good for the relaunch that follows it and no later start
+(`STAGED_FOR_SECONDS`): a relaunch that never happened must not have a start days later roll the
+install back.
 
 The module reads no config and imports nothing of the assistant: it runs before either exists.
 """
@@ -20,6 +23,8 @@ import json
 import os
 import shutil
 import sqlite3
+import tempfile
+import time
 import zipfile
 from contextlib import closing
 from pathlib import Path
@@ -31,10 +36,18 @@ from common.logging import info, error, trace
 SQLITE_MAGIC = b"SQLite format 3\x00"
 SIDECARS = ("-wal", "-shm", "-journal")
 PENDING = Path("cache") / "restore-pending.json"
+# How long a staged restore waits for its relaunch: start.sh stops the old server and starts the
+# new one within a minute or two.
+STAGED_FOR_SECONDS = 15 * 60
+WORK_PREFIX = ".restore-"
 
 
 class BackupError(Exception):
     """The backup cannot be restored; the message is fit to show the user."""
+
+
+class RestoreHalfDone(BackupError):
+    """A restore failed and the state it had moved aside could not all be put back."""
 
 
 def write(zip_path: Path, paths: list[Path], root: Path = AISERVER_DIR) -> Path:
@@ -169,16 +182,26 @@ def stage(archive: Path, state: list[Path], root: Path = AISERVER_DIR) -> int:
         raise BackupError(f"{archive.name} holds nothing of a Keep install")
     marker = root / PENDING
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"archive": str(archive.resolve()), "state": rels}))
+    marker.write_text(json.dumps({"archive": str(archive.resolve()), "state": rels, "staged": time.time()}))
     info(f"Backup: {archive} staged, {len(members)} file(s) to restore at the next start")
     return len(members)
 
 
+def unstage(root: Path = AISERVER_DIR) -> bool:
+    """Takes a staged restore back — the relaunch it waited for did not happen; whether one was staged."""
+    marker = root / PENDING
+    staged = marker.is_file()
+    marker.unlink(missing_ok=True)
+    info(f"Backup: {'the staged restore is taken back' if staged else 'no staged restore to take back'}")
+    return staged
+
+
 def apply_pending(root: Path = AISERVER_DIR) -> Optional[str]:
     """Puts a staged restore in place and says what happened; None when nothing is staged.
-    The marker goes first, so a restore that fails is not tried again by every start, and the
-    backup is read before anything is removed: one that is gone since it was staged (a folder
-    brought back to a temporary directory) leaves the install as it is."""
+    The marker goes first, so a restore that fails is not tried again by every start. A marker
+    older than `STAGED_FOR_SECONDS` is not applied: its relaunch failed, and the install has
+    lived on since. A restore that fails at any point leaves the state as it was — a backup
+    that is gone since it was staged (a folder brought back to a temporary directory) as well."""
     marker = root / PENDING
     if not marker.is_file():
         return None
@@ -186,29 +209,95 @@ def apply_pending(root: Path = AISERVER_DIR) -> Optional[str]:
         plan = json.loads(marker.read_text())
         marker.unlink()
         archive = Path(plan["archive"])
-        if archive.is_dir():
-            members = _members(_folder_files(archive), plan["state"])
-            if not members:
-                raise BackupError(f"{archive} no longer holds anything of a Keep install")
-            for rel in plan["state"]:
-                _remove(root / rel)
-            for name in members:
-                (root / name).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(archive / name, root / name)
-        else:
-            with zipfile.ZipFile(archive) as zf:
-                members = _members(zf.namelist(), plan["state"])
-                for rel in plan["state"]:
-                    _remove(root / rel)
-                zf.extractall(root, members)
-        for name in members:
-            os.chmod(root / name, 0o600)    # a zip carries no modes, and config.yaml is among them
+        age = time.time() - float(plan.get("staged") or 0)
+        if age > STAGED_FOR_SECONDS:
+            error(f"Backup: the restore of {archive} was staged {age / 60:.0f} min ago and its restart never "
+                  f"happened — not applied")
+            return (f"The restore of {archive.name} was not applied: the restart it was staged for never happened. "
+                    f"Ask for the restore again if it is still wanted.")
+        count = _replace_state(root, archive, plan["state"])
+    except RestoreHalfDone as e:
+        marker.unlink(missing_ok=True)
+        error(f"Backup: the staged restore failed and the state is not whole: {e}")
+        return f"The restore failed midway: {e}"
     except Exception as e:
         marker.unlink(missing_ok=True)
-        error(f"Backup: the staged restore failed: {type(e).__name__}: {e}")
-        return f"The restore failed: {e}"
-    info(f"Backup: {archive} restored, {len(members)} file(s) in place")
-    return f"Restored the backup {archive.name}: {len(members)} files."
+        error(f"Backup: the staged restore failed, the state is as it was: {type(e).__name__}: {e}")
+        return f"The restore failed, nothing was changed: {e}"
+    info(f"Backup: {archive} restored, {count} file(s) in place")
+    return f"Restored the backup {archive.name}: {count} files."
+
+
+def _replace_state(root: Path, archive: Path, state: list[str]) -> int:
+    """Puts the backup's part of *state* into a work directory of the install (the owner's
+    alone, on the state's own volume), then swaps it with the state the install has; the
+    number of files. The work directory goes whether it worked or not, with two exceptions
+    that leave it with the replaced state inside: a process killed in the middle, and a
+    failed swap that could not be undone (`RestoreHalfDone`) — there it is the only copy."""
+    work = Path(tempfile.mkdtemp(prefix=WORK_PREFIX, dir=root))
+    try:
+        if archive.is_dir():
+            members = _members(_folder_files(archive), state)
+            for name in members:
+                (work / "new" / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(archive / name, work / "new" / name)
+        else:
+            with zipfile.ZipFile(archive) as zf:
+                members = _members(zf.namelist(), state)
+                zf.extractall(work / "new", members)
+        if not members:
+            raise BackupError(f"{archive} no longer holds anything of a Keep install")
+        for name in members:
+            os.chmod(work / "new" / name, 0o600)    # a zip carries no modes, and config.yaml is among them
+        _swap(root, work, _outermost(state))
+    except RestoreHalfDone:
+        raise
+    except BaseException:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    shutil.rmtree(work, ignore_errors=True)
+    return len(members)
+
+
+def _outermost(state: list[str]) -> list[str]:
+    """*state* without the paths under another of its paths: those move with their directory."""
+    return [rel for rel in dict.fromkeys(state)
+            if not any(rel != other and rel.startswith(other + "/") for other in state)]
+
+
+def _swap(root: Path, work: Path, state: list[str]):
+    """Moves every path of *state* (and the sidecars of a database: they would belong to the
+    install the restore replaces) out to `work/old` and the unpacked one in from `work/new`;
+    a failure moves back what was moved."""
+    aside, placed = [], []
+    try:
+        for rel in state:
+            for name in [rel] + [rel + s for s in SIDECARS]:
+                if (root / name).exists() or (root / name).is_symlink():
+                    _move(root / name, work / "old" / name)
+                    aside.append(name)
+        for rel in state:
+            if (work / "new" / rel).exists():
+                placed.append(rel)
+                _move(work / "new" / rel, root / rel)
+    except BaseException as e:
+        error(f"Backup: the swap failed ({type(e).__name__}: {e}) — putting the {len(aside)} moved path(s) back")
+        try:
+            for rel in placed:
+                _remove(root / rel)
+            for name in aside:
+                _move(work / "old" / name, root / name)
+        except Exception as undo:
+            error(f"Backup: the moved paths could not be put back ({type(undo).__name__}: {undo}) — "
+                  f"{work / 'old'} is kept, it holds what is missing")
+            raise RestoreHalfDone(f"{e}, and the state could not be put back ({undo}): what was replaced "
+                                  f"is in {work / 'old'}") from e
+        raise
+
+
+def _move(source: Path, target: Path):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(target)
 
 
 def _remove(path: Path):

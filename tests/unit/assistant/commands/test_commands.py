@@ -2701,6 +2701,20 @@ class TestRestoreBackup:
         cqm.restart.assert_not_called()
         assert "it is not a readable zip" in note.call_args.args[1]
 
+    def test_a_restart_that_fails_takes_the_staged_restore_back_and_says_so(self, commands_instance, tmp_path):
+        """Left staged, the restore would be applied by whatever start comes next."""
+        archive = tmp_path / "keep-backup-20261101-120000.zip"
+        archive.write_bytes(b"")
+        with patch.object(commands_instance, 'fire_and_forget', side_effect=lambda fn, p: fn(p)), \
+             patch("assistant.commands.Commands.CodeQualityMaintainer") as cqm, \
+             patch("assistant.commands.Commands.system_note") as note, \
+             patch("assistant.commands.Commands.Backup.unstage") as unstage, \
+             patch("assistant.commands.Commands.Backups.restore", return_value=""):
+            cqm.restart.side_effect = OSError("start.sh is gone")
+            commands_instance.cmd_restore_backup(f'"{archive}"')
+        unstage.assert_called_once()
+        assert "start.sh is gone" in note.call_args.args[1]
+
     def test_an_unknown_backup_is_refused_before_anything_runs(self, commands_instance, tmp_path):
         with patch.object(commands_instance, 'fire_and_forget') as background, \
              patch("assistant.commands.Commands.Backups.DIRECTORY", tmp_path):
