@@ -181,6 +181,33 @@ class TestStaging:
         assert (new / "config.yaml").read_text() == "owner_name: Frances\n"
         assert Backup.apply_pending(new) is None    # and no start tries it again
 
+    def test_a_marker_that_does_not_read_fails_once_with_the_state_untouched(self, made):
+        """A start cut off while the marker was written: the next one says so and goes on,
+        instead of failing at every start or removing the state for a zip it cannot name."""
+        _, new = made
+        marker = new / Backup.PENDING
+        marker.parent.mkdir(parents=True)
+        marker.write_text('{"archive": "/tmp/keep')
+        assert "failed" in Backup.apply_pending(new)
+        assert (new / "config.yaml").read_text() == "owner_name: Frances\n"
+        assert history_rows(new / "floxy.db") == ["hello Frances"]
+        assert Backup.apply_pending(new) is None
+
+    def test_state_the_zip_lacks_is_counted_out_of_the_files_to_restore(self, made, tmp_path):
+        """The number a staging answers with is what the restore unpacks: the members under
+        the state, a folder's own entry and a file beside the state left out."""
+        _, new = made
+        mixed = tmp_path / "mixed.zip"
+        with zipfile.ZipFile(mixed, "w") as zf:
+            zf.writestr("memory/", "")
+            zf.writestr("memory/bank.md", "Marcus\n")
+            zf.writestr("memory/watchlist/boat.md", "The boat\n")
+            zf.writestr("memory.md.bak", "beside the state, named like it")
+        assert Backup.stage(mixed, state_of(new), new) == 2
+        Backup.apply_pending(new)
+        assert sorted(p.name for p in (new / "memory").rglob("*") if p.is_file()) == ["bank.md", "boat.md"]
+        assert not (new / "memory.md.bak").exists() and not (new / "config.yaml").exists()
+
 
 class TestOnlyTheStateIsWritten:
     def test_members_outside_the_state_are_not_unpacked(self, made, tmp_path):
