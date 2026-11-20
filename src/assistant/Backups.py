@@ -57,9 +57,12 @@ def integration_targets() -> list[tuple[Path, str]]:
 
 
 def state() -> list[Path]:
-    """Every path a backup holds and a restore replaces: the ones inside the install."""
-    paths = [path for path, _ in STATE + integration_targets()] + BACKUP_ONLY
-    return [path for path in dict.fromkeys(paths) if path.is_relative_to(AISERVER_DIR)]
+    """Every path a backup holds and a restore replaces: the ones inside the install, each once —
+    a file inside a directory of the list (the Spotify and Volvo tokens under `cache/oauth/`) is
+    held by the directory."""
+    paths = dict.fromkeys([path for path, _ in STATE + integration_targets()] + BACKUP_ONLY)
+    inside = [path for path in paths if path.is_relative_to(AISERVER_DIR)]
+    return [path for path in inside if not any(path != other and path.is_relative_to(other) for other in inside)]
 
 
 def backups() -> list[Path]:

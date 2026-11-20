@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from common.Paths import AISERVER_DIR
-from common.logging import info, error
+from common.logging import info, error, trace
 
 SQLITE_MAGIC = b"SQLite format 3\x00"
 SIDECARS = ("-wal", "-shm", "-journal")
@@ -43,19 +43,31 @@ def write(zip_path: Path, paths: list[Path], root: Path = AISERVER_DIR) -> Path:
     fd = os.open(zip_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         with os.fdopen(fd, "wb") as raw, zipfile.ZipFile(raw, "w", zipfile.ZIP_DEFLATED) as zf:
-            for path in paths:
-                for file in ([path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file())):
-                    if _is_sidecar(file):
-                        continue
-                    if _is_sqlite(file):
-                        _write_database(zf, file, _arcname(file, root), zip_path.with_suffix(".snapshot"))
-                    else:
-                        zf.write(file, _arcname(file, root))
+            for file, arcname in files(paths, root):
+                if _is_sqlite(file):
+                    _write_database(zf, file, arcname, zip_path.with_suffix(".snapshot"))
+                else:
+                    zf.write(file, arcname)
     except BaseException:
         zip_path.unlink(missing_ok=True)    # half a zip must never be listed as a backup
         raise
     info(f"Backup: {zip_path} written, {zip_path.stat().st_size / 1e6:.1f} MB")
     return zip_path
+
+
+def files(paths: list[Path], root: Path = AISERVER_DIR) -> list[tuple[Path, str]]:
+    """Every file a backup of *paths* holds, with its name in the backup, each once: a file
+    named on its own and again inside a directory of *paths* (a sign-in token under
+    `cache/oauth/`) would otherwise go in twice. Sidecars of a database are left out."""
+    found = {}
+    for path in paths:
+        for file in ([path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file())):
+            arcname = _arcname(file, root)
+            if arcname in found:
+                trace(f"Backup: {arcname} is already in the backup, not added twice")
+            elif not _is_sidecar(file):
+                found[arcname] = file
+    return [(file, arcname) for arcname, file in found.items()]
 
 
 def _write_database(zf: zipfile.ZipFile, path: Path, arcname: str, snapshot: Path):
