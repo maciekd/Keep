@@ -73,6 +73,15 @@ class TestParse:
         departures = parse(answer({"DepartureTime": "2026-11-17T14:10:00+01:00"}, announcement("14:20", "Ekö", "Strandvik")))
         assert len(departures) == 1
 
+    def test_a_notice_given_as_one_text_is_one_notice(self):
+        """`Info` is a list in the schema; an answer that carries a bare string must not be read letter by letter."""
+        departure, = parse(answer(announcement("14:10", "Ekö", "Strandvik", Info="Delayed 10 minutes")))
+        assert departure.info == ("Delayed 10 minutes",)
+
+    def test_blank_notices_are_dropped(self):
+        departure, = parse(answer(announcement("14:10", "Ekö", "Strandvik", Info=["", "  ", "Ice on the route"])))
+        assert departure.info == ("Ice on the route",)
+
 
 class TestMatching:
     @pytest.mark.parametrize("asked", ["Ekö", "eko", "EKÖ FÄRJELÄGE"])
@@ -164,6 +173,29 @@ class TestFetch:
         ferry.fetch()
         ferry.fetch()
         assert sum(b"FerryRoute" in c.kwargs["data"] for c in post.call_args_list) == 1
+
+    def test_a_route_withdrawn_since_the_list_was_read_is_unknown_once_the_list_is_old(self, post):
+        clock = Mock(monotonic=Mock(return_value=1000.0))
+        ferry = FerryIntegration()
+        with patch.object(module, "time", clock):
+            post.side_effect = api(TIMETABLE)
+            ferry.fetch()
+            post.side_effect = api(TIMETABLE, route_list("Norrleden", "Bodaleden"))
+            clock.monotonic.return_value += module.ROUTES_TTL - 1
+            assert ferry.fetch()                      # the list it read still stands
+            clock.monotonic.return_value += 2
+            with pytest.raises(FerryError, match="Unknown ferry route"):
+                ferry.fetch()
+
+    def test_an_error_page_instead_of_json_is_a_ferry_error_naming_the_status(self, post):
+        post.return_value = Mock(status_code=502, json=Mock(side_effect=ValueError("no JSON")))
+        with pytest.raises(FerryError, match="502"):
+            FerryIntegration().fetch()
+
+    def test_a_connection_that_cannot_be_made_is_a_ferry_error(self, post):
+        post.side_effect = requests.ConnectionError()
+        with pytest.raises(FerryError):
+            FerryIntegration().fetch()
 
 
 def departures_query(post) -> str:
