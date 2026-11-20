@@ -257,3 +257,127 @@ class TestOnlyTheStateIsWritten:
         Backup.stage(archive, state_of(new) + [outside], new)
         Backup.apply_pending(new)
         assert outside.read_text() == "ring"
+
+
+def files_of(folder: Path) -> dict[str, bytes]:
+    return {p.relative_to(folder).as_posix(): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+
+
+@pytest.fixture
+def unpacked(tmp_path):
+    """An install, the zip of it and that zip as a folder."""
+    old = tmp_path / "old"
+    state = make_install(old)
+    archive = Backup.write(tmp_path / "backups" / "keep.zip", state, old)
+    return old, archive, Backup.unpack(archive, tmp_path / "backups" / "current")
+
+
+class TestUnpack:
+    def test_the_folder_holds_the_files_of_the_zip_and_the_database_as_a_whole_copy(self, unpacked):
+        old, archive, folder = unpacked
+        with zipfile.ZipFile(archive) as zf:
+            assert sorted(files_of(folder)) == sorted(zf.namelist())
+        assert (folder / "config.yaml").read_bytes() == (old / "config.yaml").read_bytes()
+        assert history_rows(folder / "floxy.db") == ["hello Marcus"]
+
+    def test_the_folder_is_the_owners_alone_whatever_the_umask(self, unpacked):
+        _, _, folder = unpacked
+        for path in [folder, *folder.rglob("*")]:
+            assert stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, path
+
+    def test_a_new_backup_replaces_the_folder_whole(self, unpacked, tmp_path):
+        """A procedure deleted since the last backup is not in the new folder: it is another
+        tree, not the old one written over."""
+        old, _, folder = unpacked
+        (old / "memory" / "procedures" / "sauna.md").unlink()
+        (old / "config.yaml").write_text("owner_name: Frances\n")
+        Backup.unpack(Backup.write(tmp_path / "second.zip", state_of(old), old), folder)
+        assert (folder / "config.yaml").read_text() == "owner_name: Frances\n"
+        assert not (folder / "memory" / "procedures" / "sauna.md").exists()
+        assert sorted(p.name for p in folder.parent.iterdir()) == ["current", "keep.zip"]
+
+    @pytest.mark.parametrize("left", [".tmp", ".old"])
+    def test_what_a_run_that_died_left_beside_the_folder_does_not_stop_the_next(self, unpacked, left):
+        _, archive, folder = unpacked
+        leftover = folder.with_name(folder.name + left)
+        leftover.mkdir()
+        (leftover / "config.yaml").write_text("half")
+        Backup.unpack(archive, folder)
+        assert not leftover.exists()
+        assert (folder / "config.yaml").read_text() == "owner_name: Marcus\n"
+
+    def test_a_zip_that_does_not_unpack_leaves_the_previous_folder_as_it_was(self, unpacked, tmp_path):
+        _, _, folder = unpacked
+        before = files_of(folder)
+        broken = tmp_path / "broken.zip"
+        broken.write_bytes(b"not a zip")
+        with pytest.raises(zipfile.BadZipFile):
+            Backup.unpack(broken, folder)
+        assert files_of(folder) == before
+        assert not folder.with_name("current.tmp").exists() and not folder.with_name("current.old").exists()
+
+
+class TestFolderRestore:
+    def test_a_folder_restores_like_a_zip(self, unpacked, tmp_path):
+        _, _, folder = unpacked
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        (new / "memory" / "procedures" / "boat.md").write_text("Launch the boat.\n")
+        assert Backup.stage(folder, state_of(new), new) == 4
+        assert "current" in Backup.apply_pending(new)
+        assert (new / "config.yaml").read_text() == "owner_name: Marcus\n"
+        assert history_rows(new / "floxy.db") == ["hello Marcus"]
+        assert not (new / "memory" / "procedures" / "boat.md").exists()
+        assert stat.S_IMODE((new / "config.yaml").stat().st_mode) == 0o600
+
+    def test_a_file_of_the_folder_outside_the_state_is_not_put_in_the_install(self, unpacked, tmp_path):
+        _, _, folder = unpacked
+        (folder / "start.sh").write_text("echo not ours")
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        restore(folder, new)
+        assert not (new / "start.sh").exists()
+
+    def test_a_link_in_the_folder_brings_nothing_in_from_outside_it(self, unpacked, tmp_path):
+        _, _, folder = unpacked
+        outside = tmp_path / "id_ed25519"
+        outside.write_text("a key of the machine")
+        (folder / "memory" / "stolen.md").symlink_to(outside)
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        restore(folder, new)
+        assert not (new / "memory" / "stolen.md").exists()
+
+    def test_a_folder_with_nothing_of_an_install_is_refused_and_nothing_is_staged(self, tmp_path):
+        photos = tmp_path / "photos"
+        photos.mkdir()
+        (photos / "boat.jpg").write_bytes(b"jpeg")
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        with pytest.raises(BackupError):
+            Backup.stage(photos, state_of(new), new)
+        assert Backup.apply_pending(new) is None
+
+    def test_a_folder_with_a_file_that_cannot_be_read_is_refused_while_the_install_is_whole(self, unpacked, tmp_path, monkeypatch):
+        """Found at the start it would be found after the install's own state was removed."""
+        _, _, folder = unpacked
+        monkeypatch.setattr(Backup.os, "access", lambda path, mode: Path(path).name != "bank.md")
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        with pytest.raises(BackupError) as refused:
+            Backup.stage(folder, state_of(new), new)
+        assert "bank.md" in str(refused.value)
+        assert Backup.apply_pending(new) is None
+
+    def test_a_folder_gone_since_it_was_staged_leaves_the_install_as_it_is(self, unpacked, tmp_path):
+        """The copy a backup tool brought back to a temporary directory, cleaned up before the restart."""
+        import shutil
+        _, _, folder = unpacked
+        new = tmp_path / "new"
+        make_install(new, owner="Frances")
+        Backup.stage(folder, state_of(new), new)
+        shutil.rmtree(folder)
+        assert "failed" in Backup.apply_pending(new)
+        assert (new / "config.yaml").read_text() == "owner_name: Frances\n"
+        assert history_rows(new / "floxy.db") == ["hello Frances"]
+        assert Backup.apply_pending(new) is None

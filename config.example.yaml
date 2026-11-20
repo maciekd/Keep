@@ -396,6 +396,13 @@ is_developer: false
 # changes on a restart_server. Read at each fire, no restart needed.
 nightly_update: true
 
+# What a backup the assistant makes is. zip: one zip per backup in ~/KeepBackups, the newest 10 kept.
+# folder: one backup in ~/KeepBackups/current, replaced by each backup —
+# for a file-level backup tool (restic, Time Machine). User can ask the assistant to do a backup on
+# a certain schedule (the watch list can be used for this). Config read at each backup, no restart needed.
+backup:
+  format: zip
+
 # macOS only: on Linux systemd restarts a dead server by itself (the keep.service user unit) and the key is not read.
 # Relaunch the server when it dies. true: a launchd agent of your account opens "Keep Autostart.app"
 # (the login item) every 5 minutes, and its script starts the server through start.sh unless one is

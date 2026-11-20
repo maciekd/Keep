@@ -9,6 +9,11 @@ is undone by restoring that zip, and is put in place by the next start. Moving t
 is the same thing: install Keep there, copy the zip over and ask for it by its path. Left out:
 the browser profile (too big; a login brings it back), the logs and whatever lives outside the
 install.
+
+With `backup.format: folder` a backup is the folder `~/KeepBackups/current` instead — the
+zip's files unpacked, replaced by each backup — for a file-level backup tool (restic, Time
+Machine), which keeps the older versions itself. A restore takes that folder, or a copy of it
+such a tool brought back, as it takes a zip.
 """
 import threading
 from datetime import datetime
@@ -18,11 +23,15 @@ from typing import Optional
 from assistant import FirstRun
 from assistant.integration.music.SpotifyAuth import TOKEN_PATH as SPOTIFY_TOKEN_PATH
 from common import Backup
+from common.ConfigManager import config
 from common.logging import info, error
 from common.Paths import AISERVER_DIR, CACHE_DIR, CONFIG_PATH, ICLOUD_SESSION_DIR, MEMORY_DIR, VAULT_PATH, VOICE_ID_DIR
 
 DIRECTORY = Path.home() / "KeepBackups"
 KEPT = 10
+FOLDER_NAME = "current"
+FORMAT_KEY = "backup.format"
+FORMATS = (ZIP, FOLDER) = ("zip", "folder")
 # One zip at a time: a reply that asks for two backups would have both write the same file.
 _writing = threading.Lock()
 
@@ -70,39 +79,66 @@ def backups() -> list[Path]:
     return sorted(DIRECTORY.glob("keep-*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
-def _write(kind: str) -> Path:
+def folder() -> Path:
+    """The one unpacked backup, which each backup in the folder format replaces."""
+    return DIRECTORY / FOLDER_NAME
+
+
+def _format() -> str:
+    """`backup.format`, read at each backup."""
+    value = str(config.get(FORMAT_KEY, ZIP)).strip().lower()
+    if value not in FORMATS:
+        info(f"Backups: {FORMAT_KEY} '{value}' is neither of {FORMATS}, writing a zip")
+        return ZIP
+    return value
+
+
+def _write(kind: str, unpacked: bool = False) -> Path:
+    """The state as a new zip, or with *unpacked* as the folder: the zip is the way there and
+    is gone again, since a backup tool that takes the whole directory would store every one."""
     with _writing:
-        return Backup.write(DIRECTORY / f"keep-{kind}-{datetime.now():%Y%m%d-%H%M%S}.zip", state())
+        path = Backup.write(DIRECTORY / f"keep-{kind}-{datetime.now():%Y%m%d-%H%M%S}.zip", state())
+        if not unpacked:
+            return path
+        try:
+            return Backup.unpack(path, folder())
+        finally:
+            path.unlink(missing_ok=True)
+
+
+def _megabytes(path: Path) -> float:
+    return sum(f.stat().st_size for f in ([path] if path.is_file() else path.rglob("*")) if f.is_file()) / 1e6
 
 
 def create() -> str:
     """Makes a backup now and deletes the ones beyond the newest KEPT; the answer for the LLM."""
     try:
-        path = _write("backup")
+        path = _write("backup", unpacked=_format() == FOLDER)
     except Exception as e:
         error(f"Backups: the backup failed: {type(e).__name__}: {e}")
         return f"The backup failed: {e}"
     for old in backups()[KEPT:]:
         info(f"Backups: deleting {old}, beyond the {KEPT} kept")
         old.unlink(missing_ok=True)
-    return f"Backup written: {path} ({path.stat().st_size / 1e6:.0f} MB)."
+    return f"Backup written: {path} ({_megabytes(path):.0f} MB)."
 
 
 def listing() -> str:
-    found = backups()
+    found = backups() + ([folder()] if folder().is_dir() else [])
     if not found:
         info(f"Backups: none in {DIRECTORY}")
         return f"No backups in {DIRECTORY}."
-    return "\n".join([f"Backups in {DIRECTORY}, newest first:"] + [
-        f"  {p.name}: {datetime.fromtimestamp(p.stat().st_mtime):%Y-%m-%d %H:%M}, {p.stat().st_size / 1e6:.0f} MB"
+    return "\n".join([f"Backups in {DIRECTORY}, newest first, and the unpacked folder when there is one:"] + [
+        f"  {p.name}: {datetime.fromtimestamp(p.stat().st_mtime):%Y-%m-%d %H:%M}, {_megabytes(p):.0f} MB"
         for p in found])
 
 
 def resolve(name: str) -> Optional[Path]:
-    """The zip *name* means: a backup of the folder by its name, or a path."""
+    """The backup *name* means: one of the backup directory by its name, or a path — a zip, or
+    a folder of a backup's files."""
     path = Path(name).expanduser()
     path = path if path.is_absolute() else DIRECTORY / path
-    return path if name and path.is_file() else None
+    return path if name.strip() and (path.is_file() or path.is_dir()) else None
 
 
 def restore(path: Path) -> str:

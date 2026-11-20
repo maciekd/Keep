@@ -2,9 +2,11 @@
 
 The install and the backup folder are tmp_path trees."""
 import os
+import shutil
 import zipfile
 from datetime import datetime, timedelta
 from itertools import count
+from types import SimpleNamespace
 
 import pytest
 
@@ -173,3 +175,72 @@ def test_a_token_listed_by_name_under_a_directory_of_the_state_is_backed_up_once
     with zipfile.ZipFile(archive) as zf:
         names = zf.namelist()
     assert sorted(names) == ["cache/oauth/car.json", "cache/oauth/music.json", "config.yaml"]
+
+
+@pytest.fixture
+def as_folder(install, monkeypatch):
+    monkeypatch.setattr(Backups, "_format", lambda: Backups.FOLDER)
+    return install
+
+
+def test_in_the_folder_format_a_backup_is_the_unpacked_folder_and_no_zip_is_left(as_folder):
+    answer = Backups.create()
+    assert str(Backups.folder()) in answer
+    assert (Backups.folder() / "memory" / "bank.md").read_text() == "Marcus likes tea.\n"
+    assert [p.name for p in Backups.DIRECTORY.iterdir()] == [Backups.FOLDER_NAME]
+
+
+def test_each_backup_in_the_folder_format_replaces_the_one_before(as_folder):
+    Backups.create()
+    (as_folder / "memory" / "bank.md").unlink()
+    (as_folder / "config.yaml").write_text("owner_name: Charlotte\n")
+    Backups.create()
+    assert (Backups.folder() / "config.yaml").read_text() == "owner_name: Charlotte\n"
+    assert not (Backups.folder() / "memory" / "bank.md").exists()
+
+
+def test_a_folder_backup_that_does_not_unpack_is_an_answer_and_leaves_no_zip(as_folder, monkeypatch):
+    def disk_full(zip_path, folder):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Backups.Backup, "unpack", disk_full)
+    assert "disk full" in Backups.create()
+    assert Backups.backups() == []
+
+
+def test_the_zips_made_before_the_folder_format_are_still_listed_beside_the_folder(install, monkeypatch):
+    Backups.create()
+    monkeypatch.setattr(Backups, "_format", lambda: Backups.FOLDER)
+    Backups.create()
+    [earlier] = Backups.backups()
+    listing = Backups.listing()
+    assert earlier.name in listing and Backups.FOLDER_NAME in listing
+
+
+def test_a_format_the_config_does_not_know_is_a_zip(install, monkeypatch):
+    monkeypatch.setattr(Backups, "config", SimpleNamespace(get=lambda key, default: "tarball"))
+    Backups.create()
+    assert len(Backups.backups()) == 1 and not Backups.folder().exists()
+
+
+def test_the_folder_or_a_copy_brought_back_elsewhere_restores_after_the_current_state_is_backed_up(as_folder, tmp_path):
+    Backups.create()
+    brought_back = tmp_path / "restic-restore" / "current"
+    shutil.copytree(Backups.folder(), brought_back)
+    assert Backups.resolve(Backups.FOLDER_NAME) == Backups.folder()
+    assert Backups.resolve(str(brought_back)) == brought_back
+    (as_folder / "config.yaml").write_text("owner_name: Frances\n")
+    assert Backups.restore(brought_back) == ""
+    [undo] = Backups.backups()      # the way back is a zip in either format
+    with zipfile.ZipFile(undo) as zf:
+        assert zf.read("config.yaml") == b"owner_name: Frances\n"
+    Backup.apply_pending(as_folder)
+    assert (as_folder / "config.yaml").read_text() == "owner_name: Marcus\n"
+
+
+def test_a_folder_that_is_no_backup_restores_nothing_and_leaves_no_undo_backup(install, tmp_path):
+    photos = tmp_path / "photos"
+    photos.mkdir()
+    assert Backups.restore(photos)
+    assert Backups.backups() == []
+    assert Backup.apply_pending(install) is None

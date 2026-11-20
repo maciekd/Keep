@@ -4,13 +4,15 @@ The zip is the one `//wipe` has always written and `scripts/migrate.sh` packs an
 format of its own, so either reads the other's. An SQLite database goes in as a consistent copy
 made by SQLite's backup API (other threads keep writing meanwhile), its sidecars left out. The
 zip is not encrypted: it holds config.yaml, exactly as the install's own folder does, and is
-the owner's alone (0600).
+the owner's alone (0600). `unpack` turns a zip into a folder of the same files, for a
+file-level backup tool (restic, Time Machine) that dedupes a tree file by file where every zip
+is new bytes; a restore takes either.
 
 A restore cannot happen under a running server, which holds the database open and writes its
-state back: `stage` checks the zip and leaves a marker, and `apply_pending` — the first thing
-`floxy_ai_server.py` runs, ahead of the config — removes the state the install has and unpacks
-the zip's in its place. Only members under a path of the state are unpacked, so a zip never
-writes anywhere else in the tree.
+state back: `stage` checks the backup and leaves a marker, and `apply_pending` — the first thing
+`floxy_ai_server.py` runs, ahead of the config — removes the state the install has and puts
+the backup's in its place. Only files under a path of the state are put there, so a backup
+never writes anywhere else in the tree.
 
 The module reads no config and imports nothing of the assistant: it runs before either exists.
 """
@@ -32,7 +34,7 @@ PENDING = Path("cache") / "restore-pending.json"
 
 
 class BackupError(Exception):
-    """The zip cannot be restored; the message is fit to show the user."""
+    """The backup cannot be restored; the message is fit to show the user."""
 
 
 def write(zip_path: Path, paths: list[Path], root: Path = AISERVER_DIR) -> Path:
@@ -100,24 +102,67 @@ def _is_sidecar(path: Path) -> bool:
     return any(path.name.endswith(s) and _is_sqlite(path.with_name(path.name[:-len(s)])) for s in SIDECARS)
 
 
-def _members(zf: zipfile.ZipFile, state: list[str]) -> list[str]:
-    """The files of the zip a restore unpacks: the ones under a path of *state*."""
-    return [name for name in zf.namelist()
+def unpack(zip_path: Path, folder: Path) -> Path:
+    """The files of *zip_path* as the tree *folder*, the owner's alone, in place of the one
+    there. It is written beside it and renamed, so whoever reads *folder* meanwhile (a backup
+    tool on its own schedule) never finds half of one; what a run that died left beside it is
+    removed first."""
+    tmp, old = (folder.with_name(folder.name + suffix) for suffix in (".tmp", ".old"))
+    for leftover in (tmp, old):
+        if leftover.is_dir():
+            info(f"Backup: removing {leftover}, left by a run that did not finish")
+            shutil.rmtree(leftover)
+    try:
+        tmp.mkdir(mode=0o700, parents=True)    # closed before the first file is in it
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(tmp)
+        for directory, _, names in os.walk(tmp):
+            os.chmod(directory, 0o700)
+            for name in names:
+                os.chmod(Path(directory) / name, 0o600)    # a zip carries no modes
+        if folder.exists():
+            folder.rename(old)
+        tmp.rename(folder)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if old.is_dir() and not folder.exists():
+            old.rename(folder)
+        raise
+    shutil.rmtree(old, ignore_errors=True)
+    info(f"Backup: {zip_path.name} unpacked to {folder}")
+    return folder
+
+
+def _folder_files(folder: Path) -> list[str]:
+    """The files of a backup folder by their names in a backup. A link is no part of one: it
+    would bring in a file from outside the folder."""
+    return sorted((Path(directory) / name).relative_to(folder).as_posix()
+                  for directory, _, names in os.walk(folder) for name in names
+                  if not (Path(directory) / name).is_symlink())
+
+
+def _members(names: list[str], state: list[str]) -> list[str]:
+    """The files of a backup a restore puts in place: the ones under a path of *state*."""
+    return [name for name in names
             if not name.endswith("/") and ".." not in name.split("/")
             and any(name == rel or name.startswith(rel + "/") for rel in state)]
 
 
 def stage(archive: Path, state: list[Path], root: Path = AISERVER_DIR) -> int:
-    """Checks that *archive* is a whole zip holding something of *state* (the paths a restore
-    replaces) and leaves the marker for the next start; the number of files it will unpack.
-    Nothing of the install is touched."""
+    """Checks that *archive* — a zip, or a folder of the same files — is whole and holds
+    something of *state* (the paths a restore replaces) and leaves the marker for the next
+    start; the number of files it will put in place. Nothing of the install is touched."""
     rels = [p.relative_to(root).as_posix() for p in state if p.is_relative_to(root)]
-    try:
-        with zipfile.ZipFile(archive) as zf:
-            damaged = zf.testzip()
-            members = _members(zf, rels)
-    except Exception as e:     # zipfile, zlib, the disk: whatever it is, the zip does not read
-        raise BackupError(f"{archive.name} is not a readable zip ({e})")
+    if archive.is_dir():
+        members = _members(_folder_files(archive), rels)
+        damaged = next((name for name in members if not os.access(archive / name, os.R_OK)), None)
+    else:
+        try:
+            with zipfile.ZipFile(archive) as zf:
+                damaged = zf.testzip()
+                members = _members(zf.namelist(), rels)
+        except Exception as e:     # zipfile, zlib, the disk: whatever it is, the zip does not read
+            raise BackupError(f"{archive.name} is not a readable zip ({e})")
     if damaged:
         raise BackupError(f"{archive.name} is damaged ({damaged} does not read back)")
     if not members:
@@ -132,7 +177,8 @@ def stage(archive: Path, state: list[Path], root: Path = AISERVER_DIR) -> int:
 def apply_pending(root: Path = AISERVER_DIR) -> Optional[str]:
     """Puts a staged restore in place and says what happened; None when nothing is staged.
     The marker goes first, so a restore that fails is not tried again by every start, and the
-    zip is opened before anything is removed."""
+    backup is read before anything is removed: one that is gone since it was staged (a folder
+    brought back to a temporary directory) leaves the install as it is."""
     marker = root / PENDING
     if not marker.is_file():
         return None
@@ -140,11 +186,21 @@ def apply_pending(root: Path = AISERVER_DIR) -> Optional[str]:
         plan = json.loads(marker.read_text())
         marker.unlink()
         archive = Path(plan["archive"])
-        with zipfile.ZipFile(archive) as zf:
-            members = _members(zf, plan["state"])
+        if archive.is_dir():
+            members = _members(_folder_files(archive), plan["state"])
+            if not members:
+                raise BackupError(f"{archive} no longer holds anything of a Keep install")
             for rel in plan["state"]:
                 _remove(root / rel)
-            zf.extractall(root, members)
+            for name in members:
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(archive / name, root / name)
+        else:
+            with zipfile.ZipFile(archive) as zf:
+                members = _members(zf.namelist(), plan["state"])
+                for rel in plan["state"]:
+                    _remove(root / rel)
+                zf.extractall(root, members)
         for name in members:
             os.chmod(root / name, 0o600)    # a zip carries no modes, and config.yaml is among them
     except Exception as e:

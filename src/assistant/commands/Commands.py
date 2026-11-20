@@ -1514,8 +1514,9 @@ class Commands:
         return Backups.listing()
 
     def cmd_restore_backup(self, parameter_string: str) -> str:
-        """`restore_backup(file)`: the zip is checked and staged in the background, then the server
-        relaunches and the start puts it in place (common/Backup.py)."""
+        """`restore_backup(file)`: the zip, or the folder of a backup's files, is checked and staged
+        in the background, then the server relaunches and the start puts it in place
+        (common/Backup.py)."""
         name = self._first_argument(parameter_string)
         path = Backups.resolve(name)
         if path is None:

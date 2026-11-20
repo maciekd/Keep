@@ -149,6 +149,8 @@ CAST_CONFIG = {
     # install says: its tests build the transport over a fake host and patch the keys they need.
     "imessage_chat.host": "local",
     "interfaces.imessage.enabled": False,
+    # An install that backs up as a folder would have every test of the zips write a folder.
+    "backup.format": "zip",
 }
 _real_config_get = _config_module.config.get
 
