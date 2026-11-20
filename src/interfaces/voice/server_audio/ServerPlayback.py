@@ -328,10 +328,30 @@ class ServerPlayback:
             error("Outpost server event loop not available")
             return
         future = asyncio.run_coroutine_threadsafe(self.outpost_server.broadcast_command(command), loop)
+        if self._on_loop(loop):
+            # A request's generator finalised on the loop's own thread lands here: waiting
+            # would be the loop waiting for itself, the whole server frozen until the timeout.
+            info(f"Broadcasting '{command}' to outposts from the loop's own thread — not waiting for it")
+            future.add_done_callback(lambda done: self._log_broadcast_failure(command, done))
+            return
         try:
             future.result(timeout=10)
         except Exception as e:
-            error(f"Failed to broadcast '{command}' to outposts: {e}")
+            error(f"Failed to broadcast '{command}' to outposts: {type(e).__name__}: {e}")
+
+    @staticmethod
+    def _on_loop(loop) -> bool:
+        try:
+            return asyncio.get_running_loop() is loop
+        except RuntimeError:
+            return False
+
+    @staticmethod
+    def _log_broadcast_failure(command: str, done):
+        problem = None if done.cancelled() else done.exception()
+        if done.cancelled() or problem:
+            error(f"Failed to broadcast '{command}' to outposts: "
+                  f"{'cancelled' if problem is None else f'{type(problem).__name__}: {problem}'}")
 
     def play_thinking_filler(self, lang: str | None):
         """Play a short spoken filler ("Hmm...", "Let's see...") over the LLM's thinking

@@ -529,6 +529,35 @@ class TestEnsureOutpostsMuted:
         mock_error.assert_called_once()
         assert playback._outposts_muted is True
 
+    def test_a_broadcast_from_the_loops_own_thread_does_not_wait_for_the_loop(self, playback):
+        """A request's generator finalised on the event loop unmutes from the loop's thread:
+        waiting for the broadcast there is the loop waiting for itself — the server frozen
+        for the whole timeout. The call returns before the broadcast has run, and it runs."""
+        import asyncio
+        sent = []
+
+        async def broadcast(command):
+            sent.append(command)
+
+        async def on_the_loop():
+            playback.outpost_server.loop = asyncio.get_running_loop()
+            playback.outpost_server.broadcast_command = broadcast
+            playback._broadcast_outpost_command("wakeword")
+            sent_at_return = list(sent)
+            for _ in range(3):
+                await asyncio.sleep(0)
+            return sent_at_return
+
+        assert asyncio.run(on_the_loop()) == []
+        assert sent == ["wakeword"]
+
+    def test_a_broadcast_from_a_worker_thread_still_waits_for_it(self, playback):
+        _live_outposts(playback)
+        mock_future = MagicMock()
+        with patch(f"{MOD}.asyncio.run_coroutine_threadsafe", return_value=mock_future):
+            playback._broadcast_outpost_command("stop")
+        mock_future.result.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # play_thinking_filler
