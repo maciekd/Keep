@@ -289,3 +289,33 @@ class TestTheNote:
     def test_the_history_row_names_the_key_that_turns_the_messages_off(self, quiet_owner):
         # what a later chat turn has to go by when the owner says "stop writing to me"
         assert Reactivation.ENABLED_KEY in Reactivation.opening(Reactivation.due(LAST_TURN + DAY))
+
+
+class TestWhatTheCheckLeftBehind:
+    def test_a_step_is_spent_though_the_notifier_cannot_say_what_the_owner_s_chats_are(self, quiet_owner, chats):
+        chats.owner_channels.side_effect = RuntimeError("the hub is stopping")
+        at = LAST_TURN + DAY
+
+        outcome = spend(Reactivation.due(at), at)
+
+        assert outcome == Reactivation.OUTCOME_SENT
+        assert Reactivation.due(at + HOUR) is None, "the message went out: it must not be asked for again"
+        assert quiet_owner.reactivation_nudge.call_args.kwargs["owner_channels"] == []
+
+    def test_only_the_messages_are_counted_among_the_commands_of_a_check(self, quiet_owner):
+        kinds = Reactivation.posted_kinds(["load_toolkit(post_message)", "post_message(owner, Hello)",
+                                           "remember(post_message(kitchen, x) worked)", "post_message(Kitchen, Tea)"])
+
+        assert kinds == [Destinations.KIND_CHAT, Destinations.KIND_VOICE]
+
+    @pytest.mark.xfail(strict=True, reason="posted_kinds cuts the destination at the first comma of the processor's "
+                                           "record, so a group whose name holds one is reported as unknown — or as "
+                                           "the kind of whatever answers to the part before the comma")
+    def test_a_message_to_a_group_with_a_comma_in_its_name_is_reported_as_one_to_a_group(self, quiet_owner):
+        group = "Marcus, Charlotte & Frances"
+        Destinations.register(Destinations.Destination(group, Destinations.KIND_GROUP, lambda text: True))
+        Destinations.register(Destinations.Destination("Marcus", Destinations.KIND_CHAT, lambda text: True))
+        # the processor's record of a call: its name and the cleaned parameters joined with ", "
+        executed = [f"post_message({', '.join([group, 'Dinner is at six'])})"]
+
+        assert Reactivation.posted_kinds(executed) == [Destinations.KIND_GROUP]

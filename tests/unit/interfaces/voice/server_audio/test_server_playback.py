@@ -551,6 +551,28 @@ class TestEnsureOutpostsMuted:
         assert asyncio.run(on_the_loop()) == []
         assert sent == ["wakeword"]
 
+    def test_a_broadcast_that_fails_on_the_loops_own_thread_is_still_reported(self, playback):
+        """Nobody waits for it there, so the failure has only the log to reach."""
+        import asyncio
+
+        async def broadcast(command):
+            raise ConnectionResetError("the outpost hung up")
+
+        async def on_the_loop():
+            playback.outpost_server.loop = asyncio.get_running_loop()
+            playback.outpost_server.broadcast_command = broadcast
+            playback._broadcast_outpost_command("wakeword")
+            reported_at_return = mock_error.call_count
+            for _ in range(3):
+                await asyncio.sleep(0)
+            return reported_at_return
+
+        with patch(f"{MOD}.error") as mock_error:
+            assert asyncio.run(on_the_loop()) == 0
+        (reported,), _ = mock_error.call_args
+        assert mock_error.call_count == 1
+        assert "wakeword" in reported and "ConnectionResetError" in reported and "the outpost hung up" in reported
+
     def test_a_broadcast_from_a_worker_thread_still_waits_for_it(self, playback):
         _live_outposts(playback)
         mock_future = MagicMock()

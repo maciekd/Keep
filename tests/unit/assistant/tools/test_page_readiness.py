@@ -485,6 +485,18 @@ class TestSnapshotRendering:
         line = self._wa()._format_snapshot_line(4, {'tag': 'a', 'label': 'Jackets', 'href': '/collections/winter'})
         assert line == '[4] link "Jackets" -> /collections/winter'
 
+    def test_long_hrefs_that_differ_only_past_the_cut_are_not_called_the_same(self):
+        """Two results of a search page share their first hundreds of characters: shown cut they
+        read alike, and a reference from one to the other would send a click to the wrong result."""
+        stem = '/images/search?view=detail&mediaurl=' + 'a%2f' * 100
+        records = [{'tag': 'a', 'label': 'Spruce', 'href': stem + '&id=1'},
+                   {'tag': 'a', 'label': 'Pine', 'href': stem + '&id=2'},
+                   {'tag': 'a', 'label': 'Spruce in snow', 'href': stem + '&id=1'}]
+        lines = self._wa()._render_snapshot_lines(records)
+        assert 'same as' not in lines[0] + lines[1]
+        assert lines[0].endswith('…') and lines[1].endswith('…')
+        assert lines[2] == '[2] link "Spruce in snow" -> same as [0]'
+
 
 @pytest.mark.unit
 class TestPageContextHeader:
