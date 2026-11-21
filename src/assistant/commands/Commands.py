@@ -49,6 +49,8 @@ def normalize_llm_escapes(text: str) -> str:
 
 # noinspection PyMethodMayBeStatic
 # Returned to the LLM when a photo/report had nowhere to go (NullNotifier installed).
+MEDIA_NOT_DELIVERED = ("failed: no chat took it (the upload failed, or no chat interface is running), nothing was "
+                       "delivered to the user.")
 NO_NOTIFICATION_CHANNEL = "failed: no notification channel configured (no chat interface running), nothing was delivered to the user."
 # A drafted issue goes out in <pre> blocks of at most this many characters: under Telegram's 4096 with
 # the title line and the tags to spare, so no chat ever has to split a block itself.
@@ -595,7 +597,8 @@ class Commands:
 
         caption = caption.strip()
         if not notifier().send_photo(jpeg_bytes, caption=caption, **(route or {})):
-            return NO_NOTIFICATION_CHANNEL
+            info(f"send_screenshot: no chat took the screenshot ({path}, {len(jpeg_bytes)} bytes)")
+            return f"send_screenshot {MEDIA_NOT_DELIVERED}"
         info(f"Sent screenshot ({path}, {len(jpeg_bytes)} bytes) to notifier with caption: {caption!r}")
         return ""
 

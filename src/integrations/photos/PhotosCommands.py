@@ -4,7 +4,7 @@ from typing import Optional
 
 from assistant.ChannelProfile import PHOTO_TARGET_SCREEN
 from assistant.commands.CommandSet import CommandSet
-from assistant.commands.Commands import NO_NOTIFICATION_CHANNEL
+from assistant.commands.Commands import MEDIA_NOT_DELIVERED
 from assistant.Notifier import notifier
 from common.ConfigManager import config
 from common.FloxyDatabase import FloxyDatabase
@@ -61,7 +61,8 @@ class PhotosCommands(CommandSet):
         else:
             sent = notifier().send_photo(payload.data, caption=payload.caption, **(route or {}))
         if not sent:
-            return NO_NOTIFICATION_CHANNEL
+            info(f"show_photo: no chat took {payload.kind} {photo_id}")
+            return f"show_photo {MEDIA_NOT_DELIVERED}"
         info(f"Sent {payload.kind} {photo_id} to notifier: {payload.caption}")
         return ""
 
@@ -115,7 +116,8 @@ class PhotosCommands(CommandSet):
             sent = notifier().send_video(video.data, caption=video.caption, thumbnail=video.thumbnail,
                                          **kwargs) and sent
         if not sent:
-            return NO_NOTIFICATION_CHANNEL
+            info(f"show_photo: no chat took all of {len(album_photos)} photo(s) and {len(videos)} video(s)")
+            return f"show_photo {MEDIA_NOT_DELIVERED}"
 
         total = len(album_photos) + len(videos)
         info(f"Sent {len(album_photos)} photos as album and {len(videos)} video(s) to notifier")

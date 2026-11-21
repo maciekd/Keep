@@ -3,6 +3,7 @@ IncomingMessage, the draft's send/edit/flood/fallback behaviour, the status line
 keyboards, one-shot sends and the loop bridge. The reply state machine and intake rules are
 covered in tests/unit/interfaces/chat."""
 import asyncio
+import concurrent.futures
 import threading
 import time
 from contextlib import contextmanager
@@ -71,6 +72,20 @@ def reset_singleton():
     TelegramTransport.reset_instance()
     while _config_patchers:
         _config_patchers.pop().stop()
+
+
+@contextmanager
+def _running_coroutines():
+    """`run_coroutine_threadsafe` that runs the coroutine to its end, here and now."""
+    def run(coro, loop):
+        future = concurrent.futures.Future()
+        try:
+            future.set_result(asyncio.run(coro))
+        except Exception as e:
+            future.set_exception(e)
+        return future
+    with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe', side_effect=run):
+        yield
 
 
 @pytest.fixture
@@ -672,6 +687,32 @@ class TestInboundMedia:
         assert transport._message_texts[(123, 10)] == "[photo]"
 
     @pytest.mark.asyncio
+    async def test_photo_download_that_times_out_is_tried_again(self, transport, hub):
+        from telegram.error import TimedOut
+        update = _update()
+        update.message.photo = [MagicMock(file_id="f")]
+        ctx = _file_context(b"\xff\xd8jpeg")
+        ctx.bot.get_file.side_effect = [TimedOut(), ctx.bot.get_file.return_value]
+        with flood_sleeps() as sleep:
+            await transport._handle_photo(update, ctx)
+        assert sleep.call_count == 1
+        assert hub.receive.call_args[0][1].attachments[0].data == b"\xff\xd8jpeg"
+        hub.photo_dropped.assert_not_called()
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_photo_download_is_given_up_before_its_album_stops_waiting(self, transport, hub):
+        from telegram.error import TimedOut
+        update = _update()
+        update.message.photo = [MagicMock(file_id="f")]
+        ctx = MagicMock()
+        ctx.bot.get_file = AsyncMock(side_effect=TimedOut())
+        with flood_sleeps():
+            await transport._handle_photo(update, ctx)
+        assert ctx.bot.get_file.call_count == len(transport.DOWNLOAD_RETRY_DELAYS) + 1
+        hub.photo_dropped.assert_called_once_with(transport, 123)
+
+    @pytest.mark.asyncio
     async def test_photo_download_failure_is_dropped(self, transport, hub):
         update = _update()
         update.message.photo = [MagicMock(file_id="f")]
@@ -681,7 +722,7 @@ class TestInboundMedia:
         hub.receive.assert_not_called()
         hub.expect_photo.assert_called_once_with(transport, 123, "Anna", None)
         hub.photo_dropped.assert_called_once_with(transport, 123)  # else the album waits forever
-        # A caption folded into the album is dropped with it, so the user must be told.
+        # The user must be told why the picture is not part of any answer.
         update.message.reply_text.assert_awaited_once_with("Sorry, I couldn't download that photo.")
 
     @pytest.mark.asyncio
@@ -1438,6 +1479,33 @@ class TestOneShotSends:
         with flood_sleeps() as sleep:
             await transport._send_photo_async(111, b"\xff\xd8", "front door")
         assert transport._application.bot.send_photo.call_count == 3 and sleep.call_count == 2
+
+    def test_a_photo_telegram_never_took_is_reported_as_not_sent(self, transport):
+        """The sender waits for the upload: a picture that is not in the chat is never a success."""
+        from telegram.error import NetworkError
+        transport._application.bot.send_photo = AsyncMock(side_effect=NetworkError("Internal Server Error"))
+        transport._application.bot.send_media_group = AsyncMock(side_effect=NetworkError("Internal Server Error"))
+        with flood_sleeps(), _running_coroutines():
+            assert transport.send_photo(111, b"\xff\xd8", "front door") is False
+            assert transport.send_photo_album(111, [(b"1", "a"), (b"2", "b")]) is False
+
+    def test_a_photo_telegram_took_is_reported_as_sent(self, transport):
+        transport._application.bot.send_photo = AsyncMock()
+        with _running_coroutines():
+            assert transport.send_photo(111, b"\xff\xd8", "front door") is True
+
+    def test_a_photo_still_uploading_when_the_wait_ends_is_not_called_a_failure(self, transport):
+        with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
+            rcts.return_value.result.side_effect = TimeoutError()
+            assert transport.send_photo(111, b"\xff\xd8", "front door") is True
+            rcts.call_args[0][0].close()
+
+    def test_a_photo_sent_from_the_bot_loops_own_thread_is_not_waited_for(self, transport):
+        transport._thread = threading.current_thread()
+        with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
+            assert transport.send_photo(111, b"\xff\xd8", "front door") is True
+            rcts.return_value.result.assert_not_called()
+            rcts.call_args[0][0].close()
 
     @pytest.mark.asyncio
     async def test_photo_is_given_up_after_three_retries(self, transport):
