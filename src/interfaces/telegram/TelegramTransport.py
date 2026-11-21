@@ -888,15 +888,17 @@ class TelegramTransport(Integration, ChatTransport):
         # Announced before the download: album members are handled concurrently, and the
         # batch must not go out while a sibling is still downloading.
         hub.expect_photo(self, chat_id, sender, group_id)
+        async def download() -> bytes:
+            file = await context.bot.get_file(update.message.photo[-1].file_id)
+            return bytes(await file.download_as_bytearray())
+
         try:
-            photo = update.message.photo[-1]
-            file = await context.bot.get_file(photo.file_id)
-            photo_bytes = bytes(await file.download_as_bytearray())
+            photo_bytes = await self._retrying("photo download", chat_id, download, self.DOWNLOAD_RETRY_DELAYS)
         except Exception as e:
             error(f"Telegram [{chat_id}]: photo download failed: {e}")
             hub.photo_dropped(self, chat_id)
-            # A caption sent as its own message has been folded into this album; without a
-            # photo the batch is skipped, so the user must hear why nothing comes back.
+            # A text sent beside it is still answered (ChatSession._dispatch_album); the user
+            # hears here why the picture is not part of that answer.
             await update.message.reply_text("Sorry, I couldn't download that photo.")
             return
         media_type = "image/png" if photo_bytes[:4] == b'\x89PNG' else "image/jpeg"
@@ -1280,45 +1282,82 @@ class TelegramTransport(Integration, ChatTransport):
 
     # Seconds before each retry of an upload that failed on Telegram's side or on the way there.
     SEND_RETRY_DELAYS = (1.0, 2.0, 4.0)
+    # The same for an incoming photo: fewer, since its album is dispatched without it once the
+    # download has taken ChatSession.ALBUM_DOWNLOAD_TIMEOUT_SECONDS.
+    DOWNLOAD_RETRY_DELAYS = (1.0, 2.0)
+    # How long a photo's sender waits to hear whether Telegram took it: past every retry of
+    # an upload at the bot's default timeouts.
+    UPLOAD_WAIT_SECONDS = 120.0
 
-    async def _retrying(self, what: str, chat_id: int, send):
-        """The result of `send()`, called again after each of SEND_RETRY_DELAYS while it fails
-        on Telegram's side or on the network (a 500, a dropped connection, a timeout). The last
-        failure is raised, and so is at once an error a retry cannot change (a request Telegram
-        refuses)."""
-        for delay in (*self.SEND_RETRY_DELAYS, None):
+    async def _retrying(self, what: str, chat_id: int, call, delays: Optional[tuple] = None):
+        """The result of `call()`, called again after each of *delays* (SEND_RETRY_DELAYS unless
+        given) while it fails on Telegram's side or on the network (a 500, a dropped connection,
+        a timeout). The last failure is raised, and so is at once an error a retry cannot change
+        (a request Telegram refuses)."""
+        for delay in (*(self.SEND_RETRY_DELAYS if delays is None else delays), None):
             try:
-                return await send()
+                return await call()
             except NetworkError as e:
                 if delay is None or isinstance(e, BadRequest):
                     raise
-                error(f"Telegram: sending a {what} to {chat_id} failed ({e}), trying again in {delay:.0f}s")
+                error(f"Telegram [{chat_id}]: {what} failed ({e}), trying again in {delay:.0f}s")
                 await asyncio.sleep(delay)
 
-    def send_photo(self, conversation, data: bytes, caption: str = "") -> bool:
-        return self._schedule(self._send_photo_async(conversation, data, caption), "photo send")
-
-    async def _send_photo_async(self, chat_id: int, photo_bytes: bytes, caption: str):
+    def _deliver(self, coro, what: str) -> bool:
+        """Run an upload on the bot loop and wait for its outcome: False when Telegram did not
+        take it, so whoever sent it never reports a picture that is not in the chat. True
+        without an outcome where waiting is not possible — the bot still connecting (held, as
+        in `_schedule`), a call from the bot loop's own thread — and for an upload still
+        running after UPLOAD_WAIT_SECONDS."""
+        with self._held_lock:
+            if self._connecting:
+                self._held.append((coro, what))
+                trace(f"Telegram bot still connecting, {what} held until it is up ({len(self._held)} waiting).")
+                return True
+        if not self._available(what):
+            coro.close()
+            return False
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        if threading.current_thread() is self._thread:
+            trace(f"Telegram: {what} started from the bot loop's own thread, its outcome is not waited for")
+            return True
         try:
-            await self._retrying("photo", chat_id, lambda: self._application.bot.send_photo(
+            return bool(future.result(self.UPLOAD_WAIT_SECONDS))
+        except TimeoutError:
+            info(f"Telegram: {what} still running after {self.UPLOAD_WAIT_SECONDS:.0f}s, no longer waited for")
+            return True
+        except Exception as e:
+            error(f"Telegram: {what} failed: {e}")
+            return False
+
+    def send_photo(self, conversation, data: bytes, caption: str = "") -> bool:
+        return self._deliver(self._send_photo_async(conversation, data, caption), "photo send")
+
+    async def _send_photo_async(self, chat_id: int, photo_bytes: bytes, caption: str) -> bool:
+        try:
+            await self._retrying("photo send", chat_id, lambda: self._application.bot.send_photo(
                 chat_id=chat_id, photo=photo_bytes, caption=caption[:1024]))
             info(f"Telegram [{chat_id}]: sent photo ({len(photo_bytes)} bytes)")
+            return True
         except Exception as e:
             error(f"Failed to send Telegram photo to {chat_id}: {e}")
+            return False
 
     def send_photo_album(self, conversation, photos: list[tuple[bytes, str]]) -> bool:
-        return self._schedule(self._send_photo_album_async(conversation, photos), "photo album send")
+        return self._deliver(self._send_photo_album_async(conversation, photos), "photo album send")
 
-    async def _send_photo_album_async(self, chat_id: int, photos: list[tuple[bytes, str]]):
+    async def _send_photo_album_async(self, chat_id: int, photos: list[tuple[bytes, str]]) -> bool:
         from telegram import InputMediaPhoto
         media = [InputMediaPhoto(media=photo_bytes, caption=caption[:1024] if i == 0 else None)
                  for i, (photo_bytes, caption) in enumerate(photos)]
         try:
-            await self._retrying("photo album", chat_id, lambda: self._application.bot.send_media_group(
+            await self._retrying("photo album send", chat_id, lambda: self._application.bot.send_media_group(
                 chat_id=chat_id, media=media))
             info(f"Telegram [{chat_id}]: sent album of {len(media)} photos")
+            return True
         except Exception as e:
             error(f"Failed to send Telegram photo album to {chat_id}: {e}")
+            return False
 
     VIDEO_READ_TIMEOUT = 60.0  # seconds Telegram may take to accept an uploaded clip
     VIDEO_WRITE_TIMEOUT = 120.0  # seconds the upload of the clip itself may take

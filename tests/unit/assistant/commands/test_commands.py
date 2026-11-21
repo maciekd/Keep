@@ -186,7 +186,7 @@ class TestSendScreenshot:
         commands_instance.web_access.get_last_screenshot = Mock(return_value=(b"png", "/tmp/x.png"))
         with patch('assistant.tools.ImageAnalyzer.resize_to_jpeg', return_value=b"jpeg"):
             result = commands_instance._run_send_screenshot("")
-        assert "no notification channel configured" in result
+        assert "nothing was delivered" in result
 
     def test_notifier_send_failure_reports_missing_channel(self, commands_instance):
         commands_instance.web_access.get_last_screenshot = Mock(return_value=(b"png", "/tmp/x.png"))
@@ -195,7 +195,7 @@ class TestSendScreenshot:
         with patch('assistant.Notifier._notifier', bot), \
              patch('assistant.tools.ImageAnalyzer.resize_to_jpeg', return_value=b"jpeg"):
             result = commands_instance._run_send_screenshot("")
-        assert "no notification channel configured" in result
+        assert "nothing was delivered" in result
 
     def test_happy_path_sends_jpeg_with_caption(self, commands_instance):
         commands_instance.web_access.get_last_screenshot = Mock(return_value=(b"png_bytes", "/tmp/x.png"))

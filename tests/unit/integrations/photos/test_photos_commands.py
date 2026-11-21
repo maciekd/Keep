@@ -281,7 +281,7 @@ class TestCmdShowPhoto:
              patch("integrations.photos.PhotoProcessor.PhotoProcessor._get_image_bytes", return_value=b"jpeg"):
             mock_db_cls.get_instance.return_value.get_photo_by_id.return_value = mock_photo
             result = photo_commands(commands_instance)._run_show_photo("42")
-        assert "no notification channel configured" in result
+        assert "nothing was delivered" in result
 
     def test_show_photo_multiple_ids_sends_album(self, commands_instance):
         photos = {
@@ -559,7 +559,7 @@ class TestShowVideo:
         notifier_mock.send_video.return_value = False
         result = self._video(commands_instance, notifier_mock,
                              {5: (MediaPayload(b"mp4", "cap", "U", "video"), None)})
-        assert "no notification channel configured" in result
+        assert "nothing was delivered" in result
 
     def test_mixed_album_sends_photos_as_album_then_videos(self, commands_instance):
         notifier_mock = Mock()

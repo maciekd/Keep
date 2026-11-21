@@ -79,6 +79,7 @@ class _Album:
         # Photos the transport announced (`expect_photo`) but is still downloading; the
         # album is not dispatched while any are outstanding.
         self.pending = 0
+        self.dropped = 0            # announced photos whose download failed
         self.touched = time.monotonic()
 
 
@@ -108,6 +109,8 @@ class TokenRate:
 
 class ChatSession:
     IMAGES_ONLY_QUERY = "See images"   # the query of a photo batch without a caption
+    # In front of a batch's query when photos sent with it never arrived.
+    PHOTOS_MISSING = "[{count} photo(s) sent with this message could not be downloaded]"
     # How long the reply loop waits for the next assistant event before reporting progress;
     # the visible "still working" signal through slow thinking and commands.
     SPINNER_TICK_SECONDS = 0.5
@@ -287,6 +290,7 @@ class ChatSession:
                 trace(f"{self._log_prefix()}: dropped photo was not being awaited, nothing to release")
                 return
             album.pending -= 1
+            album.dropped += 1
             album.touched = time.monotonic()
             self._reset_album_timer(album, self.ALBUM_DEBOUNCE_SECONDS)
         info(f"{self._log_prefix()}: announced photo dropped ({album.pending} still downloading)")
@@ -338,15 +342,20 @@ class ChatSession:
                     return
                 info(f"{prefix}: giving up on {album.pending} photo(s) still downloading after {waited:.0f}s")
             self._album = None
-        if not album.images:
+        if not album.images and not album.captions:
             info(f"{self._log_prefix()}: batch has no images, skipping")
             return
         query = " ".join(album.captions) if album.captions else self.IMAGES_ONLY_QUERY
-        info(f"{self._log_prefix()} dispatching batch: {len(album.images)} image(s), query: {query}")
+        missing = album.dropped + album.pending
+        if missing:
+            # What was written beside a photo is still a turn when the photo never arrived.
+            query = f"{self.PHOTOS_MISSING.format(count=missing)} {query}"
+        info(f"{self._log_prefix()} dispatching batch: {len(album.images)} image(s), {missing} missing, "
+             f"query: {query}")
         self._start(IncomingMessage(conversation=self._conversation, sender=album.sender, text=query,
                                     guest=album.guest, sender_is_bot=album.sender_is_bot, context=album.context,
                                     overheard=album.overheard),
-                    images=album.images, message_ids=album.message_ids)
+                    images=album.images or None, message_ids=album.message_ids)
 
     def _cancel_album(self):
         with self._lock:

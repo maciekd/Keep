@@ -80,6 +80,7 @@ class ChatTransport(ABC):
         return True
 
     # --- one-shot sends: True when the platform accepted the message for delivery -----------
+    # A photo or an album is the one send a transport may wait on: False when the upload failed.
 
     @abstractmethod
     def send_text(self, conversation, html: str, *, silent: bool = False, preview: bool = True) -> bool: ...

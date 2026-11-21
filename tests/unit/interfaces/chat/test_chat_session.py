@@ -1009,6 +1009,40 @@ class TestAlbums:
         assert wait_until(lambda: assistant.requests)
         assert len(assistant.requests[0][0].images) == 1
 
+    def test_text_beside_a_photo_that_never_arrived_is_still_a_turn(self, session, hub, transport):
+        session.ALBUM_DEBOUNCE_SECONDS = self.HELD
+        assistant = FakeAssistant([None])
+        hub.assistant = assistant
+        session.expect_photo("Anna", None)
+        session.submit(msg(text="What plant is this?"))
+        session.photo_dropped()
+        self._debounce_runs_out(session)
+        assert wait_until(lambda: assistant.requests)
+        context, query = assistant.requests[0][0], assistant.requests[0][1]
+        assert query.endswith("What plant is this?") and "could not be downloaded" in query
+        assert not context.images
+
+    def test_a_dropped_photo_with_nothing_written_beside_it_starts_no_turn(self, session, hub, transport):
+        session.ALBUM_DEBOUNCE_SECONDS = self.HELD
+        assistant = FakeAssistant([None])
+        hub.assistant = assistant
+        session.expect_photo("Anna", None)
+        session.photo_dropped()
+        self._debounce_runs_out(session)
+        assert session._album is None and not assistant.requests
+
+    def test_a_batch_missing_one_of_its_photos_says_so(self, session, hub, transport):
+        session.ALBUM_DEBOUNCE_SECONDS = self.HELD
+        assistant = FakeAssistant([None])
+        hub.assistant = assistant
+        session.expect_photo("Anna", "g")
+        session.expect_photo("Anna", "g")
+        session.submit(self._photo(b"one", caption="Which is better?", group_id="g"))
+        session.photo_dropped()
+        self._debounce_runs_out(session)
+        assert wait_until(lambda: assistant.requests)
+        assert "1 photo(s)" in assistant.requests[0][1] and len(assistant.requests[0][0].images) == 1
+
     def test_stuck_download_stops_holding_the_album(self, session, hub, transport):
         session.ALBUM_DEBOUNCE_SECONDS = 0.005
         session.ALBUM_DOWNLOAD_TIMEOUT_SECONDS = 0.03
