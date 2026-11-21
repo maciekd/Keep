@@ -18,6 +18,8 @@ PHOTO_HISTORY_SOURCE = "iCloud Photos"
 NO_INTERACTIONS = "(No interactions in this period)"   # get_interaction_history with nothing in the period
 # `role` of the rows that hold a command round's result (MessageHistory.ROLE_COMMAND writes them).
 ROLE_COMMAND = "command"
+# The roles of the rows the server wrote itself; any other role is the name of who said the row.
+SERVER_ROLES = ("assistant", "system", ROLE_COMMAND, "note")
 # What RequestProcessor puts in front of a command round's reply; the curation filter looks past it.
 COMMAND_RESULT_HEADER = "result:"
 
@@ -607,6 +609,21 @@ class FloxyDatabase:
             except sqlite3.Error as e:
                 error(f"Error counting history entries from {source}: {e}")
                 raise
+
+    def last_dialog_turn(self, skip_source: str | None = None) -> Optional[float]:
+        """When somebody last said something to the assistant: the newest row whose role is a
+        person's name, the rows of `skip_source` left out. None for a history without one —
+        the feeds' rows are system rows and never count."""
+        roles = ",".join("?" * len(SERVER_ROLES))
+        with self.lock:
+            try:
+                with closing(sqlite3.connect(self.db_path)) as conn:
+                    row = conn.execute(f'SELECT MAX(timestamp) FROM history WHERE role NOT IN ({roles}) '
+                                       f'AND (source IS NULL OR source != ?)', (*SERVER_ROLES, skip_source or "")).fetchone()
+                    return row[0]
+            except sqlite3.Error as e:
+                error(f"Error reading the last dialog turn: {e}")
+                return None
 
     def history_timestamps(self, source: str, timestamps: list[float]) -> set[float]:
         """Which of `timestamps` already have a row under `source` — a feed's test for an

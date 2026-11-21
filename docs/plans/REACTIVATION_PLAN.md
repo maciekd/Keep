@@ -37,16 +37,17 @@ re-opens) neither counts as the owner's activity nor as a step of the schedule.
 
 The time is kept in `cache/reactivation.json` so a restart does not start the clock over, and it
 is kept whether the key is on or not, so switching the key on finds a clock that is true. An
-install without the file (the first start with this code, a `//wipe`, one nobody has ever spoken
-to) has no clock until the owner's next turn and is not written to: the history table holds the
-feeds' rows beside the dialog's, so the last turn cannot be read back out of it, and a message
-must not claim a silence nobody measured. An owner who went quiet before this release is
-therefore out of its reach.
+install without the file (the first start with this code, a restore) gets its clock from the
+history once the key is on: the newest row whose role is a person's name
+(`FloxyDatabase.last_dialog_turn` — a feed's rows are system rows, the periodic check's are left
+out by their source). A guest's row counts there, which only ever makes the silence shorter than
+it was. So an owner who went quiet before this release is within reach. A history with no such
+row (a `//wipe`, an install nobody has ever spoken to) leaves no clock until the owner's next
+turn: a message must not claim a silence nobody measured.
 
-A `//wipe` deletes the file, and no backup holds it: the clock is a measurement of the running
-install, and one a restore brought back would count a silence the restore itself had ended —
-the assistant would write within the hour to an owner who had just been there. A restore leaves
-the clock the install has, which is the turn that asked for it.
+A `//wipe` deletes the file, and no backup holds it. A restored install without the file reads
+the clock from the restored history; the step that is due then waits for its hour like any late
+one (§2), so a restore is never followed by a message at once.
 
 ### 2. The schedule
 
@@ -65,6 +66,10 @@ is early on average:
   before it on average. (A lead of 30 minutes would land it on the owner's time on average, as
   often after as before.) In Night mode the periodic check does not run, and the step waits for
   the morning.
+- A step found more than two hours past its hour (`SLOT_SECONDS`: the server was down, the key
+  was just switched on, the clock was just read from the history) waits until that hour comes
+  round again — a nightly update's restart at 03:00 must not be when the message goes out. The
+  step Night mode held back is the exception and goes out with the first check of the morning.
 - One message per check and none within 12 hours of the last: after a server that was down for
   days, the steps that passed meanwhile are one message, and its step is the newest that is due —
   the back-off comes on day 7 by the calendar, however few of the six before it went out.
@@ -180,4 +185,4 @@ return after a message to a phone against one after a line in the console.
    don't seem to be working" as a message of its own after the week.
 4. **The default.** Off for now. Turning it on for every install is the default of `due()` and
    the value in `config.example.yaml`; an install that has been silent since before this release
-   has no clock and stays out of reach either way.
+   gets its clock from the history.

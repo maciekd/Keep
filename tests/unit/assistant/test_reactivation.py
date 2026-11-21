@@ -8,12 +8,24 @@ import pytest
 import common.ConfigManager as config_module
 from assistant import Destinations, Reactivation
 from assistant.Notifier import set_notifier
+from assistant.ChannelProfile import SOURCE_AUTONOMOUS
 from assistant.agents.AutonomousActionManager import PERIODIC_CHECK_INTERVAL_SECONDS
+from common.FloxyDatabase import FloxyDatabase
 
 HOUR = 3600
 DAY = 24 * HOUR
 # The owner's last turn: a Monday evening, 20:00.
 LAST_TURN = datetime(2026, 3, 2, 20, 0).timestamp()
+
+
+@pytest.fixture(autouse=True)
+def history(tmp_path, monkeypatch):
+    """A history of the test's own: the worker's shared database holds whatever rows the tests
+    before this one left, and a clock would be read out of them."""
+    monkeypatch.setattr(FloxyDatabase, "DB_PATH", str(tmp_path / "floxy.db"))
+    db = FloxyDatabase()
+    monkeypatch.setattr(FloxyDatabase, "get_instance", classmethod(lambda cls: db))
+    return db
 
 
 @pytest.fixture
@@ -142,13 +154,37 @@ class TestWhenAStepIsDue:
         assert Reactivation.due(at + 14 * DAY).kind == Reactivation.KIND_FORTNIGHTLY
 
     def test_a_step_waits_while_the_one_before_it_was_spent_within_the_gap(self, quiet_owner):
-        late = LAST_TURN + DAY + 20 * HOUR        # step 1 went out 20 hours late
-        spend(Reactivation.due(late), late)
+        late = LAST_TURN + DAY + 20 * HOUR        # step 1 went out 20 hours late, after a long night
+        spend(Reactivation.due(late, after_night=True), late)
         step_two_due = Reactivation.due_at(LAST_TURN, 2)
 
         assert step_two_due - late < Reactivation.MIN_GAP_SECONDS
         assert Reactivation.due(step_two_due + 60) is None
-        assert Reactivation.due(late + Reactivation.MIN_GAP_SECONDS).number == 2
+        assert Reactivation.due(late + Reactivation.MIN_GAP_SECONDS, after_night=True).number == 2
+
+    def test_a_step_found_hours_past_its_hour_waits_for_that_hour_of_the_next_day(self, quiet_owner):
+        restart = LAST_TURN + DAY + 7 * HOUR      # 03:00, the nightly update: step 1 was due at 19:00
+
+        assert Reactivation.due(restart) is None
+        assert Reactivation.due(LAST_TURN + 2 * DAY - 2 * HOUR) is None, "still the night after"
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 2) + 60).number == 2
+
+    def test_a_step_is_still_sent_a_postponed_check_after_its_hour(self, quiet_owner):
+        at = Reactivation.due_at(LAST_TURN, 1) + PERIODIC_CHECK_INTERVAL_SECONDS + 20 * 60
+
+        assert Reactivation.due(at).number == 1
+
+    def test_the_last_daily_step_missed_on_its_day_goes_out_at_its_hour_of_a_later_day(self, quiet_owner):
+        back_up = LAST_TURN + 9 * DAY + 5 * HOUR   # down since day 6, up again at 01:00 on day 9
+
+        assert Reactivation.due(back_up) is None
+        assert Reactivation.due(LAST_TURN + 10 * DAY - HOUR + 60).number == 7
+
+    def test_the_step_the_night_held_back_goes_out_with_the_morning(self, quiet_owner):
+        morning = LAST_TURN + DAY + 11 * HOUR     # 07:00: Night mode was on from before 19:00
+
+        assert Reactivation.due(morning) is None
+        assert Reactivation.due(morning, after_night=True).number == 1
 
     def test_nothing_is_due_while_the_key_is_off(self, quiet_owner, settings):
         settings[Reactivation.ENABLED_KEY] = False
@@ -162,6 +198,40 @@ class TestWhenAStepIsDue:
 
     def test_an_install_whose_owner_has_no_turn_on_record_is_never_written_to(self, settings, telemetry):
         assert Reactivation.due(LAST_TURN + 30 * DAY) is None
+
+    def test_an_install_without_a_clock_counts_from_the_last_thing_somebody_wrote(self, settings, telemetry, history):
+        history.add_history_entry("Marcus", "what is on today?", LAST_TURN - DAY, "Telegram")
+        history.add_history_entry("Marcus", "good night", LAST_TURN, "Console")
+        history.add_history_entry("assistant", "Sleep well.", LAST_TURN + 1)
+
+        assert Reactivation.due(LAST_TURN + 5 * HOUR) is None
+        step = Reactivation.due(Reactivation.due_at(LAST_TURN, 3) + 60)
+        assert (step.number, step.since) == (3, LAST_TURN)
+
+    def test_what_the_server_and_the_feeds_wrote_since_is_not_the_owner_speaking(self, settings, telemetry, history):
+        history.add_history_entry("Marcus", "good night", LAST_TURN, "Console")
+        history.add_history_entry("system", "Charlotte: are you home?", LAST_TURN + 2 * DAY, "iMessage Feed")
+        history.add_history_entry("system", "Server is up again", LAST_TURN + 2 * DAY + 1, "first_run")
+        history.add_history_entry("command", "post_message: sent", LAST_TURN + 2 * DAY + 2, SOURCE_AUTONOMOUS)
+        history.add_history_entry("note", "It is 20:00.", LAST_TURN + 2 * DAY + 3)
+        history.add_history_entry("User", "periodic check", LAST_TURN + 2 * DAY + 4, SOURCE_AUTONOMOUS)
+
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 3) + 60).since == LAST_TURN
+
+    def test_a_clock_read_from_the_history_is_kept(self, settings, telemetry, history):
+        history.add_history_entry("Marcus", "good night", LAST_TURN, "Console")
+        at = Reactivation.due_at(LAST_TURN, 1) + 60
+        spend(Reactivation.due(at), at)
+        history.add_history_entry("Alice", "is anybody there?", at + 60, "Telegram")
+
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 2) + 60).number == 2, "a guest's row moves no clock that exists"
+
+    def test_no_clock_is_read_from_the_history_while_the_key_is_off(self, settings, telemetry, history):
+        history.add_history_entry("Marcus", "good night", LAST_TURN, "Console")
+        settings[Reactivation.ENABLED_KEY] = False
+
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 1) + 60) is None
+        assert not Reactivation.STATE_FILE.exists()
 
     def test_a_state_file_that_cannot_be_read_is_no_clock(self, quiet_owner):
         Reactivation.STATE_FILE.write_text("{not json")

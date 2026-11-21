@@ -414,6 +414,7 @@ class AutonomousActionManager:
     def _run_periodic_check(self):
         last_memory_curation_date = None
         night_skip_logged = False
+        after_night = False     # the next check is the first since Night mode ended
 
         next_check_at = self._first_check_at()
         while self.running:
@@ -434,6 +435,7 @@ class AutonomousActionManager:
                     info("Periodic activity check skipped — Night mode is active; the due watcher "
                          "still fires the watch items' due times")
                 night_skip_logged = True
+                after_night = True
                 continue
             night_skip_logged = False
 
@@ -447,10 +449,11 @@ class AutonomousActionManager:
             # cadence past the hour the prompt prefix stays cached.
             next_check_at = time.time() + PERIODIC_CHECK_INTERVAL_SECONDS
             self._write_last_check(time.time())
+            woke, after_night = after_night, False
             try:
                 # Only this check writes to an owner who has gone quiet: a wake-up, a watch
                 # item's check and a caffeine check are about something else.
-                self.activity_check(nudge=Reactivation.due())
+                self.activity_check(nudge=Reactivation.due(after_night=woke))
             except Exception as e:
                 # One failed check (the API out of credits, say) must not end the periodic
                 # loop: on 2026-10-04 it did, and no check ran again until the next restart.

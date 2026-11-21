@@ -2361,13 +2361,13 @@ class TestTheCheckWritesToAQuietOwner:
 
     @pytest.fixture(autouse=True)
     def quiet_for_a_day(self, monkeypatch):
-        """The messages are on and the owner's last turn was 25 hours ago."""
+        """The messages are on and the owner's last turn was 24 hours ago: step 1 is in its hour."""
         import common.ConfigManager as config_module
         from assistant import Reactivation
         values = {Reactivation.ENABLED_KEY: True, "owner_name": "Marcus"}
         monkeypatch.setattr(config_module.config, "get", lambda key, default=None: values.get(key, default))
         Destinations.register(Destinations.Destination("owner", Destinations.KIND_CHAT, lambda text: True))
-        Reactivation.owner_spoke("Telegram", now=time.time() - 25 * 3600)
+        Reactivation.owner_spoke("Telegram", now=time.time() - 24 * 3600)
         self.reactivation = Reactivation
 
     def check(self, reply: str, executed: list[str], user_active=False):
@@ -2466,6 +2466,27 @@ class TestTheCheckWritesToAQuietOwner:
         assert self.reactivation.due().number == step.number
         assert not mgr.activity_check_lock.locked()
 
+    def test_the_first_check_after_the_night_carries_the_step_the_night_held_back(self):
+        self.reactivation.owner_spoke("Telegram", now=time.time() - 34 * 3600)   # its hour was 11 hours ago
+        mgr, _ = make_manager()
+        mgr.prompt_manager.is_night_mode_active.side_effect = [True, False, False]
+        carried = []
+
+        def check(**kwargs):
+            carried.append(kwargs.get("nudge"))
+            mgr.running = len(carried) < 2
+            return ""
+
+        with patch('assistant.agents.AutonomousActionManager.time.sleep'), \
+                patch.object(mgr, '_run_memory_curation'), \
+                patch.object(mgr, '_nightly_curation_due', return_value=False), \
+                patch.object(mgr, 'is_user_interaction_active', return_value=False), \
+                patch.object(mgr, 'activity_check', side_effect=check):
+            mgr._run_periodic_check()
+
+        assert carried[0].number == 1, "the morning's first check sends what the night kept"
+        assert carried[1] is None, "the check after it is no longer the morning's first: a late step waits for its hour"
+
     def test_the_periodic_loop_hands_the_due_step_to_its_check(self):
         mgr, _ = make_manager()
         carried = []
@@ -2529,7 +2550,7 @@ class TestTheCheckWritesToAQuietOwner:
         """A check that wrote, then one that gave way before it started: the second has no
         message of its own, and the first one's must not spend its step."""
         self.check("post_message(owner, The photo index is done)\nNO", ["post_message(owner, The photo index is done)"])
-        self.reactivation.owner_spoke("Telegram", now=time.time() - 25 * 3600)      # a new silence, a day old
+        self.reactivation.owner_spoke("Telegram", now=time.time() - 24 * 3600)      # a new silence, a day old
 
         _, step = self.check("NO", [], user_active=True)
 

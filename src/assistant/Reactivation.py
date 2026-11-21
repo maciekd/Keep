@@ -4,9 +4,11 @@ Off unless `reactivation.enabled` is true. The clock is the owner's last turn �
 called by `Assistant.stream` for every request that is neither a guest's nor one the server
 started — and runs whether the key is on or not, in `cache/reactivation.json`, so a restart does
 not start it over and switching the key on finds a clock that is true. An install without the
-file has no clock until the owner's next turn: nothing here claims a silence it did not measure.
-The file goes with a `//wipe` and is in no backup — restored, it would count a silence the
-restore itself had ended.
+file (one that ran before this code, a restored one) gets its clock from the history when the key
+is on: the last row somebody wrote to the assistant (`_seed`). A guest's row counts there, which
+can only make the silence shorter than it was, and a history with no such row leaves the install
+without a clock until the owner's next turn: nothing here claims a silence it did not measure.
+The file goes with a `//wipe` and is in no backup.
 
 The schedule is counted from that turn and each step is due `LEAD_SECONDS` ahead of it, so a
 message is there a little before the time of day the owner was last active (the periodic check
@@ -18,7 +20,11 @@ it goes, among the `post_message` destinations. `record()` then spends the step 
 declined when the model answered NO — so it is not asked again; a check the model gave no
 answer to (a refusal) leaves it due. One message per check and none within `MIN_GAP_SECONDS` of
 the last: the steps that passed while the server was down are one message, the newest that is
-due. A turn of the owner's starts the schedule over.
+due — and it waits for its time of day: a step found more than `SLOT_SECONDS` after an hour it
+was due at (the server was down, the key or the clock is new) is held until that hour comes round
+again, so no message goes out at whatever hour a restart happened to be. The one late step that
+goes out at once is the one the house's Night mode held back (`after_night`): the morning is when
+the owner is there. A turn of the owner's starts the schedule over.
 
 Telemetry: `reactivation_nudge` for every step spent, `reactivation_return` for the owner's
 first turn after a silence of `RETURN_AFTER_SECONDS` or more — with no message sent meanwhile
@@ -32,9 +38,11 @@ from datetime import timedelta
 from typing import Optional
 
 from assistant import Destinations, WatchList
+from assistant.ChannelProfile import SOURCE_AUTONOMOUS
 from assistant.Notifier import notifier
 from assistant.Telemetry import Telemetry
 from common.ConfigManager import config
+from common.FloxyDatabase import FloxyDatabase
 from common.Paths import CACHE_DIR
 from common.logging import error, info, trace
 
@@ -45,6 +53,9 @@ DAY = 24 * 3600
 # A step is due this long before the time of day of the owner's last turn. The periodic check
 # notices it 0–55 minutes later, so the message lands half an hour early on average and never late.
 LEAD_SECONDS = 3600
+# How long after its hour a step still goes out: two checks' worth. Later than that it waits
+# for the same hour of the next day.
+SLOT_SECONDS = 2 * 3600
 DAILY_STEPS = 7             # one message a day for this many days; the last says the daily ones stop
 FORTNIGHT_DAYS = 14         # then one every this many days
 MIN_GAP_SECONDS = 12 * 3600     # between two steps, whatever fell due meanwhile
@@ -139,6 +150,20 @@ def _save(state: dict) -> None:
         error(f"Reactivation: the state file cannot be written: {e}")
 
 
+def _seed() -> Optional[dict]:
+    """The clock of an install that has none, read back out of the history and kept: the last
+    row somebody wrote to the assistant. None when the history holds no such row."""
+    last_turn = FloxyDatabase.get_instance().last_dialog_turn(skip_source=SOURCE_AUTONOMOUS)
+    if last_turn is None:
+        trace("Reactivation: no turn of the owner's on record and none in the history, nothing to count a silence from")
+        return None
+    state = {"last_owner_turn": last_turn, "spent": []}
+    _save(state)
+    info(f"Reactivation: no clock on record — started from the last turn in the history, "
+         f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(last_turn))}")
+    return state
+
+
 def owner_spoke(source: Optional[str], now: Optional[float] = None) -> None:
     """The owner said something: the silence ends, the schedule starts over from this turn, and
     a turn that ends a silence of `RETURN_AFTER_SECONDS` or more is reported as a return. Called
@@ -165,18 +190,18 @@ def owner_spoke(source: Optional[str], now: Optional[float] = None) -> None:
         error(f"Reactivation: noting the owner's turn failed: {type(e).__name__}: {e}")
 
 
-def due(now: Optional[float] = None) -> Optional[Step]:
+def due(now: Optional[float] = None, after_night: bool = False) -> Optional[Step]:
     """The step the periodic check should carry now, None when there is none: the key is off,
-    the owner has no turn on record, no step's time has come, the newest one is spent, or the
-    last one was spent less than `MIN_GAP_SECONDS` ago."""
+    the owner has no turn on record, no step's time has come, the newest one is spent, the
+    last one was spent less than `MIN_GAP_SECONDS` ago, or the step is past its hour and waits
+    for the next — unless *after_night* says this is the first check since Night mode ended."""
     if not config.get(ENABLED_KEY, False):
         trace(f"Reactivation: off ({ENABLED_KEY} is not true)")
         return None
     now = time.time() if now is None else now
     with _lock:
-        state = _load()
+        state = _load() or _seed()
     if state is None:
-        trace("Reactivation: no turn of the owner's on record yet, nothing to count a silence from")
         return None
     last_turn, spent = state["last_owner_turn"], state["spent"]
     quiet = now - last_turn
@@ -193,6 +218,11 @@ def due(now: Optional[float] = None) -> Optional[Step]:
     if last_spent is not None and now - last_spent < MIN_GAP_SECONDS:
         trace(f"Reactivation: step {number} is due, but the last one was spent {_describe(now - last_spent)} ago "
               f"— it waits until {MIN_GAP_SECONDS // 3600} h have passed")
+        return None
+    past_its_hour = (now - last_turn + LEAD_SECONDS) % DAY
+    if past_its_hour > SLOT_SECONDS and not after_night:
+        trace(f"Reactivation: step {number} is due, but {_describe(past_its_hour)} past its hour — it waits until "
+              f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(now + DAY - past_its_hour))}")
         return None
     step = Step(number=number, since=last_turn, quiet_seconds=quiet,
                 sent_before=sum(s["outcome"] == OUTCOME_SENT for s in spent))
