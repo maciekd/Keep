@@ -951,8 +951,14 @@ class TestWhatALinuxStartNeeds:
         (harness.dir / 'log' / 'verbose-floxy.out').write_text('x' * 470)
         harness.with_a_console_to_launch()
         harness.comes_up_on(5151)
+        calls = harness.dir / 'tail_calls'
         with harness.env_file.open('a') as env:
-            env.write(f'tail() {{ echo "$*" >> "{harness.dir}/tail_calls"; }}\n')
+            # The tail is a background job the script kills when its wait is over, and the wait is
+            # no time at all here: its sleep holds the script until the job has said what it was
+            # asked, so a busy machine cannot have it killed before its first line.
+            env.write(f'tail() {{ echo "$*" >> "{calls}"; }}\n'
+                      'sleep() { local round; [ -n "$tail_pid" ] || return 0; '
+                      f'for ((round = 0; round < 3000; round++)); do [ ! -s "{calls}" ] || return 0; command sleep 0.01; done; }}\n')
         harness.run(terminal=True)
-        (shown,) = (harness.dir / 'tail_calls').read_text().splitlines()
+        (shown,) = calls.read_text().splitlines()
         assert '+471 ' in shown and shown.endswith('log/verbose-floxy.out')
