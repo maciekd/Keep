@@ -3,6 +3,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from assistant.tools.WebAccess import WebAccess
 
 
@@ -44,6 +46,23 @@ class TestCleanLink:
                "&exph=800&expw=1200&q=tree&FORM=IRPRST&ck=044F&selectedIndex=0&itb=0")
         assert WebAccess.clean_link(url) == ("https://www.bing.com/images/search?view=detailV2&id=62E6A0"
                                              "&mediaurl=https%3A%2F%2Fphotos.example%2Ftree.jpg&q=tree")
+
+    def test_the_search_engines_tokens_go_on_their_subdomains_and_stay_everywhere_else(self):
+        tokens = "q=advent+candles&ved=2ahUKE&ei=O6Xs&sxsrf=AKtok"
+        assert (WebAccess.clean_link(f"https://images.google.com/search?{tokens}")
+                == "https://images.google.com/search?q=advent+candles")
+        # a country domain is not covered, and `ei` or `form` is a shop's own parameter elsewhere
+        for kept in (f"https://www.google.se/search?{tokens}", f"https://notgoogle.com/search?{tokens}",
+                     "https://shop.example/contact?form=returns&ck=9&ei=42"):
+            assert WebAccess.clean_link(kept) == kept
+
+    @pytest.mark.xfail(strict=True, reason="clean_link counts the query's segments by its ampersands: the empty "
+                                           "segments of Bing's `?!&&p=…` make a link nothing was dropped from look "
+                                           "changed, and it is re-encoded as `?%21=&p=…`")
+    def test_a_bing_redirect_link_is_left_exactly_as_the_page_gave_it(self):
+        # its parameters are the signed destination: the href is the only handle on the result
+        url = "https://www.bing.com/ck/a?!&&p=5f1c9e0d&ptn=3&ver=2&hsh=4&fclid=1a2b&u=a1aHR0cHM6Ly9zaG9wLmV4YW1wbGU&ntb=1"
+        assert WebAccess.clean_link(url) == url
 
     def test_a_blank_value_survives(self):
         assert WebAccess.clean_link("https://example.com/p?flag=&utm_x=1") == "https://example.com/p?flag="

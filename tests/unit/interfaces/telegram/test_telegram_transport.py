@@ -1456,6 +1456,23 @@ class TestOneShotSends:
         assert transport._application.bot.send_photo.call_count == 1 and not sleep.called
 
     @pytest.mark.asyncio
+    async def test_a_photo_to_a_chat_that_blocked_the_bot_is_not_sent_again(self, transport):
+        """Only a failure on Telegram's side or on the way there is worth a second try."""
+        from telegram.error import Forbidden
+        transport._application.bot.send_photo = AsyncMock(side_effect=Forbidden("bot was blocked by the user"))
+        with flood_sleeps() as sleep:
+            await transport._send_photo_async(111, b"\xff\xd8", "front door")
+        assert transport._application.bot.send_photo.call_count == 1 and not sleep.called
+
+    @pytest.mark.asyncio
+    async def test_an_album_that_never_goes_through_is_given_up_without_raising(self, transport):
+        from telegram.error import NetworkError
+        transport._application.bot.send_media_group = AsyncMock(side_effect=NetworkError("Bad Gateway"))
+        with flood_sleeps() as sleep:
+            await transport._send_photo_album_async(111, [(b"1", "Cap1"), (b"2", "Cap2")])
+        assert transport._application.bot.send_media_group.call_count == sleep.call_count + 1 > 1
+
+    @pytest.mark.asyncio
     async def test_album_is_sent_again_after_a_server_error(self, transport):
         from telegram.error import NetworkError
         transport._application.bot.send_media_group = AsyncMock(side_effect=[NetworkError("Bad Gateway"), MagicMock()])

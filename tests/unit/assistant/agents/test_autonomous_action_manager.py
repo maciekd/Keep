@@ -2490,3 +2490,47 @@ class TestTheCheckWritesToAQuietOwner:
         opening = AutonomousActionManager._opening_note(None, None, step)
 
         assert self.reactivation.ENABLED_KEY in opening
+
+    def test_a_step_that_cannot_be_recorded_does_not_hold_the_check_s_lock(self):
+        """The step is closed before the lock is released: a failure there that got out would
+        leave every later check waiting for a lock nobody gives back."""
+        mgr, _ = make_manager()
+        step = self.reactivation.due()
+
+        with patch.object(mgr, '_activity_check_inner', return_value="NO"), \
+                patch.object(mgr, 'is_user_interaction_active', return_value=False), \
+                patch.object(self.reactivation, 'record', side_effect=OSError("disk full")):
+            assert mgr.activity_check(nudge=step) == "NO"
+
+        assert not mgr.activity_check_lock.locked()
+
+    @pytest.mark.parametrize("executed, spent", [(["post_message(owner, The photo index is done)"], True),
+                                                 (["load_toolkit(weather)"], False)],
+                             ids=["after it had written", "before it wrote"])
+    def test_a_check_the_user_cut_short_spends_the_step_only_when_the_message_went_out(self, executed, spent):
+        from assistant.agents.AutonomousActionManager import _UserTookOver
+        mgr, _ = make_manager()
+        step = self.reactivation.due()
+
+        def cut_short(*args, **kwargs):
+            mgr._check_processor = Mock(executed_commands=executed)
+            raise _UserTookOver("mid-check")
+
+        with patch.object(mgr, '_activity_check_inner', side_effect=cut_short), \
+                patch.object(mgr, 'is_user_interaction_active', return_value=False), \
+                patch.object(mgr, '_retry_when_quiet') as retry:
+            mgr.activity_check(nudge=step)
+
+        assert (self.reactivation.due() is None) is spent
+        # whoever spoke may have been the owner: the retry carries no step, the next periodic check asks again
+        assert step not in retry.call_args.args and step not in retry.call_args.kwargs.values()
+
+    def test_the_commands_of_one_check_are_not_counted_for_the_step_of_the_next(self):
+        """A check that wrote, then one that gave way before it started: the second has no
+        message of its own, and the first one's must not spend its step."""
+        self.check("post_message(owner, The photo index is done)\nNO", ["post_message(owner, The photo index is done)"])
+        self.reactivation.owner_spoke("Telegram", now=time.time() - 25 * 3600)      # a new silence, a day old
+
+        _, step = self.check("NO", [], user_active=True)
+
+        assert self.reactivation.due().number == step.number

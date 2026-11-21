@@ -223,6 +223,12 @@ def test_a_format_the_config_does_not_know_is_a_zip(install, monkeypatch):
     assert len(Backups.backups()) == 1 and not Backups.folder().exists()
 
 
+def test_the_folder_format_is_read_however_the_config_spells_it(install, monkeypatch):
+    monkeypatch.setattr(Backups, "config", SimpleNamespace(get=lambda key, default: " Folder"))
+    Backups.create()
+    assert Backups.folder().is_dir() and Backups.backups() == []
+
+
 def test_the_folder_or_a_copy_brought_back_elsewhere_restores_after_the_current_state_is_backed_up(as_folder, tmp_path):
     Backups.create()
     brought_back = tmp_path / "restic-restore" / "current"
