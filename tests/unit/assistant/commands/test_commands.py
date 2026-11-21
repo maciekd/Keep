@@ -939,6 +939,21 @@ class TestCmdPostMessage:
             commands_instance.cmd_post_message("Marcus & Alice - board", "pay with 4111 1111 1111 1111")
         assert self.sent == ["pay with [card:primary]"]
 
+    def test_only_a_message_a_chat_took_is_the_assistant_writing_to_its_owner(self, commands_instance):
+        # What the quiet-owner schedule holds back for: a group, a room and a refused send are none.
+        from assistant import Destinations, Reactivation
+        Destinations.register(Destinations.Destination("owner", Destinations.KIND_CHAT, lambda text: True))
+        Destinations.register(Destinations.Destination("kitchen", Destinations.KIND_VOICE, lambda text: True))
+        Destinations.register(Destinations.Destination("Charlotte", Destinations.KIND_CHAT, lambda text: "the daily limit is reached"))
+        with patch.object(Reactivation, "assistant_wrote") as wrote:
+            commands_instance.cmd_post_message("Marcus & Alice - board", "hi")
+            commands_instance.cmd_post_message("kitchen", "hi")
+            commands_instance.cmd_post_message("Charlotte", "hi")
+            commands_instance.cmd_post_message("garage", "hi")
+            wrote.assert_not_called()
+            commands_instance.cmd_post_message("owner", "The parcel is at the door")
+            wrote.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # TestCmdScheduleAndCaffeinate

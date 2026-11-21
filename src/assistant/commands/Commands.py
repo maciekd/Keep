@@ -17,7 +17,7 @@ from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess, NETWORK_LOG_HEADER
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
-from assistant import Backups, Destinations, FirstRun, MemoryFile, Procedures, VoiceCandidates, WatchList
+from assistant import Backups, Destinations, FirstRun, MemoryFile, Procedures, Reactivation, VoiceCandidates, WatchList
 from common.logging import trace, info, note, error, fine
 from assistant.agents.BuildPreflight import BuildPreflight
 from assistant.agents.CodeQualityMaintainer import (CodeQualityMaintainer, IssueDraft, JobPullRequest,
@@ -2185,7 +2185,10 @@ class Commands:
             trace(f"post_message: {len(text) - len(redacted)} chars of vault values redacted before sending")
         # The room's speakers must not wait for the very turn that is posting (a spoken
         # "tell the kitchen…" would wait on itself): the context says which turn that is.
-        return Destinations.send(destination, redacted, sender=self._current_context) or None
+        failure = Destinations.send(destination, redacted, sender=self._current_context)
+        if not failure and Destinations.find(destination).kind == Destinations.KIND_CHAT:
+            Reactivation.assistant_wrote()
+        return failure or None
 
     # The watch list and the procedures: the argument handling lives with the stores
     # (the memory curator's command block runs the same commands through them).

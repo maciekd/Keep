@@ -239,6 +239,66 @@ class TestWhenAStepIsDue:
         assert Reactivation.due(LAST_TURN + 3 * DAY) is None
 
 
+class TestTheAssistantWasNotQuietEither:
+    def test_a_message_of_the_assistant_s_own_that_day_stands_in_for_the_step(self, quiet_owner):
+        at = Reactivation.due_at(LAST_TURN, 1) + 60
+        Reactivation.assistant_wrote(now=at - 5 * HOUR)
+
+        assert Reactivation.due(at) is None
+        assert quiet_owner.reactivation_nudge.call_args.kwargs["outcome"] == Reactivation.OUTCOME_COVERED
+        assert quiet_owner.reactivation_nudge.call_args.kwargs["via"] == []
+        Reactivation.due(at + HOUR)
+        assert quiet_owner.reactivation_nudge.call_count == 1, "the step is spent, not covered again at the next check"
+
+    def test_an_install_that_writes_every_day_never_sends_one(self, quiet_owner):
+        for day in range(1, 10):
+            Reactivation.assistant_wrote(now=LAST_TURN + day * DAY - 30 * 60)     # 19:30, after the step's 19:00
+            assert Reactivation.due(Reactivation.due_at(LAST_TURN, 1) + day * DAY + 60) is None
+
+    def test_a_message_from_more_than_a_day_ago_holds_nothing_back(self, quiet_owner):
+        Reactivation.assistant_wrote(now=LAST_TURN + 2 * HOUR)
+
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 2) + 60).number == 2
+        quiet_owner.reactivation_nudge.assert_not_called()
+
+    def test_the_message_a_step_sent_does_not_stand_in_for_the_next_step(self, quiet_owner):
+        at = Reactivation.due_at(LAST_TURN, 1) + 55 * 60
+        step = Reactivation.due(at)
+        Reactivation.assistant_wrote(now=at + 20)      # the check's own post_message
+        spend(step, at + 30)
+
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 2) + 60).number == 2
+
+    def test_a_covered_step_is_no_message_for_the_seventh_to_call_off(self, quiet_owner):
+        at = Reactivation.due_at(LAST_TURN, 6) + 60
+        Reactivation.assistant_wrote(now=at - HOUR)
+        Reactivation.due(at)
+
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 7) + 60).kind == Reactivation.KIND_DAILY
+
+    def test_the_owner_s_turn_does_not_forget_that_the_assistant_wrote(self, settings, telemetry):
+        Reactivation.assistant_wrote(now=LAST_TURN - DAY)       # before any turn of the owner's
+        Reactivation.owner_spoke("Telegram", now=LAST_TURN)
+        Reactivation.assistant_wrote(now=LAST_TURN + 10.5 * HOUR)
+        Reactivation.owner_spoke("Telegram", now=LAST_TURN + 11 * HOUR)     # half an hour after the message
+
+        assert Reactivation.due(LAST_TURN + 11 * HOUR + DAY - HOUR + 60) is None
+        assert telemetry.reactivation_nudge.call_args.kwargs["outcome"] == Reactivation.OUTCOME_COVERED
+
+    def test_a_message_noted_before_there_was_a_clock_counts_once_the_history_gives_one(self, settings, telemetry, history):
+        history.add_history_entry("Marcus", "good night", LAST_TURN, "Console")
+        at = Reactivation.due_at(LAST_TURN, 2) + 60
+        Reactivation.assistant_wrote(now=at - 3 * HOUR)
+
+        assert Reactivation.due(at) is None
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 4) + 60).number == 4
+
+    def test_a_failure_to_note_the_message_does_not_reach_the_command(self, quiet_owner, monkeypatch):
+        monkeypatch.setattr(Reactivation, "_load", Mock(side_effect=RuntimeError("disk full")))
+
+        Reactivation.assistant_wrote()
+
+
 class TestTheOwnersTurn:
     def test_a_turn_starts_the_schedule_over_from_itself(self, quiet_owner):
         at = LAST_TURN + 2 * DAY

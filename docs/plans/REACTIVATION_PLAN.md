@@ -33,7 +33,16 @@ Any way in counts — a chat, the console, a voice — so a household that talks
 every day is never written to.
 
 What the assistant sends on its own (a watch item's reminder, a restart note, the brief a restart
-re-opens) neither counts as the owner's activity nor as a step of the schedule.
+re-opens) is not the owner's activity. But the silence has two sides: a step goes out only when
+the assistant has been quiet as well. A message it chose to send to a chat within the last day —
+any `post_message` to a destination of the kind `chat`, which `Commands.cmd_post_message` reports
+to `assistant_wrote` — is that day's contact with the owner, and the step that would have gone
+out on top of it is spent as `covered`, never shown to the model. An install that writes to its
+owner every day (a daily summary, a busy watch list) therefore never sends a reactivation
+message: it is not quiet. The notices the code writes — a restart, an update, a PR trial — go
+through the notifier, are no `post_message` and cover nothing, and neither does a message to a
+group or a room's speakers. The message a step itself sent covers nothing either: the next step
+is the schedule's own.
 
 The time is kept in `cache/reactivation.json` so a restart does not start the clock over, and it
 is kept whether the key is on or not, so switching the key on finds a clock that is true. An
@@ -141,7 +150,7 @@ Two events, neither carrying text (the message itself is the `assistant_turn` wi
 
 | Event | When | Properties |
 |---|---|---|
-| `reactivation_nudge` | a step was spent | `step`, `kind` (`daily` / `backoff` / `fortnightly`), `outcome` (`sent` / `declined`), `via` (the kinds of the destinations posted to — `chat`, `voice`, `group` — never a name), `owner_channels` (the names of the transports a push to `owner` reaches), `inactive_hours` |
+| `reactivation_nudge` | a step was spent | `step`, `kind` (`daily` / `backoff` / `fortnightly`), `outcome` (`sent` / `declined` / `covered`), `via` (the kinds of the destinations posted to — `chat`, `voice`, `group` — never a name), `owner_channels` (the names of the transports a push to `owner` reaches), `inactive_hours` |
 | `reactivation_return` | the owner's first turn after a silence of a day or more | `inactive_hours`, `nudges_sent`, `last_step`, `hours_since_nudge` (absent without a nudge), `source` |
 
 `reactivation_return` goes out with `nudges_sent: 0` too — the key off, every step declined, a

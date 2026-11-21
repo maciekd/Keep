@@ -500,8 +500,10 @@ telemetry:
 # assistant for a day — in a chat, in the console or by voice — it writes one message, about an hour
 # before the time of day they were last there, and again each day for seven days; the seventh says
 # that the daily ones stop, and from then on it writes once every 14 days. Whatever the owner says
-# starts the count over. The assistant decides what to say and where (the owner's chats, a room's
-# speakers). false: it never writes because of a silence. Read at each check, no restart needed.
+# starts the count over, and a day on which the assistant wrote to them anyway (a reminder, a summary —
+# not a restart notice) gets no message on top. The assistant decides what to say and where (the
+# owner's chats, a room's speakers). false: it never writes because of a silence. Read at each check,
+# no restart needed.
 reactivation:
   enabled: false
 
