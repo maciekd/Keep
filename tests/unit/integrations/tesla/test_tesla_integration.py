@@ -143,11 +143,11 @@ class TestVehicleState:
                             "active_route_minutes_to_arrival": 12.7, "active_route_destination": "IKEA",
                             "timestamp": 1_700_000_000_000},
             "charge_state": {"usable_battery_level": 60},
-            "climate_state": {"inside_temp": 21.5},
+            "climate_state": {"inside_temp": 21.5, "is_climate_on": True},
         })
         state = api.vehicle_state(family(api))
         assert state == VehicleState(connectivity="online", in_gear=True, speed_kmh=80, latitude=57.5, longitude=12.0,
-                                     battery_percent=60, cabin_temp_c=21.5, destination="IKEA", minutes_to_arrival=12.7)
+                                     battery_percent=60, cabin_temp_c=21.5, climate_on=True, destination="IKEA", minutes_to_arrival=12.7)
         assert state.is_driving
 
     def test_an_asleep_car_carries_the_snapshots_time_and_a_stopped_one_is_not_driving(self):
@@ -161,6 +161,7 @@ class TestVehicleState:
         state = api.vehicle_state(family(api))
         assert state.data_time == 1_700_000_000 and state.connectivity == "asleep"
         assert not state.in_gear and not state.is_driving and state.cabin_temp_c is None
+        assert state.climate_on is None
 
     def test_an_online_car_has_no_data_time_even_with_a_timestamp(self):
         api = self._api({"state": "online", "drive_state": {"timestamp": 1_700_000_000_000}, "charge_state": {}})

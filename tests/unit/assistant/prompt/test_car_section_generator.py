@@ -88,6 +88,13 @@ class TestRender:
         assert "Cabin 22°C" in line and "(~40% fuel)" in line and "~300 km range" in line
         assert "battery" not in line
 
+    def test_the_climate_is_said_on_or_off_and_left_out_when_the_brand_cannot_tell(self, section):
+        on = section._render(CAR, VehicleState(battery_percent=80, cabin_temp_c=5, climate_on=True))
+        off = section._render(CAR, VehicleState(battery_percent=80, cabin_temp_c=5, climate_on=False))
+        assert "climate on" in on and "climate off" not in on
+        assert "climate off" in off and "climate on" not in off
+        assert "climate" not in section._render(CAR, VehicleState(battery_percent=80, cabin_temp_c=5))
+
     def test_a_driving_car_shows_its_exact_range(self, section, no_lookups):
         line = section._render(CAR, VehicleState(latitude=AWAY[0], longitude=AWAY[1], speed_kmh=50, in_gear=True, range_km=312.4))
         assert "312 km range" in line

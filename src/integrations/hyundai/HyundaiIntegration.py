@@ -457,6 +457,7 @@ class HyundaiIntegration(Integration, VehicleProvider):
             battery_percent=int(battery) if battery is not None else None,
             fuel_percent=int(fuel) if fuel is not None else None,
             range_km=range_km,
+            climate_on=getattr(vehicle, "air_control_is_on", None),
             data_time=updated.timestamp() if updated is not None else None,
         )
 
