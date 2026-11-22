@@ -1698,10 +1698,11 @@ class WebAccess(Integration):
         host = parsed.netloc.lower()
         site_params = next((params for suffix, params in cls.SITE_TRACKING_PARAMS.items()
                             if host == suffix or host.endswith('.' + suffix)), frozenset())
-        kept = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        kept = [(k, v) for k, v in pairs
                 if k not in cls.TRACKING_PARAMS and k not in site_params
                 and not k.startswith(cls.TRACKING_PARAM_PREFIXES)]
-        if len(kept) == parsed.query.count('&') + 1:
+        if len(kept) == len(pairs):
             return url
         return urlunparse(parsed._replace(query=urlencode(kept)))
 

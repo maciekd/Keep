@@ -56,9 +56,6 @@ class TestCleanLink:
                      "https://shop.example/contact?form=returns&ck=9&ei=42"):
             assert WebAccess.clean_link(kept) == kept
 
-    @pytest.mark.xfail(strict=True, reason="clean_link counts the query's segments by its ampersands: the empty "
-                                           "segments of Bing's `?!&&p=…` make a link nothing was dropped from look "
-                                           "changed, and it is re-encoded as `?%21=&p=…`")
     def test_a_bing_redirect_link_is_left_exactly_as_the_page_gave_it(self):
         # its parameters are the signed destination: the href is the only handle on the result
         url = "https://www.bing.com/ck/a?!&&p=5f1c9e0d&ptn=3&ver=2&hsh=4&fclid=1a2b&u=a1aHR0cHM6Ly9zaG9wLmV4YW1wbGU&ntb=1"
