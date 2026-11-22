@@ -55,6 +55,7 @@ class VehicleState:
     charging: bool = False                  # plugged in and taking charge, when the brand can tell
     range_km: Optional[float] = None
     cabin_temp_c: Optional[float] = None
+    climate_on: Optional[bool] = None       # the climate (HVAC) running, when the brand can tell
     destination: Optional[str] = None       # the active route's destination, with its ETA
     minutes_to_arrival: Optional[float] = None
     data_time: Optional[float] = None       # epoch seconds of the snapshot when the brand serves a cached one

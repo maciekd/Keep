@@ -175,6 +175,7 @@ class TeslaIntegration(Integration, VehicleProvider):
             battery_percent=charge.get("usable_battery_level"),
             charging=charge.get("charging_state") == "Charging",
             cabin_temp_c=climate.get("inside_temp"),
+            climate_on=climate.get("is_climate_on"),
             destination=drive.get("active_route_destination"),
             minutes_to_arrival=drive.get("active_route_minutes_to_arrival"),
             data_time=timestamp_ms / 1000 if timestamp_ms and connectivity not in (None, "online") else None,

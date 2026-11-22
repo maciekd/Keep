@@ -1,7 +1,7 @@
 """The CURRENT CAR INFO section: one line per car of every ready VehicleProvider — Tesla
 beside whatever other brand the house has — with the car's vehicle_id, whether it is parked or
 driving, where it is (Home, or an address), its route or how far from home it is, the cabin
-temperature, the charge and the range — rounded and held (Held.py), so a parked or charging
+temperature, whether the climate is on, the charge and the range — rounded and held (Held.py), so a parked or charging
 car's line stays the same text for hours and the prompt's cache with it. Refreshed every five minutes while every car is parked and every
 minute while one is driving; a parked car's minutes from home are asked for every ten minutes
 and held through a one-minute traffic wobble; a brand that fails gets an error on its car's
@@ -142,6 +142,7 @@ class CarSectionGenerator(PromptSectionGenerator):
 
         cabin_c = self._cabin.show(spec.id, state.cabin_temp_c)
         cabin_text = f"Cabin {cabin_c}°C" if cabin_c is not None else ""
+        climate_text = "" if state.climate_on is None else "climate on" if state.climate_on else "climate off"
         energy, unit = (state.battery_percent, "battery") if state.battery_percent is not None else (state.fuel_percent, "fuel")
         moving = is_driving or state.in_gear
         if energy is None:
@@ -178,7 +179,7 @@ class CarSectionGenerator(PromptSectionGenerator):
                 asleep_text = f"[car is {state.connectivity}, data may be stale]"
 
         parts = [f"{spec.label} (vehicle_id: {spec.id}):", status, speed_text, location_text, eta_text,
-                 cabin_text, energy_text, range_text, asleep_text]
+                 cabin_text, climate_text, energy_text, range_text, asleep_text]
         return " ".join(p for p in parts if p)
 
     def _eta_to_home(self, spec: VehicleSpec, state: VehicleState) -> Optional[int]:

@@ -539,6 +539,12 @@ def test_a_plug_in_hybrid_reports_battery_and_fuel_and_its_electric_range_first(
     assert (state.battery_percent, state.fuel_percent, state.range_km) == (80, 55, 45.0)
 
 
+def test_the_running_climate_is_reported_and_unknown_when_the_library_has_no_reading():
+    assert HyundaiIntegration._to_state(_vehicle(engine_type="EV", air_control_is_on=True)).climate_on is True
+    assert HyundaiIntegration._to_state(_vehicle(engine_type="EV", air_control_is_on=False)).climate_on is False
+    assert HyundaiIntegration._to_state(_vehicle(engine_type="EV")).climate_on is None
+
+
 def test_a_hybrid_without_an_electric_range_falls_back_to_the_fuel_range_whatever_the_case_of_its_type():
     state = HyundaiIntegration._to_state(_vehicle(engine_type="phev", ev_battery_percentage=12,
                                                   fuel_driving_range=100, _fuel_driving_range_unit="mi"))
