@@ -277,13 +277,19 @@ class TestTheAssistantWasNotQuietEither:
 
         assert Reactivation.due(Reactivation.due_at(LAST_TURN, 7) + 60).kind == Reactivation.KIND_DAILY
 
-    def test_the_owner_s_turn_does_not_forget_that_the_assistant_wrote(self, settings, telemetry):
-        Reactivation.assistant_wrote(now=LAST_TURN - DAY)       # before any turn of the owner's
+    def test_a_message_the_owner_answered_does_not_stand_in_for_the_first_step(self, settings, telemetry):
+        Reactivation.assistant_wrote(now=LAST_TURN - 30 * 60)       # 19:30, and the owner answers at 20:00
         Reactivation.owner_spoke("Telegram", now=LAST_TURN)
-        Reactivation.assistant_wrote(now=LAST_TURN + 10.5 * HOUR)
-        Reactivation.owner_spoke("Telegram", now=LAST_TURN + 11 * HOUR)     # half an hour after the message
 
-        assert Reactivation.due(LAST_TURN + 11 * HOUR + DAY - HOUR + 60) is None
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 1) + 10 * 60).number == 1     # 19:10 the next day
+        telemetry.reactivation_nudge.assert_not_called()
+
+    def test_a_message_after_the_owner_s_answer_to_an_earlier_one_still_stands_in(self, settings, telemetry):
+        Reactivation.assistant_wrote(now=LAST_TURN - 30 * 60)
+        Reactivation.owner_spoke("Telegram", now=LAST_TURN)
+        Reactivation.assistant_wrote(now=LAST_TURN + 12 * HOUR)
+
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 1) + 60) is None
         assert telemetry.reactivation_nudge.call_args.kwargs["outcome"] == Reactivation.OUTCOME_COVERED
 
     def test_a_message_noted_before_there_was_a_clock_counts_once_the_history_gives_one(self, settings, telemetry, history):

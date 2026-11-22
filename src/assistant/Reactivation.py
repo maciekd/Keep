@@ -29,8 +29,9 @@ the owner is there. A turn of the owner's starts the schedule over.
 The silence has two sides. A step goes out only when the assistant has been quiet too: a message
 it chose to send to a chat in the last `COVER_SECONDS` — a `post_message` of any check or turn,
 noted by `assistant_wrote`; the notices the code writes (a restart, an update) are no messages —
-is the day's contact with the owner, and the step is spent as covered. A step's own message
-covers nothing: the schedule's next step is the one after it.
+is the day's contact with the owner, and the step is spent as covered. A message from before the
+owner's last turn covers nothing: the owner has answered since, and the silence began after it.
+A step's own message covers nothing either: the schedule's next step is the one after it.
 
 Telemetry: `reactivation_nudge` for every step spent (covered ones too), `reactivation_return` for the owner's
 first turn after a silence of `RETURN_AFTER_SECONDS` or more — with no message sent meanwhile
@@ -257,10 +258,11 @@ def due(now: Optional[float] = None, after_night: bool = False) -> Optional[Step
         return None
     step = Step(number=number, since=last_turn, quiet_seconds=quiet,
                 sent_before=sum(s["outcome"] == OUTCOME_SENT for s in spent))
-    # The message a step sent is the schedule's own and covers nothing.
+    # The message a step sent is the schedule's own and covers nothing, and neither does one
+    # the owner has answered since: the silence is counted from that answer.
     last_message = state["last_message"]
     last_sent = max((s["at"] for s in spent if s["outcome"] == OUTCOME_SENT), default=0.0)
-    if last_message is not None and last_message > last_sent and now - last_message < COVER_SECONDS:
+    if last_message is not None and last_message > max(last_sent, last_turn) and now - last_message < COVER_SECONDS:
         info(f"Reactivation: step {number} is due, but the assistant wrote to a chat {_describe(now - last_message)} ago "
              f"— that is the contact, the step is spent as covered")
         _spend(step, OUTCOME_COVERED, [], now)

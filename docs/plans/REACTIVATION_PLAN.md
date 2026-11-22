@@ -34,14 +34,15 @@ every day is never written to.
 
 What the assistant sends on its own (a watch item's reminder, a restart note, the brief a restart
 re-opens) is not the owner's activity. But the silence has two sides: a step goes out only when
-the assistant has been quiet as well. A message it chose to send to a chat within the last day —
+the assistant has been quiet as well. A message it chose to send to a chat within the last day and
+after the owner's last turn —
 any `post_message` to a destination of the kind `chat`, which `Commands.cmd_post_message` reports
 to `assistant_wrote` — is that day's contact with the owner, and the step that would have gone
 out on top of it is spent as `covered`, never shown to the model. An install that writes to its
 owner every day (a daily summary, a busy watch list) therefore never sends a reactivation
 message: it is not quiet. The notices the code writes — a restart, an update, a PR trial — go
 through the notifier, are no `post_message` and cover nothing, and neither does a message to a
-group or a room's speakers. The message a step itself sent covers nothing either: the next step
+group or a room's speakers, nor one the owner has answered since. The message a step itself sent covers nothing either: the next step
 is the schedule's own.
 
 The time is kept in `cache/reactivation.json` so a restart does not start the clock over, and it
