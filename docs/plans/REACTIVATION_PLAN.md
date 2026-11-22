@@ -1,7 +1,6 @@
 # Plan: the assistant writes to an owner who has gone quiet
 
-Written 2026-11-19. Status: built 2026-11-20, off by default (`reactivation.enabled`) — the developer runs it
-on his own install for a week or two before the default is decided.
+Written 2026-11-19. Status: built 2026-11-20, on by default since 2026-11-22 (`reactivation.enabled`; `false` turns it off).
 
 ## The problem
 
@@ -161,7 +160,7 @@ return after a message to a phone against one after a line in the console.
 
 ### 7. Config
 
-`reactivation.enabled`, false by default, read at every check; documented in
+`reactivation.enabled`, true by default, read at every check; documented in
 `config.example.yaml`. The assistant may set it (it is the owner's own preference).
 
 ## The pieces
@@ -193,6 +192,6 @@ return after a message to a phone against one after a line in the console.
    that softens it. The alternative is a first step that waits longer once setup is over.
 3. **Step 7 is both the seventh message and the back-off.** Duolingo sends its "these reminders
    don't seem to be working" as a message of its own after the week.
-4. **The default.** Off for now. Turning it on for every install is the default of `due()` and
-   the value in `config.example.yaml`; an install that has been silent since before this release
-   gets its clock from the history.
+4. **The default.** On since 2026-11-22: the default of `due()` and the value in
+   `config.example.yaml`. An install that has been silent since before that release gets its
+   clock from the history.

@@ -496,7 +496,7 @@ telemetry:
   enabled: true
   id:                   # written by install.sh, or by the server when missing
 
-# Messages to an owner who has gone quiet. true: when nobody of the household has said anything to the
+# Messages to an owner who has gone quiet, on unless this says false. true: when nobody of the household has said anything to the
 # assistant for a day — in a chat, in the console or by voice — it writes one message, about an hour
 # before the time of day they were last there, and again each day for seven days; the seventh says
 # that the daily ones stop, and from then on it writes once every 14 days. Whatever the owner says
@@ -505,7 +505,7 @@ telemetry:
 # owner's chats, a room's speakers). false: it never writes because of a silence. Read at each check,
 # no restart needed.
 reactivation:
-  enabled: false
+  enabled: true
 
 # Home automation extras, whichever backends are enabled — several at once make one house. Optional.
 # home:

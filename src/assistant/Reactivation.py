@@ -1,6 +1,6 @@
 """Writes to an owner who has gone quiet: when a message is due, what the periodic check is told then, and what the message leaves behind.
 
-Off unless `reactivation.enabled` is true. The clock is the owner's last turn — `owner_spoke`,
+On unless `reactivation.enabled` is false. The clock is the owner's last turn — `owner_spoke`,
 called by `Assistant.stream` for every request that is neither a guest's nor one the server
 started — and runs whether the key is on or not, in `cache/reactivation.json`, so a restart does
 not start it over and switching the key on finds a clock that is true. An install without the
@@ -225,8 +225,8 @@ def due(now: Optional[float] = None, after_night: bool = False) -> Optional[Step
     last one was spent less than `MIN_GAP_SECONDS` ago, the step is past its hour and waits
     for the next — unless *after_night* says this is the first check since Night mode ended —
     or the assistant wrote to a chat within `COVER_SECONDS`, which spends the step as covered."""
-    if not config.get(ENABLED_KEY, False):
-        trace(f"Reactivation: off ({ENABLED_KEY} is not true)")
+    if not config.get(ENABLED_KEY, True):
+        trace(f"Reactivation: off ({ENABLED_KEY} is false)")
         return None
     now = time.time() if now is None else now
     with _lock:

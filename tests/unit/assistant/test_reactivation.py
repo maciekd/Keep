@@ -192,10 +192,10 @@ class TestWhenAStepIsDue:
 
         assert Reactivation.due(LAST_TURN + 3 * DAY) is None
 
-    def test_the_key_is_off_unless_the_config_says_otherwise(self, quiet_owner, settings):
+    def test_the_key_is_on_unless_the_config_says_otherwise(self, quiet_owner, settings):
         del settings[Reactivation.ENABLED_KEY]
 
-        assert Reactivation.due(LAST_TURN + 3 * DAY) is None
+        assert Reactivation.due(LAST_TURN + 3 * DAY).number == 3
 
     def test_an_install_whose_owner_has_no_turn_on_record_is_never_written_to(self, settings, telemetry):
         assert Reactivation.due(LAST_TURN + 30 * DAY) is None

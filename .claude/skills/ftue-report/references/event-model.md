@@ -12,7 +12,7 @@ the tester's config.yaml). Everything carries `version` (Keep release) and `sour
 | `tab_change` | a console tab opened | `tab`, `from`, `dwell` seconds on the tab left |
 | `status` | 5 min after start, then hourly if changed | `feeds` (items per running feed), `integrations`, `prompt_kb`, `prompt_sections` |
 | `memory_size` | a memory curation ran | `words`, `watch_items`, `procedures` |
-| `reactivation_nudge` | a step of the reactivation schedule was spent (`reactivation.enabled`, off by default) | `step` (1–7 daily, 8+ fortnightly), `kind` (`daily`, `backoff`, `fortnightly`), `outcome` (`sent`, `declined` — the model answered NO, `covered` — never asked: the assistant had sent a message of its own within the day), `via` (kinds of the destinations written to: `chat`, `voice`, `group`), `owner_channels` (chats a push could reach), `inactive_hours` |
+| `reactivation_nudge` | a step of the reactivation schedule was spent (`reactivation.enabled`, on by default since 2026-11-22) | `step` (1–7 daily, 8+ fortnightly), `kind` (`daily`, `backoff`, `fortnightly`), `outcome` (`sent`, `declined` — the model answered NO, `covered` — never asked: the assistant had sent a message of its own within the day), `via` (kinds of the destinations written to: `chat`, `voice`, `group`), `owner_channels` (chats a push could reach), `inactive_hours` |
 | `reactivation_return` | the owner's first turn after a day or more of silence | `inactive_hours`, `nudges_sent` (0 = came back unprompted: the base rate), `last_step`, `hours_since_nudge`, `source` |
 
 ## Quirks to know before reading a transcript
