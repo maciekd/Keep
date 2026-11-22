@@ -376,7 +376,9 @@ class TestTrialFallback:
     def test_a_pr_whose_server_never_comes_up_is_rolled_back_and_the_branch_relaunched(self, either):
         harness = either
         self._arm(harness, boots=False)
-        result = harness.run(DEAD_PID, 'release')
+        # No old pid: this test is two starts already, and on Linux a pid handed over costs the first
+        # a look at its control group and at the listeners — the siblings hand one over before the same watch.
+        result = harness.run('', 'release')
         assert result.returncode == 0, result.stderr
         assert self._git_calls(harness) == ['checkout release']
         assert harness.launches == 2, "the previous branch is launched again"
