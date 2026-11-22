@@ -713,6 +713,18 @@ class TestInboundMedia:
         hub.photo_dropped.assert_called_once_with(transport, 123)
 
     @pytest.mark.asyncio
+    async def test_photo_download_telegram_refuses_is_not_tried_again(self, transport, hub):
+        from telegram.error import BadRequest
+        update = _update()
+        update.message.photo = [MagicMock(file_id="f")]
+        ctx = MagicMock()
+        ctx.bot.get_file = AsyncMock(side_effect=BadRequest("File is too big"))
+        with flood_sleeps() as sleep:
+            await transport._handle_photo(update, ctx)
+        assert ctx.bot.get_file.call_count == 1 and sleep.call_count == 0
+        hub.photo_dropped.assert_called_once_with(transport, 123)
+
+    @pytest.mark.asyncio
     async def test_photo_download_failure_is_dropped(self, transport, hub):
         update = _update()
         update.message.photo = [MagicMock(file_id="f")]
@@ -1499,6 +1511,31 @@ class TestOneShotSends:
             rcts.return_value.result.side_effect = TimeoutError()
             assert transport.send_photo(111, b"\xff\xd8", "front door") is True
             rcts.call_args[0][0].close()
+
+    def test_a_photo_sent_while_the_bot_connects_is_held_and_not_waited_for(self, transport):
+        transport._application.bot.send_photo = AsyncMock()
+        transport._connecting = True
+        with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
+            assert transport.send_photo(111, b"\xff\xd8", "front door") is True
+            rcts.assert_not_called()
+        transport._application.bot.send_photo.assert_not_called()
+        (held, _), = transport._held
+        asyncio.run(held)
+        assert transport._application.bot.send_photo.call_args.kwargs["chat_id"] == 111
+
+    def test_a_photo_for_a_bot_that_is_not_running_is_not_sent(self, transport):
+        transport._running = False
+        with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
+            assert transport.send_photo(111, b"\xff\xd8", "front door") is False
+            assert transport.send_photo_album(111, [(b"1", "a"), (b"2", "b")]) is False
+            rcts.assert_not_called()
+
+    def test_an_upload_the_bot_loop_ended_under_is_not_sent(self, transport):
+        with patch(f'{MODULE}.asyncio.run_coroutine_threadsafe') as rcts:
+            rcts.return_value.result.side_effect = concurrent.futures.CancelledError()
+            sent = transport.send_photo(111, b"\xff\xd8", "front door")
+            rcts.call_args[0][0].close()
+        assert sent is False
 
     def test_a_photo_sent_from_the_bot_loops_own_thread_is_not_waited_for(self, transport):
         transport._thread = threading.current_thread()

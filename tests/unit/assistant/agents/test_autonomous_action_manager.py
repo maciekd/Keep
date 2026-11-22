@@ -2487,6 +2487,26 @@ class TestTheCheckWritesToAQuietOwner:
         assert carried[0].number == 1, "the morning's first check sends what the night kept"
         assert carried[1] is None, "the check after it is no longer the morning's first: a late step waits for its hour"
 
+    def test_a_check_postponed_in_the_morning_is_still_the_first_since_the_night(self):
+        self.reactivation.owner_spoke("Telegram", now=time.time() - 34 * 3600)   # its hour was 11 hours ago
+        mgr, _ = make_manager()
+        mgr.prompt_manager.is_night_mode_active.side_effect = [True, False, False]
+        carried = []
+
+        def check_then_stop(**kwargs):
+            carried.append(kwargs.get("nudge"))
+            mgr.running = False
+            return ""
+
+        with patch('assistant.agents.AutonomousActionManager.time.sleep'), \
+                patch.object(mgr, '_run_memory_curation'), \
+                patch.object(mgr, '_nightly_curation_due', return_value=False), \
+                patch.object(mgr, 'is_user_interaction_active', side_effect=[True, False]), \
+                patch.object(mgr, 'activity_check', side_effect=check_then_stop):
+            mgr._run_periodic_check()
+
+        assert carried[0].number == 1, "somebody in the room at the first check does not cost the owner the message"
+
     def test_the_periodic_loop_hands_the_due_step_to_its_check(self):
         mgr, _ = make_manager()
         carried = []

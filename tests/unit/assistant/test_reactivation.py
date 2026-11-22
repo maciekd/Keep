@@ -1,5 +1,6 @@
 """The messages to an owner who has gone quiet: when a step of the schedule is due, what
 spends it, what starts it over, and what is reported of it."""
+import json
 from datetime import datetime
 from unittest.mock import Mock
 
@@ -292,6 +293,46 @@ class TestTheAssistantWasNotQuietEither:
 
         assert Reactivation.due(at) is None
         assert Reactivation.due(Reactivation.due_at(LAST_TURN, 4) + 60).number == 4
+
+    def test_the_clock_file_of_a_release_before_the_messages_were_noted_still_counts_the_silence(self, quiet_owner):
+        """A contract with the file an older release left in cache/: no `last_message` in it."""
+        at = Reactivation.due_at(LAST_TURN, 1) + 60
+        Reactivation.STATE_FILE.write_text(json.dumps(
+            {"last_owner_turn": LAST_TURN, "spent": [{"step": 1, "at": at, "outcome": Reactivation.OUTCOME_SENT}]}))
+
+        step = Reactivation.due(Reactivation.due_at(LAST_TURN, 2) + 60)
+        assert (step.number, step.sent_before) == (2, 1)
+        Reactivation.assistant_wrote(now=Reactivation.due_at(LAST_TURN, 3) - HOUR)
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 3) + 60) is None, "the old file takes the new note"
+        assert [s["step"] for s in Reactivation._load()["spent"]] == [1, 3]
+
+    def test_the_first_turn_after_only_the_assistant_wrote_is_no_return(self, settings, telemetry):
+        Reactivation.assistant_wrote(now=LAST_TURN - 9 * DAY)
+
+        Reactivation.owner_spoke("Telegram", now=LAST_TURN)
+
+        telemetry.reactivation_return.assert_not_called()
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 1) + 60).since == LAST_TURN
+
+    def test_a_message_with_no_turn_on_record_and_none_in_the_history_starts_no_clock(self, settings, telemetry):
+        Reactivation.assistant_wrote(now=LAST_TURN)
+
+        assert Reactivation.due(LAST_TURN + 3 * DAY) is None
+        assert Reactivation.due(LAST_TURN + 30 * DAY) is None
+        telemetry.reactivation_nudge.assert_not_called()
+
+    def test_a_covered_step_found_before_the_owner_spoke_spends_nothing_of_the_new_silence(self, quiet_owner, monkeypatch):
+        at = Reactivation.due_at(LAST_TURN, 1) + 60
+        Reactivation.assistant_wrote(now=at - HOUR)
+        spend_it = Reactivation._spend
+
+        def owner_speaks_first(*args):
+            Reactivation.owner_spoke("Telegram", now=at)
+            return spend_it(*args)
+        monkeypatch.setattr(Reactivation, "_spend", owner_speaks_first)
+
+        assert Reactivation.due(at) is None
+        assert Reactivation._load()["spent"] == []
 
     def test_a_failure_to_note_the_message_does_not_reach_the_command(self, quiet_owner, monkeypatch):
         monkeypatch.setattr(Reactivation, "_load", Mock(side_effect=RuntimeError("disk full")))
