@@ -200,7 +200,7 @@ class ChatHub(SingletonMixin):
 
     def _register_owner_destination(self):
         Destinations.register(Destinations.Destination(
-            self.OWNER_DESTINATION, Destinations.KIND_CHAT, lambda text: self.send_message(text)))
+            self.OWNER_DESTINATION, Destinations.KIND_CHAT, lambda text: self.send_message(text), owner=True))
 
     # --- transcript -----------------------------------------------------------------------
 

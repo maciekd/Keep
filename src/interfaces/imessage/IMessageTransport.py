@@ -1280,7 +1280,7 @@ class IMessageTransport(Integration, ChatTransport):
 
     def _wanted_destinations(self) -> list[tuple]:
         """What the destinations should be now, one (names to try in order, kind, target,
-        aliases, label, listed) each.
+        aliases, label, listed, an owner's own chat) each.
 
         A person on the lists by name, the handle as alias. A name with several handles is
         one person's (the config says so): a post by name goes to the first, and every other
@@ -1296,8 +1296,9 @@ class IMessageTransport(Integration, ChatTransport):
         for first, *others in named.values():
             name = first.name or first.handle
             wanted.append(((name, f"{name} (iMessage)", f"{name} (iMessage {self._tail(first.handle)})"),
-                           Destinations.KIND_CHAT, first.handle, (first.handle,), "iMessage", True))
-            wanted.extend(((other.handle,), Destinations.KIND_CHAT, other.handle, (), "iMessage", False) for other in others)
+                           Destinations.KIND_CHAT, first.handle, (first.handle,), "iMessage", True, first.owner))
+            wanted.extend(((other.handle,), Destinations.KIND_CHAT, other.handle, (), "iMessage", False, other.owner)
+                          for other in others)
         vouched = self._kept.vouched()
         groups = sorted((group for group in self._groups.values() if self._vouched_for(group, vouched)),
                         key=lambda group: group.guid)
@@ -1311,7 +1312,7 @@ class IMessageTransport(Integration, ChatTransport):
                    and not (candidate != members and self._reads_as_a_person(candidate, people))]
             base = members if self._reads_as_a_person(name, people) else name
             wanted.append(((*own, f"{base} (iMessage {self._tail(group.guid)})"), Destinations.KIND_GROUP, group.guid,
-                           (group.guid,), "iMessage group", True))
+                           (group.guid,), "iMessage group", True, False))
         return wanted
 
     def _register_destinations(self, read_groups: bool = True):
@@ -1333,7 +1334,8 @@ class IMessageTransport(Integration, ChatTransport):
         info(f"iMessage chat: {people} person(s) and {groups} group(s) are post_message destinations"
              + (f"; {further} further handle(s) of a name with several are found by the handle alone" if further else ""))
 
-    def _add_destination(self, names: tuple, kind: str, target: str, aliases: tuple, label: str, listed: bool):
+    def _add_destination(self, names: tuple, kind: str, target: str, aliases: tuple, label: str, listed: bool,
+                         owner: bool = False):
         """Claim the first of *names* that nobody answers to. A name another destination
         holds — a Telegram group of the same title — is never taken from it, and a group never
         takes a name another group of this account was posted to under (`ChatState.names`):
@@ -1347,7 +1349,7 @@ class IMessageTransport(Integration, ChatTransport):
                 continue
             claimed = Destinations.claim(Destinations.Destination(
                 candidate, kind, lambda text, chat=target: self._post(chat, text), aliases=aliases, label=label,
-                listed=listed))
+                listed=listed, owner=owner))
             if claimed is not None:
                 if candidate != names[0]:
                     info(f"iMessage chat: the destination name {names[0]!r} is not free — registered as {candidate!r}")

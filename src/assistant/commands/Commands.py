@@ -2185,9 +2185,15 @@ class Commands:
             trace(f"post_message: {len(text) - len(redacted)} chars of vault values redacted before sending")
         # The room's speakers must not wait for the very turn that is posting (a spoken
         # "tell the kitchen…" would wait on itself): the context says which turn that is.
+        # Looked up before the send: a transport may register its destinations anew meanwhile.
+        target = Destinations.find(destination)
         failure = Destinations.send(destination, redacted, sender=self._current_context)
-        if not failure and Destinations.find(destination).kind == Destinations.KIND_CHAT:
+        if failure or target is None:
+            return failure or None
+        if target.owner:
             Reactivation.assistant_wrote()
+        else:
+            trace(f"post_message: {target.name!r} is not the owner's own chat — the quiet-owner schedule does not count it")
         return failure or None
 
     # The watch list and the procedures: the argument handling lives with the stores

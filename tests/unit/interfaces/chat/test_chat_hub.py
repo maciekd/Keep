@@ -173,6 +173,14 @@ class TestOwnerDestination:
     def test_the_first_transport_brings_the_owner_destination(self, hub, transport):
         assert Destinations.names() == ["owner"]
 
+    def test_a_post_to_owner_is_the_assistant_writing_to_its_owner(self, hub, transport):
+        from unittest.mock import Mock, patch
+        from assistant import Reactivation
+        from assistant.commands.Commands import Commands
+        with patch.object(Reactivation, "assistant_wrote") as wrote:
+            Commands(Mock()).cmd_post_message("owner", "hi there")
+        wrote.assert_called_once()
+
     def test_a_post_to_owner_lands_on_the_notification_route_not_every_owner(self, hub, transport):
         transport.owners = [111, 222]
         transport.notify = [222]

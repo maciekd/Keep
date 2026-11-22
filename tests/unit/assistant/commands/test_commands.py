@@ -939,19 +939,33 @@ class TestCmdPostMessage:
             commands_instance.cmd_post_message("Marcus & Alice - board", "pay with 4111 1111 1111 1111")
         assert self.sent == ["pay with [card:primary]"]
 
-    def test_only_a_message_a_chat_took_is_the_assistant_writing_to_its_owner(self, commands_instance):
+    def test_only_a_message_the_owner_s_own_chat_took_is_the_assistant_writing_to_its_owner(self, commands_instance):
         # What the quiet-owner schedule holds back for: a group, a room and a refused send are none.
         from assistant import Destinations, Reactivation
-        Destinations.register(Destinations.Destination("owner", Destinations.KIND_CHAT, lambda text: True))
+        took = []
+        Destinations.register(Destinations.Destination("owner", Destinations.KIND_CHAT, lambda text: True, owner=True))
         Destinations.register(Destinations.Destination("kitchen", Destinations.KIND_VOICE, lambda text: True))
-        Destinations.register(Destinations.Destination("Charlotte", Destinations.KIND_CHAT, lambda text: "the daily limit is reached"))
+        Destinations.register(Destinations.Destination("Family", Destinations.KIND_GROUP, lambda text: took.append("Family") or True))
+        Destinations.register(Destinations.Destination("Charlotte", Destinations.KIND_CHAT, lambda text: took.append("Charlotte") or True))
+        Destinations.register(Destinations.Destination(
+            "Marcus", Destinations.KIND_CHAT, lambda text: "the daily limit is reached", owner=True))
         with patch.object(Reactivation, "assistant_wrote") as wrote:
-            commands_instance.cmd_post_message("Marcus & Alice - board", "hi")
+            assert commands_instance.cmd_post_message("Family", "hi") is None
+            assert commands_instance.cmd_post_message("Charlotte", "Dinner is at six") is None
             commands_instance.cmd_post_message("kitchen", "hi")
-            commands_instance.cmd_post_message("Charlotte", "hi")
+            commands_instance.cmd_post_message("Marcus", "hi")
             commands_instance.cmd_post_message("garage", "hi")
+            assert took == ["Family", "Charlotte"]
             wrote.assert_not_called()
             commands_instance.cmd_post_message("owner", "The parcel is at the door")
+            wrote.assert_called_once()
+
+    def test_a_destination_dropped_while_its_message_went_out_is_still_a_sent_message(self, commands_instance):
+        from assistant import Destinations, Reactivation
+        Destinations.register(Destinations.Destination(
+            "owner", Destinations.KIND_CHAT, lambda text: Destinations.unregister("owner") or True, owner=True))
+        with patch.object(Reactivation, "assistant_wrote") as wrote:
+            assert commands_instance.cmd_post_message("owner", "The parcel is at the door") is None
             wrote.assert_called_once()
 
 

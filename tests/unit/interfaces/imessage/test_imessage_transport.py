@@ -1338,6 +1338,14 @@ class TestDestinations:
             chat.transport.stop()
             assert Destinations.find(ALICE) is None
 
+    def test_only_an_owner_s_chat_is_the_owner_s_own_destination(self, chat):
+        """What the quiet-owner schedule counts as the assistant writing to its owner: a
+        message to a family member or to a group the owner is in is none."""
+        chat.transport._kept.vouch(FAMILY, MARCUS)
+        chat.transport._register_destinations()
+        own = {name for name in Destinations.names() if Destinations.find(name).owner}
+        assert own == {"Marcus"} and {"Charlotte", "Family"} <= set(Destinations.names())
+
     def test_a_failed_send_comes_back_as_the_error_never_as_delivered(self, started):
         started.host.chat_answer = SendResult(error="timeout sending iMessage")
         answer = Destinations.send("Charlotte", "Dinner is ready")

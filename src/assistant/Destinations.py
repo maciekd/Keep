@@ -59,6 +59,9 @@ class Destination:
     # False for a destination that is found by its name and left out of the prompt's list: a
     # person's second address, which is not a name to show.
     listed: bool = True
+    # True when what is sent here is read by the owner alone: `owner`, an owner's own chat with
+    # the assistant. A family member's or a guest's chat is a chat too, and not the owner's.
+    owner: bool = False
 
     def answers_to(self, name: str) -> bool:
         wanted = _key(name)
