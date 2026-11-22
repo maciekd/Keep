@@ -303,9 +303,21 @@ def posted_kinds(executed_commands: list[str]) -> list[str]:
         name, _, params = call.partition("(")
         if name.strip() != "post_message":
             continue
-        destination = Destinations.find(params.split(",", 1)[0].strip().strip("\"'`)"))
-        kinds.append(destination.kind if destination else UNKNOWN_DESTINATION)
+        kinds.append(_posted_kind(params))
     return kinds
+
+
+def _posted_kind(params: str) -> str:
+    """The kind of the destination a `post_message` record names. The record joins the
+    destination and the text with commas, and a group's name may hold one: the longest
+    cut that names a destination is it."""
+    pieces = params.split(",")
+    for cut in range(len(pieces), 0, -1):
+        destination = Destinations.find(",".join(pieces[:cut]).strip().strip("\"'`)"))
+        if destination:
+            return destination.kind
+    trace(f"Reactivation: no destination answers to the start of post_message({params[:40]}…)")
+    return UNKNOWN_DESTINATION
 
 
 def record(step: Step, executed_commands: list[str], now: Optional[float] = None) -> str:

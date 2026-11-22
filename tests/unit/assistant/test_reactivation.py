@@ -485,9 +485,6 @@ class TestWhatTheCheckLeftBehind:
 
         assert kinds == [Destinations.KIND_CHAT, Destinations.KIND_VOICE]
 
-    @pytest.mark.xfail(strict=True, reason="posted_kinds cuts the destination at the first comma of the processor's "
-                                           "record, so a group whose name holds one is reported as unknown — or as "
-                                           "the kind of whatever answers to the part before the comma")
     def test_a_message_to_a_group_with_a_comma_in_its_name_is_reported_as_one_to_a_group(self, quiet_owner):
         group = "Marcus, Charlotte & Frances"
         Destinations.register(Destinations.Destination(group, Destinations.KIND_GROUP, lambda text: True))
