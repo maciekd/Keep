@@ -1055,6 +1055,19 @@ class TestAlbums:
         assert len(assistant.requests[0][0].images) == 1
         assert session._album is None
 
+    def test_text_beside_a_photo_whose_download_never_ended_is_still_a_turn(self, session, hub, transport):
+        """Nobody called `photo_dropped`: the album gave up on the download by itself."""
+        session.ALBUM_DEBOUNCE_SECONDS = 0.005
+        session.ALBUM_DOWNLOAD_TIMEOUT_SECONDS = 0.03
+        assistant = FakeAssistant([None])
+        hub.assistant = assistant
+        session.expect_photo("Anna", None)
+        session.submit(msg(text="What plant is this?"))
+        assert wait_until(lambda: assistant.requests)
+        context, query = assistant.requests[0][0], assistant.requests[0][1]
+        assert query.endswith("What plant is this?") and "1 photo(s)" in query
+        assert not context.images
+
     def test_new_message_supersedes_the_running_reply(self, session, hub, transport):
         session.SPINNER_TICK_SECONDS = 0.01
         first = FakeAssistant([Token("Hel"), threading.Event(), Token("lo"), RoundEnd(), None])
