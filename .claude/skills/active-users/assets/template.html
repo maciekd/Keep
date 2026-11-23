@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keep · Active users</title>
+<style>
+  :root {
+    --bg: #f4f1ea; --card: #fffdf8; --ink: #1d1b16; --muted: #857f72; --line: #e7e1d3;
+    --heat: 24 95% 53%; --heat-ink: #4a1d00; --accent: #e8590c; --shadow: 0 30px 60px -30px rgba(60, 40, 10, .25);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0f13; --card: #16181f; --ink: #f1eee6; --muted: #8b8fa0; --line: #252833;
+      --heat: 28 100% 58%; --heat-ink: #fff3e6; --accent: #ff9a4d; --shadow: 0 30px 80px -30px rgba(0, 0, 0, .8);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 48px 16px;
+    background: radial-gradient(1200px 600px at 80% -10%, hsl(var(--heat) / .12), transparent 60%), var(--bg);
+    color: var(--ink); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { width: min(980px, 100%); }
+  .eyebrow { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  h1 { font-size: clamp(28px, 5vw, 44px); line-height: 1.05; letter-spacing: -.03em; margin: 8px 0 10px; font-weight: 700; }
+  .lede { color: var(--muted); margin: 0 0 28px; max-width: 60ch; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; }
+  .stat b { display: block; font-size: 28px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--shadow); padding: 10px; overflow-x: auto; }
+  table { border-collapse: separate; border-spacing: 6px; width: 100%; min-width: 720px; }
+  th { font-weight: 600; text-align: center; padding: 10px 6px 12px; vertical-align: bottom; }
+  th .who { display: block; font-size: 15px; }
+  th .id { display: block; font: 11px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); margin-top: 2px; }
+  th .tag { display: block; font-size: 11px; font-weight: 500; color: var(--muted); }
+  th.day, td.day { text-align: left; padding-left: 14px; white-space: nowrap; }
+  td.day b { font-weight: 600; }
+  td.day span { color: var(--muted); font-size: 13px; margin-left: 6px; }
+  td.cell {
+    text-align: center; height: 54px; border-radius: 12px; font-size: 17px; font-weight: 600;
+    font-variant-numeric: tabular-nums; background: hsl(var(--heat) / var(--a)); color: var(--ink);
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  td.cell.hot { color: var(--heat-ink); }
+  td.cell:hover { transform: translateY(-2px) scale(1.04); box-shadow: 0 10px 20px -10px hsl(var(--heat) / .7); }
+  td.zero { color: var(--muted); font-weight: 400; opacity: .5; background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+  td.total, th.total { text-align: right; padding-right: 14px; font-variant-numeric: tabular-nums; font-weight: 700; }
+  tr.sum td { border-top: 1px solid var(--line); padding-top: 14px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+  tr.sum td.day { text-align: left; color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: .1em; }
+  tr.sum td.total { text-align: right; color: var(--accent); font-size: 18px; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 18px; display: grid; gap: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Keep telemetry · PostHog</div>
+  <h1>Who talked to the assistant</h1>
+  <p class="lede" id="lede"></p>
+  <div class="stats" id="stats"></div>
+  <div class="card"><table id="grid"></table></div>
+  <footer id="notes"></footer>
+</main>
+<script>
+// The one thing a run replaces: this object. Everything below it renders from it.
+const data = {
+  lede: "Messages sent to the AI per install and day, 3–9 March 2031, Stockholm time. Sunday the 9th runs to about 14:00.",
+  notes: [
+    "One column is one install, so a household with several people counts as one.",
+    "Turns the server starts itself during setup are counted too.",
+  ],
+  users: [
+    { who: "Marcus", tag: "prod", id: "0a1b2c3d" },
+    { who: "Alice", tag: "new, Linux", id: "4e5f6a7b" },
+    { who: "Bob", tag: "", id: "8c9d0e1f" },
+    { who: "", tag: "unnamed", id: "2a3b4c5d" },
+  ],
+  days: [
+    ["Mon", "3 Mar", [72, 40, 9, 0]],
+    ["Tue", "4 Mar", [65, 22, 4, 2]],
+    ["Wed", "5 Mar", [98, 6, 11, 0]],
+    ["Thu", "6 Mar", [120, 0, 7, 1]],
+    ["Fri", "7 Mar", [31, 0, 10, 0]],
+    ["Sat", "8 Mar", [84, 3, 0, 0]],
+    ["Sun", "9 Mar", [12, 0, 13, 0]],
+  ],
+};
+const { users, days } = data;
+const sum = a => a.reduce((x, y) => x + y, 0);
+const max = Math.max(...days.flatMap(d => d[2]));
+const colTotals = users.map((_, i) => sum(days.map(d => d[2][i])));
+const grand = sum(colTotals);
+const top = colTotals.indexOf(Math.max(...colTotals));
+const busiest = days.reduce((a, b) => sum(b[2]) > sum(a[2]) ? b : a);
+
+document.getElementById("lede").textContent = data.lede;
+document.getElementById("notes").innerHTML = data.notes.map(n => `<span>${n}</span>`).join("");
+document.getElementById("stats").innerHTML = [
+  [grand, `messages in ${days.length} days`],
+  [users.length, "active installs"],
+  [Math.round(100 * colTotals[top] / grand) + "%", "from the busiest install, " + (users[top].who || users[top].id)],
+  [sum(busiest[2]), "on the busiest day, " + busiest[0] + " " + busiest[1]],
+].map(([b, s]) => `<div class="stat"><b>${b}</b><span>${s}</span></div>`).join("");
+
+const head = `<tr><th class="day"></th>${users.map(u =>
+  `<th><span class="who">${u.who || u.id}</span><span class="tag">${u.tag || "&nbsp;"}</span><span class="id">${u.who ? u.id : "&nbsp;"}</span></th>`
+).join("")}<th class="total">Total</th></tr>`;
+const body = days.map(([wd, date, vals]) => `<tr><td class="day"><b>${wd}</b><span>${date}</span></td>${vals.map(v => {
+  if (!v) return `<td class="cell zero">·</td>`;
+  const a = 0.1 + 0.85 * Math.sqrt(v / max);
+  return `<td class="cell${a > 0.6 ? " hot" : ""}" style="--a:${a.toFixed(2)}">${v}</td>`;
+}).join("")}<td class="total">${sum(vals)}</td></tr>`).join("");
+const foot = `<tr class="sum"><td class="day">Total</td>${colTotals.map(t => `<td>${t}</td>`).join("")}<td class="total">${grand}</td></tr>`;
+document.getElementById("grid").innerHTML = head + body + foot;
+</script>
+</body>
+</html>
