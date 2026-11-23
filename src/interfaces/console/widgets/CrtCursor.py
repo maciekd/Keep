@@ -29,8 +29,11 @@ class CrtCursor:
     TRAIL_BRIGHTNESS = 0.4
     TRAIL_DURATION = 0.6
     MAX_TRAIL = 500
-    BLINK_PERIOD = 20
-    BLINK_ON = 12
+    # The head blinks like a phosphor: lit at once, held for BLINK_ON seconds after it last moved
+    # or relit, then decaying over BLINK_DECAY and dark for the rest of BLINK_PERIOD.
+    BLINK_ON = 0.5
+    BLINK_DECAY = 0.4
+    BLINK_PERIOD = 1.0
 
     def __init__(self):
         self._trail: Deque[Tuple[int, int, float]] = deque()
@@ -128,25 +131,32 @@ class CrtCursor:
             ch = char_at(tx, ty) if char_at is not None else " "
             screen.write_at(tx, ty, ch)
 
-        # Paint the current cursor head with blink. Solid block: bg=bright, fg=bright.
+        # The head: a solid block (bg=bright, fg=bright) while lit; as its phosphor decays the
+        # character under it shows through in `fg`, like a trail cell.
         if self._last_pos is not None:
             cx, cy = self._last_pos
-            if not blink or (frame % self.BLINK_PERIOD) < self.BLINK_ON:
-                screen.set_bg_color(bright)
+            decay = self._blink_decay(now) if blink else 0.0
+            if decay < 1.0:
+                screen.set_bg_color(self._fade_color(decay, bright, strength=1.0))
                 if fg is not None:
-                    screen.set_color(bright)
+                    screen.set_color(bright if decay == 0.0 else fg)
                 screen.write_at(cx, cy, char_at_cursor)
 
         screen.reset_color()
 
+    def _blink_decay(self, now: float) -> float:
+        """0 while the head is lit, rising to 1 as its phosphor decays; 1 while it is dark."""
+        phase = (now - (self._last_pos_time or now)) % self.BLINK_PERIOD
+        return max(0.0, min(1.0, (phase - self.BLINK_ON) / self.BLINK_DECAY))
+
     @classmethod
-    def _fade_color(cls, t: float, base: Optional[Color] = None) -> Color:
+    def _fade_color(cls, t: float, base: Optional[Color] = None, strength: Optional[float] = None) -> Color:
         # Phosphor decay: stay near `base` for most of the lifetime, fall off fast at the end.
         # Weight = (1 - t)^2 keeps the trail bright early and fades hard at the tail.
         if base is None:
             base = cls.BRIGHT
         t = max(0.0, min(1.0, t))
-        w = cls.TRAIL_BRIGHTNESS * (1.0 - t) ** 2
+        w = (cls.TRAIL_BRIGHTNESS if strength is None else strength) * (1.0 - t) ** 2
         return Color(
             int(base.r * w),
             int(base.g * w),

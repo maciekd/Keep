@@ -171,22 +171,39 @@ class TestDraw:
         assert screen.calls == []
         screen.reset_color.assert_called_once()
 
-    def test_blink_off_phase_skips_head(self):
+    @staticmethod
+    def _head_bg_at(monkeypatch, seconds_after_move, blink=True):
+        """The head's background `seconds_after_move` after it last moved; None when not drawn."""
+        now = [100.0]
+        monkeypatch.setattr("interfaces.console.widgets.CrtCursor.time", SimpleNamespace(time=lambda: now[0]))
         c = CrtCursor()
         c.update(3, 4)
+        now[0] += seconds_after_move
         screen = _make_screen()
-        # Frame inside the blink-off window.
-        c.draw(screen, frame=CrtCursor.BLINK_ON)
-        bg_calls = [call for call in screen.calls if call[0] == "bg"]
-        assert len(bg_calls) == 0  # no trail, head suppressed by blink
+        c.draw(screen, frame=0, blink=blink)
+        bg = [call for call in screen.calls if call[0] == "bg"]
+        return bg[0] if bg else None
 
-    def test_blink_disabled_always_draws_head(self):
-        c = CrtCursor()
-        c.update(3, 4)
-        screen = _make_screen()
-        c.draw(screen, frame=CrtCursor.BLINK_ON, blink=False)
-        bg_calls = [call for call in screen.calls if call[0] == "bg"]
-        assert len(bg_calls) == 1
+    def test_blink_holds_the_head_lit_after_a_move(self, monkeypatch):
+        b = CrtCursor.BRIGHT
+        assert self._head_bg_at(monkeypatch, CrtCursor.BLINK_ON * 0.9) == ("bg", b.r, b.g, b.b)
+
+    def test_blink_decays_the_head_before_it_goes_dark(self, monkeypatch):
+        fading = self._head_bg_at(monkeypatch, CrtCursor.BLINK_ON + CrtCursor.BLINK_DECAY / 2)
+        assert fading is not None and 0 < fading[2] < CrtCursor.BRIGHT.g
+
+    def test_blink_dark_phase_skips_head(self, monkeypatch):
+        dark = CrtCursor.BLINK_ON + CrtCursor.BLINK_DECAY + (CrtCursor.BLINK_PERIOD - CrtCursor.BLINK_ON - CrtCursor.BLINK_DECAY) / 2
+        assert self._head_bg_at(monkeypatch, dark) is None
+
+    def test_blink_relights_the_head_each_period(self, monkeypatch):
+        b = CrtCursor.BRIGHT
+        assert self._head_bg_at(monkeypatch, CrtCursor.BLINK_PERIOD + 0.01) == ("bg", b.r, b.g, b.b)
+
+    def test_blink_disabled_always_draws_head(self, monkeypatch):
+        b = CrtCursor.BRIGHT
+        dark = CrtCursor.BLINK_ON + CrtCursor.BLINK_DECAY
+        assert self._head_bg_at(monkeypatch, dark, blink=False) == ("bg", b.r, b.g, b.b)
 
     def test_draw_renders_trail_then_head(self):
         c = CrtCursor()
