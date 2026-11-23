@@ -119,3 +119,19 @@ class TestTheInvokeFormat:
         text = f"{self.block(('turn_on', 'Kitchen lamp'))}\nLit.\n{self.block(('turn_off', 'Hall lamp'), ('turn_off', 'Porch'))}"
         reply = self.guarded(invoke_reader, text)
         assert reply.prose == "Lit." and len(reply.before) == 1 and len(reply.after) == 2
+
+
+def test_a_reader_built_before_the_format_was_chosen_reads_in_the_one_chosen_since():
+    """The console builds its reader at startup, the smart LLM names the format a moment later:
+    a call written in that format is an echo, never prose."""
+    from assistant.commands.formats.CommandFormats import CommandFormats
+    from assistant.commands.formats.QwenFormat import QwenFormat
+    early = StoredReplyReader()
+    CommandFormats.set_active(QwenFormat, "a test")
+    try:
+        reply = early.read("<tool_call>\n<function=config_set>\n<parameter=key>\nowner_name\n</parameter>\n"
+                           "<parameter=value>\nMarcus\n</parameter>\n</function>\n</tool_call>")
+    finally:
+        CommandFormats.reset()
+    assert reply.prose == ""
+    assert len(reply.before) == 1 and "owner_name" in reply.before[0].text

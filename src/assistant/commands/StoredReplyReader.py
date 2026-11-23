@@ -45,7 +45,16 @@ class StoredReplyReader:
         self._commands = Commands(None)
         self._format = CommandFormats.active()(self._commands.list_commands())
 
+    def _follow_active_format(self):
+        """The process's format is chosen when the smart LLM is built, which a reader made
+        at startup precedes: a reply is read in the format it is written in now."""
+        active = CommandFormats.active()
+        if type(self._format) is not active:
+            trace(f"StoredReplyReader: reading in the {active.name} command format now (was {self._format.name})")
+            self._format = active(self._commands.list_commands())
+
     def read(self, reply: str) -> StoredReply:
+        self._follow_active_format()
         prose, before, after = "", [], []
         remaining = reply or ""
         while remaining:
