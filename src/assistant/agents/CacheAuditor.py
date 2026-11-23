@@ -26,20 +26,30 @@ Examples of SAFE responses (should be cached):
 - query: "Turn off the TV in five minutes" - even though this references time it is safe in cache since the response to this query will always be the same, independent of time of day
 - query: "User (VoiceToVoice in Bedroom): turn off the lights" - this is safe because it's clear that the user is in the Bedroom from context
 
-Start your reply with a short explanation of your thinking. 
+"""
+
+# Sonnet 5.5, Opus 5.5 and Fable refuse a request that asks for their reasoning
+# (`reasoning_extraction`) and return nothing, so such a backend is asked for the verdict alone.
+EXPLAINED_VERDICT = """Start your reply with a short explanation of your thinking.
 Then ALWAYS end your reply with SAFE or UNSAFE on a single line."""
+BARE_VERDICT = "ALWAYS end your reply with SAFE or UNSAFE on a single line."
+
+
+def system_prompt(refuses_reasoning: bool) -> str:
+    return SYSTEM_PROMPT + (BARE_VERDICT if refuses_reasoning else EXPLAINED_VERDICT)
 
 
 class CacheAuditor:
     """Classifies cached LLM responses as safe or unsafe to replay and evicts the unsafe ones.
 
-    Without the key its LLM tier needs (Gemini by default) the auditor is disabled: the server
+    Without the key its LLM tier needs (Claude's by default) the auditor is disabled: the server
     still starts, cache entries just stay unaudited until the key is configured."""
     def __init__(self):
         self._running = False
         self._thread = None
         llm_name, model = parse_llm_config('cache_auditor')
         self._llm = create_llm(llm_name, model)
+        self._system_prompt = system_prompt(self._llm.refuses_reasoning_requests())
         self.disabled_reason = self._llm.missing_api_key()
         if self.disabled_reason:
             info(f"Cache auditor disabled: no {self.disabled_reason}")
@@ -100,7 +110,7 @@ class CacheAuditor:
                     continue
 
                 user_message = f"Query: {query}\nResponse: {response}"
-                llm_response = self._llm.think(SYSTEM_PROMPT, user_message).strip()
+                llm_response = self._llm.think(self._system_prompt, user_message).strip()
                 verdict = llm_response.split("\n")[-1].strip().upper()
                 trace(f"CacheAuditor {verdict}: '{query}' - '{response.replace("\n", "")}'")
                 res = llm_response.replace("UNSAFE", "").replace("SAFE", "").strip()

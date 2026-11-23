@@ -46,6 +46,14 @@ class TestCacheAuditorInit:
         finally:
             CommandFormats.reset()
 
+    @pytest.mark.parametrize("refuses", [True, False])
+    def test_asks_for_an_explanation_only_from_a_backend_that_answers_such_a_request(self, mock_gemini_llm, refuses):
+        from assistant.agents.CacheAuditor import CacheAuditor
+        mock_gemini_llm.return_value.refuses_reasoning_requests.return_value = refuses
+        prompt = CacheAuditor()._system_prompt
+        assert ("explanation" in prompt) is not refuses
+        assert prompt.rstrip().endswith("SAFE or UNSAFE on a single line.")
+
 @pytest.mark.unit
 class TestCacheAuditorAuditPass:
     """Tests for _audit_pass() verdict handling"""

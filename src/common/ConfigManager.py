@@ -11,9 +11,9 @@ from typing import Optional, Any
 # The keys the server cannot start without, whatever the LLM setup: the vault passphrase
 # encrypts every secret the assistant is handed later. The launcher adds the api_keys entry of
 # the `smart` tier's backend (Claude by default, none at all on a local model — see
-# `_required_keys` in floxy_ai_server.py). The Gemini key (video and the cache auditor default
-# to it) is set up during the first run; without it those tiers report the missing key instead
-# of running. Everything else is an optional integration.
+# `_required_keys` in floxy_ai_server.py). The Gemini key (the video tier defaults to it) is set
+# up during the first run; without it that tier reports the missing key instead of running.
+# Everything else is an optional integration.
 REQUIRED_KEYS = ("vault.key",)
 # Written when config.yaml is missing (first start, or after //wipe), so the user has a file
 # to put the keys into rather than a traceback.

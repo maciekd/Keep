@@ -33,7 +33,7 @@ api_keys:
   # https://platform.claude.com/settings/workspaces). A key with Scope Default workspace needs nothing here.
   anthropic_workspace: ""
   anthropic_admin: YOUR_ANTHROPIC_ADMIN_API_KEY_HERE  # For cost monitoring, create at console.anthropic.com > Settings > Admin Keys. Note that cost comes in with a days delay.
-  gemini: YOUR_GEMINI_API_KEY_HERE  # video clips (the ai.video tier) and the cache auditor run on Gemini by default; without the key videos stay undescribed
+  gemini: YOUR_GEMINI_API_KEY_HERE  # video clips (the ai.video tier) run on Gemini by default; without the key videos stay undescribed
   elevenlabs: YOUR_ELEVENLABS_API_KEY_HERE
   grok: YOUR_GROK_API_KEY_HERE
   openrouter: YOUR_API_KEY_HERE
