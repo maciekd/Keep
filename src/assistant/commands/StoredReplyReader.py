@@ -7,6 +7,11 @@ one echo per call ("Searching for …", `Commands.echo_text`). The reader rebuil
 view from the stored text — and keeps, beside the echo, what a call said to somebody else
 (`Commands.echo_body`, the text of a `post_message`), which no stream showed — with the parser the stream itself uses, so a chat redrawn from
 the history reads like the one that was watched live.
+
+A row is read in the syntax it is written in, whichever of the formats that is: the history
+outlives the choice of format (another model since, or a backfill at startup, which runs
+before the smart LLM is built and its format chosen), and a row read in the wrong syntax
+would show its calls as prose.
 """
 import re
 from dataclasses import dataclass
@@ -16,6 +21,7 @@ from common.logging import trace
 
 from .formats.CommandFormats import CommandFormats
 from .formats.KeepFormat import CODE_TAGS
+from .formats.RescueFormat import RescueFormat
 from .Commands import Commands
 
 WRAP_OPENS = re.compile(r"(`+|<code>)\s*$")
@@ -43,15 +49,21 @@ class StoredReplyReader:
     def __init__(self):
         # Never runs a command: describing one needs no processor behind it.
         self._commands = Commands(None)
-        self._format = CommandFormats.active()(self._commands.list_commands())
+        self._format = self._every_format(CommandFormats.active())
+
+    def _every_format(self, active) -> RescueFormat:
+        """The active format with every other one read beside it."""
+        names = self._commands.list_commands()
+        others = [fmt(names) for fmt in CommandFormats.BY_NAME.values() if fmt is not active]
+        return RescueFormat(active(names), others)
 
     def _follow_active_format(self):
         """The process's format is chosen when the smart LLM is built, which a reader made
         at startup precedes: a reply is read in the format it is written in now."""
         active = CommandFormats.active()
-        if type(self._format) is not active:
-            trace(f"StoredReplyReader: reading in the {active.name} command format now (was {self._format.name})")
-            self._format = active(self._commands.list_commands())
+        if type(self._format.primary) is not active:
+            trace(f"StoredReplyReader: the {active.name} command format is read first now (was {self._format.name})")
+            self._format = self._every_format(active)
 
     def read(self, reply: str) -> StoredReply:
         self._follow_active_format()

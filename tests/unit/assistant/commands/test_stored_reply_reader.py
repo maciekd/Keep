@@ -135,3 +135,21 @@ def test_a_reader_built_before_the_format_was_chosen_reads_in_the_one_chosen_sin
         CommandFormats.reset()
     assert reply.prose == ""
     assert len(reply.before) == 1 and "owner_name" in reply.before[0].text
+
+
+@pytest.mark.parametrize("written_in", ["keep", "qwen", "dsml", "invoke"])
+@pytest.mark.parametrize("active", ["keep", "qwen", "dsml", "invoke"])
+def test_a_row_is_read_in_the_format_it_was_written_in_whatever_the_active_one(written_in, active):
+    """The startup backfill reads the history before the smart LLM has named the format, and
+    a history outlives a change of model: the calls of a row are echoes either way."""
+    from assistant.commands.formats.CommandFormats import CommandFormats
+    writer = CommandFormats.by_name(written_in)
+    calls = "\n".join(writer.render_tool_call("config_set", {"key": key, "value": value})
+                      for key, value in (("icloud.devices[0].id", "abc=="), ("icloud.devices[0].display_name", "frances")))
+    CommandFormats.set_active(CommandFormats.by_name(active), "a test")
+    try:
+        reply = StoredReplyReader().read(f"Saving both.\n{calls}")
+    finally:
+        CommandFormats.reset()
+    assert reply.prose == "Saving both."
+    assert [("id" in echo.text, "display_name" in echo.text) for echo in reply.after] == [(True, False), (False, True)]
