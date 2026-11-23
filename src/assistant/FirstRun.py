@@ -325,8 +325,7 @@ FULL_DISK_ACCESS_TURN = (
     "the setup in the console (the Home tab is the chat). Keep it short.")
 # Appended to either when the login item was registered along with the shortcut.
 AUTOSTART_NOTE = (" The server now also starts by itself when the user logs in on this Mac (a login item, "
-                  f"{Autostart.SETTINGS_PATH}, where it can be removed). After a reboot that means once someone "
-                  "has signed in, or unlocked the disk when FileVault is on, unless the Mac logs in automatically.")
+                  f"{Autostart.SETTINGS_PATH}, where it can be removed). ")
 CURATION_RETRY_SECONDS = 600  # how long an all-failed first curation waits before it is run again
 CURATION_STEP_SECONDS = 160.0   # what one curation chunk normally takes: the bar's estimate until one has finished
 PHOTOS_INTEGRATION = "Photos"
