@@ -50,7 +50,7 @@ def counted(count: int, noun: str, plural: str = "") -> str:
 
 
 class MemoryTab(TabView):
-    """Base of the Memory group's document sub-tabs (`BankTab`, `ProceduresTab`): one part of the
+    """Base of the Memory group's document sub-tabs (`BankTab`, `ProceduresTab`, `MemosTab`): one part of the
     long-term memory, `_live_text` being the part, read as a document in the Dashboard's tiles.
     Summary tiles on top (how much there is, how it is divided, and what the tab adds), an
     outline of the sections on the left from 110 columns — each with a meter of its share, its

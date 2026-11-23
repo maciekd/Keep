@@ -11,6 +11,7 @@ from datetime import datetime
 from . import PromptSectionGenerator as SectionGenerators
 from .TimeOfDay import TimeOfDay
 from .sections.MemorySectionGenerator import MemorySectionGenerator
+from .sections.MemosSectionGenerator import MemosSectionGenerator
 from .sections.ProceduresSectionGenerator import ProceduresSectionGenerator
 from .sections.TrialSectionGenerator import TrialSectionGenerator
 from .sections.WatchListSectionGenerator import WatchListSectionGenerator
@@ -167,7 +168,7 @@ class PromptManager:
     # Where each section stands in `self.sections`: the order they are started and stopped in,
     # and the order of the {INTEGRATION_DATA} block. A section a new folder brings comes after
     # these, by key.
-    SECTION_ORDER = ("memory", "memory_recent", "procedures", "watchlist", "integrations", "trial", "vault", "voices", "weather",
+    SECTION_ORDER = ("memory", "memory_recent", "procedures", "memos", "watchlist", "integrations", "trial", "vault", "voices", "weather",
                      "homeclaw",
                      "precipitation", "home", "web", "calendar", "music", "music_zones", "car_info", "pool", "heat_pump", "phones")
     # The placeholder the data sections of the integrations fill, each under its own heading.
@@ -197,6 +198,7 @@ class PromptManager:
             'memory': memory,
             'memory_recent': memory.recent,
             'procedures': ProceduresSectionGenerator(self),
+            'memos': MemosSectionGenerator(self),
             'watchlist': WatchListSectionGenerator(self),
             'integrations': IntegrationsSectionGenerator(self),
             'trial': TrialSectionGenerator(self),

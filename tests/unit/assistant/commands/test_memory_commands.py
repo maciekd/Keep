@@ -4,7 +4,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from assistant import Procedures, WatchList
+from assistant import WatchList
+
+from assistant.Procedures import Procedures
 from assistant.commands.CommandParser import CommandParser
 from assistant.commands.Commands import Commands
 
@@ -13,7 +15,7 @@ from assistant.commands.Commands import Commands
 def stores(tmp_path, monkeypatch):
     monkeypatch.setattr(WatchList, "WATCHLIST_DIR", tmp_path / "watchlist")
     monkeypatch.setattr(WatchList, "LOG_DIR", tmp_path / "log" / "watchlist")
-    monkeypatch.setattr(Procedures, "PROCEDURES_DIR", tmp_path / "procedures")
+    monkeypatch.setattr(Procedures, "DIR", tmp_path / "procedures")
     monkeypatch.setattr(Procedures, "LOG_DIR", tmp_path / "log" / "procedures")
     return tmp_path
 

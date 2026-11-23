@@ -326,11 +326,14 @@ def isolated_memory_stores(tmp_path_factory):
     there after 04:00 would make the live server skip the night's curation): the stores'
     default directories are empty ones for the session. A test of the stores passes or
     patches its own tmp_path."""
-    from assistant import Procedures, VoiceCandidates, WatchList
+    from assistant import VoiceCandidates, WatchList
+    from assistant.Memos import Memos
+    from assistant.Procedures import Procedures
     from assistant.agents import LongTermMemoryCurator
     root = tmp_path_factory.mktemp("memory")
     WatchList.WATCHLIST_DIR, WatchList.LOG_DIR = root / "watchlist", root / "log" / "watchlist"
-    Procedures.PROCEDURES_DIR, Procedures.LOG_DIR = root / "procedures", root / "log" / "procedures"
+    Procedures.DIR, Procedures.LOG_DIR = root / "procedures", root / "log" / "procedures"
+    Memos.DIR, Memos.LOG_DIR = root / "memos", root / "log" / "memos"
     VoiceCandidates.CANDIDATES_DIR, VoiceCandidates.LOG_DIR = root / "voice_candidates", root / "log" / "voice_id"
     LongTermMemoryCurator.MEMORY_LOG_DIR = root / "log"
 

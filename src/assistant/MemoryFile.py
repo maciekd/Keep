@@ -1,8 +1,8 @@
 """memory/bank.md — the long-term memory bank — and the one lock every writer of it shares.
 
 The bank holds what is durably true of the household: people, preferences, relationships,
-contacts, standing rules. How-tos live in `Procedures`, things being tracked in `WatchList`;
-the three together are the `memory/` directory.
+contacts, standing rules. How-tos live in `Procedures`, lookup material in `Memos`, things being
+tracked in `WatchList`; the four together are the `memory/` directory.
 
 Two things write the file: the curator's full rewrite (a read, minutes of LLM time, then a
 write) and the `remember` command's append. The lock serialises the append with the curator's

@@ -10,7 +10,9 @@ from .LongTermMemoryCurator import LongTermMemoryCurator
 from ..llm import create_llm, parse_llm_config, messages_contain_images, speed_override
 from ..llm.AbstractLLM import LLMRefusalError, Thinking
 from common.logging import trace, info, note, error, fine
-from assistant import Destinations, MemoryFile, Procedures, Reactivation, WatchList
+from assistant import Destinations, MemoryFile, Reactivation, WatchList
+from assistant.Memos import Memos
+from assistant.Procedures import Procedures
 from assistant.Telemetry import Telemetry
 from common.Paths import CACHE_DIR
 from ..prompt.PromptManager import PromptManager
@@ -1154,14 +1156,17 @@ class AutonomousActionManager:
     @staticmethod
     def _report_memory_size():
         """The beta telemetry's memory event: the size of the bank as the curation left it (as
-        it stood, when the period was empty) and the number of watch items and procedures."""
+        it stood, when the period was empty), the number of watch items and procedures, and
+        the memos with their total — what the curator's prompt carries of them every night."""
         try:
             bank = MemoryFile.read()
             words, watch_items, procedures = (LongTermMemoryCurator.word_count(bank), len(WatchList.items()),
                                               len(Procedures.names()))
+            memos = Memos.names()
+            memo_words = sum(LongTermMemoryCurator.word_count(Memos.read(name) or "") for name in memos)
             info(f"Rem: memory is {words} words ({len(bank)} chars), {watch_items} watch item(s), "
-                 f"{procedures} procedure(s)")
-            Telemetry.get_instance().memory_size(words, len(bank), watch_items, procedures)
+                 f"{procedures} procedure(s), {len(memos)} memo(s) of {memo_words} words in all")
+            Telemetry.get_instance().memory_size(words, len(bank), watch_items, procedures, len(memos), memo_words)
         except Exception as e:
             error(f"Memory size telemetry failed: {type(e).__name__}: {e}")
 

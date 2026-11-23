@@ -291,7 +291,8 @@ trace(f"Toolkits: {len(CORE_TOOLKITS)} core, {len(TOOLKITS) - len(CORE_TOOLKITS)
 
 # Documented in the prompt itself, outside any toolkit.
 CORE_COMMANDS = frozenset({"load_toolkit", "remember", "post_message", "load_watch",
-                           "load_procedure", "save_procedure", "delete_procedure"})
+                           "load_procedure", "save_procedure", "delete_procedure",
+                           "load_memo", "save_memo", "delete_memo"})
 # The toolkit `load_watch` brings along: its commands are what one loads an item for.
 WATCH_TOOLKIT = "watch"
 # Runnable but deliberately offered nowhere (Commands.py carries the todo asking whether to keep it).
@@ -333,7 +334,7 @@ def stop_and_wait_commands() -> frozenset[str]:
 
 
 # The stop-and-wait commands the prompt documents outside any toolkit (res/prompt.md).
-LOADS = ("load_toolkit", "load_procedure", "load_watch")
+LOADS = ("load_toolkit", "load_procedure", "load_memo", "load_watch")
 _STOP_AND_WAIT: frozenset[str] | None = None
 
 

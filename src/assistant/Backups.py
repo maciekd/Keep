@@ -40,7 +40,7 @@ STATE = [
     (AISERVER_DIR / "floxy.db", "database: dialog history, usage stats, photo index, feeds"),
     (CONFIG_PATH, "config.yaml (the next start writes a skeleton and asks for the required keys)"),
     (VAULT_PATH, "vault"),
-    (MEMORY_DIR, "long-term memory: bank, procedures, watch list"),
+    (MEMORY_DIR, "long-term memory: bank, procedures, memos, watch list"),
     (AISERVER_DIR / "memory.md", "long-term memory bank of an install from before memory/"),
     (FirstRun.STATE_FILE, "first-run pipeline state"),
     (ICLOUD_SESSION_DIR, "iCloud session, trust token and cookies"),

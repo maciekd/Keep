@@ -5,7 +5,7 @@ from unittest.mock import Mock, call, patch
 import pytest
 
 from assistant import MemoryFile
-from assistant import Procedures
+from assistant.Procedures import Procedures
 from assistant.agents.LongTermMemoryCurator import (CONDENSE_PASSES, CONDENSE_TRIGGER, HISTORY_SOURCE,
                                                     MEMORY_WORD_LIMIT, LongTermMemoryCurator)
 from assistant.commands.Commands import is_reference_result

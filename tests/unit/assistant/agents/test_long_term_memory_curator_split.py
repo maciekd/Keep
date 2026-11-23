@@ -6,7 +6,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 import assistant.agents.LongTermMemoryCurator as curator_mod
-from assistant import MemoryFile, Procedures, WatchList
+from assistant import MemoryFile, WatchList
+from assistant.Procedures import Procedures
 from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator
 
 OLD_BANK = ("# The Family\n* Marcus likes tea\n* Charlotte is allergic to cats\n"
@@ -19,7 +20,7 @@ def no_live_memory(tmp_path, monkeypatch):
     """Nothing here may reach the repository's own memory/ or log/memory/."""
     monkeypatch.setattr(WatchList, "WATCHLIST_DIR", tmp_path / "default" / "watchlist")
     monkeypatch.setattr(WatchList, "LOG_DIR", tmp_path / "default" / "log" / "watchlist")
-    monkeypatch.setattr(Procedures, "PROCEDURES_DIR", tmp_path / "default" / "procedures")
+    monkeypatch.setattr(Procedures, "DIR", tmp_path / "default" / "procedures")
     monkeypatch.setattr(Procedures, "LOG_DIR", tmp_path / "default" / "log" / "procedures")
     monkeypatch.setattr(curator_mod, "MEMORY_DIR", tmp_path / "live")
     monkeypatch.setattr(curator_mod, "MEMORY_LOG_DIR", tmp_path / "memlog")

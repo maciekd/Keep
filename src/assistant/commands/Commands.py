@@ -17,7 +17,9 @@ from assistant.integration import HomeAutomation as home
 from assistant.tools.WebAccess import WebAccess, NETWORK_LOG_HEADER
 from assistant.agents.AutonomousActionManager import AutonomousActionManager
 from . import CommandSet, Toolkits, ToolkitPreloader
-from assistant import Backups, Destinations, FirstRun, MemoryFile, Procedures, Reactivation, VoiceCandidates, WatchList
+from assistant import Backups, Destinations, FirstRun, MemoryFile, Reactivation, VoiceCandidates, WatchList
+from assistant.Memos import Memos
+from assistant.Procedures import Procedures
 from common.logging import trace, info, note, error, fine
 from assistant.agents.BuildPreflight import BuildPreflight
 from assistant.agents.CodeQualityMaintainer import (CodeQualityMaintainer, IssueDraft, JobPullRequest,
@@ -76,7 +78,7 @@ SERVER_LOG_SCAN_LIMIT = 64 << 20
 
 def is_reference_result(body: str) -> bool:
     """Whether a command result is reference text nobody learns anything from later: a toolkit
-    or procedure reference, the note a preload puts in front of one, a server log dump or a
+    reference, a procedure or a memo, the note a preload puts in front of one, a server log dump or a
     browse network listing. The memory curator leaves them out of its transcript (over
     2026-10-07..09 they were 433KB of the 683KB of command results), and search_history /
     show_history leave them out of their hits: a toolkit loaded a dozen times a day matched
@@ -85,7 +87,7 @@ def is_reference_result(body: str) -> bool:
     (`_publish_bg_results`) puts the reference results after the others, so a round that
     loaded a toolkit beside a real read opens with the read and is kept; the toolkit text
     itself has blank lines in it, so cutting the body into parts would not tell them apart."""
-    return (body.startswith((Toolkits.HEADER_PREFIX, Procedures.HEADER_PREFIX, SERVER_LOG_HEADER, NETWORK_LOG_HEADER))
+    return (body.startswith((Toolkits.HEADER_PREFIX, Procedures.HEADER_PREFIX, Memos.HEADER_PREFIX, SERVER_LOG_HEADER, NETWORK_LOG_HEADER))
             or ToolkitPreloader.is_preface(body))
 
 
@@ -155,13 +157,14 @@ class Commands:
         "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit", "pr_feedback", "server_logs",
         "load_watch", "save_watch", "delete_watch", "open_url",
-        "load_procedure", "save_procedure", "delete_procedure", "post_message", "name_voice",
+        "load_procedure", "save_procedure", "delete_procedure", "load_memo", "save_memo", "delete_memo",
+        "post_message", "name_voice",
         "create_event", "delete_event", "move_event", "load_calendar", "fetch_camera_images", "car_navigate",
         "play_music",
     })
     # Side-effect-free commands that the prompt test suite still runs: a toolkit the LLM
     # never receives would fail every expectation that depends on its reference.
-    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_watch", "load_calendar"})
+    PURE_COMMANDS = frozenset({"load_toolkit", "load_procedure", "load_memo", "load_watch", "load_calendar"})
     # Commands that act on the Mac itself: on any other system `run` refuses them and the
     # toolkit texts leave them out.
     MAC_ONLY_COMMANDS = Toolkits.MAC_ONLY_COMMANDS
@@ -2190,7 +2193,7 @@ class Commands:
             Reactivation.assistant_wrote()
         return failure or None
 
-    # The watch list and the procedures: the argument handling lives with the stores
+    # The watch list, the procedures and the memos: the argument handling lives with the stores
     # (the memory curator's command block runs the same commands through them).
     def cmd_load_watch(self, *names: str):
         self.background_command(self._run_load_watch, list(names))
@@ -2233,16 +2236,26 @@ class Commands:
     def _run_load_procedure(*names: str) -> str:
         """The named procedures, each under its header. Splatted like every list-parameter
         background command (`function(*params)`)."""
-        names = [n for n in names if n and n.strip()]
-        if not names:
-            return "load_procedure failed: expected a procedure name. Available: " + (", ".join(Procedures.names()) or "none")
-        return "\n\n".join(Procedures.load(name) for name in names)
+        return Procedures.load_all(list(names))
 
     def cmd_save_procedure(self, *args: str) -> str:
         return Procedures.run("save_procedure", list(args))
 
     def cmd_delete_procedure(self, *args: str) -> str:
         return Procedures.run("delete_procedure", list(args))
+
+    def cmd_load_memo(self, *names: str):
+        self.background_command(self._run_load_memo, list(names))
+
+    @staticmethod
+    def _run_load_memo(*names: str) -> str:
+        return Memos.load_all(list(names))
+
+    def cmd_save_memo(self, *args: str) -> str:
+        return Memos.run("save_memo", list(args))
+
+    def cmd_delete_memo(self, *args: str) -> str:
+        return Memos.run("delete_memo", list(args))
 
     # The unnamed voices the discovery filed: the folder is the contract, VoiceCandidates owns it.
     def cmd_name_voice(self, *args: str) -> str:
@@ -2821,6 +2834,9 @@ class Commands:
     def describe_load_procedure(self, p):         return f"Loading the {self._first_argument(p)} procedure" if p.strip() else "Loading a procedure"
     def describe_save_procedure(self, p):         return f"Saving the {self._first_argument(p)} procedure" if p.strip() else "Saving a procedure"
     def describe_delete_procedure(self, p):       return f"Deleting the {self._first_argument(p)} procedure" if p.strip() else "Deleting a procedure"
+    def describe_load_memo(self, p):              return f"Loading the {self._first_argument(p)} memo" if p.strip() else "Loading a memo"
+    def describe_save_memo(self, p):              return f"Saving the {self._first_argument(p)} memo" if p.strip() else "Saving a memo"
+    def describe_delete_memo(self, p):            return f"Deleting the {self._first_argument(p)} memo" if p.strip() else "Deleting a memo"
     def describe_false_positive(self, p):         return None  # noisy / dev-only — suppress
     def describe_load_toolkit(self, p):
         names = [n.strip().strip("\"'`") for n in p.split(",") if n.strip()]

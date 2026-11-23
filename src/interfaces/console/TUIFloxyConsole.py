@@ -12,6 +12,7 @@ from interfaces.console.tabs.LogTab import LogTab
 from interfaces.console.tabs.PromptTab import PromptTab
 from interfaces.console.tabs.VoiceTab import VoiceTab
 from interfaces.console.tabs.BankTab import BankTab
+from interfaces.console.tabs.MemosTab import MemosTab
 from interfaces.console.tabs.ProceduresTab import ProceduresTab
 from interfaces.console.tabs.WatchListTab import WatchListTab
 from interfaces.console.tabs.VaultTab import VaultTab
@@ -110,6 +111,7 @@ class TUIFloxyConsole(AssistantObserver):
             TabGroup("Memory", [
                 BankTab(),
                 ProceduresTab(),
+                MemosTab(),
                 WatchListTab(),
             ]),
             VaultTab(),
