@@ -105,11 +105,12 @@ class TestTheSetupToolkit:
         assert "System Settings" not in text and "<!--" not in text
         assert len(text) <= Toolkits.MAX_FILE_CHARS
 
-    def test_both_systems_are_told_the_same_stop_and_wait_commands_but_the_macs_own(self, monkeypatch):
+    def test_both_systems_are_told_the_same_stop_and_wait_commands(self, monkeypatch):
         _on(monkeypatch, Platform.MAC)
         on_mac = SETUP.stop_and_wait()
         _on(monkeypatch, Platform.LINUX)
-        assert on_mac - SETUP.stop_and_wait() == Toolkits.MAC_ONLY_COMMANDS
+        assert on_mac == SETUP.stop_and_wait()
+        assert not on_mac & Toolkits.MAC_ONLY_COMMANDS
 
     def test_every_marker_of_every_toolkit_has_its_pair(self):
         for toolkit in Toolkits.TOOLKITS:

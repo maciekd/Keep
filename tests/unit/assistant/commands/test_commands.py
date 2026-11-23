@@ -3159,34 +3159,16 @@ class TestPullRequestTrialCommands:
 
 
 class TestShowFullDiskAccessSetting:
-    """Opens the System Settings pane and tells the LLM whether the grant is in force."""
+    """Opens the System Settings pane; what a `cmd_*` returns is read as its error, so only a failure speaks."""
 
-    def test_opens_the_pane_and_says_the_grant_is_missing(self, commands_instance):
-        with patch("assistant.commands.Commands.FullDiskAccess.observable", return_value=True), \
-                patch("assistant.commands.Commands.FullDiskAccess.granted", return_value=False), \
-                patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value=None) as opened:
-            result = commands_instance.cmd_show_full_disk_access_setting("")
+    def test_a_pane_that_opened_is_no_error(self, commands_instance):
+        with patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value=None) as opened:
+            assert commands_instance.cmd_show_full_disk_access_setting("") is None
         opened.assert_called_once()
-        assert "Full Disk Access" in result and "not granted" in result and "restart_server" in result
-
-    def test_an_already_granted_process_says_so(self, commands_instance):
-        with patch("assistant.commands.Commands.FullDiskAccess.observable", return_value=True), \
-                patch("assistant.commands.Commands.FullDiskAccess.granted", return_value=True), \
-                patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value=None):
-            result = commands_instance.cmd_show_full_disk_access_setting("")
-        assert "already granted" in result
-
-    def test_a_mac_without_messages_cannot_be_checked(self, commands_instance):
-        with patch("assistant.commands.Commands.FullDiskAccess.observable", return_value=False), \
-                patch("assistant.commands.Commands.FullDiskAccess.granted", return_value=False), \
-                patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value=None):
-            result = commands_instance.cmd_show_full_disk_access_setting("")
-        assert "cannot be checked" in result
 
     def test_a_pane_that_will_not_open_names_the_path_to_it_by_hand(self, commands_instance):
-        with patch("assistant.commands.Commands.FullDiskAccess.observable", return_value=True), \
-                patch("assistant.commands.Commands.FullDiskAccess.granted", return_value=False), \
-                patch("assistant.commands.Commands.FullDiskAccess.open_settings", return_value="System Settings could not be opened: no open"):
+        with patch("assistant.commands.Commands.FullDiskAccess.open_settings",
+                   return_value="System Settings could not be opened: no open"):
             result = commands_instance.cmd_show_full_disk_access_setting("")
         assert "could not be opened" in result and "Privacy & Security" in result
 

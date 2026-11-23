@@ -63,7 +63,7 @@ there on your own. When the user presses Start in the bot their chat id reaches 
 
 <!-- mac -->
 `show_full_disk_access_setting()` — opens System Settings on Privacy & Security > Full Disk Access, on the Mac's own
-screen (the user must be at it), and reports whether the grant is in force for the running server. macOS
+screen (the user must be at it). macOS
 keeps the Messages database behind this grant and gives it to Terminal, the app the server is launched through. The
 user turns Terminal on there; macOS then offers to quit Terminal — they should accept (the terminal and console
 close; the server and Telegram keep running). The grant reaches a new process only, so `restart_server`
@@ -139,9 +139,4 @@ with — if it failed, say why and offer to re-enter the value. Never ask for a 
 guess a key that config_help does not list.
 
 ### Stop-and-wait
-<!-- mac -->
-`list_integrations()`, `config_help`, `config_request`, `config_set`, `config_delete`, `restart_integration`, `enable_integration`, `disable_integration`, `show_full_disk_access_setting`, `telegram_login`, `microsoft_login`, `google_login`, `google_login_code`, `icloud_login_code`, `volvo_login`, `volvo_login_code`, `spotify_login`, `spotify_login_code` return data: emit them and stop generating; the result arrives in the next round.
-<!-- /mac -->
-<!-- linux -->
 `list_integrations()`, `config_help`, `config_request`, `config_set`, `config_delete`, `restart_integration`, `enable_integration`, `disable_integration`, `telegram_login`, `microsoft_login`, `google_login`, `google_login_code`, `icloud_login_code`, `volvo_login`, `volvo_login_code`, `spotify_login`, `spotify_login_code` return data: emit them and stop generating; the result arrives in the next round.
-<!-- /linux -->

@@ -1792,25 +1792,14 @@ class Commands:
     def cmd_config_help(self, parameter_string: str = ""):
         self.background_command(self._run_config_help, parameter_string.strip().strip('"\''))
 
-    def cmd_show_full_disk_access_setting(self, parameter_string: str = "") -> str:
+    def cmd_show_full_disk_access_setting(self, parameter_string: str = "") -> str | None:
         """Opens System Settings on the Full Disk Access pane, on the Mac's own screen (the first-run
-        brief's step 2), and says whether the grant is in force for this process. `open` returns at
-        once, so no background lane."""
-        granted = FullDiskAccess.granted()
-        if granted:
-            info("show_full_disk_access_setting: the grant is already in force")
-        if not FullDiskAccess.observable():
-            status = ("Full Disk Access cannot be checked from here: there is no Messages database on this Mac "
-                      "(Messages.app is not set up).")
-        elif granted:
-            status = "Full Disk Access is already granted to this server process."
-        else:
-            status = ("Full Disk Access is not granted to this server process yet. Once the user turns Terminal on "
-                      "and lets macOS quit it, restart_server() starts a process that has it.")
+        brief's step 2). Silent when the pane opened — whether the grant is in force is the last line
+        of the prompt's integrations section — and the failure as the command's error otherwise."""
         failure = FullDiskAccess.open_settings()
         if failure:
-            return f"{failure}. The pane is {FullDiskAccess.SETTINGS_PATH}. {status}"
-        return f"System Settings is open on {FullDiskAccess.SETTINGS_PATH}, on the Mac's screen. {status}"
+            return f"{failure}. The pane is {FullDiskAccess.SETTINGS_PATH}."
+        return None
 
     def _run_config_help(self, section: str = "") -> str:
         if not section:
