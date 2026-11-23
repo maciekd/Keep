@@ -12,7 +12,7 @@ from interfaces.console.widgets import Board, ChartImage, Tile
 from interfaces.console.widgets.Board import MeterRow
 from interfaces.console.widgets.ChartImage import Bar, ChartPicture, Rule, Segment
 from interfaces.console.widgets.FeedStrip import SHORT_NAMES, SYMBOL_FAILED, SYMBOL_PAUSED, SYMBOL_RUNNING, format_eta
-from common import Platform
+from common import MemorySizes, Platform
 from common.logging import info
 from common.GpuMonitor import GpuMonitor
 from common.AnthropicCostMonitor import AnthropicCostMonitor
@@ -485,15 +485,26 @@ class DashboardTab(TabView):
 
     LTM_MIN_MAX_KB = 10.0
 
-    def _draw_long_term_memory_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int):
-        sizes = [kb for _, kb in self.memory_log_sizes]
-        latest_str = f"{sizes[-1]:.0f} KB · {self.memory_word_count:,} words" if sizes else ""
-        peak = max(sizes) if sizes else 0.0
-        max_kb = self._nice_ceil(peak) if peak > self.LTM_MIN_MAX_KB else self.LTM_MIN_MAX_KB
+    # The parts of the memory (`MemorySizes.PARTS`) as the chart stacks them, the bank at the base.
+    LTM_LAYERS = ((MemorySizes.BANK, "bank", Theme.COLOR_PINK), ("procedures", "procedures", Theme.COLOR_PURPLE),
+                  ("memos", "memos", Theme.COLOR_BLUE), ("watchlist", "watch list", Theme.COLOR_TEAL))
 
-        self._draw_area_chart(screen, x, y, width, chart_h, sizes, Theme.COLOR_PINK,
+    def _draw_long_term_memory_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int):
+        """The memory's size per day as a stack: the bank, and on it the procedures, the memos
+        and the watch list from the first day their sizes were recorded. The value is the
+        bank's latest size and its words, with the whole stack's size in grey before it."""
+        readings = [sizes for _, sizes in self.memory_log_sizes]
+        totals = [sum(sizes.values()) for sizes in readings]
+        latest_str = (f"{readings[-1].get(MemorySizes.BANK, 0.0):.0f} KB · {self.memory_word_count:,} words"
+                      if readings else "")
+        peak = max(totals) if totals else 0.0
+        max_kb = self._nice_ceil(peak) if peak > self.LTM_MIN_MAX_KB else self.LTM_MIN_MAX_KB
+        layers = [(name, [sizes.get(part) for sizes in readings], color) for part, name, color in self.LTM_LAYERS]
+
+        self._draw_area_chart(screen, x, y, width, chart_h, totals, Theme.COLOR_PINK,
                               "Long Term Memory", latest_str, max_value=max_kb, y_axis_format=self._format_kb,
-                              window=self.DAILY_AVERAGE_DAYS, window_label=f"{self.DAILY_AVERAGE_DAYS}d avg")
+                              layers=[layer for layer in layers if any(v is not None for v in layer[1])],
+                              aside=f"{totals[-1]:.0f} KB" if totals else "")
 
     @staticmethod
     def _format_kb(v: float) -> str:
@@ -546,7 +557,8 @@ class DashboardTab(TabView):
                          max_value: float = 100.0, y_axis_format=None, slots: int = 0,
                          window: int = 0, window_label: str = "", window_format=None,
                          ticks: Optional[Sequence[Tuple[float, str, Color]]] = None,
-                         color_for: Optional[Callable[[float], Color]] = None):
+                         color_for: Optional[Callable[[float], Color]] = None,
+                         layers: Sequence[Tuple[str, Sequence[Optional[float]], Color]] = (), aside: str = ""):
         """A chart tile with a filled line chart (`ChartImage.area`): the title strip with the
         latest value and, with a `window`, a legend for the rolling average of that many points
         traced over the line, its latest figure in parentheses (in `window_format`, the y-axis
@@ -554,11 +566,25 @@ class DashboardTab(TabView):
         percent by default) unless `ticks` — (value, label, colour) — name the rules instead.
         A missing value (None) breaks the line. With nothing to show the plot is the empty
         ground with a note.
+        With `layers` — (name, values, colour), aligned with `values`, which are their sums —
+        the plot is the layers stacked from the first up (`ChartImage.stacked`), with no
+        average, and the legend names them in their colours.
+        `aside` is a second figure, in grey before the value, when the strip has the room.
         On a screen without pictures the line would be coarse half-block pixels, so the plot
         is the values as block-character columns instead (`_draw_columns`, a missing value an
         empty column, each in `fg` or the colour `color_for(value)` gives it) with no average
         and no legend."""
         Tile.draw_card(screen, self._cards, x, y, width, chart_h + Tile.CARD_CHROME, label, value_str, fg)
+        if aside and value_str and display_width(label) + display_width(aside) + display_width(value_str) + 9 <= width:
+            aside_x = x + width - 2 - display_width(value_str) - 3 - display_width(aside)
+            screen.set_color(Theme.COLOR_LABEL)
+            screen.bold()
+            screen.write_at(aside_x, y, aside)
+            screen.reset_color()
+            screen.set_color(Theme.COLOR_FAINT)
+            screen.write_at(aside_x + display_width(aside), y, " · ")
+            screen.reset_color()
+            value_str = f"{aside} · {value_str}"    # what the legend must leave free
         y_axis_format = y_axis_format or self._format_pct
         window_format = window_format or y_axis_format
         chart_y = y + Tile.CARD_TOP
@@ -595,6 +621,15 @@ class DashboardTab(TabView):
         if not screen.graphics:
             self._draw_columns(screen, chart_x, chart_y, chart_w, chart_h, [v or 0.0 for v in values], max_value,
                                color_for or (lambda _: fg), guides=guides)
+            return
+
+        if layers:
+            stack = [(list(series), color) for _, series, color in layers]
+            image = self._chart_picture(label).update(
+                chart_w, chart_h, (stack, max_value, rules, slots),
+                lambda: ChartImage.stacked(stack, max_value, chart_w, chart_h, rules, slots))
+            screen.image(chart_x, chart_y, image, chart_w, chart_h)
+            self._write_chart_legend(screen, x, y, width, label, value_str, [(name, color) for name, _, color in layers])
             return
 
         average = ChartImage.rolling_mean(values, window) if window > 1 and len(values) > 1 else []

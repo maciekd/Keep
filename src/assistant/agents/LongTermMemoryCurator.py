@@ -19,6 +19,7 @@ from assistant.integration.calendar.Event import NO_EVENTS
 from common.logging import info, error, trace
 from ..llm.AbstractLLM import LLMRefusalError, Thinking
 from ..llm.LLMUsage import LLMUsage
+from common import MemorySizes
 from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
 from common.vault.Redactor import redact_for_storage
 
@@ -971,6 +972,9 @@ class LongTermMemoryCurator:
                 f.write(f"- Calendar events: {metadata.get('calendar_events_count', 0)}\n")
                 f.write(f"- Old size: {metadata.get('old_memory_size', 0)} chars\n")
                 f.write(f"- New size: {metadata.get('new_memory_size', 0)} chars\n")
+                for line in MemorySizes.header_lines({"procedures": Procedures.DIR, "memos": Memos.DIR,
+                                                      "watchlist": WatchList.WATCHLIST_DIR}):
+                    f.write(line + "\n")
                 f.write(f"- LLM duration: {metadata.get('llm_duration_seconds', 0):.1f}s\n")
                 if metadata.get('llm_call'):
                     f.write(f"- Curation call: {metadata['llm_call']}\n")

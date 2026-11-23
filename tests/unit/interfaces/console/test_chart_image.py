@@ -184,6 +184,30 @@ class TestArea:
 
 
 @pytest.mark.unit
+class TestStacked:
+    COLS = 8
+    MIDDLE = COLS * CELL_W // 2
+
+    def test_a_layer_lies_on_the_one_under_it(self):
+        image = ChartImage.stacked([([30.0, 30.0], A), ([40.0, 40.0], B)], 100.0, self.COLS, ROWS)
+        lower, upper = px(image, self.MIDDLE, y_at(0.15)), px(image, self.MIDDLE, y_at(0.5))
+        assert distance(lower, A) < distance(lower, B)
+        assert distance(upper, B) < distance(upper, A)
+        assert px(image, self.MIDDLE, y_at(0.85)) == GROUND
+
+    def test_a_layer_without_a_value_is_left_out_and_the_next_rests_on_what_is_under_it(self):
+        image = ChartImage.stacked([([30.0] * 6, A), ([None] * 6, B), ([None, None, None, 40.0, 40.0, 40.0], B)],
+                                   100.0, self.COLS, ROWS)
+        assert px(image, CELL_W * 2, y_at(0.5)) == GROUND
+        late = px(image, self.COLS * CELL_W - CELL_W * 2, y_at(0.5))
+        assert late != GROUND and distance(late, B) < distance(late, A)
+
+    def test_a_stack_with_no_value_is_the_empty_ground(self):
+        image = ChartImage.stacked([([None, None], A), ([], B)], 100.0, self.COLS, ROWS)
+        assert all(px(image, x, y) == GROUND for x in range(0, self.COLS * CELL_W, 7) for y in range(HEIGHT))
+
+
+@pytest.mark.unit
 class TestSmooth:
     """The rolling average is resampled along a monotone cubic before it is drawn: it bends
     through its points and never swings past the two either side of it."""

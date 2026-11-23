@@ -1,15 +1,20 @@
 import re
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
+from common import MemorySizes
 from common.logging import fine, trace
 
 
 class MemoryLogMonitor:
     """Scans log/memory snapshots on a background thread to chart memory size per day in the
-    DashboardTab, and counts the words of the live memory bank for the chart's label."""
+    DashboardTab, and counts the words of the live memory bank for the chart's label.
+
+    A day's reading is a size in KB per part of the memory (`MemorySizes.PARTS`): the bank's
+    from every snapshot, the folders' from the snapshots written since the curator records
+    them — an older day has the bank alone. Today's reading is the memory as it stands."""
 
     LOG_DIR = Path("log/memory")
     MEMORY_FILE = Path("memory/bank.md")
@@ -51,14 +56,15 @@ class MemoryLogMonitor:
             stop_event.wait(self._fetch_interval)
 
     def _scan(self):
-        self._dashboard_tab.memory_word_count = self._count_words()
+        bank = self._read_bank()
+        self._dashboard_tab.memory_word_count = self._count_words(bank)
         if not self.LOG_DIR.exists():
             self._dashboard_tab.memory_log_sizes = []
             self._dashboard_tab.memory_log_error = f"Directory not found: {self.LOG_DIR}"
             trace(f"MemoryLogMonitor: {self.LOG_DIR} does not exist")
             return
 
-        # Per-day: keep the largest reading (handles future days with multiple snapshots)
+        # Per day and part: keep the largest reading (handles days with multiple snapshots)
         per_day: dict = {}
         skipped = 0
         for entry in self.LOG_DIR.iterdir():
@@ -87,21 +93,34 @@ class MemoryLogMonitor:
                 skipped += 1
                 trace(f"MemoryLogMonitor: no 'New size' header in {entry.name}")
                 continue
-            size_kb = int(size_match.group(1)) / 1024.0
-            existing = per_day.get(day)
-            if existing is None or size_kb > existing:
-                per_day[day] = size_kb
+            reading = {MemorySizes.BANK: int(size_match.group(1)), **MemorySizes.parse(header)}
+            sizes = per_day.setdefault(day, {})
+            for part, chars in reading.items():
+                sizes[part] = max(sizes.get(part, 0.0), chars / 1024.0)
 
+        if bank is not None:
+            per_day[date.today()] = self._live_sizes(bank)
         sizes = sorted(per_day.items(), key=lambda kv: kv[0])
+        fine(f"MemoryLogMonitor: {len(sizes)} day(s) of memory sizes, {skipped} file(s) skipped")
         self._dashboard_tab.memory_log_sizes = sizes
         self._dashboard_tab.memory_log_error = ""
 
-    def _count_words(self) -> int:
-        """Words of the live bank; markdown markers (`#`, `-`, `---`) are not words."""
+    def _live_sizes(self, bank: str) -> dict:
+        """The memory as it stands, in KB per part: the bank and the folders beside it."""
+        folder = self.MEMORY_FILE.parent
+        return {MemorySizes.BANK: len(bank) / 1024.0,
+                **{part: MemorySizes.folder_chars(folder / part) / 1024.0 for part in MemorySizes.FOLDERS}}
+
+    def _read_bank(self) -> Optional[str]:
         try:
-            text = self.MEMORY_FILE.read_text(encoding="utf-8", errors="replace")
+            return self.MEMORY_FILE.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             trace(f"MemoryLogMonitor: cannot read {self.MEMORY_FILE}: {e}")
+            return None
+
+    def _count_words(self, text: Optional[str]) -> int:
+        """Words of the live bank; markdown markers (`#`, `-`, `---`) are not words."""
+        if text is None:
             return 0
         words = sum(1 for token in text.split() if any(c.isalnum() for c in token))
         fine(f"MemoryLogMonitor: {self.MEMORY_FILE} holds {words} words")

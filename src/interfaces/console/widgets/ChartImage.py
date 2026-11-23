@@ -2,7 +2,8 @@
 and stacked bars on the panel ground, each shaded from its colour's deep companion up to the
 colour, with rounded anti-aliased tops, dashed rules and a soft glow around the newest column;
 and filled line charts (`area`) — a line over a fill fading to the ground, a rolling average
-traced over it as a smooth glowing curve and a glowing dot on the newest point.
+traced over it as a smooth glowing curve and a glowing dot on the newest point — which
+`stacked` lays on one another as bands.
 
 A plot is `cols` × `rows` cells at `Pictures.CELL_PX` pixels a cell, the size the screen sends
 a picture at, so the PNG goes out unscaled. The value scale runs from the centre of the bottom
@@ -97,39 +98,21 @@ def area(values: Sequence[Optional[float]], color: Color, max_value: float, cols
     with a soft glow. The values are spread over `slots` evenly spaced points (at least one per
     value), the newest at the right edge, so a short history fills the plot from the right.
     A missing value (None) breaks the line and the fill."""
-    cell_w, cell_h = CELL_PX
-    width, height = cols * cell_w, rows * cell_h
-    inset = cell_h / 2 if rows > 1 else 0.0
-    zero_y = height - inset
-    plot_h = max(1.0, height - 2 * inset)
-    canvas = np.empty((height, width, 3), np.float32)
-    canvas[:] = _rgb(Theme.COLOR_PANEL_BG)
-    _rules(canvas, rules, zero_y, plot_h)
-
     values, average = list(values), list(average)
     if len(values) == 1 and slots <= 1:     # one reading: a level across the plot rather than a lone dot
         values, average = values * 2, average * 2
-    scale = max_value if max_value > 0 else 1.0
-    slots = max(slots, len(values))
-    span = max(1.0, width - 2 * EDGE_PX)
-    step = span / (slots - 1) if slots > 1 else 0.0
-
-    def x_of(i: int) -> float:
-        return EDGE_PX + (slots - len(values) + i) * step if slots > 1 else width - EDGE_PX
-
-    def y_of(value: float) -> float:
-        return zero_y - min(1.0, max(0.0, value / scale)) * plot_h
+    plot = _Plot(cols, rows, rules, len(values), slots, max_value)
+    canvas, width, height, zero_y, x_of, y_of = plot.canvas, plot.width, plot.height, plot.zero_y, plot.x_of, plot.y_of
 
     runs = _runs([None if v is None else (x_of(i), y_of(v)) for i, v in enumerate(values)])
     if not runs:
-        return Image.fromarray(np.clip(canvas + 0.5, 0, 255).astype(np.uint8))
+        return plot.image()
 
     peak_y = min(y for run in runs for _, y in run)
     fill = _mask(width, height, lambda draw, s: [
         draw.polygon([(x * s, y * s) for x, y in run] + [(run[-1][0] * s, zero_y * s), (run[0][0] * s, zero_y * s)],
                      fill=255) for run in runs if len(run) > 1])
-    t = np.clip((zero_y - np.arange(height) - 0.5) / max(1.0, zero_y - peak_y), 0, 1)[:, None]
-    _paint(canvas, color, fill * (FILL_BOTTOM_ALPHA + (FILL_TOP_ALPHA - FILL_BOTTOM_ALPHA) * t))
+    _paint(canvas, color, fill * plot.fade(peak_y))
 
     # The average under the value line, so where the two meet the values win; it follows the
     # values' own runs and never bridges a gap in them.
@@ -143,13 +126,102 @@ def area(values: Sequence[Optional[float]], color: Color, max_value: float, cols
     _paint(canvas, color, _mask(width, height, lambda draw, s: [_polyline(draw, run, s, LINE_PX) for run in runs]))
 
     if values[-1] is not None:
-        x, y = runs[-1][-1]
-        dot = _mask(width, height, lambda draw, s: draw.ellipse(
+        plot.dot(*runs[-1][-1], color)
+    return plot.image()
+
+
+def stacked(layers: Sequence[Tuple[Sequence[Optional[float]], Color]], max_value: float, cols: int, rows: int,
+            rules: Sequence[Rule] = (), slots: int = 0) -> Image.Image:
+    """Filled lines stacked on one another, the first layer at the base: each layer's values
+    (all aligned, oldest at the left, spread over `slots` as in `area`) lie on the sum of the
+    layers before it, as a band filled in the layer's colour under a line along its top, and
+    the newest point of the whole stack is a dot with a soft glow in the colour of its top
+    layer. A missing value (None) leaves the layer out there: its band and line break, and the
+    layers above rest on what is under it. A layer's reading with none beside it is a point."""
+    layers = [(list(values), color) for values, color in layers]
+    count = max((len(values) for values, _ in layers), default=0)
+    layers = [(values + [None] * (count - len(values)), color) for values, color in layers]
+    if count == 1 and slots <= 1:
+        layers, count = [(values * 2, color) for values, color in layers], 2
+    plot = _Plot(cols, rows, rules, count, slots, max_value)
+    canvas, width, height, x_of, y_of = plot.canvas, plot.width, plot.height, plot.x_of, plot.y_of
+
+    # Each layer as its runs of (x, y of its top, y of what it rests on).
+    base = [0.0] * count
+    bands, top_color = [], None
+    for values, color in layers:
+        tops = [None if v is None else b + v for v, b in zip(values, base)]
+        bands.append((color, _runs([None if t is None else (x_of(i), y_of(t), y_of(b))
+                                    for i, (t, b) in enumerate(zip(tops, base))])))
+        if count and tops[-1] is not None:
+            top_color = color
+        base = [b if t is None else t for t, b in zip(tops, base)]
+    if not any(runs for _, runs in bands):
+        return plot.image()
+
+    fade = plot.fade(min(y for _, runs in bands for run in runs for _, y, _ in run))
+    for color, runs in bands:
+        fill = _mask(width, height, lambda draw, s: [
+            draw.polygon([(x * s, top * s) for x, top, _ in run] + [(x * s, under * s) for x, _, under in reversed(run)],
+                         fill=255) for run in runs if len(run) > 1])
+        _paint(canvas, color, fill * fade)
+    for color, runs in bands:
+
+        def lines(draw: ImageDraw.ImageDraw, s: int):
+            for run in runs:
+                if len(run) > 1:
+                    _polyline(draw, [(x, top) for x, top, _ in run], s, LINE_PX)
+                else:
+                    x, top, _ = run[0]
+                    draw.ellipse([(x - LINE_PX) * s, (top - LINE_PX) * s, (x + LINE_PX) * s, (top + LINE_PX) * s], fill=255)
+
+        _paint(canvas, color, _mask(width, height, lines))
+
+    if top_color is not None:
+        plot.dot(x_of(count - 1), y_of(base[-1]), top_color)
+    return plot.image()
+
+
+class _Plot:
+    """The canvas of a line chart — the panel ground with its rules — and its scales: `count`
+    points spread over `slots` evenly spaced places (at least one per point), the newest at
+    the right edge, and a value's height on a scale from zero to `max_value`."""
+
+    def __init__(self, cols: int, rows: int, rules: Sequence[Rule], count: int, slots: int, max_value: float):
+        cell_w, cell_h = CELL_PX
+        self.width, self.height = cols * cell_w, rows * cell_h
+        inset = cell_h / 2 if rows > 1 else 0.0
+        self.zero_y = self.height - inset
+        self.plot_h = max(1.0, self.height - 2 * inset)
+        self.canvas = np.empty((self.height, self.width, 3), np.float32)
+        self.canvas[:] = _rgb(Theme.COLOR_PANEL_BG)
+        _rules(self.canvas, rules, self.zero_y, self.plot_h)
+        self.count = count
+        self.slots = max(slots, count)
+        self.scale = max_value if max_value > 0 else 1.0
+        self.step = max(1.0, self.width - 2 * EDGE_PX) / (self.slots - 1) if self.slots > 1 else 0.0
+
+    def x_of(self, i: int) -> float:
+        return EDGE_PX + (self.slots - self.count + i) * self.step if self.slots > 1 else self.width - EDGE_PX
+
+    def y_of(self, value: float) -> float:
+        return self.zero_y - min(1.0, max(0.0, value / self.scale)) * self.plot_h
+
+    def fade(self, peak_y: float) -> np.ndarray:
+        """A fill's opacity per pixel row: `FILL_TOP_ALPHA` at the height of the peak, fading to the base."""
+        t = np.clip((self.zero_y - np.arange(self.height) - 0.5) / max(1.0, self.zero_y - peak_y), 0, 1)[:, None]
+        return FILL_BOTTOM_ALPHA + (FILL_TOP_ALPHA - FILL_BOTTOM_ALPHA) * t
+
+    def dot(self, x: float, y: float, color: Color):
+        """The newest point: a dot with a soft glow."""
+        dot = _mask(self.width, self.height, lambda draw, s: draw.ellipse(
             [(x - DOT_RADIUS_PX) * s, (y - DOT_RADIUS_PX) * s, (x + DOT_RADIUS_PX) * s, (y + DOT_RADIUS_PX) * s], fill=255))
         halo = _blur(dot, GLOW_RADIUS_PX)
-        _paint(canvas, color, np.clip(halo * 2 * GLOW_STRENGTH, 0, 1) * (1 - dot))
-        _paint(canvas, color, dot)
-    return Image.fromarray(np.clip(canvas + 0.5, 0, 255).astype(np.uint8))
+        _paint(self.canvas, color, np.clip(halo * 2 * GLOW_STRENGTH, 0, 1) * (1 - dot))
+        _paint(self.canvas, color, dot)
+
+    def image(self) -> Image.Image:
+        return Image.fromarray(np.clip(self.canvas + 0.5, 0, 255).astype(np.uint8))
 
 
 def _runs(points: Sequence[Optional[Tuple[float, float]]]) -> List[List[Tuple[float, float]]]:
