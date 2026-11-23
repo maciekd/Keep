@@ -25,9 +25,15 @@ there would only blink), 100 at once on a full cache hit, the engine's own progr
 at the measured rate between two reports — when it gives any, and otherwise the time since the
 workload line was read (since the request became the one the server is on, for a forecast)
 against a rolling prefill rate (`observe_rate` refines it after each reply, from
-the prefill time the log reports — `prefill_seconds`) — capped at 99 until the first token
-confirms the prefill is over, or the log does (`LogFormat.done`: a non-streamed request, the
-memory curation say, sends no token until its whole reply is written). The clock and the rate
+the prefill time the log reports — `prefill_seconds`). The engine's own progress is capped at 99
+until the first token confirms the prefill is over, or the log does (`LogFormat.done`: a
+non-streamed request, the memory curation say, sends no token until its whole reply is written);
+the clock's estimate is not held there: once it has run out with nothing from the server the
+estimate is 0 — plain waiting, since a bar parked at 99 claims an end nobody knows — and the bar
+is back where the server's next report puts it. A user request sent while a pre-heat is still
+prefilling is one wait to the user, so the bar spans both (`_span`): the pre-heat's work and the
+request's own are one total, and what the pre-heat prefilled stays counted when it is gone
+(`ahead_done`) — the bar goes on from there instead of starting again. The clock and the rate
 both start at the workload line, never at the send: the wait behind the request ahead is not
 prefill, and counted as such it ran the bar up to 99 before the engine's first progress line
 pulled it back, and taught the rate single digits. The rate shown beside the bar (`rate`) is
@@ -209,6 +215,10 @@ class _Request:
     progress_ts: float = 0.0                  # when that line was read
     read_ts: float = 0.0
     preceding_done: int = 0                   # earlier requests whose prefill ended inside this one's window
+    ahead_done: int = 0                       # tokens the pre-heats ahead of it prefilled while it waited: the bar's start
+    ran_out: bool = False                     # the clock's estimate ran out before the server said anything (logged once)
+    bar_up: bool = False                      # the bar this request waits behind is drawn
+    late_logged: bool = False                 # "too little left to start a bar" is logged once
 
     @property
     def generating(self) -> bool:
@@ -352,6 +362,8 @@ class PrefillTracker:
         for r in later:
             if done_offset is None or r.anchor is None or r.anchor < done_offset:
                 r.preceding_done += 1
+            if not request.interactive:
+                r.ahead_done += request.ahead_done + self._remaining(request)
 
     def end(self, token: int | None):
         """The request is over; the next one in line, if any, is what the bar follows. A request
@@ -420,14 +432,32 @@ class PrefillTracker:
         with self._lock:
             return next((r for r in self._requests if not r.generating), None)
 
+    @staticmethod
+    def _remaining(request: _Request) -> int:
+        """The tokens the request has to prefill: the server's count, else the forecast, else 0."""
+        return (request.work or request.forecast or (0, 0))[1]
+
+    @staticmethod
+    def _span(line: list[_Request]) -> list[_Request]:
+        """The requests one bar covers, of those still to prefill, in order: the one the server
+        is on and, when that is a pre-heat with a user request waiting behind it, everything up
+        to that request — the user waits for all of it."""
+        if line[0].interactive:
+            return line[:1]
+        mine = next((i for i, r in enumerate(line) if r.interactive), None)
+        return line[:1] if mine is None else line[:mine + 1]
+
     def progress(self) -> float | None:
-        """Estimated prefill completion (0-100) of the request the server is on, None when no
-        request is in flight. 100 when every request in flight is past its prefill."""
+        """Estimated prefill completion (0-100) of what the server is on — with the user request
+        waiting behind a pre-heat counted in (`_span`) — None when no request is in flight. 100
+        when every request in flight is past its prefill, 0 when there is nothing to draw."""
         if not self._requests:
             return None
-        head = self._head()
-        if head is None:
+        with self._lock:
+            line = [r for r in self._requests if not r.generating]
+        if not line:
             return 100.0
+        head = line[0]
         work, progress = self._poll(head)
         if head.done:
             return 100.0   # the log said so: the server is generating the reply
@@ -437,19 +467,40 @@ class PrefillTracker:
             if head.forecast is None:
                 return 0.0   # the server has not said the workload yet — nothing to draw
             work, start = head.forecast, head.head_ts or now
-        _cached, remaining = work
-        if remaining <= 0:
+        remaining = max(work[1], 0)
+        span = self._span(line)
+        before = span[-1].ahead_done
+        total = before + remaining + sum(self._remaining(r) for r in span[1:])
+        if total <= 0:
             return 100.0   # a full cache hit: no prefill work
-        eta = remaining / self.tps if self.tps > 0 else 0.0
-        if 0 < eta < self.MIN_BAR_SECONDS:
+        if self.tps > 0 and total / self.tps < self.MIN_BAR_SECONDS:
             return 0.0   # too short to be worth a bar — plain waiting
+        mine = span[-1]
         if progress and progress[1] > 0:
-            processed, total = progress
-            processed += (now - head.progress_ts) * self._rate_of(head, progress)   # since the last report
-            return min(99.0, processed / total * 100.0)
-        if eta <= 0:
-            return 99.0
-        return min(99.0, (now - start) / eta * 100.0)
+            rate = self._rate_of(head, progress)
+            processed = progress[0] + (now - head.progress_ts) * rate   # since the last report
+            return self._drawn(mine, before + min(processed, remaining), total, rate)
+        processed = (now - start) * self.tps
+        if processed >= remaining > 0:
+            if not head.ran_out:
+                head.ran_out = True
+                trace(f"{self.label} prefill: #{head.token}'s estimate ({remaining} tokens at {self.tps:.0f} t/s) has run "
+                      "out with nothing from the server — no bar until it reports")
+            mine.bar_up = False
+            return 0.0
+        return self._drawn(mine, before + processed, total, self.tps)
+
+    def _drawn(self, mine: _Request, done: float, total: int, rate: float) -> float:
+        """The bar's percentage — 0 (no bar) when it is not up yet and under `MIN_BAR_SECONDS`
+        of it are left: a server that reports only at the end would blink a full bar."""
+        if not mine.bar_up and rate > 0 and (total - done) / rate < self.MIN_BAR_SECONDS:
+            if not mine.late_logged:
+                mine.late_logged = True
+                trace(f"{self.label} prefill: #{mine.token} has {max(total - done, 0):.0f} of {total} tokens left — "
+                      "too little to start a bar on")
+            return 0.0
+        mine.bar_up = True
+        return min(99.0, done / total * 100.0)
 
     def rate(self) -> float:
         """The prefill rate in tokens/s: measured from the engine's progress when the request

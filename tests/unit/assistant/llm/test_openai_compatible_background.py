@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from assistant.llm.AbstractLLM import LLMPreempted
+from assistant.llm.Ds4Replay import ReplayStore
 from assistant.llm.OpenAICompatibleLLM import OpenAICompatibleLLM
 from assistant.llm.PrefillTracker import LogSource
 from tests.unit.waiting import FAILURE_BOUND, wait_until
@@ -29,8 +30,8 @@ def _reasoning(text) -> bytes:
     return _data({"choices": [{"index": 0, "delta": {"reasoning_content": text}}]})
 
 
-def _progress(total, cache, processed) -> bytes:
-    return _data({"choices": [], "prompt_progress": {"total": total, "cache": cache, "processed": processed, "time_ms": 100}})
+def _progress(total, cache, processed, time_ms=100) -> bytes:
+    return _data({"choices": [], "prompt_progress": {"total": total, "cache": cache, "processed": processed, "time_ms": time_ms}})
 
 
 def _usage(prompt, cached, completion=4) -> bytes:
@@ -102,6 +103,7 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(OpenAICompatibleLLM._prefill, "tps", 800.0)
     monkeypatch.setattr(OpenAICompatibleLLM._prefill, "_observed", OpenAICompatibleLLM._prefill._observed)
     monkeypatch.setattr(OpenAICompatibleLLM._prefill, "_held", [])
+    monkeypatch.setattr(OpenAICompatibleLLM, "_replay_store", ReplayStore(None))
 
     def reset():
         OpenAICompatibleLLM._slot.reset()
@@ -187,7 +189,8 @@ class TestTheBarAndTheReport:
                 seen.append(tracker.progress())
                 return super().readline()
 
-        FakeConn.lines = [_progress(total=4000, cache=0, processed=1000), _content("A"), DONE]
+        # 100 t/s by the server's clock: half a minute of prefill is left, enough to put a bar up for.
+        FakeConn.lines = [_progress(total=4000, cache=0, processed=1000, time_ms=10_000), _content("A"), DONE]
         with patch.object(FakeConn, 'getresponse', lambda self: WatchingResponse(self.sock, FakeConn.lines)):
             _run(_llm())
         # seen[i] is the bar before line i is read: before the progress chunk nothing is known,

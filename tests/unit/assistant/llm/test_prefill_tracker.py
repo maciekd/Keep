@@ -134,24 +134,26 @@ class TestEstimate:
         assert PrefillTracker.current_rate() == tracker.rate()
         tracker.end(token)
 
-    def test_capped_at_99_until_the_first_token(self, tracker, log_path):
+    def test_an_estimate_that_ran_out_draws_no_bar_until_the_first_token(self, tracker, log_path):
+        # The clock said the prefill is over and the server said nothing: a bar parked at its
+        # end would claim what nobody knows.
         token = tracker.begin()
         _append(log_path, "work 0 1000\n")
         tracker.work(token, force=True)
         tracker._find(token).work_ts = time.monotonic() - 9999
-        assert tracker.progress() == 99.0
+        assert tracker.progress() == 0.0
         tracker.first_token(token)
         assert tracker.progress() == 100.0
         tracker.end(token)
 
     def test_the_log_saying_the_prompt_is_done_ends_the_prefill_without_a_token(self, tracker, log_path):
         # A non-streamed request (the memory curation) sends nothing until its whole reply is
-        # written, so the log is the only thing that can take the bar off 99.
+        # written, so the log is the only thing that can say its prefill is over.
         token = tracker.begin()
         _append(log_path, "work 0 1000\n")
         tracker.work(token, force=True)
         tracker._find(token).work_ts = time.monotonic() - 9999
-        assert tracker.progress() == 99.0
+        assert tracker.progress() == 0.0
         _append(log_path, "finished\n")
         tracker._find(token).read_ts = 0.0
         assert tracker.progress() == 100.0
@@ -169,7 +171,7 @@ class TestEstimate:
 
 
 class TestQueue:
-    def test_the_bar_follows_the_request_the_server_is_on(self, tracker, log_path):
+    def test_the_bar_follows_the_request_the_server_is_on(self, tracker, log_path, prefill_clock):
         # The pre-heat fired at the end of one turn is often still prefilling when the next user
         # request goes out: the user waits for it, so its bar shows until it is over; the user
         # request's own workload line is then read from its own anchor, past the pre-heat's.
@@ -178,10 +180,10 @@ class TestQueue:
             pre_heat = tracker.begin(interactive=False)
         user = tracker.begin()
         tracker.work(pre_heat, force=True)
-        tracker._find(pre_heat).work_ts = time.monotonic() - 9999
-        assert tracker.progress() == 99.0, "the pre-heat's prefill is what the server is doing"
+        prefill_clock.now += 0.5   # half of the 1000 tokens at the tracker's 1000 t/s
+        assert tracker.progress() == pytest.approx(50.0), "the pre-heat's prefill is what the server is doing"
         tracker.first_token(user)
-        assert tracker.progress() == 99.0, "a token the queued request cannot have had changes nothing"
+        assert tracker.progress() == pytest.approx(50.0), "a token the queued request cannot have had changes nothing"
         tracker._find(user).first_token = False
         tracker.end(pre_heat)
         assert tracker.progress() == 0.0, "the user request's workload is not logged yet"
@@ -522,7 +524,8 @@ class TestWireProgress:
         wire.first_token(heat)
         assert wire.progress() == 0.0, "the user's request has not reported yet"
         wire.report_progress(user, total=2100, cache=2000, processed=2050, time_ms=50.0)
-        assert wire.progress() == pytest.approx(50.0)
+        # One bar for the whole wait: the pre-heat's 2000 tokens stay counted, 50 of the user's 100 are in.
+        assert wire.progress() == pytest.approx(2050 / 2100 * 100)
         wire.end(heat)
         wire.end(user)
 
