@@ -124,7 +124,8 @@ class TestTheFirstRunBrief:
     def test_a_mac_reads_the_brief_with_the_linux_passages_and_the_markers_taken_out(self, monkeypatch):
         _on(monkeypatch, Platform.MAC)
         owner = FirstRun.brief().split("\n", 1)[0].removeprefix(FirstRun.BRIEF.split("{owner}")[0])
-        assert FirstRun.brief() == _without_markers(FirstRun.BRIEF, dropped=Platform.LINUX).format(owner=owner)
+        assert FirstRun.brief() == _without_markers(FirstRun.BRIEF, dropped=Platform.LINUX).format(
+            owner=owner, photos=FirstRun._photos_step())
         assert "show_full_disk_access_setting" in FirstRun.brief()
 
     def test_on_linux_the_brief_sends_nobody_to_the_macs_settings_or_to_photos(self, monkeypatch):

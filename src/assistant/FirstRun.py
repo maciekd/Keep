@@ -151,21 +151,7 @@ must be signed in with the user's own Apple ID. WAIT with Photos - we need iClou
 
 6. iCloud, needed so that Photos below can download offline photos - and in the future for Find My, user locations, etc.
 
-7. Photos: enable_integration("Photos"). The index starts at once on the Claude key the install already has — Sonnet
-for new photos, Haiku for the backlog — so nothing more is needed to begin.
-
-8. While the index runs, explain that Gemini (gemini-3.8-flash) is the better fit for the photo index, for three
-reasons and no other: it writes better image descriptions, it indexes videos too (Claude takes no video, so the clips
-stay unindexed), and the price is good. Never pitch it as "cheaper" or compare its bill with Claude's — this is not a
-money question. Give the user an estimate of what the full index costs on Gemini (check the current price on the web)
-and let them decide; nothing breaks if they stay on Claude. A user that takes a lot of photos has 5000 photos per year
-on average; the backfill is three years. Token count estimation per indexed asset:
-- 3,000 input tokens, of which about 1,900 are served from the implicit cache for photos (none for videos) — the
-  prompt carries the memory bank and the instructions beside the image, so it is far more than the image alone
-- 750 output tokens, so output is normally three quarters of the bill; never price all tokens at the input rate
-If they choose Gemini: config_request("api_keys.gemini") (the masked prompt — don't ask the user to paste the key
-into the chat), then config_set("ai.photo_indexing.llm", "GeminiLLM"), config_set("ai.photo_backfill.llm", "GeminiLLM") and
-restart_integration("Photos") — the index carries on where it was, on Gemini.
+{photos}
 
 Once you have a deep understanding of the user and his/her family/friends you will be able to be truly helpful and
 be truly intelligent. iMessage and Photos are important because you'll get loads of background/context on the user
@@ -207,6 +193,27 @@ Rough outline of the setup process:
 <!-- /linux -->
 
 If the history shows you have met before, skip the introduction and continue where you left off."""
+
+# Step 7 of the Mac's brief, by the backend the photo index runs on (`_photos_step`).
+PHOTOS_ON_CLAUDE = """\
+7. Photos: enable_integration("Photos"). The index starts at once on the Claude key the install already has — Sonnet
+for new photos, Haiku for the backlog — so nothing more is needed to begin.
+
+8. While the index runs, explain that Gemini (gemini-3.8-flash) is the better fit for the photo index, for three
+reasons and no other: it writes better image descriptions, it indexes videos too (Claude takes no video, so the clips
+stay unindexed), and the price is good. Never pitch it as "cheaper" or compare its bill with Claude's — this is not a
+money question. Give the user an estimate of what the full index costs on Gemini (check the current price on the web)
+and let them decide; nothing breaks if they stay on Claude. A user that takes a lot of photos has 5000 photos per year
+on average; the backfill is three years. Token count estimation per indexed asset:
+- 3,000 input tokens, of which about 1,900 are served from the implicit cache for photos (none for videos) — the
+  prompt carries the memory bank and the instructions beside the image, so it is far more than the image alone
+- 750 output tokens, so output is normally three quarters of the bill; never price all tokens at the input rate
+If they choose Gemini: config_request("api_keys.gemini") (the masked prompt — don't ask the user to paste the key
+into the chat), then config_set("ai.photo_indexing.llm", "GeminiLLM"), config_set("ai.photo_backfill.llm", "GeminiLLM") and
+restart_integration("Photos") — the index carries on where it was, on Gemini."""
+PHOTOS_LOCAL = '7. Photos: enable_integration("Photos"). The index runs on the local model on this machine. Videos are not indexed on a local model.'
+PHOTOS_ELSEWHERE = '7. Photos: enable_integration("Photos").'
+PHOTO_TIERS = ('photo_indexing', 'photo_backfill')
 
 _OWNER_KNOWN = "You are talking to {name}."
 _OWNER_UNKNOWN = ('owner_name is not set: ask who you are talking to and save the name with '
@@ -293,12 +300,29 @@ def preload_toolkits() -> tuple[str, ...]:
     return FTUE_TOOLKITS if in_ftue() else ()
 
 
+def _photos_step() -> str:
+    """The brief's Photos step for the backend the two photo tiers resolve to: the Gemini pitch
+    only while both are on Claude, a local index said to be local, anything else (Gemini
+    already, a mix) just enabled."""
+    from assistant.llm import LOCAL_BACKENDS, parse_llm_config   # the llm package is not FirstRun's to load at import
+    backends = {parse_llm_config(tier)[0] for tier in PHOTO_TIERS}
+    if backends == {'ClaudeLLM'}:
+        step = PHOTOS_ON_CLAUDE
+    elif backends <= set(LOCAL_BACKENDS.values()):
+        step = PHOTOS_LOCAL
+    else:
+        step = PHOTOS_ELSEWHERE
+    trace(f"Brief: the photo index runs on {', '.join(sorted(backends))} — "
+          f"{'the Gemini pitch is in' if step is PHOTOS_ON_CLAUDE else 'no Gemini pitch'}")
+    return step
+
+
 def brief() -> str:
     """The system turn that opens the first conversation."""
     name = config.get_owner_name()
     owner = _OWNER_UNKNOWN if name == _NO_OWNER else _OWNER_KNOWN.format(name=name)
     from assistant.commands.formats.Rewriter import gate_platform   # the brief never passes the rewriter
-    return gate_platform(BRIEF).format(owner=owner)
+    return gate_platform(BRIEF).format(owner=owner, photos=_photos_step())
 
 
 # --- The pipeline -------------------------------------------------------------------------

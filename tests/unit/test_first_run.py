@@ -15,6 +15,10 @@ def _config(overrides: dict):
     return patch.object(config, 'get', side_effect=lambda key, default=None: overrides.get(key, real_get(key, default)))
 
 
+def _photo_tiers(block) -> dict:
+    return {f'ai.{tier}': block for tier in FirstRun.PHOTO_TIERS}
+
+
 @pytest.mark.unit
 class TestBriefDue:
     def test_no_enabled_integration_opens_the_brief(self):
@@ -125,6 +129,23 @@ class TestBrief:
             text = FirstRun.brief()
         assert "You are talking to Anna." in text
         assert "owner_name is not set" not in text
+
+    def test_the_gemini_pitch_is_made_only_while_the_photo_index_runs_on_claude(self, on_a_mac):
+        with _config({'local_backend': 'none', **_photo_tiers(None)}):
+            assert "Gemini" in FirstRun.brief()
+
+    @pytest.mark.parametrize("backend", ["ollama", "ds4", "openai"])
+    def test_a_local_install_is_told_the_index_is_local_and_reads_nothing_of_gemini_or_claude(self, on_a_mac, backend):
+        with _config({'local_backend': backend, **_photo_tiers(None)}):
+            text = FirstRun.brief()
+        assert 'enable_integration("Photos")' in text
+        assert "Gemini" not in text and "Claude" not in text and "api_keys" not in text
+        assert "local model" in text
+
+    def test_an_index_already_on_gemini_is_not_pitched_gemini(self, on_a_mac):
+        with _config({'local_backend': 'none', **_photo_tiers({'llm': 'GeminiLLM'})}):
+            text = FirstRun.brief()
+        assert 'enable_integration("Photos")' in text and "Gemini" not in text
 
     def test_asks_for_the_owner_name_when_not_set(self):
         with _config({'owner_name': 'user'}):
