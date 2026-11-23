@@ -103,6 +103,11 @@ class StartupTracker:
             error(f"StartupTracker: failed to write the resume marker: {e}")
 
     @staticmethod
+    def resume_pending() -> bool:
+        """Whether a restart left a marker `take_resume_marker` has not taken yet."""
+        return RESUME_FILE.exists()
+
+    @staticmethod
     def take_resume_marker() -> dict | None:
         """The marker the restart left, taken once: None when there is none (a nightly update, a
         crash, a manual start) or it cannot be read."""

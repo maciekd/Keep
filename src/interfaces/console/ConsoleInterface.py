@@ -59,6 +59,11 @@ class ConsoleInterface(Interface):
         it has): the launcher's first-run brief waits for the chat it is answered in."""
         self.console.intro.on_done(fn)
 
+    def at_intro_start(self, fn) -> None:
+        """Run `fn` as the startup intro starts for the first TUI client (at once when it
+        has): a turn that opens the conversation on a local model prefills behind it."""
+        self.console.intro.on_started(fn)
+
     def attach_voice(self, voice) -> None:
         self.console.attach_voice(voice.speech_analyzer, voice.outpost_server)
 

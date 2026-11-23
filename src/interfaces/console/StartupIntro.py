@@ -135,6 +135,17 @@ class StartupIntro:
         self._logo: Optional[Logo] = None
         self._typed_at: Optional[float] = None
         self._on_done: List[Callable[[], None]] = []
+        self._on_started: List[Callable[[], None]] = []
+
+    def on_started(self, fn: Callable[[], None]):
+        """Run `fn` once the intro starts for the first client — right away when it has. An
+        opening turn on a local model starts here: its prefill runs behind the flight, and
+        the reply lands in the chat pane, which is not drawn until the tabs are."""
+        if self.state != ARMED:
+            fn()
+            return
+        self._on_started.append(fn)
+        info(f"StartupIntro: {len(self._on_started)} callback(s) waiting for the intro to start.")
 
     def on_done(self, fn: Callable[[], None]):
         """Run `fn` once the intro is over and the tabs are on screen — right away when they
@@ -158,6 +169,8 @@ class StartupIntro:
             self.scene.last_frame_at = None
             self.scene.restart_intro()
             info(f"StartupIntro: the first client is in, flying on a {screen.width}x{screen.height} screen.")
+            self._fire(self._on_started, "as the intro started")
+            self._on_started = []
         if self.state == FLYING:
             self.scene.draw(screen, 1, 1, screen.width, screen.height)
             if not self.scene.landed:
@@ -174,17 +187,18 @@ class StartupIntro:
             if now - self._typed_at >= self.HOLD_SECONDS:
                 self.state = DONE
                 info("StartupIntro: over to the tabs.")
-                self._fire_done()
+                self._fire(self._on_done, "after the intro")
+                self._on_done = []
                 return False
         return True
 
-    def _fire_done(self):
-        callbacks, self._on_done = self._on_done, []
-        for fn in callbacks:
+    @staticmethod
+    def _fire(callbacks: List[Callable[[], None]], when: str):
+        for fn in list(callbacks):
             try:
                 fn()
             except Exception as e:
-                error(f"StartupIntro: a callback failed after the intro: {e}")
+                error(f"StartupIntro: a callback failed {when}: {e}")
 
     def skip(self):
         """A key: the flight jumps to its end, or the title shows whole and the hold ends."""

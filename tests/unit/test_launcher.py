@@ -373,6 +373,13 @@ class TestConfigCheck:
 
 @pytest.mark.unit
 class TestFirstConversation:
+    @pytest.fixture(autouse=True)
+    def cloud_smart_tier(self):
+        # Whatever the config's smart tier is: a cloud model's turn waits for the intro's end.
+        import floxy_ai_server
+        with patch.object(floxy_ai_server, "_smart_tier_is_local", return_value=False):
+            yield
+
     def test_with_the_console_the_brief_waits_for_its_startup_intro(self):
         import floxy_ai_server
 
@@ -445,6 +452,14 @@ class TestResumeConversation:
     """Issue #113: a restart the assistant started from a chat left the conversation hanging
     until the next periodic check. The marker the restart leaves resumes it with a system turn."""
 
+    @pytest.fixture(autouse=True)
+    def cloud_smart_tier(self):
+        # Whatever the config's smart tier is: a cloud model's turn waits for the intro's end.
+        import floxy_ai_server
+        with patch.object(floxy_ai_server, "_smart_tier_is_local", return_value=False):
+            yield
+
+
     class FakeServer:
         interfaces = [type("Telegram", (), {"name": "telegram"})()]
 
@@ -510,6 +525,7 @@ class TestResumeConversation:
     class FakeAssistant:
         def __init__(self, busy=False, spoken_to=False):
             self.busy, self.spoken_to = busy, spoken_to
+            self.prompt_manager = Mock()
 
         def is_busy(self):
             return self.busy
@@ -535,6 +551,19 @@ class TestResumeConversation:
         with self.resume(server) as opened:
             console.waiting[0]()
             opened.assert_not_called()
+        # no turn of the boot's is left to end the hold on the pre-heats
+        assistant.prompt_manager.release_pre_heats.assert_called_once()
+
+    @pytest.mark.parametrize("brief_due, resume_pending, held", [(True, False, True), (False, True, True),
+                                                                 (False, False, False)],
+                             ids=["the first-run brief", "a resumed conversation", "no opening turn"])
+    def test_a_boot_that_opens_the_conversation_holds_the_pre_heats(self, brief_due, resume_pending, held):
+        import floxy_ai_server
+        prompt_manager = Mock()
+        with patch("assistant.FirstRun.brief_due", return_value=brief_due), \
+                patch("common.StartupTracker.StartupTracker.resume_pending", return_value=resume_pending):
+            floxy_ai_server._hold_pre_heats_for_opening_turn(prompt_manager)
+        assert prompt_manager.hold_pre_heats.called is held
 
     def test_a_quiet_boot_resumes_the_conversation(self):
         console = self.FakeConsole()

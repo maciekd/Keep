@@ -84,6 +84,13 @@ class PromptManager:
         self._prompt_lock = threading.Lock()
         self._last_assembly_time = 0
         self._on_prompt_assembled_callbacks = []
+        # The pre-heat gate: none goes out while a turn is in flight or a boot waits for its
+        # opening turn (hold_pre_heats); one asked for meanwhile is owed and goes out, for
+        # the prompt as it then stands, when the gate opens.
+        self._pre_heat_gate = threading.Lock()
+        self._pre_heats_held = None
+        self._turns_in_flight = 0
+        self._pre_heat_owed = False
         # The history window (ChannelProfile.window) the last request rendered: the one the
         # pre-heats warm, since the next request is most likely on the same channel.
         self._last_window = WINDOW_TEXT
@@ -766,9 +773,63 @@ class PromptManager:
             added = True
         return added
 
+    def hold_pre_heats(self, reason: str):
+        """No pre-heat goes out until the turn that is about to start has ended: it prefills
+        the prompt itself, and at a boot the prompt also changes several times in its first
+        second, each a prefill of its own. `turn_started` takes the hold over;
+        `release_pre_heats` ends it when no turn comes."""
+        info(f"Pre-heats held: {reason}")
+        with self._pre_heat_gate:
+            self._pre_heats_held = reason
+
+    def release_pre_heats(self, why: str):
+        with self._pre_heat_gate:
+            if self._pre_heats_held is None:
+                return
+            info(f"Pre-heats released ({why}) — they were held: {self._pre_heats_held}")
+            self._pre_heats_held = None
+        self._fire_owed_pre_heat()
+
+    def turn_started(self):
+        """A user turn is in flight until `turn_ended`: its requests prefill the prompt, and on
+        a local server a pre-heat beside them halves their speed. A pre-heat asked for
+        meanwhile (a section's note, a rebuild) is owed instead of sent."""
+        with self._pre_heat_gate:
+            self._turns_in_flight += 1
+            self._pre_heats_held = None
+
+    def turn_ended(self, closing: bool = False):
+        """The turn needs the LLM no more. `closing`: its closing history update follows at
+        once and brings the pre-heat itself, so the one owed is dropped — sent here it would
+        be a prefill of the prompt without the exchange, with the next turn waiting behind it.
+        A turn that ended any other way sends the one owed, once the last turn is gone, for the
+        prompt as it stands."""
+        with self._pre_heat_gate:
+            self._turns_in_flight = max(0, self._turns_in_flight - 1)
+            if closing and self._pre_heat_owed:
+                trace("Pre-heat owed is dropped: the turn's closing history update brings one")
+                self._pre_heat_owed = False
+        self._fire_owed_pre_heat()
+
+    def _fire_owed_pre_heat(self):
+        with self._pre_heat_gate:
+            if not self._pre_heat_owed or self._turns_in_flight or self._pre_heats_held is not None:
+                return
+        trace("Pre-heat owed from a turn in flight goes out now")
+        with self._prompt_lock:
+            messages = self._resolved_messages_locked()
+        self._fire_prompt_callbacks(messages)
+
     def _fire_prompt_callbacks(self, messages: list[dict]):
-        """Invoke the registered pre-heat callbacks. Never called under _prompt_lock —
-        callbacks may do slow work (network requests to the LLM backend)."""
+        """Invoke the registered pre-heat callbacks, unless the gate holds them (then one is
+        owed). Never called under _prompt_lock — callbacks may do slow work (network requests
+        to the LLM backend)."""
+        with self._pre_heat_gate:
+            held = self._pre_heats_held or (f"{self._turns_in_flight} turn(s) in flight" if self._turns_in_flight else None)
+            self._pre_heat_owed = held is not None and bool(self._on_prompt_assembled_callbacks)
+        if held:
+            trace(f"Pre-heat held back, owed for later: {held}")
+            return
         for callback in self._on_prompt_assembled_callbacks:
             try:
                 callback(messages)
@@ -1117,6 +1178,7 @@ class PromptManager:
         (MessageHistory.add_exchange)."""
         self.message_history.add_exchange(user_name, user_query, assistant_reply, source, location,
                                           timestamp=timestamp, note=time_note)
+        self._move_open_notes_behind_the_turn()
 
         # The rendered exchange extends the request prefix (the assistant's own
         # generated tokens are NOT reusable — history is re-rendered with turn
@@ -1139,6 +1201,25 @@ class PromptManager:
         one, which share the cap; `source` stamps a preloaded one with its window
         (MessageHistory.preload_source)."""
         self.message_history.add_command_result(result, cap=cap, source=source, parts=parts)
+        self._move_open_notes_behind_the_turn()
+
+    def _move_open_notes_behind_the_turn(self):
+        """Re-stamp the section notes no request has sent to after the row just written. A note
+        made while a turn runs is older than the rows that turn writes, yet the turn's rounds
+        went out without it: left at its own time it would stand in front of them in the next
+        request, and every byte from there on would be new to the prefix cache."""
+        with self._prompt_lock:
+            rows = self.message_history.history
+            if not self._open_notes or not rows:
+                return
+            last = rows[-1]["timestamp"]
+            moved = 0
+            for entry, _base, _chars in self._open_notes.values():
+                if entry["timestamp"] <= last:
+                    entry["timestamp"] = max(time.time(), last + 0.001)
+                    moved += 1
+        if moved:
+            trace(f"PromptManager: {moved} unsent section note(s) moved behind the row just written")
 
     # The dump of the latest request sent, cited by a cache-break report (CacheBreakTracker);
     # a request that overlaps another's may cite its neighbour's.

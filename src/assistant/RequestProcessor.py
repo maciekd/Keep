@@ -12,7 +12,7 @@ from colorama import Fore
 from common.DevelopmentConfig import BYTE_PREFIX_TAIL, prepend_user_query_override
 from assistant.DialogManager import DialogManager
 from assistant.prompt.MessageHistory import MessageHistory
-from assistant.AssistantRequest import RequestContext
+from assistant.AssistantRequest import RequestContext, SYSTEM_USER
 from common.RequestKilledException import RequestKilledException
 from common.logging import info, trace, note, error, fine
 from assistant.PromptInjectionDetector import is_prompt_injection
@@ -299,6 +299,10 @@ class RequestProcessor:
         # response must call end-notify itself, otherwise the in-flight
         # counter leaks and the autonomous loop is stuck forever.
         self._notify_autonomous_user_started()
+        # Paired the same way: `_end_pre_heat_hold` at every exit, and ahead of the closing
+        # history update.
+        self._pre_heats_held_on = prompt_manager
+        prompt_manager.turn_started()
 
         try:
             # set this so that we do not recreate the prompt during or directly after a request,
@@ -328,6 +332,7 @@ class RequestProcessor:
             if self.is_killed:
                 info("Request was killed before generation started; returning an empty stream.")
                 self._notify_autonomous_user_ended()
+                self._end_pre_heat_hold()
                 return iter(())
 
             return self.generate_events(prompt_manager)
@@ -337,6 +342,7 @@ class RequestProcessor:
             # (Assistant._in_flight reads it: stuck true, it would refuse every guest turn).
             self.is_performing_request = False
             self._notify_autonomous_user_ended()
+            self._end_pre_heat_hold()
             raise
 
     def _handle_first_audio_chunk(self, chunk_time: float):
@@ -609,6 +615,12 @@ class RequestProcessor:
 
         source = self.ctx.source
         location = self.ctx.location
+        if (self.ctx.user or "").lower() == SYSTEM_USER:
+            # The history renders a system row as "System (HH:MM)", without where it came from
+            # (MessageHistory): the turn the server starts must go out as the same bytes, or the
+            # next request finds the cache broken at this turn and prefills it again.
+            trace("A system turn: its header goes out without the source, as the history renders it")
+            source = location = None
         user_input_sent_to_ai = MessageFormatter.format_message(self.ctx.display_name, self.turn_timestamp,
                                                                 source, location, user_input)
         # The response cache and the DB row are keyed without the byte-prefix header's HH:MM —
@@ -723,6 +735,7 @@ class RequestProcessor:
         source = self.ctx.source
         location = self.ctx.location
         if not self.is_killed:
+            self._end_pre_heat_hold(closing=True)   # the last request is answered: the update's pre-heat goes out
             if already_reported != self.ctx.user_input:
                 prompt_manager.update_history(self.ctx.display_name, self.ctx.user_input, response_text, source, location,
                                               timestamp=self.turn_timestamp, time_note=self.time_note)
@@ -1050,6 +1063,7 @@ class RequestProcessor:
             self.is_performing_request = False
             self._close_text_stream(self.dialog_manager.request_id)
             self._notify_autonomous_user_ended()
+            self._end_pre_heat_hold()
             self._restore_outposts_if_muted()
 
     def _ensure_outposts_muted(self):
@@ -1065,6 +1079,12 @@ class RequestProcessor:
         ServerPlayback.restore_outposts_if_muted."""
         if self.playback:
             self.playback.restore_outposts_if_muted()
+
+    def _end_pre_heat_hold(self, closing: bool = False):
+        """End this turn's hold on the pre-heats (PromptManager.turn_started), once."""
+        prompt_manager, self._pre_heats_held_on = getattr(self, "_pre_heats_held_on", None), None
+        if prompt_manager is not None:
+            prompt_manager.turn_ended(closing)
 
     def _notify_autonomous_user_started(self):
         try:

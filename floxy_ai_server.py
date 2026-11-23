@@ -114,6 +114,23 @@ def _register_llm_pre_heat(prompt_manager):
     info(f"KV cache pre-heating registered for: {', '.join(pre_heat_llms.keys())}")
 
 
+def _hold_pre_heats_for_opening_turn(prompt_manager):
+    """A boot that opens the conversation itself (the first-run brief, the conversation a restart
+    interrupted) sends no pre-heat ahead of that turn: the turn prefills the prompt, and a
+    pre-heat fired here would be of a prompt the starting integrations and the command format
+    change within the second — on a local server a full prefill the turn then waits behind.
+    The turn takes the hold over when it starts, `_open_conversation` ends it when the turn is
+    not opened."""
+    from assistant import FirstRun
+    from common.StartupTracker import StartupTracker
+    if FirstRun.brief_due(verbose=False):
+        prompt_manager.hold_pre_heats("the first-run brief opens the conversation")
+    elif StartupTracker.resume_pending():
+        prompt_manager.hold_pre_heats("the conversation the restart interrupted is resumed")
+    else:
+        trace("No opening turn at this boot, the pre-heats go out from the first prompt.")
+
+
 def _post_startup_message(prompt_manager) -> str:
     """Leave the startup row (and the change log since the last start) in the history and
     return the announcement `_announce_startup` sends once the interfaces are up."""
@@ -222,7 +239,10 @@ def _open_conversation(server: "Server | None", query, what: str, overtaken=None
                        done=None):
     """Open the owner's conversation with the system turn *query()* builds. When the console
     runs, the turn waits until its startup intro has played for the first TUI client, so the
-    assistant starts thinking as the chat appears, not while the intro is on — for *max_wait*
+    assistant starts thinking as the chat appears, not while the intro is on — on a local
+    model it starts with the intro instead (`_smart_tier_is_local`): the prefill of a cold
+    prompt takes minutes, and the chat pane the reply lands in is drawn when the intro ends.
+    Either wait is for *max_wait*
     seconds at most when given: with no TUI client there is no intro, and the turn would
     otherwise fire stale whenever one next connects. It goes out once, and not at all when
     *overtaken()* names a reason at that moment. *done()* is called once the turn has been
@@ -241,6 +261,8 @@ def _open_conversation(server: "Server | None", query, what: str, overtaken=None
             reason = overtaken() if overtaken else None
             if reason:
                 info(f"{what[0].upper()}{what[1:]} is not opened: {reason}.")
+                if server is not None:
+                    server.assistant.prompt_manager.release_pre_heats(f"{what} is not opened")
                 return
             info(f"The assistant opens the conversation with {what}.")
             ChatHub.get_instance().open_conversation(query())
@@ -259,14 +281,24 @@ def _open_conversation(server: "Server | None", query, what: str, overtaken=None
     if console is None:
         send()
         return
-    info(f"{what[0].upper()}{what[1:]} waits for the console's startup intro"
+    early = _smart_tier_is_local()
+    info(f"{what[0].upper()}{what[1:]} waits for the console's startup intro to {'start' if early else 'end'}"
          + (f", {max_wait:.0f}s at most." if max_wait else "."))
     if max_wait:
         timer = threading.Timer(max_wait, give_up_waiting)
         timer.daemon = True
         timer.name = "OpenConversationWait"
         timer.start()
-    console.after_intro(send)
+    (console.at_intro_start if early else console.after_intro)(send)
+
+
+def _smart_tier_is_local() -> bool:
+    from assistant.llm import create_llm, parse_llm_config
+    try:
+        return bool(create_llm(*parse_llm_config('smart')).is_local())
+    except Exception as e:
+        error(f"Could not tell whether the smart tier is local ({type(e).__name__}: {e}) — taken as a cloud model.")
+        return False
 
 
 class Server:
@@ -388,6 +420,7 @@ def build(port: int, running_as_testsuite: bool = False) -> Server:
         from assistant.agents.CacheAuditor import CacheAuditor
         from assistant.agents.CodeQualityMaintainer import CodeQualityMaintainer
         from assistant.integration.bootstrap import discover_integrations
+        _hold_pre_heats_for_opening_turn(prompt_manager)
         _register_llm_pre_heat(prompt_manager)
         autonomous = AutonomousActionManager.get_instance(prompt_manager)
         startup_announcement = _post_startup_message(prompt_manager)
