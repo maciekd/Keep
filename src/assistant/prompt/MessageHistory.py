@@ -74,7 +74,7 @@ class MessageHistory:
     # the trim happens whatever the rows' age — the ceiling is what the window costs in any
     # busy period, feed bursts included, so it is a size worth paying always.
     TRIM_CEILING_BYTES = 50 * 1024
-    TRIM_FRESH_SECONDS = 15 * 60
+    TRIM_FRESH_SECONDS = 25 * 60
     # Before a trim drops any row, the bulky `command` rows of the window (this size and up: a
     # toolkit reference, a procedure, a page read — one command brings any of them back) are
     # collapsed to a one-line stub, oldest first, until the window is back at LOW. A 19.5KB
