@@ -59,6 +59,8 @@ def _clean_class_state(monkeypatch):
     # prefill another module's test expects a bar for is too short for one at the rate learnt here.
     for tracker in (OpenAICompatibleLLM._prefill, Ds4LLM._prefill):
         monkeypatch.setattr(tracker, "tps", tracker.tps)
+        monkeypatch.setattr(tracker, "_observed", tracker._observed)
+        monkeypatch.setattr(tracker, "_held", [])
     OpenAICompatibleLLM._models_checked.clear()
     OpenAICompatibleLLM._discovered_models.clear()
     OpenAICompatibleLLM._discovery_failed.clear()
@@ -255,7 +257,7 @@ class TestPrefillBar:
         with patch.object(PrefillTracker, "MIN_BAR_SECONDS", 0.0):
             yield
 
-    def test_progress_chunks_drive_the_bar_while_the_server_prefills(self):
+    def test_progress_chunks_drive_the_bar_while_the_server_prefills(self, prefill_clock):
         seen = []
         tracker = OpenAICompatibleLLM._prefill
 
@@ -300,7 +302,7 @@ class TestPrefillBar:
         llm = _llm({}, chunks=iter([bad, _chunk(content="Hi."), _chunk(choices=False)]))
         assert _stream(llm) == ["Hi."]
 
-    def test_a_raw_sse_progress_chunk_is_read_the_same_way(self):
+    def test_a_raw_sse_progress_chunk_is_read_the_same_way(self, prefill_clock):
         # The background image request reads the stream itself: the chunk is a dict there.
         llm = _llm({})
         token = OpenAICompatibleLLM._prefill.begin()

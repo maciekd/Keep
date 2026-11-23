@@ -26,8 +26,10 @@ the key) and the server streams `prompt_progress` chunks while it prefills — t
 total, cached and processed tokens and the elapsed time — which the class's one
 `PrefillTracker` turns into the bar, the rate beside it and the early cache-break report, the
 way ds4 and Ollama get them from their logs. A server that streams no progress leaves the bar
-on the tracker's time estimate. The stream also asks for `stream_options.include_usage`, and
-the closing usage chunk is the metrics line of the request.
+on the tracker's time estimate. Each request hands the tracker its text and, once answered,
+its prompt tokens (`learn`), so the bar runs on a forecast of the workload from the send on —
+oMLX's first chunk comes only after a whole prefill step. The stream also asks for
+`stream_options.include_usage`, and the closing usage chunk is the metrics line of the request.
 
 Background work (photo indexing, `background=True`): a local server serves one request at a
 time, so an image call goes through the single-slot gate every instance of the class shares
@@ -55,6 +57,7 @@ from openai import OpenAI
 
 from .AbstractLLM import LLMPreempted, Thinking
 from .BackgroundSlot import BackgroundSlot
+from .CacheBreakTracker import CacheBreakTracker
 from .ChatGPTLLM import ChatGPTLLM
 from .PrefillTracker import PrefillTracker
 from assistant.commands.formats import QwenFormat as qwen
@@ -342,7 +345,7 @@ class OpenAICompatibleLLM(ChatGPTLLM):
              f"effort {kwargs['extra_body']['reasoning_effort']})...")
         started = time.monotonic()
         self._slot.interactive_begin()
-        token = self._prefill.begin(interactive=False)
+        token = self._prefill.begin(interactive=False, prompt=self._prompt_text(messages))
         try:
             usage = None
             for chunk in client.chat.completions.create(**kwargs):
@@ -351,6 +354,8 @@ class OpenAICompatibleLLM(ChatGPTLLM):
                 self._take_progress(token, chunk)
             # Read before `end` drops the request from the tracker.
             seconds = self._prefill.prefill_seconds(token) if usage is not None else None
+            if usage is not None:
+                self._prefill.learn(token, usage.prompt_tokens)
         finally:
             self._prefill.end(token)
             self._slot.interactive_end()
@@ -408,6 +413,11 @@ class OpenAICompatibleLLM(ChatGPTLLM):
 
     def cache_scope(self) -> str | None:
         return f"{self.LABEL} {self.base_url}"
+
+    @staticmethod
+    def _prompt_text(messages: list[dict]) -> str:
+        """The prompt as one text, for the prefill tracker's forecast."""
+        return "\n".join(CacheBreakTracker.flatten(messages))
 
     def _take_progress(self, token: int | None, chunk) -> bool:
         """A streamed chunk's `prompt_progress`, when it carries one, handed to the prefill
@@ -523,7 +533,7 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         started = time.monotonic()
         self._slot.interactive_begin()
         early, late = self._cache_report(messages, self._effort_for(thinking))
-        token = self._prefill.begin(on_work=early)
+        token = self._prefill.begin(on_work=early, prompt=self._prompt_text(messages))
         try:
             yield from self._stream(messages, thinking, started, token, late)
         finally:
@@ -587,6 +597,7 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         prefilled = self._log_usage(usage, started, len(reasoning))
         report_cache(usage)
         if prefilled is not None:
+            self._prefill.learn(token, usage.prompt_tokens)
             seconds = self._prefill.prefill_seconds(token)
             if seconds:
                 self._prefill.observe_rate(prefilled, seconds)
@@ -599,11 +610,14 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         started = time.monotonic()
         self._slot.interactive_begin()
         early, late = self._cache_report(messages, self._effort_for(thinking))
-        token = self._prefill.begin(on_work=early)
+        token = self._prefill.begin(on_work=early, prompt=self._prompt_text(messages))
         self._last_stop_reason = None
         kwargs = self._request_kwargs(messages, thinking, stream=False)
         try:
             response = self.client.chat.completions.create(**kwargs)
+            usage = getattr(response, 'usage', None)
+            if usage is not None:
+                self._prefill.learn(token, usage.prompt_tokens)
         finally:
             self._prefill.end(token)
             self._slot.interactive_end()

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from assistant.llm.PrefillTracker import LogFormat, LogSource, PrefillTracker, parse_last
+from assistant.llm.PrefillTracker import LogFormat, LogSource, PrefillTracker, common_prefix_length, parse_last
 
 
 class _ToyFormat(LogFormat):
@@ -241,9 +241,13 @@ class TestQueue:
 
 
 class TestRate:
-    def test_a_finished_request_refines_the_rate_by_half(self, tracker):
+    def test_the_first_measured_rate_replaces_the_seed_and_the_next_refine_it_by_half(self, tracker):
+        # The seed is a guess at a machine the code has never seen: averaged in, a seed ten
+        # times too fast took several replies to wash out.
         tracker.observe_rate(3000, 5.0)
-        assert tracker.tps == pytest.approx(0.5 * 1000.0 + 0.5 * 600.0)
+        assert tracker.tps == pytest.approx(600.0)
+        tracker.observe_rate(4000, 5.0)
+        assert tracker.tps == pytest.approx(0.5 * 600.0 + 0.5 * 800.0)
 
     def test_the_prefill_seconds_are_the_done_lines_else_the_clock_from_the_workload_line(self, tracker, log_path):
         # Never the time since the send: a request that waited behind another's reply taught
@@ -279,7 +283,8 @@ class TestWindow:
     """A request's view of the log opens at the log's end when it was sent, so the lines the
     request ahead logs after that land in it and must be skipped."""
 
-    def test_the_request_ahead_finishing_in_the_window_is_skipped_after_its_first_token(self, tracker, log_path):
+    def test_the_request_ahead_finishing_in_the_window_is_skipped_after_its_first_token(self, tracker, log_path,
+                                                                                          prefill_clock):
         ahead = tracker.begin()
         _append(log_path, "work 0 1000\n")
         mine = tracker.begin()                                 # sent while the one ahead prefills
@@ -296,7 +301,8 @@ class TestWindow:
         tracker.end(ahead)
         tracker.end(mine)
 
-    def test_a_done_line_the_log_showed_is_skipped_only_by_the_requests_sent_before_it(self, tracker, log_path):
+    def test_a_done_line_the_log_showed_is_skipped_only_by_the_requests_sent_before_it(self, tracker, log_path,
+                                                                                        prefill_clock):
         # A non-streamed request ahead never sends a token: its done line is seen by a poll,
         # and the log's offset says which later requests have it in their window.
         ahead = tracker.begin()
@@ -466,7 +472,7 @@ class TestWireProgress:
         t._requests.clear()
         PrefillTracker._trackers.remove(t)
 
-    def test_the_first_chunk_is_the_workload_and_the_bar_counts_the_uncached_part(self, wire):
+    def test_the_first_chunk_is_the_workload_and_the_bar_counts_the_uncached_part(self, wire, prefill_clock):
         token = wire.begin()
         assert wire.progress() == 0.0, "nothing to draw before the server says anything"
         wire.report_progress(token, total=5000, cache=4000, processed=4500, time_ms=250.0)
@@ -507,7 +513,7 @@ class TestWireProgress:
         wire.report_progress(token, total=10, cache=0, processed=5)
         assert wire.progress() is None
 
-    def test_the_bar_follows_the_request_the_server_is_on(self, wire):
+    def test_the_bar_follows_the_request_the_server_is_on(self, wire, prefill_clock):
         # A pre-heat still prefilling when the user's request goes out: the user waits for it.
         heat = wire.begin(interactive=False)
         user = wire.begin()
@@ -519,3 +525,84 @@ class TestWireProgress:
         assert wire.progress() == pytest.approx(50.0)
         wire.end(heat)
         wire.end(user)
+
+
+class TestForecast:
+    """A server that says nothing until a whole prefill step is done (oMLX) leaves the bar on the
+    tracker's own forecast: the part of the prompt a prompt the server prefilled lately shares
+    is taken as cached, at that prompt's tokens per character."""
+
+    @pytest.fixture
+    def wire(self):
+        t = PrefillTracker("Forecast", None, seed_tps=100.0)
+        yield t
+        t._requests.clear()
+        PrefillTracker._trackers.remove(t)
+
+    @staticmethod
+    def _held(tracker, prompt, tokens):
+        token = tracker.begin(interactive=False, prompt=prompt)
+        tracker.learn(token, tokens)
+        tracker.first_token(token)
+        tracker.end(token)
+
+    def test_the_shared_prefix_is_cached_at_the_learned_tokens_per_char(self, wire):
+        self._held(wire, "s" * 1000, 250)                      # a quarter of a token per character
+        token = wire.begin(prompt="s" * 1000 + "u" * 400)
+        assert wire._find(token).forecast == (250, 100)
+        wire.end(token)
+
+    def test_the_longest_prefix_among_the_held_prompts_counts(self, wire):
+        self._held(wire, "s" * 1000, 500)
+        self._held(wire, "x" * 2000, 1000)                      # a newer prompt that shares nothing
+        token = wire.begin(prompt="s" * 1000 + "u" * 200)
+        assert wire._find(token).forecast == (500, 100)
+        wire.end(token)
+
+    def test_a_prompt_the_server_never_finished_is_not_taken_as_cached(self, wire):
+        token = wire.begin(prompt="s" * 1000)
+        wire.end(token)                                          # no usage: nothing learned
+        token = wire.begin(prompt="s" * 1000 + "u" * 10)
+        cached, remaining = wire._find(token).forecast
+        assert cached == 0 and remaining > 0
+        wire.end(token)
+
+    def test_the_bar_draws_from_the_forecast_then_switches_to_the_servers_numbers(self, wire, prefill_clock):
+        self._held(wire, "s" * 1000, 1000)
+        token = wire.begin(prompt="s" * 1000 + "u" * 200)        # 200 tokens: 2 s at 100 t/s
+        prefill_clock.now += 1.0
+        assert wire.progress() == pytest.approx(50.0), "drawn before the server says anything"
+        wire.report_progress(token, total=1400, cache=1000, processed=1040, time_ms=1000.0)
+        assert wire.work(token) == (1000, 400)
+        assert wire.progress() == pytest.approx(10.0), "the server's 40 of 400, not the forecast's clock"
+        wire.end(token)
+
+    def test_the_forecast_clock_starts_when_the_request_ahead_is_past_its_prefill(self, wire, prefill_clock):
+        self._held(wire, "s" * 1000, 1000)
+        ahead = wire.begin(interactive=False)
+        mine = wire.begin(prompt="s" * 1000 + "u" * 200)
+        prefill_clock.now += 30.0                                 # the one ahead still prefilling
+        assert wire.progress() == 0.0, "the bar is the one ahead's, which has said nothing"
+        wire.first_token(ahead)
+        prefill_clock.now += 0.5
+        assert wire.progress() == pytest.approx(25.0), "0.5 s of 2, not the 30 s since the send"
+        wire.end(ahead)
+        wire.end(mine)
+
+    def test_between_two_reports_the_bar_moves_at_the_measured_rate(self, wire, prefill_clock):
+        token = wire.begin()
+        wire.report_progress(token, total=2000, cache=0, processed=500, time_ms=1000.0)   # 500 t/s
+        assert wire.progress() == pytest.approx(25.0)
+        prefill_clock.now += 1.0
+        assert wire.progress() == pytest.approx(50.0)
+        prefill_clock.now += 60.0
+        assert wire.progress() == 99.0, "capped until the first token"
+        wire.end(token)
+
+
+@pytest.mark.parametrize("a, b, shared", [
+    ("", "", 0), ("", "abc", 0), ("abc", "abc", 3), ("abc", "abcdef", 3),
+    ("abcdef", "abc", 3), ("abX", "abY", 2), ("Xbc", "abc", 0),
+])
+def test_common_prefix_length(a, b, shared):
+    assert common_prefix_length(a, b) == shared

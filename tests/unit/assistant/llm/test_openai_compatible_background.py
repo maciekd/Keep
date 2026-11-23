@@ -100,6 +100,8 @@ def _fresh(monkeypatch):
     # The rate the bar is drawn by, not whatever the worker's earlier requests taught the class's
     # tracker: at 800 t/s the 4000 tokens of the bar test are a prefill long enough to draw.
     monkeypatch.setattr(OpenAICompatibleLLM._prefill, "tps", 800.0)
+    monkeypatch.setattr(OpenAICompatibleLLM._prefill, "_observed", OpenAICompatibleLLM._prefill._observed)
+    monkeypatch.setattr(OpenAICompatibleLLM._prefill, "_held", [])
 
     def reset():
         OpenAICompatibleLLM._slot.reset()
@@ -176,7 +178,7 @@ class TestTheStream:
 
 @pytest.mark.unit
 class TestTheBarAndTheReport:
-    def test_progress_chunks_drive_the_bar_and_the_first_delta_ends_the_prefill(self):
+    def test_progress_chunks_drive_the_bar_and_the_first_delta_ends_the_prefill(self, prefill_clock):
         tracker = OpenAICompatibleLLM._prefill
         seen = []
 

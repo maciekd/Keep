@@ -14,10 +14,17 @@ when the server is on another machine). Whichever the source, the request's stat
 — its workload (cached, remaining), its latest progress (processed, total), its prefill time —
 and so is everything below.
 
-The estimate: 0 until the start line is read (nothing to draw) and for a prefill the rolling rate
-puts under `MIN_BAR_SECONDS` (a bar there would only blink), 100 at once on a full cache hit,
-the engine's own progress lines when it logs them, and otherwise the time since the workload
-line was read against a rolling prefill rate (`observe_rate` refines it after each reply, from
+The estimate: the workload is the server's own once a start line or a first chunk says it, and
+until then the tracker's forecast when the backend handed `begin` the prompt's text — the longest
+prefix it shares with a prompt the server prefilled lately (`learn`) is taken as cached, the rest
+as to prefill, at the last prompt's tokens per character. oMLX needs it: its first chunk comes
+only once a whole prefill step (2048 tokens, half a minute on a small Mac) is done, and a turn
+that adds less than a step gets none before its first token. Without either the estimate is 0
+(nothing to draw); it is 0 too for a prefill the rolling rate puts under `MIN_BAR_SECONDS` (a bar
+there would only blink), 100 at once on a full cache hit, the engine's own progress — carried on
+at the measured rate between two reports — when it gives any, and otherwise the time since the
+workload line was read (since the request became the one the server is on, for a forecast)
+against a rolling prefill rate (`observe_rate` refines it after each reply, from
 the prefill time the log reports — `prefill_seconds`) — capped at 99 until the first token
 confirms the prefill is over, or the log does (`LogFormat.done`: a non-streamed request, the
 memory curation say, sends no token until its whole reply is written). The clock and the rate
@@ -194,6 +201,9 @@ class _Request:
     duration: float | None = None             # the prefill seconds the done line, or the latest progress chunk, reported
     work: tuple[int, int] | None = None       # (cached, remaining) once the workload line is logged
     work_ts: float = 0.0                      # when that line was read: the start of the clock
+    prompt: str | None = None                 # the prompt's text, when the backend gave it: what `learn` keeps
+    forecast: tuple[int, int] | None = None   # (cached, remaining) the tracker expects until `work` is known
+    head_ts: float = 0.0                      # when it became the request the server is on: the forecast's clock
     on_work: "Callable[[int, int], None] | None" = None   # told (cached, remaining) once, when that line is read
     progress: tuple[int, int] | None = None   # (processed, total) of the latest progress line
     progress_ts: float = 0.0                  # when that line was read
@@ -211,12 +221,16 @@ class PrefillTracker:
     POLL_INTERVAL_S = 2.0   # log reads between polls: over ssh each is a round trip, and new lines are rare
     MIN_BAR_SECONDS = 2.0   # a prefill estimated shorter is not drawn: the bar would only blink
     MIN_RATE_TOKENS = 1000  # a prefill shorter teaches the rate nothing (observe_rate)
+    HELD_PROMPTS = 8        # the prompts a forecast compares against: the server's cache holds more than one
+    TOKENS_PER_CHAR = 0.28  # the forecast's ratio until the server has counted a prompt
     _trackers: list["PrefillTracker"] = []
 
     def __init__(self, label: str, log_format: LogFormat | None, seed_tps: float):
         self.label = label
         self.format = log_format   # None for a backend whose server streams its progress (`report_progress`)
         self.tps = seed_tps  # rolling estimate of the prefill rate, tokens/s; the seed stands until a reply refines it
+        self._observed = False   # the seed is a guess at a machine unknown: the first measured rate replaces it
+        self._held: list[tuple[str, int]] = []   # (text, tokens) of the prompts the server prefilled lately, newest last
         self.log: LogSource | None = None
         self._lock = threading.Lock()
         self._requests: list[_Request] = []   # in the order sent — the order the server serves them
@@ -231,26 +245,58 @@ class PrefillTracker:
         self.log = source
         info(f"{self.label} prefill diagnostics: reading {source.describe()}.")
 
-    def begin(self, interactive: bool = True, on_work: Callable[[int, int], None] | None = None) -> int:
+    def begin(self, interactive: bool = True, on_work: Callable[[int, int], None] | None = None,
+              prompt: str | None = None) -> int:
         """Register a request about to be sent and hand back its token. `on_work` is told the
         request's (cached, remaining) tokens once, from whichever poll first reads its workload
         line — the backend's cache-break report, made while the bar is still drawn rather than
         after the reply. It runs on the polling thread (a chat UI's tick, the dashboard's
-        frame, the backend's forced read) and never on a request whose log is unreachable."""
+        frame, the backend's forced read) and never on a request whose log is unreachable.
+        `prompt`, the request's text, gives the bar a forecast until the server says the workload."""
         # The anchor is fetched before taking the lock: over ssh it can take a moment and the
         # progress polls must not block on it. The scan from it stays non-destructive, so every
         # poll and the done-time read see the same lines.
         anchor = self.log.size() if self.log is not None else None
-        if anchor is None:
+        if anchor is None and self.format is not None:
             trace(f"{self.label} prefill: log unreachable — prefill diagnostics disabled for this request.")
+        forecast = self._forecast(prompt) if prompt else None
         with self._lock:
             self._last_token += 1
             token = self._last_token
-            self._requests.append(_Request(token, interactive, time.monotonic(), anchor, on_work=on_work))
+            self._requests.append(_Request(token, interactive, time.monotonic(), anchor, on_work=on_work,
+                                           prompt=prompt, forecast=forecast))
             queued = len(self._requests) - 1
+            self._stamp_head()
         trace(f"{self.label} prefill: started (#{token}, {'user request' if interactive else 'background'}"
-              f"{f', {queued} ahead of it' if queued else ''}).")
+              f"{f', {queued} ahead of it' if queued else ''}"
+              f"{f'; forecast {forecast[0]} cached, {forecast[1]} to prefill' if forecast else ''}).")
         return token
+
+    def _forecast(self, prompt: str) -> tuple[int, int]:
+        """(cached, remaining) as the server will likely find them: the longest prefix the prompt
+        shares with one the server prefilled lately is cached, at the newest one's tokens per char."""
+        with self._lock:
+            held = list(self._held)
+        per_char = held[-1][1] / len(held[-1][0]) if held else self.TOKENS_PER_CHAR
+        shared = max((common_prefix_length(prompt, text) for text, _ in held), default=0)
+        return round(shared * per_char), round((len(prompt) - shared) * per_char)
+
+    def learn(self, token: int | None, prompt_tokens: int):
+        """The server prefilled the request's whole prompt, `prompt_tokens` long (its usage says
+        so): a later prompt that starts the same is forecast to find that part cached."""
+        with self._lock:
+            request = self._find(token)
+            if request is None or not request.prompt or prompt_tokens <= 0:
+                return
+            others = [held for held in self._held if held[0] != request.prompt]
+            self._held = others[-(self.HELD_PROMPTS - 1):] + [(request.prompt, prompt_tokens)]
+        trace(f"{self.label} prefill: #{token}'s {prompt_tokens}-token prompt is held for the next forecasts")
+
+    def _stamp_head(self):
+        """Under the lock: the request the server is now on starts its forecast's clock."""
+        head = next((r for r in self._requests if not r.generating), None)
+        if head is not None and not head.head_ts:
+            head.head_ts = time.monotonic()
 
     def first_token(self, token: int | None):
         """The request's first generated token means its prefill is over."""
@@ -260,6 +306,7 @@ class PrefillTracker:
                 request.first_token, request.first_token_ts = True, time.monotonic()
                 if not request.done:
                     self._prefill_over(request)
+                self._stamp_head()
                 trace(f"{self.label} prefill: first token received (prefill #{token} complete).")
 
     def report_progress(self, token: int | None, total: int, cache: int, processed: int,
@@ -319,6 +366,7 @@ class PrefillTracker:
         with self._lock:
             if request in self._requests:
                 self._requests.remove(request)
+            self._stamp_head()
 
     def prefill_seconds(self, token: int | None) -> float | None:
         """How long the request's prefill took, for `observe_rate`: what the log's done line says
@@ -349,7 +397,8 @@ class PrefillTracker:
             trace(f"{self.label} prefill rate estimate kept at {self.tps:.1f} t/s: {tokens} tokens are too few to measure it")
             return
         observed = tokens / seconds
-        self.tps = 0.5 * self.tps + 0.5 * observed
+        self.tps = 0.5 * self.tps + 0.5 * observed if self._observed else observed
+        self._observed = True
         trace(f"{self.label} prefill rate estimate updated: {self.tps:.1f} t/s (observed {observed:.1f} t/s)")
 
     def work(self, token: int | None, force: bool = False) -> tuple[int, int] | None:
@@ -382,8 +431,12 @@ class PrefillTracker:
         work, progress = self._poll(head)
         if head.done:
             return 100.0   # the log said so: the server is generating the reply
+        now = time.monotonic()
+        start = head.work_ts
         if work is None:
-            return 0.0   # the server has not logged the workload yet — nothing to draw
+            if head.forecast is None:
+                return 0.0   # the server has not said the workload yet — nothing to draw
+            work, start = head.forecast, head.head_ts or now
         _cached, remaining = work
         if remaining <= 0:
             return 100.0   # a full cache hit: no prefill work
@@ -392,10 +445,11 @@ class PrefillTracker:
             return 0.0   # too short to be worth a bar — plain waiting
         if progress and progress[1] > 0:
             processed, total = progress
+            processed += (now - head.progress_ts) * self._rate_of(head, progress)   # since the last report
             return min(99.0, processed / total * 100.0)
         if eta <= 0:
             return 99.0
-        return min(99.0, (time.monotonic() - head.work_ts) / eta * 100.0)
+        return min(99.0, (now - start) / eta * 100.0)
 
     def rate(self) -> float:
         """The prefill rate in tokens/s: measured from the engine's progress when the request
@@ -405,11 +459,14 @@ class PrefillTracker:
         if head is None:
             return self.tps
         _work, progress = self._poll(head)
+        return self._rate_of(head, progress)
+
+    def _rate_of(self, request: _Request, progress: tuple[int, int] | None) -> float:
         if progress and progress[0] > 0:
-            if head.duration:
-                return progress[0] / head.duration
-            if head.progress_ts > head.work_ts:
-                return progress[0] / (head.progress_ts - head.work_ts)
+            if request.duration:
+                return progress[0] / request.duration
+            if request.progress_ts > request.work_ts:
+                return progress[0] / (request.progress_ts - request.work_ts)
         return self.tps
 
     def _find(self, token: int | None) -> _Request | None:
@@ -450,6 +507,7 @@ class PrefillTracker:
                 if not request.first_token:
                     done_offset = anchor + len(raw[:len(raw) - len(text) + done_at].encode())
                     self._prefill_over(request, done_offset)
+                self._stamp_head()
                 trace(f"{self.label} prefill: the log says #{request.token}'s prompt is done — the server is "
                       f"generating its reply{' (non-streamed: no token tells us)' if not request.first_token else ''}.")
             work, progress = request.work, request.progress
@@ -499,6 +557,19 @@ class PrefillTracker:
         """Whether the user's reply waits for the server to finish another request's reply (see `queued`)."""
         tracker = cls._busy()
         return tracker.queued() if tracker is not None else False
+
+
+def common_prefix_length(a: str, b: str) -> int:
+    """How many leading characters `a` and `b` share — a binary search over slice compares, which
+    run in C, since prompts are tens of thousands of characters."""
+    low, high = 0, min(len(a), len(b))
+    while low < high:
+        mid = (low + high + 1) // 2
+        if a[:mid] == b[:mid]:
+            low = mid
+        else:
+            high = mid - 1
+    return low
 
 
 def parse_last(pattern: str, text: str) -> tuple[int, int] | None:

@@ -66,13 +66,15 @@ def _dsml_active_and_a_memory_store():
     CommandFormats.set_active(DsmlFormat)
     Ds4LLM._replay_store = ReplayStore(None)
     Ds4LLM._checkpointed.clear()
-    saved_log, saved_tps = Ds4LLM._prefill.log, Ds4LLM._prefill.tps
+    saved = Ds4LLM._prefill.log, Ds4LLM._prefill.tps, Ds4LLM._prefill._observed, Ds4LLM._prefill._held
+    # A rate earlier replies measured: a new one refines it rather than replacing the seed.
+    Ds4LLM._prefill._observed, Ds4LLM._prefill._held = True, []
     with patch.object(LogSource, 'size', return_value=None), patch.object(Ds4DiskCacheSweeper, 'start_once'):
         yield
     CommandFormats.reset()
     Ds4LLM._replay_store = None
     Ds4LLM._prefill._requests.clear()
-    Ds4LLM._prefill.log, Ds4LLM._prefill.tps = saved_log, saved_tps
+    Ds4LLM._prefill.log, Ds4LLM._prefill.tps, Ds4LLM._prefill._observed, Ds4LLM._prefill._held = saved
 
 
 class TestSetup:
@@ -475,7 +477,7 @@ class TestPrefillBar:
         llm, _ = _llm_with_stream([_chunk(content="Hi."), _chunk(choices=False, usage=usage)])
         reports = []
 
-        def begin(interactive=True, on_work=None):
+        def begin(interactive=True, on_work=None, prompt=None):
             on_work(4000, 1000)    # the line read on the first poll, cached..total:remaining
             return 7
 

@@ -2590,12 +2590,13 @@ class TestOllamaLLM:
         """OllamaLLM's tracker pointed at a tmp log, fresh, and restored afterwards."""
         from assistant.llm.OllamaLLM import OllamaLLM
         t = OllamaLLM._prefill
-        saved_log, saved_tps = t.log, t.tps
+        saved = t.log, t.tps, t._observed, t._held
         t.use_log(str(tmp_path / "ollama.log"))
         _reset_tracker(t)
+        t._held = []
         yield t
         _reset_tracker(t)
-        t.log, t.tps = saved_log, saved_tps
+        t.log, t.tps, t._observed, t._held = saved
 
     def test_the_llamacpp_cache_slot_line_gives_the_workload(self):
         from assistant.llm.OllamaLLM import OllamaLogFormat
@@ -2624,14 +2625,13 @@ class TestOllamaLLM:
         assert tracker.work(token, force=True) == (5786, 558), "polls never consume the line"
         tracker.end(token)
 
-    def test_progress_follows_the_mlx_progress_lines_in_the_log(self, tracker, tmp_path):
-        import time
+    def test_progress_follows_the_mlx_progress_lines_in_the_log(self, tracker, tmp_path, prefill_clock):
         token = tracker.begin()
         (tmp_path / "ollama.log").write_text(
             'msg="cache miss" total=17531 matched=2 cached=0 left=17531\n'
             'msg="Prompt processing progress" processed=2048 total=17531\n'
             'msg="Prompt processing progress" processed=8192 total=17531\n')
-        tracker._find(token).start_ts = time.monotonic() - 9999  # the time estimate alone would say 99
+        tracker._find(token).start_ts = prefill_clock.now - 9999  # the time estimate alone would say 99
         assert tracker.progress() == pytest.approx(8192 / 17531 * 100.0)
         tracker.end(token)
 
@@ -2643,7 +2643,7 @@ class TestOllamaLLM:
         token = tracker.begin()
         request = tracker._find(token)
         request.work, request.anchor = (5000, 2232), None   # remaining=2232 over 4.0s => 558 t/s
-        tracker.tps = 350.0
+        tracker.tps, tracker._observed = 350.0, True        # a rate earlier replies measured
         self._make_llm()._log_metrics({
             "prompt_eval_count": 7232, "prompt_eval_duration": 4_000_000_000,
             "eval_count": 5, "eval_duration": 500_000_000,
