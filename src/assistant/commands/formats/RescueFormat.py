@@ -39,6 +39,8 @@ class RescueFormat(CommandFormat):
         self.primary = primary
         self.rescues = list(rescues)
         self.rescued = 0  # the calls read by a rescue syntax so far (one processor, one reply)
+        # The parameter names of the call `extract` read last that its command does not declare.
+        self.undeclared: list[str] = []
 
     @classmethod
     def wrap(cls, fmt: CommandFormat) -> "RescueFormat":
@@ -92,6 +94,7 @@ class RescueFormat(CommandFormat):
     def extract(self, buffer: str) -> tuple[tuple[str, list[str], str] | None, str | None]:
         reader = self._reader(buffer)
         call, rest = reader.extract(buffer)
+        self.undeclared = list(getattr(reader, "undeclared", ())) if call is not None else []
         if reader is not self.primary and call is not None:
             self.rescued += 1
             note(f"Rescued a {call[0]} call the model wrote as a {reader.name} block under the {self.name} format "
