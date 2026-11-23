@@ -783,10 +783,15 @@ class RequestProcessor:
         if self._cap_hit_followed_up:
             error("The LLM hit its output cap again on the round it was told about it — ending the request.")
             return self.CAP_HIT_NOTICE
-        self._cap_hit_followed_up = True
         cap = dm.ai.output_cap()
         cap_text = f"the {cap}-token output cap" if cap else "its output cap"
         said = dm.llm_response.strip()
+        ran = dm.command_processor.commands_dispatched
+        if not said and ran:
+            # Nothing to tell the model: its commands ran and the results are the next round.
+            info(f"LLM hit {cap_text} after {ran} command(s) and no text — the results go back as they are")
+            return None
+        self._cap_hit_followed_up = True
         if said:
             tail = said.splitlines()[-1][-self.CAP_HIT_TAIL_CHARS:]
             info(f"LLM hit {cap_text} mid-reply, after {len(said)} chars — one more round to continue")
@@ -922,6 +927,7 @@ class RequestProcessor:
             # result turn would put the divergence before the runner's restore point.
             self.dialog_manager.byte_prefix_tail = old_dialog_manager.byte_prefix_tail
             self.dialog_manager.request_id = old_dialog_manager.request_id
+            self.dialog_manager.after_whitespace_runaway = old_dialog_manager.whitespace_runaway
             if self.dialog_manager.request_id:
                 trace(f"Carried request_id {self.dialog_manager.request_id} into command follow-up for text streaming")
 

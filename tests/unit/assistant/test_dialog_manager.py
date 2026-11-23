@@ -151,6 +151,8 @@ def make_dialog_manager(monkeypatch, chunks, cached=False, command_processor=Non
     dm.thinking = False
     dm.cache_query = None
     dm.follow_up = False
+    dm.whitespace_runaway = False
+    dm.after_whitespace_runaway = False
 
     return dm, console
 
@@ -252,13 +254,86 @@ def test_a_round_that_produced_no_text_leaves_no_empty_assistant_turn(monkeypatc
 def test_a_round_that_produced_only_whitespace_gets_the_placeholder_too(monkeypatch):
     """A newline before the cap was reached is as empty to the Messages API as nothing: a
     whitespace-only non-final assistant message is the same 400. The placeholder stands for
-    the turn, and the round's own record keeps the whitespace it received."""
+    the turn."""
     dm, _ = make_dialog_manager(monkeypatch, ["\n", "  "])
 
     list(dm.stream_llm_response())
 
-    assert dm.llm_response_raw == "\n  "
+    assert not dm.llm_response_raw
     assert dm.messages[-1]["content"].strip()
+
+
+@pytest.mark.unit
+def test_a_reply_that_goes_on_in_whitespace_alone_is_closed_and_stored_without_the_run(monkeypatch):
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    run = ["\n" * 10] * (DialogManager.WHITESPACE_RUN_LIMIT // 10 + 20)
+    stream = ClosableStream(["turn_on(kitchen)", "\n\n"] + run)
+    dm.ai.create_streaming_completion = lambda *a, **k: stream
+
+    list(dm.stream_llm_response())
+
+    assert stream.closed
+    assert stream.consumed < len(run) - 10
+    assert dm.command_processor.invocations
+    assert dm.llm_response_raw == "turn_on(kitchen)"
+    assert dm.messages[-1]["content"] == "turn_on(kitchen)"
+    assert dm.whitespace_runaway
+
+
+@pytest.mark.unit
+def test_whitespace_between_the_parts_of_a_reply_is_no_runaway(monkeypatch):
+    gap = "\n" * (DialogManager.WHITESPACE_RUN_LIMIT - 1)
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    stream = ClosableStream(["turn_on(kitchen)", gap, "Done.", gap, "Really."])
+    dm.ai.create_streaming_completion = lambda *a, **k: stream
+
+    list(dm.stream_llm_response())
+
+    assert not stream.closed
+    assert dm.llm_response_raw.endswith("Really.")
+    assert not dm.whitespace_runaway
+
+
+@pytest.mark.unit
+def test_whitespace_ahead_of_the_reply_is_no_runaway(monkeypatch):
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    stream = ClosableStream(["\n" * DialogManager.WHITESPACE_RUN_LIMIT * 2, "Hello."])
+    dm.ai.create_streaming_completion = lambda *a, **k: stream
+
+    list(dm.stream_llm_response())
+
+    assert not stream.closed
+    assert dm.llm_response_raw.endswith("Hello.")
+
+
+@pytest.mark.unit
+def test_a_refusal_of_the_round_after_a_whitespace_runaway_is_asked_again_once(monkeypatch):
+    from assistant.llm.AbstractLLM import LLMRefusalError
+
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.after_whitespace_runaway = True
+    dm.ai = DroppingAI([[LLMRefusalError("refused")], ["Holmes is on Prime."]])
+    _patch_stream_time(monkeypatch, [100.0, 100.1, 100.2])
+
+    output = list(dm.stream_llm_response())
+
+    assert dm.ai.calls == 2
+    assert output == ["Holmes is on Prime."]
+
+
+@pytest.mark.unit
+def test_a_second_refusal_after_a_whitespace_runaway_is_final(monkeypatch):
+    from assistant.llm.AbstractLLM import LLMRefusalError
+
+    dm, _ = make_dialog_manager(monkeypatch, [])
+    dm.after_whitespace_runaway = True
+    dm.ai = DroppingAI([[LLMRefusalError("refused")], [LLMRefusalError("refused")]])
+    _patch_stream_time(monkeypatch, [100.0, 100.1, 100.2])
+
+    output = list(dm.stream_llm_response())
+
+    assert dm.ai.calls == 2
+    assert "refused" in output[0]
 
 
 @pytest.mark.unit

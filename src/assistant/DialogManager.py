@@ -113,6 +113,10 @@ class DialogManager:
 
         self.llm_response = ""
         self.llm_response_raw = ""
+        # This round's reply ended in a whitespace runaway (WHITESPACE_RUN_LIMIT), cut from the
+        # stored turn; and whether the round before this one did, set by the request processor.
+        self.whitespace_runaway = False
+        self.after_whitespace_runaway = False
         self.stub_dropped = ""
         self.time_to_first_token = 0
         self.time_to_user_reply = 0
@@ -409,8 +413,8 @@ class DialogManager:
         # The turn as the history keeps it: a call the model wrote in a foreign syntax and the
         # processor rescued is written in the active one, so the model never sees that shape
         # in its own past turns (the feedback loop that made Opus repeat it).
-        self.llm_response_raw = self.command_processor.format.rewritten(
-            self.command_processor.without_dropped_thinking(self.llm_response_raw))
+        self.llm_response_raw = self._without_trailing_whitespace(self.command_processor.format.rewritten(
+            self.command_processor.without_dropped_thinking(self.llm_response_raw)))
         self.messages.append({"role": "assistant", "content": self._turn_for_messages()})
 
     # What stands for an assistant turn that produced no text — the output cap spent on
@@ -423,6 +427,22 @@ class DialogManager:
             return self.llm_response_raw
         info("The round produced no text — a placeholder stands for it in the request's messages")
         return self.EMPTY_TURN_PLACEHOLDER
+
+    # The whitespace runaway: a reply that has said what it had to — its commands, its text —
+    # and then streams newlines until the output cap (Opus 5.5 on prod, 2026-10-30, 11-02,
+    # 11-17 and 11-20: 16,000 tokens each, 50 s of a dead stream, ending in 7–8k newlines).
+    # The stream is closed once this many whitespace-only characters follow the reply, and no
+    # stored turn keeps its trailing whitespace: the two rounds that were sent one with the
+    # run in it were the only two the classifier refused in a month.
+    WHITESPACE_RUN_LIMIT = 50
+
+    def _without_trailing_whitespace(self, raw: str) -> str:
+        kept = raw.rstrip()
+        dropped = len(raw) - len(kept)
+        if dropped >= self.WHITESPACE_RUN_LIMIT:
+            self.whitespace_runaway = True
+            info(f"The reply ended in {dropped} whitespace-only chars — dropped from the stored turn")
+        return kept
 
     STREAM_DROP_RETRIES = 2
     STREAM_DROP_RETRY_DELAY = 1.0
@@ -472,6 +492,7 @@ class DialogManager:
                                         raw_snapshot: str) -> Generator[str, None, None]:
         refused_ai = None
         stub_retried = False
+        refusal_retried = False
         attempt = 0
         while True:
             try:
@@ -490,6 +511,15 @@ class DialogManager:
                     yield from self._surface_fallback_notice(refused_ai)
                 return
             except LLMRefusalError:
+                # A refusal is final on identical input, but the two rounds after a whitespace
+                # runaway that were refused (2026-11-17, 11-20) had nothing else in common and
+                # a third (11-02) was answered: that one refusal is asked again, once.
+                if self.after_whitespace_runaway and not refusal_retried:
+                    refusal_retried = True
+                    note(f"{self.ai.name()} refused the round after a whitespace runaway — asking again, once")
+                    self.llm_response_raw = raw_snapshot
+                    self.command_processor.reset_parse_state()
+                    continue
                 fallback = self.ai.refusal_fallback() if refused_ai is None else None
                 if fallback is None:
                     yield from self._surface_refusal_notice()
@@ -609,6 +639,7 @@ class DialogManager:
         in_span = False   # inside a backtick span of the model's (strip_backticks)
         held = "" if not self.llm_response else None   # the reply's start, while it may be a stub
         self.stub_dropped = ""
+        blank_run = 0   # the whitespace-only characters the stream ends in so far
 
         def publish_stream_text(chunk: str, flush: bool = False):
             nonlocal stream_text_buffer
@@ -649,6 +680,17 @@ class DialogManager:
                 # initialize audio playback as soon as possible, so pyaudio has time to boot up when we're waiting for first sound chunk
                 if not self.web_request_handler.ctx.text_only:
                     self.web_request_handler.initialize_audio_playback()
+
+            blank_run = len(content) - len(content.rstrip()) + (0 if content.strip() else blank_run)
+            if blank_run >= self.WHITESPACE_RUN_LIMIT and self.llm_response_raw.strip():
+                note(f"The reply went on in whitespace alone ({blank_run} chars after "
+                     f"{self.command_processor.commands_dispatched} command(s) and {len(self.llm_response)} "
+                     f"reply chars) — closing the stream, the reply ends where it stood")
+                self.llm_response_raw += content
+                close = getattr(response, "close", None)
+                if close is not None:
+                    close()
+                break
 
             before = self.llm_response_raw[-1:]
             self.llm_response_raw += content

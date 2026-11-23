@@ -1688,14 +1688,22 @@ class WebAccess(Integration):
         }),
     }
 
+    # A click-out host: its link is a tracking wrapper around the address one parameter holds.
+    # JustWatch's are 1.8–2.4 KB each — 6 KB of a 10 KB title page (prod 2026-11-20).
+    CLICK_OUT_TARGET_PARAMS = {'e.justwatch.com': 'r'}
+
     @classmethod
     def clean_link(cls, url: str) -> str:
         """The link without its tracking parameters; the rest of the query, the order
-        included, stays as it was."""
+        included, stays as it was. A click-out link is the address it wraps."""
         parsed = urlparse(url)
         if not parsed.query:
             return url
         host = parsed.netloc.lower()
+        if target_param := cls.CLICK_OUT_TARGET_PARAMS.get(host):
+            target = dict(parse_qsl(parsed.query)).get(target_param, '')
+            if target.startswith(('http://', 'https://')):
+                return cls.clean_link(target)
         site_params = next((params for suffix, params in cls.SITE_TRACKING_PARAMS.items()
                             if host == suffix or host.endswith('.' + suffix)), frozenset())
         pairs = parse_qsl(parsed.query, keep_blank_values=True)

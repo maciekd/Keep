@@ -17,6 +17,16 @@ class TestCleanLink:
         url = "https://example.com/p?b=2&utm_source=mail&a=1&fbclid=xyz&gclid=q"
         assert WebAccess.clean_link(url) == "https://example.com/p?b=2&a=1"
 
+    def test_a_click_out_link_is_the_address_it_wraps_cleaned_too(self):
+        wrapped = ("https://e.justwatch.com/a?uct_web_app_version=4.1.0&r=https%3A%2F%2Fapp.primevideo.com"
+                   "%2Fdetail%3Fgti%3Damzn1.dv.gti.0000%26utm_source%3Djw&uct_country=SE&cx=eyJzY2hlbWEi")
+        assert WebAccess.clean_link(wrapped) == "https://app.primevideo.com/detail?gti=amzn1.dv.gti.0000"
+
+    def test_a_click_out_link_that_wraps_no_address_is_left_alone(self):
+        for url in ("https://e.justwatch.com/a?uct_country=SE", "https://e.justwatch.com/a?r=javascript%3Avoid(0)",
+                    "https://example.com/a?r=https%3A%2F%2Fexample.org%2F"):
+            assert WebAccess.clean_link(url) == url
+
     def test_a_link_without_tracking_is_returned_unchanged(self):
         for url in ("https://example.com/p?foo=bar&baz=qux", "https://example.com/p#frag",
                     "https://example.com/p?q=a%20b"):

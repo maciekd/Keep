@@ -912,7 +912,7 @@ class TestHandleBackgroundCommands:
 
     # --- a round the LLM ended at its output cap ---
 
-    def _cut_dm(self, said="", cap=16000):
+    def _cut_dm(self, said="", cap=16000, ran=0):
         """A round ended at max_tokens: `said` is what reached the user before the cut (nothing
         when the thinking alone used the cap). The note goes through CommandProcessor.add_note,
         which composes it into the reply the loop reads."""
@@ -920,6 +920,7 @@ class TestHandleBackgroundCommands:
         dm.llm_response = dm.llm_response_raw = said
         dm.ai.last_stop_reason = 'max_tokens'
         dm.ai.output_cap.return_value = cap
+        dm.command_processor.commands_dispatched = ran
         dm.command_processor.add_note.side_effect = lambda text: setattr(dm.command_processor, 'command_reply', text)
         return dm
 
@@ -944,6 +945,19 @@ class TestHandleBackgroundCommands:
         assert len(streamed) == 1
         note = streamed[0].reply_to_llm
         assert "16000-token" in note and "nothing reached the user" in note
+
+    def test_a_round_cut_after_its_commands_and_no_text_gets_no_note(self, handler):
+        """The whitespace runaway: the commands ran, their results are all the next round needs."""
+        first = self._cut_dm(ran=4)
+        handler.dialog_manager = first
+        handler._rounds = [first]
+        assert handler._cap_hit() is None
+        first.command_processor.add_note.assert_not_called()
+        # and it is not the one cut a request is allowed: a later one is still told
+        later = self._cut_dm()
+        handler.dialog_manager = later
+        assert handler._cap_hit() is None
+        later.command_processor.add_note.assert_called_once()
 
     def test_a_reply_cut_mid_text_circles_back_with_where_it_stopped(self, handler):
         streamed, _ = self._drive_from(handler, self._cut_dm("The plan:\n- six automations, one per lamp, bui"))
