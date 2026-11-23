@@ -32,7 +32,7 @@ Easiest: ask Keep to move you to local — it flips the switch and walks you thr
 
 By hand:
 
-1. **Start the model server** — oMLX per its readme (`localhost:8000`), `scripts/local_ds4_start.sh` for DwarfStar ([our fork](#dwarfstar-our-fork)), or `scripts/local_ollama_start.sh`.
+1. **Start the model server** — `scripts/local_omlx_start.sh` for oMLX (`localhost:8000`), `scripts/local_ds4_start.sh` for DwarfStar ([our fork](#dwarfstar-our-fork)), or Ollama (`ollama serve`).
 2. **Set `local_backend`** in `config.yaml` (`openai`, `ds4` or `ollama`), plus `base_url` in the matching section
    if the server is elsewhere (see [config.example.yaml](../config.example.yaml)).
 3. **Restart Keep.** `local_backend: none` goes back to the cloud.

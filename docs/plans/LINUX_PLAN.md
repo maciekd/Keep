@@ -27,7 +27,7 @@ with a warning and is not tested. A machine without a screen is the normal case.
 
 **Mac-only, and said so to the user and the LLM**: the server's own microphones and speakers,
 Photos, Reminders, HomeClaw, a *local* Messages host, the iMessage satellite role, the Desktop shortcut, Full Disk Access, the `watchdog` key, the
-local-backend start scripts (`scripts/local_ds4_start.sh`, `local_ollama_start.sh`).
+local-backend start scripts (`scripts/local_ds4_start.sh`, `local_omlx_start.sh`).
 
 **iMessage on Linux** works the way it already does across two Macs: `imessage.host` /
 `imessage_chat.host` name a satellite on a Mac. `host: local` on Linux is a configuration error

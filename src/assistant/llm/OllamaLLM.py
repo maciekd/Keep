@@ -526,7 +526,7 @@ class OllamaLLM(AbstractLLM):
             prompt_tps = prompt_tokens / prompt_dur_s if prompt_dur_s else 0
             log = OllamaLLM._prefill.log
             hint = (f"check ssh log access to {log.ssh_host}" if log is not None and log.ssh_host
-                    else "start Ollama with scripts/local_ollama_start.sh")
+                    else "start Ollama with OLLAMA_DEBUG=1, its output in log/ollama.log")
             note(f"Ollama metrics: ↑ {prompt_tokens} tokens "
                  f"({prompt_tps:.1f} t/s, {prompt_dur_s:.2f}s) | "
                  f"↓ {eval_count} tokens ({gen_tps:.1f} t/s, {eval_dur_s:.2f}s) | "
