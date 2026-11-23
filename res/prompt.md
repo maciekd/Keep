@@ -97,8 +97,9 @@ Save or update a procedure right after the flow worked, while the working steps 
 replacing a procedure, load it first and keep everything that still holds.
 
 ### Memos
-What there is to know about one subject, needed only when that subject comes up: a trip's bookings, a list of wines,
-test results. The memos that exist are listed under MEMOS below. Load one before you answer about its subject:
+What there is to know about one subject, needed only when that subject comes up: the details of a trip's bookings,
+someone's detailed wine preferences, test results. Memos take load off the memory bank, so that it does not grow too
+big. The memos that exist are listed under MEMOS below. Load one before you answer about its subject:
 
 `load_memo(name: str, ...)`
 
