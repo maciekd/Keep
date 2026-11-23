@@ -889,7 +889,7 @@ class TestAutonomousActionManager:
             # Should not raise
             manager._run_memory_curation()
 
-    @pytest.mark.parametrize("ran, reported", [({'interaction_count': 3}, [(3, 16, 2, 1)]), (None, [])])
+    @pytest.mark.parametrize("ran, reported", [({'interaction_count': 3}, [(3, 16, 2, 1, 2, 5)]), (None, [])])
     @patch('assistant.agents.AutonomousActionManager.create_llm')
     def test_a_curation_that_ran_reports_the_memory_size_and_a_skipped_one_does_not(self, mock_claude, ran, reported):
         mock_claude.return_value = Mock()
@@ -899,6 +899,8 @@ class TestAutonomousActionManager:
              patch(f'{module}.MemoryFile.read', return_value="Marcus likes\ntea"), \
              patch(f'{module}.WatchList.items', return_value=[Mock(), Mock()]), \
              patch(f'{module}.Procedures.names', return_value=["descale-the-kettle"]), \
+             patch(f'{module}.Memos.names', return_value=["wine-list", "ski-trip"]), \
+             patch(f'{module}.Memos.read', side_effect=["Barolo and Rioja", "Hotel Example", None]), \
              patch(f'{module}.Telemetry') as telemetry:
             manager._run_memory_curation()
         assert [c.args for c in telemetry.get_instance().memory_size.call_args_list] == reported

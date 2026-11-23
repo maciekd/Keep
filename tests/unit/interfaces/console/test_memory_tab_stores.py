@@ -2,12 +2,16 @@
 the watch list. Every one masks a vaulted value; only the bank has a history to browse."""
 import pytest
 
-from assistant import Procedures, WatchList
+from assistant import WatchList
+
+from assistant.Memos import Memos
+from assistant.Procedures import Procedures
 from common.vault.Redactor import Redactor
 from common.vault.Vault import Vault
 from interfaces.console.framework.TUIScreen import TUIScreen
 from interfaces.console.tabs.BankTab import BankTab
 from interfaces.console.tabs.MemoryTab import MemoryTab
+from interfaces.console.tabs.MemosTab import MemosTab
 from interfaces.console.tabs.ProceduresTab import ProceduresTab
 from interfaces.console.tabs.TabView import SUB_CONTENT_TOP
 from interfaces.console.tabs.WatchListTab import WatchListTab
@@ -20,8 +24,10 @@ PHONE = "+46701740605"
 def stores(tmp_path, monkeypatch):
     monkeypatch.setattr(WatchList, "WATCHLIST_DIR", tmp_path / "memory" / "watchlist")
     monkeypatch.setattr(WatchList, "LOG_DIR", tmp_path / "log" / "memory" / "watchlist")
-    monkeypatch.setattr(Procedures, "PROCEDURES_DIR", tmp_path / "memory" / "procedures")
+    monkeypatch.setattr(Procedures, "DIR", tmp_path / "memory" / "procedures")
     monkeypatch.setattr(Procedures, "LOG_DIR", tmp_path / "log" / "memory" / "procedures")
+    monkeypatch.setattr(Memos, "DIR", tmp_path / "memory" / "memos")
+    monkeypatch.setattr(Memos, "LOG_DIR", tmp_path / "log" / "memory" / "memos")
 
 
 @pytest.fixture
@@ -94,6 +100,15 @@ class TestEachTabShowsItsOwnPart:
         bank.memory_file_path = str(tmp_path / "memory" / "absent.md")
         assert "absent.md" in bank._live_text()
         assert "Error" not in text_of(bank) and "Marcus likes tea." not in text_of(bank)
+
+    def test_the_memos_tab_shows_the_memos_alone(self, tmp_path, redactor):
+        Procedures.save("shop-checkout", "paying at shop.example", "open the cart\nclick Pay")
+        memos = make(MemosTab, redactor, tmp_path)
+        assert Memos.EMPTY in text_of(memos)
+        Memos.save("wine-list", "choosing wine", "## Reds\nBarolo")
+        text = memos._live_text()
+        assert "## wine-list" in text and "### Reds" in text and "Barolo" in text
+        assert "shop-checkout" not in text
 
     def test_empty_stores_are_shown_as_empty_not_blank(self, watchlist, procedures):
         assert WatchList.EMPTY in text_of(watchlist)

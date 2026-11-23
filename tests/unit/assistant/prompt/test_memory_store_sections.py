@@ -4,7 +4,9 @@ from unittest.mock import patch
 
 import pytest
 
-from assistant import Procedures, WatchList
+from assistant import WatchList
+
+from assistant.Procedures import Procedures
 from assistant.prompt.sections.ProceduresSectionGenerator import ProceduresSectionGenerator
 from assistant.prompt.sections.WatchListSectionGenerator import WatchListSectionGenerator
 
@@ -13,7 +15,7 @@ from assistant.prompt.sections.WatchListSectionGenerator import WatchListSection
 def stores(tmp_path, monkeypatch):
     monkeypatch.setattr(WatchList, "WATCHLIST_DIR", tmp_path / "watchlist")
     monkeypatch.setattr(WatchList, "LOG_DIR", tmp_path / "log" / "watchlist")
-    monkeypatch.setattr(Procedures, "PROCEDURES_DIR", tmp_path / "procedures")
+    monkeypatch.setattr(Procedures, "DIR", tmp_path / "procedures")
     monkeypatch.setattr(Procedures, "LOG_DIR", tmp_path / "log" / "procedures")
 
 

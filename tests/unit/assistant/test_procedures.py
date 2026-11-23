@@ -2,7 +2,7 @@
 deleted version lands in the log directory, and the curator's mode can add but never replace."""
 import pytest
 
-from assistant import Procedures
+from assistant.Procedures import Procedures
 
 BODY = '1) open shop.example/cart\n2) click "Pay", never press Back\n`fetch(\'/pay?id=\' + id)`'
 

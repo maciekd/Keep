@@ -3,7 +3,8 @@
 from a reply holds the real card number."""
 import pytest
 
-from assistant import MemoryFile, Procedures, WatchList
+from assistant import MemoryFile, WatchList
+from assistant.Procedures import Procedures
 from common.vault import Redactor as redactor_module
 from common.vault.Redactor import placeholder
 from common.vault.Vault import Vault

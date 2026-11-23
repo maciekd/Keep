@@ -10,7 +10,7 @@ from datetime import datetime
 
 from assistant.ChannelProfile import profile_for
 from assistant.commands.CommandParser import CommandParser
-from assistant import Procedures
+from assistant.Procedures import Procedures
 from assistant.commands import Toolkits, ToolkitPreloader
 from assistant.commands.Commands import Commands, is_reference_result
 from assistant.agents.BuildPreflight import BuildPreflight, Unmet

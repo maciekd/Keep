@@ -272,13 +272,14 @@ class Telemetry:
         self._enqueue("integration_enabled" if enabled else "integration_disabled",
                       {"integration": name, "state": state})
 
-    def memory_size(self, words: int, chars: int, watch_items: int, procedures: int):
-        """A memory curation has run: how big the bank is now, and how many watch items and
-        procedures stand beside it. Sizes only — nothing of what the memory says."""
+    def memory_size(self, words: int, chars: int, watch_items: int, procedures: int, memos: int = 0,
+                    memo_words: int = 0):
+        """A memory curation has run: how big the bank is now, and how many watch items,
+        procedures and memos stand beside it. Sizes only — nothing of what the memory says."""
         if not self._on():
             return
         self._enqueue("memory_size", {"words": words, "chars": chars, "watch_items": watch_items,
-                                      "procedures": procedures})
+                                      "procedures": procedures, "memos": memos, "memo_words": memo_words})
 
     def reactivation_nudge(self, step: int, kind: str, outcome: str, via: list[str], owner_channels: list[str],
                            inactive_hours: float):

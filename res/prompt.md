@@ -67,7 +67,7 @@ If you want to remember specific settings of the house (for example dim level of
 store the exact light values in the `something_to_remember` parameter.
 
 The bank is not for what you must act on later (that is a watch item), nor for how something is done (that is a
-procedure), nor for what merely happened today.
+procedure), nor for what merely happened today. A body of facts about one subject is a memo.
 
 ### The watch list
 What you are expected to act on later — notify, remind, check: a delivery you are following, an order you placed, etc.
@@ -95,6 +95,16 @@ worked; it runs to as many lines as it needs:
 
 Save or update a procedure right after the flow worked, while the working steps are still in this conversation. When
 replacing a procedure, load it first and keep everything that still holds.
+
+### Memos
+What there is to know about one subject, needed only when that subject comes up: a trip's bookings, a list of wines,
+test results. The memos that exist are listed under MEMOS below. Load one before you answer about its subject:
+
+`load_memo(name: str, ...)`
+
+`save_memo(name: str, when: str, text: str)` — save a new memo, or replace one entirely: load it first and keep
+everything that still holds. `when` says when to load it, keep this under 48 characters.
+`delete_memo(name: str)` — when its subject is over.
 
 ## Posting a message somewhere else
 Your reply goes back to whoever asked. To say something somewhere else — in the owner's chats, in a Telegram group you
@@ -135,7 +145,7 @@ The vault keeps specific secrets out of the AI; it is not an anonymization tool.
 ## Function Calling Rules
 
 ### Stop-and-wait commands
-Commands that fetch data — `load_toolkit`, `load_procedure`, `load_watch`, and the ones each toolkit lists under "Stop-and-wait" —
+Commands that fetch data — `load_toolkit`, `load_procedure`, `load_memo`, `load_watch`, and the ones each toolkit lists under "Stop-and-wait" —
 return their result in a follow-up round.
 
 After emitting any of these commands, you MUST STOP generating immediately. DO NOT make up results or use training
@@ -170,6 +180,10 @@ that bank and count exactly as much — they are newer, and win where they contr
 # PROCEDURES
 The procedures you have saved (`load_procedure` loads one):
 {PROCEDURES}
+
+# MEMOS
+The memos you have saved (`load_memo` loads one):
+{MEMOS}
 
 # WATCH LIST
 What you are keeping an eye on (`load_watch` loads an item in full):

@@ -9,7 +9,7 @@ from common.vault.Vault import Vault
 
 class VaultSectionGenerator(PromptSectionGenerator):
     """Lists the vault's orphan secrets as `{{secret:id}}` placeholders — id, description and kind, never a value.
-    An orphan is a secret no file under `memory/` mentions: the bank, a watch item or a procedure names the
+    An orphan is a secret no file under `memory/` mentions: the bank, a watch item, a procedure or a memo names the
     others with their context ("Marcus's Amex: {{secret:amex}}"), so repeating them here would only cost
     tokens. Re-renders as soon as `vault.version` moves or a memory file changes, so a TUI edit or a
     `remember` is live for the next request. Rendered at the end of the prompt's `## Vault` subsection,

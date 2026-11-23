@@ -7,7 +7,9 @@ import threading
 from datetime import datetime, timedelta, date
 from pathlib import Path
 
-from .. import Destinations, MemoryFile, Procedures, WatchList
+from .. import Destinations, MemoryFile, WatchList
+from ..Memos import Memos
+from ..Procedures import Procedures
 from ..llm import create_llm, parse_llm_config
 from .MemoryCondenser import MemoryCondenser
 from common.ConfigManager import ConfigManager
@@ -53,11 +55,16 @@ CONDENSE_MIN_DELIVERY = 0.10
 # How long a nightly run waits for its batch before it makes the ordinary full-price call
 # (`ai.memory_curator.batch_wait_minutes`): from the 04:00 run, done before the house wakes.
 BATCH_WAIT_MINUTES = 90
-# What the curator may do to the watch list and the procedures, in the command block after the
-# bank. It may add to a procedure but never replace or delete one: a procedure is rewritten
-# only by the assistant that has the working flow in front of it, or by the user.
+# What the curator may do to the watch list, the procedures and the memos, in the command block
+# after the bank. It may add to a procedure but never replace or delete one: a procedure is
+# rewritten only by the assistant that has the working flow in front of it, or by the user.
+# A memo it keeps current, so it may replace and delete one.
 # Not `checked_watch`: only a real check may stamp an item as looked at.
-CURATOR_COMMANDS = ("save_watch", "delete_watch", "save_procedure", "procedure_note")
+CURATOR_COMMANDS = ("save_watch", "delete_watch", "save_procedure", "procedure_note", "save_memo", "delete_memo")
+# The commands that move text out of the bank: one that is refused keeps its text there.
+MOVES = {"save_procedure": "Procedure", "save_memo": "Memo"}
+# Under this a block is not worth a memo: every memo costs its index line in every prompt.
+MEMO_MIN_WORDS = 100
 # The one message the curator may send: a tip for other households' Keeps, posted to the group
 # `ai.memory_curator.tips_destination` names (a post_message destination). Unset, the command
 # is skipped like any other that is not the curator's. The destination the model writes is
@@ -73,7 +80,7 @@ You are called periodically — every night once the system has been running for
 fresh install while the memory bank is still being built up — to analyze everything that happened in a period and
 update the long-term memory. This run covers {PERIOD}. Today is {TODAY}.
 
-The long-term memory has three parts:
+The long-term memory has four parts:
 - the **memory bank**: what is durably true of the family — people, preferences, relationships, contacts, standing
   rules — plus a short "Ongoing projects" section: where the family's own projects, to-dos and open decisions stand
   (a renovation, a purchase being considered). It is in front of the AI in every conversation. You rewrite it.
@@ -86,6 +93,9 @@ The long-term memory has three parts:
   tidy up what it missed.
 - the **procedures**: how something is done — login flows, checkouts, bookings, readings. The AI loads one when it
   needs it, so a procedure can be as detailed as it has to be. You only see their index.
+- the **memos**: what there is to know about one subject, for when that subject comes up — a trip's bookings, a list
+  of wines, test results, a directory of tradespeople. The AI sees their index and loads one when it needs it. You see
+  them in full and keep them current.
 
 {STT_NOTE}
 
@@ -101,13 +111,16 @@ The long-term memory has three parts:
 ## Procedures (index only):
 {PROCEDURES}
 
+## Memos (in full):
+{MEMOS}
+
 {IN_PROMPT}
 
 ## Your task:
 Update the memory bank based on new information. You may add, modify, remove and restructure information as needed.
 Keep the memory bank concise: a fact the period supersedes is replaced, not kept beside the new one, and what is outdated goes. Its size is not yours to manage - do not count words.
 
-Then bring the watch list in line with what the period shows, with commands (see the output format).
+Then bring the watch list and the memos in line with what the period shows, with commands (see the output format).
 
 Rules:
 - The bank does NOT include command names or action IDs (the AI knows what commands it can run)
@@ -120,7 +133,7 @@ Rules:
 - When a user corrects a misheard command (e.g. by saying "No, I said X" right after), the original action was based on a MISHEARD phrase. Record the STT correction, but do NOT add anything from the misinterpreted action as a genuine preference
 - Be very mindful of making assumptions - errors sneak easily into the memory bank and can propagate over time - so only enter things you are sure of in the memory
 - Remove a fact only when it of extremely low value or recent interactions give positive evidence against it: contradicted, superseded, explicitly retracted, or expired. Not being mentioned in this period's logs is not necessarily staleness
-- This memory bank is the system's ONLY long-term storage — anything dropped is permanently forgotten. Be mindful of deleting valuable information
+- The bank and the memos are the system's ONLY long-term storage of facts — anything dropped from both is permanently forgotten. Be mindful of deleting valuable information
 - The bank deliberately holds operational data the system acts with: credentials, payment details. Preserve these verbatim — never redact, mask or drop them
 - Do not assume things, be very mindful of what you put into the memory. Only facts you are sure of.
 - The bank holds no watch items: something the AI must act on later (see the watch list's definition above) that is
@@ -135,6 +148,14 @@ Rules:
   holds one that no procedure in the index covers, save it with `save_procedure(...)`, complete and verbatim (every
   step, URL, endpoint, code snippet, warning), and leave at most a one-line pointer in the bank. You cannot replace
   an existing procedure; add what the period taught with `procedure_note(...)`
+- The bank holds no lookup material: facts needed only when their subject comes up belong in a memo. Move such a
+  block of about {MEMO_MIN_WORDS} words or more with `save_memo(...)`, every detail kept, and leave at most a one-line
+  pointer in the bank. What must act unasked stays in the bank even when the facts around it move: who is who, a rule,
+  a sensitivity, a secrecy clause, a preference that shapes an answer nobody asked about
+- Memo upkeep: write what the period adds or changes into the memo it belongs to (`save_memo` under its existing name
+  — the text REPLACES the old one, so carry over every detail that still holds); delete a memo whose subject is over
+  (`delete_memo`), first moving what is durably true of it to the bank. Leave a memo alone when the period says
+  nothing about it
 - Watch list upkeep: delete an item the period shows is done, delivered, paid, cancelled or past
   (`delete_watch`); rewrite the note of one whose state changed (`save_watch` under its existing name — the note
   REPLACES the old one, so carry over every detail that still holds). Leave an item alone when the period says nothing about it, unless it
@@ -156,6 +177,9 @@ The commands:
 - `save_procedure("name", "when to load it", \"\"\"the full text\"\"\")` — a NEW procedure; the text in a
   triple-quoted block. Keep `when` under  {PROCEDURE_WHEN_CHARS} characters
 - `procedure_note("name", "the lesson")` — append a lesson to an existing procedure
+- `save_memo("name", "when to load it", \"\"\"the full text\"\"\")` — a new memo, or the whole new text of the memo
+  with that name; `when` under {PROCEDURE_WHEN_CHARS} characters, the text under {MEMO_MAX_CHARS}
+- `delete_memo("name")` — the memo's subject is over
 {TIPS}"""
 
 # Appended to the prompt only while `ai.memory_curator.tips_destination` is set.
@@ -267,8 +291,9 @@ headlines
 
 class LongTermMemoryCurator:
     """Rewrites the long-term memory bank from the interaction history of a period — nightly
-    once the system is settled, more often while it is new — and tidies the watch list and
-    adds to the procedures through the command block that follows the bank in its reply."""
+    once the system is settled, more often while it is new — and tidies the watch list, adds to
+    the procedures and keeps the memos through the command block that follows the bank in its
+    reply. The memos are where the bank gets shorter: lookup material moves out of it into them."""
 
     _curation_lock = threading.Lock()
 
@@ -279,7 +304,8 @@ class LongTermMemoryCurator:
                  test_mode: bool = False,
                  watchlist_dir: Path = None,
                  procedures_dir: Path = None,
-                 batch: bool = False):
+                 batch: bool = False,
+                 memos_dir: Path = None):
         """
         Initialize the memory curator.
 
@@ -290,6 +316,7 @@ class LongTermMemoryCurator:
             test_mode: If True, skip database initialization (use curate_memory_with_data only)
             watchlist_dir: The watch list the curator reads and tidies (defaults to memory/watchlist)
             procedures_dir: The procedures it indexes and adds to (defaults to memory/procedures)
+            memos_dir: The memos it reads in full and keeps current (defaults to memory/memos)
             batch: Nobody waits for this curation (the nightly run), so it may take the half-price
                 batch API and an answer that is up to `ai.memory_curator.batch_wait_minutes` away;
                 the sections of the condensing after it go the same way, a batch each
@@ -297,6 +324,7 @@ class LongTermMemoryCurator:
         self.batch = batch
         self.watchlist_dir = watchlist_dir
         self.procedures_dir = procedures_dir
+        self.memos_dir = memos_dir
         if test_mode:
             self.floxy_db = None
         else:
@@ -478,9 +506,9 @@ class LongTermMemoryCurator:
                        record: bool = True) -> dict:
         """One period, lock already held: curate, run the commands, save the bank and its debug
         log and, when `record`, leave the completion in the history. The commands run before
-        the bank is written: the bank keeps only a pointer to a how-to the commands move into
-        a procedure, so a refused `save_procedure` must be known before the bank is replaced —
-        its text is then kept in the bank. A period with no interactions changes nothing."""
+        the bank is written: the bank keeps only a pointer to what the commands move into a
+        procedure or a memo, so a refused `save_procedure` or `save_memo` must be known before
+        the bank is replaced — its text is then kept in the bank. A period with no interactions changes nothing."""
         new_memory, metadata = curator.curate_memory(period_start, period_end)
         if metadata.get('empty'):
             info("Rem: nothing happened in this period — memory bank unchanged.")
@@ -724,6 +752,9 @@ class LongTermMemoryCurator:
         info(f"Rem: current memory bank is {word_count} words (limit {MEMORY_WORD_LIMIT})")
         prompt = PROMPT.replace("{WATCHLIST}", WatchList.render(self.watchlist_dir)) \
             .replace("{PROCEDURES}", Procedures.render_index(self.procedures_dir)) \
+            .replace("{MEMOS}", self._memos_in_full()) \
+            .replace("{MEMO_MIN_WORDS}", str(MEMO_MIN_WORDS)) \
+            .replace("{MEMO_MAX_CHARS}", str(Memos.MAX_FILE_CHARS)) \
             .replace("{TODAY}", f"{datetime.now():%Y-%m-%d}") \
             .replace("{INTERACTION_HISTORY}", interaction_history) \
             .replace("{CALENDAR}", calendar_data) \
@@ -1042,7 +1073,8 @@ class LongTermMemoryCurator:
                                   "extracting the watch items and procedures")
         commands = self._split_commands(reply)[1]
         # A refused procedure stays in the old bank's text, which the rewrite below keeps verbatim
-        results, _ = self.run_commands(commands, watchlist_dir, procedures_dir, log_dir=target / "replaced")
+        results, _ = self.run_commands(commands, watchlist_dir, procedures_dir, log_dir=target / "replaced",
+                                       memos_dir=target / "memos")
         info(f"Memory split: {len(WatchList.items(watchlist_dir))} watch item(s), "
              f"{len(Procedures.names(procedures_dir))} procedure(s); rewriting the bank without them...")
         procedures = "\n\n".join(Procedures.load(name, procedures_dir) for name in Procedures.names(procedures_dir))
@@ -1082,7 +1114,7 @@ class LongTermMemoryCurator:
         MemoryFile.write(bank_file.read_text(encoding="utf-8"), self.memory_file_path)
         copied, kept = {}, {}
         stores = (("watchlist", self.watchlist_dir or WatchList.WATCHLIST_DIR),
-                  ("procedures", self.procedures_dir or Procedures.PROCEDURES_DIR))
+                  ("procedures", self.procedures_dir or Procedures.DIR))
         for store, directory in stores:
             copied[store], kept[store] = [], []
             for file in sorted((source / store).glob("*.md")):
@@ -1128,6 +1160,13 @@ class LongTermMemoryCurator:
         if toolkits:
             lines.append("- toolkits it loads when needed, each with its commands and live data: " + ", ".join(toolkits))
         return "\n".join(lines)
+
+    def _memos_in_full(self) -> str:
+        """Every memo as the AI would load it: the curator cannot keep one current unread."""
+        names = Memos.names(self.memos_dir)
+        text = "\n\n".join(Memos.load(name, self.memos_dir) for name in names)
+        info(f"Rem: the prompt carries {len(names)} memo(s) in full, {self.word_count(text)} words")
+        return text or Memos.EMPTY
 
     def _tips_prompt(self) -> str:
         destination = self.tips_destination()
@@ -1233,19 +1272,20 @@ class LongTermMemoryCurator:
         return args
 
     def run_commands(self, block: str, watchlist_dir: Path = None, procedures_dir: Path = None,
-                     log_dir: Path = None) -> tuple[list[str], list[str]]:
-        """Run the curator's command block against the watch list and the procedures, one
+                     log_dir: Path = None, memos_dir: Path = None) -> tuple[list[str], list[str]]:
+        """Run the curator's command block against the watch list, the procedures and the memos, one
         command after the other; a line that is not one of CURATOR_COMMANDS is skipped. A
         `save_watch` here is a rewrite, not a look, so it leaves the item's `checked` stamp alone.
         Returns one line per command for the debug log (the command, and why it failed if it
-        did), and the bank sections that keep the text of every refused `save_procedure`: the
-        bank is rewritten to hold a one-line pointer in its place, so the how-to would be lost
-        otherwise. The directories default to the curator's own; `propose_split` points them at
+        did), and the bank sections that keep the text of every refused `save_procedure` and
+        `save_memo`: the bank is rewritten to hold a one-line pointer in its place, so the text
+        would be lost otherwise. The directories default to the curator's own; `propose_split` points them at
         its proposal."""
         watchlist_dir = watchlist_dir or self.watchlist_dir
         procedures_dir = procedures_dir or self.procedures_dir
+        memos_dir = memos_dir or self.memos_dir
         if not block.strip():
-            trace("Rem: no watch list or procedure commands this run")
+            trace("Rem: no watch list, procedure or memo commands this run")
             return [], []
         results, unsaved = [], []
         skipped, chunks = self._command_chunks(block)
@@ -1263,20 +1303,22 @@ class LongTermMemoryCurator:
                 failure = self._post_tip(params)
             elif command in WatchList.COMMANDS:
                 failure = WatchList.run(command, params, watchlist_dir, log_dir, looked=False)
+            elif command in Memos.COMMANDS:
+                failure = Memos.run(command, params, memos_dir, log_dir)
             else:
                 failure = Procedures.run(command, params, procedures_dir, log_dir, allow_replace=False)
             if failure:
                 error(f"Rem: {shown} — {failure}")
                 results.append(f"FAILED {shown} — {failure}")
-                if command == "save_procedure" and len(params) > 2 and "".join(params[2:]).strip():
-                    unsaved.append(f"## Procedure not saved: {params[0]}\n"
+                if command in MOVES and len(params) > 2 and "".join(params[2:]).strip():
+                    unsaved.append(f"## {MOVES[command]} not saved: {params[0]}\n"
                                    f"({failure}; move it with the commands)\nWhen: {params[1]}\n\n"
                                    + ", ".join(params[2:]).strip())
                     info(f"Rem: the text of '{params[0]}' stays in the bank until it is saved")
             else:
                 info(f"Rem: {shown}")
                 results.append(shown)
-        info(f"Rem: {len(results)} watch list / procedure command(s) handled, "
+        info(f"Rem: {len(results)} watch list / procedure / memo command(s) handled, "
              f"{sum(r.startswith('FAILED') for r in results)} failed")
         return results, unsaved
 
