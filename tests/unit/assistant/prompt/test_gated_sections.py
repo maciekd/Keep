@@ -195,11 +195,97 @@ def test_a_change_to_a_block_section_reaches_the_llm_as_a_delta_note(manager):
     assert "Kettle: 40°C, heating" in manager.prompt, "the prompt bytes stay as they were"
 
 
+@pytest.fixture
+def indexed(manager):
+    """The manager with the toolkit index in its prompt, which a request has sent."""
+    with open("res/prompt.md", "a") as template:
+        template.write("The toolkits:\n{TOOLKITS}\n")
+    manager._assemble_prompt()
+    manager.get_messages()
+    return manager
+
+
+def _index_notes(manager):
+    return [e["content"] for e in manager.message_history.transient_entries
+            if e.get("section") == PromptManager.TOOLKIT_INDEX]
+
+
 @pytest.mark.unit
-def test_a_notify_that_changes_nothing_still_rebuilds_for_the_toolkit_index(manager):
-    before = manager._last_assembly_time
-    manager.monitor.notify()
-    assert manager._last_assembly_time >= before and "kettle" not in manager.sections
+def test_a_toolkit_going_off_after_a_request_is_a_note_and_the_prompt_keeps_its_bytes(indexed):
+    from assistant.integration.CameraProvider import CameraProvider
+    sent = indexed.prompt
+    assert "- `cameras`" in sent
+    indexed.monitor.contracts[CameraProvider] = False
+    indexed.monitor.notify()
+    assert indexed.prompt == sent
+    notes = _index_notes(indexed)
+    assert len(notes) == 1 and "-- `cameras`" in notes[0]
+    assert any("-- `cameras`" in m["content"] for m in indexed.get_messages()[1:])
+
+
+@pytest.mark.unit
+def test_a_toolkit_back_before_its_note_was_sent_leaves_no_note(indexed):
+    from assistant.integration.CameraProvider import CameraProvider
+    indexed.monitor.contracts[CameraProvider] = False
+    indexed.monitor.notify()
+    indexed.monitor.contracts[CameraProvider] = True
+    indexed.monitor.notify()
+    assert _index_notes(indexed) == []
+
+
+@pytest.mark.unit
+def test_a_notify_that_moves_nothing_leaves_a_sent_prompt_alone(indexed):
+    assembled = []
+    indexed.on_prompt_assembled(assembled.append)
+    indexed.monitor.notify()
+    assert assembled == [] and _index_notes(indexed) == []
+
+
+@pytest.mark.unit
+def test_a_prompt_no_request_has_sent_is_rebuilt_with_the_new_index(indexed):
+    from assistant.integration.CameraProvider import CameraProvider
+    indexed._assemble_prompt()
+    indexed.monitor.contracts[CameraProvider] = False
+    indexed.monitor.notify()
+    assert "- `cameras`" not in indexed.prompt and _index_notes(indexed) == []
+
+
+def _notes(manager, key):
+    return [e["content"] for e in manager.message_history.transient_entries if e.get("section") == key]
+
+
+@pytest.mark.unit
+def test_a_section_starting_after_a_request_arrives_as_a_note_and_the_prompt_keeps_its_bytes(indexed):
+    sent = indexed.prompt
+    indexed.monitor.folders["kettle"] = True
+    indexed.monitor.notify()
+    assert "kettle" in indexed.sections and indexed.prompt == sent
+    notes = _notes(indexed, "kettle")
+    assert len(notes) == 1 and "+Kettle: 40°C, heating" in notes[0]
+    indexed._assemble_prompt()
+    assert "# THE KETTLE\nWhat the kettle is up to:\nKettle: 40°C, heating\n" in indexed.prompt
+
+
+@pytest.mark.unit
+def test_a_section_starting_with_more_than_a_note_holds_rebuilds_the_prompt(indexed):
+    KettleSectionGenerator.data = "\n".join(f"Kettle log {n}: " + "x" * 40 for n in range(40))
+    indexed.monitor.folders["kettle"] = True
+    indexed.monitor.notify()
+    assert "# THE KETTLE" in indexed.prompt and _notes(indexed, "kettle") == []
+
+
+@pytest.mark.unit
+def test_a_section_leaving_a_sent_prompt_rebuilds_it_and_takes_the_index_along(indexed):
+    from assistant.integration.CameraProvider import CameraProvider
+    indexed.monitor.folders["kettle"] = True
+    indexed.monitor.notify()
+    indexed._assemble_prompt()
+    indexed.get_messages()
+    indexed.monitor.folders["kettle"] = False
+    indexed.monitor.contracts[CameraProvider] = False
+    indexed.monitor.notify()
+    assert "# THE KETTLE" not in indexed.prompt and "- `cameras`" not in indexed.prompt
+    assert _index_notes(indexed) == []
 
 
 class BrokenSectionGenerator(KettleSectionGenerator):

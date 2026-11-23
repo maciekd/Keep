@@ -65,6 +65,9 @@ class PromptManager:
     # notes accumulate until the LLM loads the toolkit again; past this many chars of notes
     # one pointer note replaces them and tracking stops until the next load.
     _CARRIED_NOTES_BUDGET = 3000
+    # The toolkit index is tracked beside the sections under this key: its baseline is the
+    # index in the prompt, its notes are restated after a trim like a section's.
+    TOOLKIT_INDEX = "toolkits"
     # {PHOTO_COUNT} refresh cadence. The live count creeps up as photos sync, and
     # re-reading it on every rebuild changes the prompt bytes for no user-visible
     # benefit. Fetch once at server start, then at most daily; rendered with a ~
@@ -83,6 +86,9 @@ class PromptManager:
         self.static_prompt = static_prompt
         self._prompt_lock = threading.Lock()
         self._last_assembly_time = 0
+        # Whether a request has gone out with the prompt as last assembled: until then a
+        # rebuild costs no cached byte (a boot assembles several times before its first turn).
+        self._prompt_sent = False
         self._on_prompt_assembled_callbacks = []
         # The pre-heat gate: none goes out while a turn is in flight or a boot waits for its
         # opening turn (hold_pre_heats); one asked for meanwhile is owed and goes out, for
@@ -258,8 +264,10 @@ class PromptManager:
         rebuild the prompt — the toolkit index follows the same verdict, so it is rebuilt even
         when no section changed. The generators are stopped outside the prompt lock: a stop
         joins the generator's thread, which may be waiting for that lock in on_section_updated."""
+        from assistant.commands import Toolkits
         monitor = self._monitor()
-        started, stopped = [], []
+        started, stopped, noted = [], [], []
+        prompt_moved = False
         with self._prompt_lock:
             for key, cls in self._gated.items():
                 running = key in self.sections
@@ -272,8 +280,18 @@ class PromptManager:
                               f"{type(e).__name__}: {e}")
                         continue
                     started.append(key)
+                    if key in Toolkits.CARRIED_SECTIONS:
+                        continue
+                    if self._prompt_sent:
+                        # A sent prompt keeps its bytes: the section starts from nothing and
+                        # its content follows as a delta note (on_section_updated).
+                        self._section_baselines[key] = self._section_current[key] = ""
+                        noted.append(self.sections[key].section_name)
+                    else:
+                        prompt_moved = True
                 elif running and not wanted:
                     stopped.append(self.sections.pop(key))
+                    prompt_moved |= key not in Toolkits.CARRIED_SECTIONS
             if started or stopped:
                 self.sections = self._ordered(self.sections)
             starting = [self.sections[key] for key in started]
@@ -284,7 +302,41 @@ class PromptManager:
         info(f"Integrations changed — sections started: {', '.join(started) or 'none'}, stopped: "
              f"{', '.join(s.section_name for s in stopped) or 'none'}; "
              f"waiting: {', '.join(k for k in self._gated if k not in self.sections) or 'none'}")
-        self._assemble_prompt("integrations changed")
+        if prompt_moved or not self._note_toolkit_index():
+            self._assemble_prompt("integrations changed")
+            return
+        for name in noted:
+            self.on_section_updated(name)
+
+    def _note_toolkit_index(self) -> bool:
+        """The toolkit index after a change of the integrations that took no section out of
+        the prompt: a prompt a request has sent keeps its bytes, and the lines that came or went
+        reach the LLM as a note. A rebuild rewrites the prompt from the index on — one new
+        `cameras` line had a local server prefill 16.8K tokens again, 3.5 minutes, on
+        2026-11-23. False when the prompt is to be rebuilt instead."""
+        from assistant.commands import Toolkits
+        key = self.TOOLKIT_INDEX
+        with self._prompt_lock:
+            told = self._section_current.get(key)
+            if told is None or not self._prompt_sent:
+                trace("Toolkit index: no request has sent this prompt yet — a rebuild costs nothing")
+                return False
+            index = Toolkits.render_index(self._monitor())
+            withdrawn = self._withdraw_open_note_locked(key, key)
+            base = withdrawn[0] if withdrawn else told
+            diff = self._compute_section_delta(base, index)
+            self._section_current[key] = index
+            if not diff and not withdrawn:
+                info("Integrations changed — the toolkit index stands, the prompt keeps its bytes")
+                return True
+            if diff:
+                info(f"Integrations changed — the toolkit index moved, sent as a note ({len(diff)} chars)")
+                self._emit_transient_section_update_locked(key, key, diff, base)
+            else:
+                info("Integrations changed — the toolkit index is back where its unsent note started")
+            messages = self._resolved_messages_locked()
+        self._fire_prompt_callbacks(messages)
+        return True
 
     def _compute_section_positions(self) -> dict[str, float]:
         """Map of section_key -> where the section stands in the prompt template: its own
@@ -877,6 +929,9 @@ class PromptManager:
             from assistant.commands import Toolkits
             new_baselines = {key: gen.get_content() for key, gen in self.sections.items()
                              if key not in Toolkits.CARRIED_SECTIONS}
+            # Rendered once and placed by _substitute like a section's content, so the
+            # baseline is the index the prompt holds.
+            new_baselines[self.TOOLKIT_INDEX] = Toolkits.render_index(self._monitor())
             self.prompt = self._substitute(prompt, new_baselines)
             self._messages = [{"role": "system", "content": self.prompt}]
 
@@ -898,6 +953,7 @@ class PromptManager:
 
             # Update last assembly time
             self._last_assembly_time = time.time()
+            self._prompt_sent = False
             messages_copy = self._resolved_messages_locked()
 
         self._fire_prompt_callbacks(messages_copy)
@@ -1076,6 +1132,7 @@ class PromptManager:
             # but the turns are rendered identically (MessageHistory.render_messages),
             # so the LLM receives the same message structure either way.
             messages = self._resolved_messages_locked(window)
+            self._prompt_sent = True
             if self.test_suite:
                 messages.extend(self._test_history_messages)
                 messages.extend(self._test_toolkit_messages)
