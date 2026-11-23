@@ -95,6 +95,12 @@ class TestRender:
         assert "climate off" in off and "climate on" not in off
         assert "climate" not in section._render(CAR, VehicleState(battery_percent=80, cabin_temp_c=5))
 
+    def test_a_car_that_reports_the_climate_and_no_cabin_temperature_still_says_it(self, section):
+        # what Hyundai and Kia give: whether the climate runs, never how warm the cabin is
+        line = section._render(CAR, VehicleState(battery_percent=80, range_km=300, climate_on=True))
+        assert "Cabin" not in line and "°C" not in line
+        assert line.index("climate on") < line.index("battery")
+
     def test_a_driving_car_shows_its_exact_range(self, section, no_lookups):
         line = section._render(CAR, VehicleState(latitude=AWAY[0], longitude=AWAY[1], speed_kmh=50, in_gear=True, range_km=312.4))
         assert "312 km range" in line
@@ -129,6 +135,12 @@ class TestRoundedAndHeld:
         shown = [self._parked(section, cabin_temp_c=t).split("Cabin ")[1].split("°")[0]
                  for t in (25.4, 25.9, 26.3, 26.4, 24.5, 26.5, 20.0)]
         assert shown == ["25", "25", "26", "26", "24", "26", "20"]
+
+    def test_the_climate_stopping_is_shown_at_once_while_the_cabin_reading_holds(self, section):
+        heated = self._parked(section, battery_percent=80, cabin_temp_c=21.0, climate_on=True)
+        stopped = self._parked(section, battery_percent=80, cabin_temp_c=20.6, climate_on=False)
+
+        assert heated.replace("climate on", "climate off") == stopped
 
     def test_a_parked_charge_is_shown_in_five_percent_steps_and_held(self, section):
         shown = [self._parked(section, battery_percent=p).split("(")[2].split("%")[0]

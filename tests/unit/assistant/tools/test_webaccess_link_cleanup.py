@@ -61,6 +61,11 @@ class TestCleanLink:
         url = "https://www.bing.com/ck/a?!&&p=5f1c9e0d&ptn=3&ver=2&hsh=4&fclid=1a2b&u=a1aHR0cHM6Ly9zaG9wLmV4YW1wbGU&ntb=1"
         assert WebAccess.clean_link(url) == url
 
+    def test_stray_ampersands_do_not_shield_a_tracking_parameter(self):
+        assert WebAccess.clean_link("https://example.com/p?a=1&&utm_source=mail&") == "https://example.com/p?a=1"
+        untracked = "https://example.com/p?&a=1&&b=2&"
+        assert WebAccess.clean_link(untracked) == untracked
+
     def test_a_blank_value_survives(self):
         assert WebAccess.clean_link("https://example.com/p?flag=&utm_x=1") == "https://example.com/p?flag="
 
