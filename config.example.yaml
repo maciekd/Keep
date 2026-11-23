@@ -588,7 +588,7 @@ local_backend: none
 #                                  # medium, high, xhigh or max. The autonomous check gets one step more (medium
 #                                  # at least); the memory curator always gets high.
 #  log_path: ~/Documents/ds4/ds4-server.log   # The file the server's output is redirected to: the chat's
-#                                  # "Prefilling…" bar reads the prefill progress from it. Optional.
+#                                  # "Reading…" bar reads the prefill progress from it. Optional.
 #  ssh_host: user@192.168.1.50     # Where to read that log over ssh when base_url is another machine;
 #                                  # defaults to the base_url host. Optional.
 #  background_idle_seconds: 20     # Photo indexing on ds4 runs only after this much quiet since the last
@@ -600,7 +600,7 @@ local_backend: none
 
 # Any OpenAI-compatible local server used by every OpenAICompatibleLLM tier: oMLX (github.com/jundot/omlx)
 # or llama.cpp's server, say, serving one model on this machine or another on the LAN. The
-# chat's "Prefilling…" bar, the rate beside it and the cache report come from the progress the
+# chat's "Reading…" bar, the rate beside it and the cache report come from the progress the
 # server streams while it prefills (llama.cpp's `return_progress`, which oMLX speaks too), so
 # nothing but the address is needed. Optional — defaults to localhost:8000 and the first model
 # the server lists.

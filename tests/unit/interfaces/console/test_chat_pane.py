@@ -496,12 +496,12 @@ class TestTranscript:
         pane.add_user("hi")
         pane.set_working(Progress(phase=PHASE_PREFILL, prefill=50.0, elapsed=1.0))
         line = draw(pane, screen)[2]
-        assert line.startswith(BULLET + "Prefilling… ")
+        assert line.startswith(BULLET + "Reading… ")
         width = ChatPane.PREFILL_BAR_WIDTH
-        bar = line[len(BULLET + "Prefilling… "):][:width]
+        bar = line[len(BULLET + "Reading… "):][:width]
         assert bar.count("█") == width // 2 and bar.count("░") == width - width // 2
         assert line.endswith(" (50%)")
-        bar_x = len(BULLET + "Prefilling… ")
+        bar_x = len(BULLET + "Reading… ")
         assert screen.next_frame[2][bar_x].style.fg == ChatPane.COLOR_WORKING
         assert screen.next_frame[2][bar_x + width - 1].style.fg == ChatPane.COLOR_DIM
         pane.set_working(Progress(phase=PHASE_PREFILL, prefill=99.0, elapsed=12.0))

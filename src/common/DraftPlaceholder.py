@@ -15,9 +15,9 @@ SPINNER_FRAMES_BRAILLE = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 SPINNER_FRAME_CHARS = frozenset(SPINNER_FRAMES_C64 + SPINNER_FRAMES_BRAILLE)
 
 # The line a draft puts over its frame while it waits for something in particular; a detail
-# in parentheses may follow ("Thinking (↓ 1.2k tokens · 45 t/s)…", "Prefilling (▓▓▓▓░░░░░░)…").
+# in parentheses may follow ("Thinking (↓ 1.2k tokens · 45 t/s)…", "Reading (▓▓▓▓░░░░░░)…").
 THINKING_LABEL = "Thinking"
-PREFILL_LABEL = "Prefilling"
+PREFILL_LABEL = "Reading"
 COMMAND_LABEL = "Running command"
 COMMANDS_LABEL = "Running commands"
 QUEUED_LABEL = "Waiting in queue"

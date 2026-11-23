@@ -1321,8 +1321,8 @@ class TestTelegramDraft:
         t, d = self._draft()
         d.show_progress(Progress(PHASE_PREFILL, prefill=42.6))
         text = t.texts[0]
-        assert text.startswith("Prefilling (<code>") and text.endswith("</code>)…")
-        bar = text[len("Prefilling (<code>"):-len("</code>)…")]
+        assert text.startswith("Reading (<code>") and text.endswith("</code>)…")
+        bar = text[len("Reading (<code>"):-len("</code>)…")]
         assert len(bar) == TelegramDraft.PREFILL_BAR_WIDTH
         assert bar == "▓▓▓▓░░░░░░", "42.6% of 10 cells rounds to four whole cells, in the seamless shade glyphs"
         assert "%" not in text

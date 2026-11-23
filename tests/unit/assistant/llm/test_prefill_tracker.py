@@ -1,4 +1,4 @@
-"""PrefillTracker — the estimate behind the "Prefilling…" bar: what the log says, how far the
+"""PrefillTracker — the estimate behind the "Reading…" bar: what the log says, how far the
 clock says, and which request's bar it is; and LogSource, the file here or over ssh."""
 import re
 import time

@@ -20,7 +20,7 @@ tier's `command_format:`, Keep's own by default) and the command processor reads
 content. A server that hands back parsed `tool_calls` all the same gets them written back as
 call text in the active format, at the end of the reply.
 
-The "Prefilling…" bar: every request goes out with `return_progress: true` (llama.cpp's
+The "Reading…" bar: every request goes out with `return_progress: true` (llama.cpp's
 extension, oMLX's too; `openai_compatible.return_progress: false` for a server that rejects
 the key) and the server streams `prompt_progress` chunks while it prefills — the prompt's
 total, cached and processed tokens and the elapsed time — which the class's one

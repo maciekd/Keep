@@ -90,7 +90,7 @@ LLMPreempted and resends when the slot is idle again. The eviction is noticed wi
 while the image reply decodes; during its prefill the server only writes a keepalive every
 5 s, so a kill that lands then takes up to that long.
 
-The "Prefilling…" bar: ds4 says nothing on the wire until the first token (its SSE keepalive is a
+The "Reading…" bar: ds4 says nothing on the wire until the first token (its SSE keepalive is a
 bare comment, and it knows no `return_progress`), so the prefill progress is read from the
 server's log by the class's one `PrefillTracker`, as Ollama's is — `ds4.log_path` (default
 `~/Documents/ds4/ds4-server.log`), over ssh to `ds4.ssh_host` (default: the base_url host) when

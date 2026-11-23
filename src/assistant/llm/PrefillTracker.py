@@ -1,4 +1,4 @@
-"""Tracks how far a local model has got with a prompt's prefill, for the "Prefilling…" bar of the chat UIs.
+"""Tracks how far a local model has got with a prompt's prefill, for the "Reading…" bar of the chat UIs.
 
 One `PrefillTracker` per backend class holds the state of the requests in flight; the backend
 brackets each request with `begin` / `first_token` / `end` and feeds the tracker the prefill

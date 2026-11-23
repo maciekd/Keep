@@ -12,11 +12,11 @@ class TestIsDraftPlaceholder:
         "<code>█</code>", "<code>░</code>", "`█`", "`░`", "█", " ░ \n",
         "Thinking…\n <code>█</code>", "Thinking…\n `░`",
         "Thinking (↓ 1.2k tokens · 45 t/s)…\n `█`",
-        "Prefilling (43%)…\n <code>█</code>", "Prefilling (43% · 1.5k t/s)…\n `░`",
+        "Reading (43%)…\n <code>█</code>", "Reading (43% · 1.5k t/s)…\n `░`",
         "Running command…\n `█`", "Running commands…\n <code>░</code>",
         "Waiting in queue…\n `█`",
         "`⠋`", "Thinking…\n ⠹",
-        "Thinking (↓ 1.2k tokens · 45 t/s)…", "Prefilling (43%)…", "Prefilling (43% · 1.5k t/s)…", "Thinking…",
+        "Thinking (↓ 1.2k tokens · 45 t/s)…", "Reading (43%)…", "Reading (43% · 1.5k t/s)…", "Thinking…",
     ])
     def test_a_frame_with_or_without_its_phase_line_or_a_phase_line_alone_is_a_placeholder(self, text):
         assert is_draft_placeholder(text) is True
@@ -42,9 +42,9 @@ class TestPrefillBarLineIsAPlaceholder:
     a message."""
 
     @pytest.mark.parametrize("text", [
-        "Prefilling (<code>▓▓▓▓░░░░░░</code>)…", "Prefilling (`▓▓▓▓░░░░░░`)…",
-        "Prefilling (<code>▓▓▓▓░░░░░░</code> · 1.5k t/s)…", "Prefilling (`▓▓▓▓▓▓▓▓▓▓` · 1.5k t/s)…",
-        "Prefilling (<code>░░░░░░░░░░</code>)…\n <code>█</code>",
+        "Reading (<code>▓▓▓▓░░░░░░</code>)…", "Reading (`▓▓▓▓░░░░░░`)…",
+        "Reading (<code>▓▓▓▓░░░░░░</code> · 1.5k t/s)…", "Reading (`▓▓▓▓▓▓▓▓▓▓` · 1.5k t/s)…",
+        "Reading (<code>░░░░░░░░░░</code>)…\n <code>█</code>",
     ])
     def test_the_bar_line_alone_or_over_a_frame_is_a_placeholder(self, text):
         assert is_draft_placeholder(text) is True

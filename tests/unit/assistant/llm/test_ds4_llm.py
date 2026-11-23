@@ -390,7 +390,7 @@ class TestStopReason:
 
 
 class TestPrefillBar:
-    """The "Prefilling…" bar: ds4's log lines, the tracker bracketed around a request, and the
+    """The "Reading…" bar: ds4's log lines, the tracker bracketed around a request, and the
     rate each reply's usage teaches."""
 
     LOG = ('1021 11:39:28 ds4-server: chat ctx=24576..26339:1763 TOOLS prompt start\n'

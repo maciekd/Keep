@@ -780,7 +780,7 @@ class ChatPane:
         return BULLET, [spans]
 
     def _working_spans(self) -> List[StyledSpan]:
-        """What is being waited for — the LLM ("Thinking…", or "Prefilling…" with a bar while
+        """What is being waited for — the LLM ("Thinking…", or "Reading…" with a bar while
         a local model is still on the prompt) or a command ("Running command…") — in the
         working colour, the detail in parentheses dim."""
         p = self._working
@@ -797,7 +797,7 @@ class ChatPane:
         if p.phase == PHASE_COMMANDS:
             label = "Running commands…" if p.commands > 1 else "Running command…"
         elif p.phase == PHASE_PREFILL:
-            label = "Prefilling…"
+            label = "Reading…"
         elif p.phase == PHASE_QUEUED:
             label = "Waiting in queue…"
         else:
