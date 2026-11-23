@@ -7,10 +7,10 @@ The default install uses the cloud (Anthropic), but one line of `config.yaml` sw
 It's recommended to start with default settings (Anthropic) and have Keep help you configure local AI. The first thing you'll do with Keep is change to local AI, so nothing sensitive will leave your machine. 
 
 ## Supported setups
-| Model | Server | Local Backend | Min RAM |
-|---|---|---------------|---------|
-| Qwen 3.8 27B, with vision | [oMLX](https://github.com/jundot/omlx) with [Splash](https://github.com/incoai/splash) (on M3+) | `openai`      | 32 GB   |
-| DeepSeek V4.1 Flash 1017, with vision | [DwarfStar](https://github.com/antirez/ds4), [our fork](#dwarfstar-our-fork) | `ds4`         | 128 GB  |
+| Model | Server                                                                                          | Local Backend | Min RAM |
+|---|-------------------------------------------------------------------------------------------------|---------------|---------|
+| Qwen 3.8 27B, with vision | [oMLX](https://github.com/jundot/omlx) with [Splash](https://github.com/incoai/splash) (if M3+) | `openai`      | 32 GB   |
+| DeepSeek V4.1 Flash 1017, with vision | [DwarfStar](https://github.com/antirez/ds4), [our fork](#dwarfstar-our-fork)                    | `ds4`         | 128 GB  |
 
 These two are tested and supported.
 
