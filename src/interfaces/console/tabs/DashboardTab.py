@@ -484,6 +484,7 @@ class DashboardTab(TabView):
                               "CPU Usage", f"{self.console.system_cpu_percent:.0f}%", **usage)
 
     LTM_MIN_MAX_KB = 10.0
+    LTM_CEIL_STEPS = (1, 2, 2.5, 5, 10)   # 2.5 too: its axis is labelled at the half, which stays readable
 
     # The parts of the memory (`MemorySizes.PARTS`) as the chart stacks them, the bank at the base.
     LTM_LAYERS = ((MemorySizes.BANK, "bank", Theme.COLOR_PINK), ("procedures", "procedures", Theme.COLOR_PURPLE),
@@ -498,7 +499,7 @@ class DashboardTab(TabView):
         latest_str = (f"{readings[-1].get(MemorySizes.BANK, 0.0):.0f} KB · {self.memory_word_count:,} words"
                       if readings else "")
         peak = max(totals) if totals else 0.0
-        max_kb = self._nice_ceil(peak) if peak > self.LTM_MIN_MAX_KB else self.LTM_MIN_MAX_KB
+        max_kb = self._nice_ceil(peak, self.LTM_CEIL_STEPS) if peak > self.LTM_MIN_MAX_KB else self.LTM_MIN_MAX_KB
         layers = [(name, [sizes.get(part) for sizes in readings], color) for part, name, color in self.LTM_LAYERS]
 
         self._draw_area_chart(screen, x, y, width, chart_h, totals, Theme.COLOR_PINK,
@@ -508,7 +509,7 @@ class DashboardTab(TabView):
 
     @staticmethod
     def _format_kb(v: float) -> str:
-        return f"{v:.0f}KB"
+        return f"{v:g}KB"
 
     # Apple Silicon junction temps: throttling starts ~100-105°C, so sustained
     # readings near 95°C mean the warm room is eating all thermal headroom.
@@ -1342,17 +1343,9 @@ class DashboardTab(TabView):
         return Theme.mix(Theme.mix(Theme.COLOR_PANEL_BG, Theme.deep(fg), 0.8), fg, t)
 
     @staticmethod
-    def _nice_ceil(value: float) -> float:
+    def _nice_ceil(value: float, steps: Sequence[float] = (1, 2, 5, 10)) -> float:
         if value <= 0:
             return 1.0
         magnitude = 10 ** math.floor(math.log10(value))
         normalized = value / magnitude
-        if normalized <= 1:
-            nice = 1
-        elif normalized <= 2:
-            nice = 2
-        elif normalized <= 5:
-            nice = 5
-        else:
-            nice = 10
-        return nice * magnitude
+        return next(step for step in steps if normalized <= step) * magnitude
