@@ -92,7 +92,7 @@ const sum = a => a.reduce((x, y) => x + y, 0);
 const max = Math.max(...days.flatMap(d => d[2]));
 const colTotals = users.map((_, i) => sum(days.map(d => d[2][i])));
 const grand = sum(colTotals);
-const top = colTotals.indexOf(Math.max(...colTotals));
+const lead = colTotals.indexOf(Math.max(...colTotals));
 const busiest = days.reduce((a, b) => sum(b[2]) > sum(a[2]) ? b : a);
 
 document.getElementById("lede").textContent = data.lede;
@@ -100,7 +100,7 @@ document.getElementById("notes").innerHTML = data.notes.map(n => `<span>${n}</sp
 document.getElementById("stats").innerHTML = [
   [grand, `messages in ${days.length} days`],
   [users.length, "active installs"],
-  [Math.round(100 * colTotals[top] / grand) + "%", "from the busiest install, " + (users[top].who || users[top].id)],
+  [Math.round(100 * colTotals[lead] / grand) + "%", "from the busiest install, " + (users[lead].who || users[lead].id)],
   [sum(busiest[2]), "on the busiest day, " + busiest[0] + " " + busiest[1]],
 ].map(([b, s]) => `<div class="stat"><b>${b}</b><span>${s}</span></div>`).join("");
 
