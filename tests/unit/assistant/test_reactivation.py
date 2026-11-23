@@ -292,6 +292,14 @@ class TestTheAssistantWasNotQuietEither:
         assert Reactivation.due(Reactivation.due_at(LAST_TURN, 1) + 60) is None
         assert telemetry.reactivation_nudge.call_args.kwargs["outcome"] == Reactivation.OUTCOME_COVERED
 
+    def test_a_message_noted_before_the_history_s_last_turn_does_not_stand_in(self, settings, telemetry, history):
+        # no clock yet: the file holds the assistant's message alone, and the owner's answer is a history row
+        Reactivation.assistant_wrote(now=LAST_TURN - 30 * 60)
+        history.add_history_entry("Marcus", "thanks, good night", LAST_TURN, "Console")
+
+        assert Reactivation.due(Reactivation.due_at(LAST_TURN, 1) + 10 * 60).number == 1
+        telemetry.reactivation_nudge.assert_not_called()
+
     def test_a_message_noted_before_there_was_a_clock_counts_once_the_history_gives_one(self, settings, telemetry, history):
         history.add_history_entry("Marcus", "good night", LAST_TURN, "Console")
         at = Reactivation.due_at(LAST_TURN, 2) + 60
@@ -493,3 +501,21 @@ class TestWhatTheCheckLeftBehind:
         executed = [f"post_message({', '.join([group, 'Dinner is at six'])})"]
 
         assert Reactivation.posted_kinds(executed) == [Destinations.KIND_GROUP]
+
+    def test_a_comma_in_the_text_does_not_turn_a_person_into_the_group_that_starts_with_their_name(self, quiet_owner):
+        Destinations.register(Destinations.Destination("Marcus, Charlotte & Frances", Destinations.KIND_GROUP, lambda text: True))
+        Destinations.register(Destinations.Destination("Marcus", Destinations.KIND_VOICE, lambda text: True))
+
+        kinds = Reactivation.posted_kinds(["post_message(Marcus, Charlotte & Frances are out, back at six)",
+                                           "post_message(owner, Marcus, Charlotte & Frances)",
+                                           "post_message(Marcus, Charlotte & Frances, Dinner, at six (sharp))"])
+
+        assert kinds == [Destinations.KIND_VOICE, Destinations.KIND_CHAT, Destinations.KIND_GROUP]
+
+    @pytest.mark.xfail(strict=True, reason="_posted_kind strips a closing bracket off every candidate name — meant for "
+                                           "the record's own `)` — so a destination whose name ends in one is never "
+                                           "found and the message is reported as one to an unknown destination")
+    def test_a_message_to_a_group_whose_name_ends_in_a_bracket_is_reported_as_one_to_a_group(self, quiet_owner):
+        Destinations.register(Destinations.Destination("Family (home)", Destinations.KIND_GROUP, lambda text: True))
+
+        assert Reactivation.posted_kinds(["post_message(Family (home), Dinner is at six)"]) == [Destinations.KIND_GROUP]
