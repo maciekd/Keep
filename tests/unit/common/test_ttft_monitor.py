@@ -44,7 +44,7 @@ class TestShorten:
         ("claude-opus", "opus"),
     ])
     def test_shorten(self, model, expected):
-        assert TTFTMonitor._shorten(model) == expected
+        assert TTFTMonitor.shorten(model) == expected
 
 class TestCachePct:
     def test_a_hosted_and_a_local_model_share_one_series_in_request_order(self):

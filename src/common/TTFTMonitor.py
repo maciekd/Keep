@@ -33,14 +33,10 @@ class TTFTMonitor:
         self._cache_samples: collections.deque = collections.deque(maxlen=self.HISTORY_SIZE)
         self.smart_model: str = ""
         self.fast_model: str = ""
-        self.smart_model_short: str = ""
-        self.fast_model_short: str = ""
 
     def register_models(self, smart_model: str, fast_model: str):
         self.smart_model = smart_model
         self.fast_model = fast_model
-        self.smart_model_short = self._shorten(smart_model)
-        self.fast_model_short = self._shorten(fast_model)
 
     def record(self, model: str, ttft: float):
         if model not in self._data:
@@ -70,7 +66,7 @@ class TTFTMonitor:
         return self._data.get(self.fast_model, _EMPTY_DEQUE)
 
     @staticmethod
-    def _shorten(model: str) -> str:
+    def shorten(model: str) -> str:
         name = model.lower().replace("claude-", "")
         parts = [p for p in name.split("-") if not (len(p) == 8 and p.isdigit())]
         return "-".join(parts)

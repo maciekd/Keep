@@ -759,8 +759,7 @@ CACHE_X, CACHE_Y, CACHE_W, CACHE_H = 1, 1, 60, 4   # wide enough for a three-par
 
 def draw_cache_chart(samples):
     monitor = TTFTMonitor()
-    monitor.smart_model, monitor.fast_model = SMART, FAST
-    monitor.smart_model_short, monitor.fast_model_short = "opus", "haiku"
+    monitor.register_models(SMART, FAST)
     for model, pct in samples:
         monitor.record_cache_pct(model, pct)
     screen = TUIScreen(CACHE_W + 4, 12)
@@ -782,12 +781,27 @@ def bottom_row(screen):
 
 @pytest.mark.unit
 class TestCacheChart:
-    def test_the_legend_names_the_tiers_and_adds_other_only_when_another_model_served(self):
+    def test_the_legend_names_the_tiers_and_another_model_only_once_it_served(self):
         tiers_only = title_strip(draw_cache_chart([(SMART, 80), (FAST, 60)]))
-        assert "opus" in tiers_only and "haiku" in tiers_only and "other" not in tiers_only
+        assert "opus" in tiers_only and "haiku" in tiers_only and "deepseek" not in tiers_only
         assert tiers_only.endswith("60%"), "the value is the latest request's hit"
-        with_curator = title_strip(draw_cache_chart([(SMART, 80), (CURATOR, 90)]))
-        assert "other" in with_curator and with_curator.endswith("90%")
+        with_curator = title_strip(draw_cache_chart([(SMART, 80), (CURATOR, 90), (CURATOR, 95)]))
+        assert with_curator.count("deepseek") == 1 and with_curator.endswith("95%")
+
+    def test_one_model_on_both_tiers_is_one_legend_entry_in_the_smart_colour(self):
+        def chart(fast):
+            monitor = TTFTMonitor()
+            monitor.register_models(SMART, fast)
+            monitor.record_cache_pct(SMART, 50)
+            screen = TUIScreen(CACHE_W + 4, 12)
+            screen.clear_buffer()
+            make_tab()._draw_cache_chart(screen, CACHE_X, CACHE_Y, CACHE_W, CACHE_H, monitor)
+            return screen
+
+        shared, split = chart(SMART), chart(FAST)
+        assert title_strip(shared).count("opus") == 1
+        column = lambda screen: next(cell for cell in bottom_row(screen) if cell.char == "▄").style.fg
+        assert column(shared) == column(split)
 
     def test_a_request_of_a_model_outside_the_tiers_is_charted_in_its_own_colour(self):
         # unlike the TTFT chart beside it, which shows the two tiers alone
