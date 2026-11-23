@@ -66,6 +66,8 @@ class NamedParameterFormat(CommandFormat):
         super().__init__(possible_commands)
         self._table = table
         self._variadic = variadic if variadic is not None or table is None else set()
+        # The parameter names of the call read last that its command does not declare.
+        self.undeclared: list[str] = []
 
     def function_schema(self, declaration: Declaration) -> dict:
         """The `{"type": "function", "function": {...}}` schema of a declaration: the four
@@ -189,6 +191,7 @@ class NamedParameterFormat(CommandFormat):
         trailing ones left out are dropped. A variadic last parameter is split into its values."""
         names = self._names_of(name)
         given = dict(arguments)
+        self.undeclared = [key for key in given if key not in (names or ())]
         if names is None or any(key not in names for key in given):
             how = "an undeclared command" if names is None else "parameter(s) outside the declaration"
             trace(f"{self.name} format: {name} parameters taken in the model's order ({how}): {list(given)}")

@@ -99,6 +99,24 @@ class CommandProcessor:
                            "command(s) ran, the rest was dropped unread and no text after it reached the "
                            "user. The result(s) follow.")
 
+    # The invented-result guard (prod 2026-11-22, Opus buying from a web shop): the tool loop
+    # written as calls — after each real `<invoke>` a block of the same name whose one
+    # parameter, `result`, held the output the model expected. The value ran as the command's
+    # argument: `browse_open` on "URL: …", a `browse_act` typing a card number into a page
+    # nobody had read. A call whose parameters are named is cut at a parameter of one of these
+    # names that its command does not declare (an honest call misnames a parameter now and
+    # then — `query`, `since` — and still runs in the model's order).
+    RESULT_PARAMETERS = frozenset({"result", "results", "output"})
+    INVENTED_RESULT_NOTE = ("Your reply wrote a `{name}` call whose `{parameter}` parameter the command does not "
+                            "declare. Only the system writes results, so the reply was cut there: {ran} command(s) "
+                            "ran, that call and everything after it were dropped unread and did not reach the "
+                            "user. {real}")
+    # The page guard (same reply): every browse command is stop-and-wait, so the after-the-fetch
+    # guard lets them chain — right for reads, wrong for a call that acts on the page while a
+    # browse result is pending: its indices and coordinates come from a snapshot that does not
+    # exist yet. Such a call cuts the reply like any call after a fetch.
+    PAGE_ACTING_COMMANDS = frozenset({"browse_act", "browse_key", "browse_click_at"})
+
     def __init__(self, test_suite_mode: bool):
         self.previous_content_buffer = ""
         # Whether the reply read so far ends inside a line that holds a sentence, where the
@@ -145,6 +163,9 @@ class CommandProcessor:
         # The stop-and-wait command this reply dispatched last, None before the first: with
         # one pending, text and other calls cut the reply (FETCH_CUT_NOTE).
         self.fetch_pending: str | None = None
+        # The browse command this reply dispatched last: with one pending, a call that acts
+        # on the page cuts the reply too (PAGE_ACTING_COMMANDS).
+        self.page_pending: str | None = None
         # The reply was cut right after its last call (the after-the-fetch, repeat and
         # degenerate-value guards): the stored turn ends at that call, never at prose after it.
         self.cut_after_last_call = False
@@ -507,6 +528,7 @@ class CommandProcessor:
         self.commands_dispatched = 0
         self.reply_cut = False
         self.fetch_pending = None
+        self.page_pending = None
         self.cut_after_last_call = False
         self._last_call = None
         self._last_call_times = 0
@@ -532,10 +554,15 @@ class CommandProcessor:
             rescued = getattr(self.format, "rescued", 0) > rescued_before
             if rescued and self._cut_at_degenerate_values(command_name, params):
                 return ""
+            if self._cut_at_invented_result(command_name):
+                return ""
             if self._cut_at_repeat(command_name, params, display):
                 return ""
             if self.fetch_pending and not self.commands.is_stop_and_wait(command_name):
                 self._cut_after_fetch(f"the call {self._label(command_name, display)}")
+                return ""
+            if self.page_pending and command_name in self.PAGE_ACTING_COMMANDS:
+                self._cut_after_fetch(f"the call {self._label(command_name, display)}", self.page_pending)
                 return ""
             if unreadable := self._unreadable(command_name, display, content):
                 self._answer_unreadable(command_name, params, dialog_manager, unreadable)
@@ -543,6 +570,8 @@ class CommandProcessor:
             self.invoke_command(command_name, params, dialog_manager)
             if self.commands.is_stop_and_wait(command_name):
                 self.fetch_pending = command_name
+                if command_name.startswith("browse_"):
+                    self.page_pending = command_name
             elif self._streaming and self._resumes_thinking(dialog_manager):
                 # Text after a stop-and-wait call cuts the reply unshown anyway (_released).
                 trace(f"Holding the text after {command_name} until a bare </think> or the end of the stream")
@@ -879,6 +908,20 @@ class CommandProcessor:
         self._cut_reply(self.DEGENERATE_CUT_NOTE.format(name=command_name, values=values, ran=self.commands_dispatched))
         return True
 
+    def _cut_at_invented_result(self, command_name: str) -> bool:
+        """The invented-result guard: True when the call names a result parameter its command
+        does not declare — the reply is cut there and the call does not run."""
+        invented = [key for key in getattr(self.format, "undeclared", ()) if key.lower() in self.RESULT_PARAMETERS]
+        if not invented:
+            return False
+        ran = self.commands_dispatched
+        error(f"The reply wrote a {command_name} call holding an invented result (undeclared parameter "
+              f"{invented[0]!r}) after {ran} command(s) — it does not run, the rest is dropped unread")
+        real = (f"The real result(s) of the {ran} command(s) that ran follow." if ran
+                else "No command ran, so there is no result.")
+        self._cut_reply(self.INVENTED_RESULT_NOTE.format(name=command_name, parameter=invented[0], ran=ran, real=real))
+        return True
+
     def _cut_reply(self, note_text: str):
         """Stop reading the reply here, with the stored turn ending at the last call that ran
         and the note ahead of the results in the follow-up round, which comes for the note
@@ -888,12 +931,14 @@ class CommandProcessor:
         self.previous_content_buffer = ""
         self.add_note(note_text)
 
-    def _cut_after_fetch(self, dropped: str):
-        """The reply went on after a stop-and-wait command: stop reading it here, run and show
-        nothing more of it, and say so ahead of the fetch's result in the follow-up round."""
-        info(f"Reply cut after the stop-and-wait command {self.fetch_pending}: {dropped} written before its "
+    def _cut_after_fetch(self, dropped: str, fetch: str | None = None):
+        """The reply went on after a stop-and-wait command (`fetch`, the last one when not
+        given): stop reading it here, run and show nothing more of it, and say so ahead of
+        the fetch's result in the follow-up round."""
+        fetch = fetch or self.fetch_pending
+        info(f"Reply cut after the stop-and-wait command {fetch}: {dropped} written before its "
              f"result existed — dropped unread")
-        self._cut_reply(self.FETCH_CUT_NOTE.format(fetch=self.fetch_pending, dropped=dropped))
+        self._cut_reply(self.FETCH_CUT_NOTE.format(fetch=fetch, dropped=dropped))
 
     def _partial_tail(self, buffer: str) -> int:
         """Where a possible start of a call or of a `<function_results` tag begins at the end

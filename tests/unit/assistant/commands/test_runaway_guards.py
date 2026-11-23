@@ -111,3 +111,76 @@ class TestDegenerateValueGuard:
         assert processor.format.rescued == 1
         processor.start_new_reply()
         assert processor.format.rescued == 0
+
+
+@pytest.mark.unit
+class TestInventedResultGuard:
+    """Prod 2026-11-22: after each real `<invoke>` the model wrote a block of the same name
+    holding the result it expected in a `result` parameter, and the value ran as the argument."""
+
+    def test_a_block_holding_a_result_parameter_does_not_run(self, processor):
+        raw = (invoke("browse_open", url="https://shop.example/cart")
+               + invoke("browse_open", result="URL: https://shop.example/cart\n[12] input card number")
+               + invoke("browse_act", spec="12=4000 0000 0000 0000; 13"))
+        shown = feed(processor, raw)
+        assert shown == "" and processor.reply_cut
+        assert processor.calls == [("browse_open", ["https://shop.example/cart"])]
+        assert processor.format.extract_all(processor.kept_of(raw)) == processor.calls
+        assert "result" in processor.command_reply and "browse_open" in processor.command_reply
+        assert not processor.command_reply_contains_error
+
+    def test_an_invented_result_before_any_call_still_gets_its_note(self, processor):
+        feed(processor, invoke("load_watch", result="radon: 80 Bq/m3"))
+        assert processor.reply_cut and processor.calls == []
+        assert "result" in processor.command_reply
+
+    def test_a_result_beside_the_declared_parameter_is_cut_too(self, processor):
+        feed(processor, invoke("browse_open", url="https://shop.example/", result="URL: https://shop.example/"))
+        assert processor.reply_cut and processor.calls == []
+
+    def test_an_honest_call_with_a_misnamed_parameter_still_runs(self, processor):
+        """`query` is not what `search_email` declares; the rescue has always taken it in the model's order."""
+        feed(processor, invoke("search_email", query="invoice"))
+        assert not processor.reply_cut
+        assert processor.calls == [("search_email", ["invoice"])]
+
+    def test_the_guard_is_the_replys_not_the_processors(self, processor):
+        feed(processor, invoke("load_watch", result="radon: 80 Bq/m3"))
+        processor.clear_command_reply()
+        processor.start_new_reply()
+        feed(processor, invoke("load_watch", item="radon"))
+        assert not processor.reply_cut and len(processor.calls) == 1
+
+
+@pytest.mark.unit
+class TestPageGuard:
+    """A call that acts on the page while a browse result is pending rests on a snapshot the
+    model has not read (prod 2026-11-22: a card number typed into an unknown element)."""
+
+    @pytest.mark.parametrize("acting", ['browse_act("12=Marcus; 13")', 'browse_key("3,Enter")', "browse_click_at(120, 340)"])
+    def test_an_action_on_a_page_just_opened_is_cut(self, processor, acting):
+        raw = f'browse_open("https://shop.example/checkout")\n{acting}\n'
+        feed(processor, raw)
+        assert processor.reply_cut
+        assert [name for name, _ in processor.calls] == ["browse_open"]
+        assert processor.kept_of(raw).strip() == 'browse_open("https://shop.example/checkout")'
+        assert "browse_open" in processor.command_reply and acting.split("(")[0] in processor.command_reply
+
+    def test_a_second_action_after_an_action_is_cut(self, processor):
+        feed(processor, 'browse_act("3=2")\nbrowse_act("7")\n')
+        assert processor.reply_cut and processor.calls == [("browse_act", ["3=2"])]
+
+    def test_reads_after_a_browse_call_still_chain(self, processor):
+        feed(processor, 'browse_act("7")\nbrowse_network("cart")\nbrowse_screenshot()\n')
+        assert not processor.reply_cut
+        assert [name for name, _ in processor.calls] == ["browse_act", "browse_network", "browse_screenshot"]
+
+    def test_the_page_is_named_as_what_was_pending_when_a_read_stands_between(self, processor):
+        feed(processor, 'browse_open("https://shop.example/")\nload_toolkit("email")\nbrowse_act("3")\n')
+        assert processor.reply_cut and len(processor.calls) == 2
+        assert "browse_open" in processor.command_reply
+
+    def test_an_action_after_a_fetch_that_is_no_browse_call_runs(self, processor):
+        """The snapshot it acts on is an earlier round's."""
+        feed(processor, 'load_toolkit("email")\nbrowse_act("3")\n')
+        assert not processor.reply_cut and len(processor.calls) == 2
