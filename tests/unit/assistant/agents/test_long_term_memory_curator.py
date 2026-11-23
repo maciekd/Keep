@@ -206,6 +206,15 @@ class TestCurationPeriod:
         assert "{PERIOD}" not in prompt
         assert "the recent interactions below" in prompt
 
+    def test_only_a_chunk_with_more_to_follow_is_told_so(self):
+        curator = self._curator()
+        prompts = []
+        for more_follow in (False, True):
+            curator._curate_with_data("history", "calendar", "# Memory\nA bank long enough", more_follow=more_follow)
+            prompts.append(curator.llm.think.call_args.kwargs['system_message'])
+        assert "{FOLLOWS}" not in prompts[0] + prompts[1]
+        assert "runs that follow" not in prompts[0] and "runs that follow" in prompts[1]
+
 
 class TestThePromptSaysWhatTheAiAlreadyHas:
     """The curator sees the bank and nothing else of the AI's prompt, so it is told what stands
@@ -483,7 +492,7 @@ class TestRun:
         curator = _mock_curator()
         curator.curate_memory.return_value = ("new bank", {'interaction_count': 3, 'new_memory_size': 8})
         metadata = LongTermMemoryCurator.run(datetime(2026, 9, 10, 14), datetime(2026, 9, 10, 16), curator=curator)
-        curator.curate_memory.assert_called_once_with(datetime(2026, 9, 10, 14), datetime(2026, 9, 10, 16))
+        curator.curate_memory.assert_called_once_with(datetime(2026, 9, 10, 14), datetime(2026, 9, 10, 16), more_follow=False)
         curator.save_memory.assert_called_once_with("new bank", metadata)
         curator.save_debug_log.assert_called_once_with("new bank", metadata)
 
@@ -504,7 +513,7 @@ class TestRun:
         started, release = threading.Event(), threading.Event()
         slow = _mock_curator()
 
-        def curate(*_):
+        def curate(*_, **__):
             started.set()
             release.wait(FAILURE_BOUND)
             return "bank", {'interaction_count': 0, 'new_memory_size': 4}
@@ -635,7 +644,7 @@ def _span_curator(metadata_for=None):
     picks the metadata by the chunk's start (default: a normal curated chunk)."""
     curator = _mock_curator()
 
-    def curate(period_start, period_end):
+    def curate(period_start, period_end, more_follow=False):
         base = {'interaction_count': 2, 'new_memory_size': 8,
                 'period_start': period_start.isoformat(timespec='minutes'),
                 'period_end': period_end.isoformat(timespec='minutes')}
@@ -658,6 +667,22 @@ class TestRunSpan:
         assert curator.save_memory.call_count == 3 and curator.save_debug_log.call_count == 3
         assert summary == {'chunks': 3, 'curated': 3, 'empty': 0, 'failed': 0, 'aborted': False, 'interaction_count': 6,
                            'period_start': '2026-08-01T00:00', 'period_end': '2026-08-10T00:00'}
+
+    def test_every_chunk_but_the_last_is_told_that_more_follow(self):
+        curator = _span_curator()
+        LongTermMemoryCurator.run_span(self.START, self.END, curator=curator)
+        assert [c.kwargs['more_follow'] for c in curator.curate_memory.call_args_list] == [True, True, False]
+
+    def test_a_span_is_backfilling_until_its_last_chunk(self):
+        seen = []
+        curator = _span_curator(lambda _: seen.append(LongTermMemoryCurator.backfilling()) or {})
+        LongTermMemoryCurator.run_span(self.START, self.END, curator=curator)
+        assert seen == [True, True, False]
+        assert not LongTermMemoryCurator.backfilling()
+
+    def test_a_span_stopped_midway_is_no_longer_backfilling(self):
+        LongTermMemoryCurator.run_span(self.START, self.END, curator=_span_curator(), on_chunk=lambda *_: False)
+        assert not LongTermMemoryCurator.backfilling()
 
     def test_the_last_chunk_of_a_span_ending_today_ends_when_it_runs(self):
         curator = _span_curator()
@@ -702,7 +727,7 @@ class TestRunSpan:
         seen = []
         summary = LongTermMemoryCurator.run_span(self.START, self.END, curator=curator, first_chunk=2,
                                                  on_chunk=lambda i, t, m: seen.append((i, t)))
-        assert curator.curate_memory.call_args_list == [call(datetime(2026, 8, 9), datetime(2026, 8, 10))]
+        assert curator.curate_memory.call_args_list == [call(datetime(2026, 8, 9), datetime(2026, 8, 10), more_follow=False)]
         assert seen == [(3, 3)]
         assert summary['chunks'] == 3 and summary['curated'] == 1
 
@@ -742,7 +767,7 @@ class TestRunSpan:
         started, release = threading.Event(), threading.Event()
         slow = _mock_curator()
 
-        def curate(*_):
+        def curate(*_, **__):
             started.set()
             release.wait(FAILURE_BOUND)
             return "bank", {'interaction_count': 0, 'new_memory_size': 4}

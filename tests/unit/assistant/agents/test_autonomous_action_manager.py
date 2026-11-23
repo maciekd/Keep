@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from assistant import Destinations, WatchList
 from assistant.llm.AbstractLLM import LLMRefusalError, Thinking
+from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator
 
 from assistant.agents.AutonomousActionManager import (
     AutonomousActionManager,
@@ -1421,6 +1422,24 @@ class TestDueWatcher:
         (call,) = mgr.activity_check.call_args_list
         assert sorted(moment for _, moment in call.kwargs["due"]) == [datetime(2026, 10, 11, 12, 20),
                                                                       datetime(2026, 10, 11, 17, 0)]
+
+    def test_a_reached_due_time_waits_for_a_curation_span_to_finish(self):
+        # A backfill's first chunks save the watch items of weeks ago; the later chunks settle them.
+        self.watch("water-meter", "2026-10-11 17:00")
+        mgr = self.manager()
+        with patch.object(LongTermMemoryCurator, "backfilling", return_value=True):
+            assert mgr._poll_due(datetime(2026, 10, 11, 17, 0)) is False
+        mgr.activity_check.assert_not_called()
+        assert mgr._poll_due(datetime(2026, 10, 11, 17, 1)) is True
+
+    def test_a_check_during_a_curation_span_carries_no_due_items(self):
+        self.watch("water-meter", "2026-10-11 17:00")
+        llm = Mock()
+        llm.handles_thinking_internally.return_value = True
+        with patch.object(LongTermMemoryCurator, "backfilling", return_value=True):
+            during = AutonomousActionManager._action_prompt(llm)
+        assert "water-meter" not in during
+        assert "water-meter" in AutonomousActionManager._action_prompt(llm)
 
     def test_a_bare_due_date_fires_nothing(self):
         WatchList.save("sofa-delivery", "on its way", "2026-10-11")

@@ -236,6 +236,7 @@ class AutonomousActionManager:
         self._next_due_logged: Optional[datetime] = None   # the watcher logs the next moment when it changes
         # The cadence polls held for the morning, said once each while Night mode lasts
         self._held_at_night: set[tuple[str, datetime]] = set()
+        self._held_for_backfill = False
         self.due_thread = threading.Thread(target=self._run_due_watcher, daemon=True, name="DueWatcher")
         if not test_mode:
             self.thread.start()
@@ -261,7 +262,11 @@ class AutonomousActionManager:
         internal = llm.handles_thinking_internally() is True
         if internal:
             trace(f"Autonomous prompt without the <thinking> tag paragraph: {llm.name()} thinks on its own")
-        due = WatchList.render_due(tolerance=WATCH_POLL_TOLERANCE)
+        if LongTermMemoryCurator.backfilling():
+            info("Autonomous prompt without due watch items: a curation span is rebuilding the watch list")
+            due = WatchList.NOTHING_DUE
+        else:
+            due = WatchList.render_due(tolerance=WATCH_POLL_TOLERANCE)
         prompt = AUTONOMOUS_ACTION_PROMPT.format(
             interval_minutes=PERIODIC_CHECK_INTERVAL_MINUTES,
             watch_list=due,
@@ -937,7 +942,16 @@ class AutonomousActionManager:
         in Night mode too (issue #119: a 06:15 check was held until the owner got up and asked);
         a cadence poll is the check's own rhythm and Night mode leaves it unfired, like the
         periodic check, so it fires in the morning. A user in flight leaves a moment for the
-        next read a minute on."""
+        next read a minute on. So does a curation span between its chunks: the list is then a
+        past day's, and what is still due when the last chunk has run fires then."""
+        if LongTermMemoryCurator.backfilling():
+            if not self._held_for_backfill:
+                info("Due watcher: holding — a curation span is rebuilding the watch list")
+            self._held_for_backfill = True
+            return False
+        if self._held_for_backfill:
+            info("Due watcher: the curation span is over — reading the watch list again")
+            self._held_for_backfill = False
         now = now or datetime.now()
         pending = WatchList.pending(now, within=timedelta(seconds=PERIODIC_CHECK_INTERVAL_SECONDS))
         # An item earns several moments at once (its due time and its cadence's next poll), each

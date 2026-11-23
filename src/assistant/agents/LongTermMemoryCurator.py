@@ -78,7 +78,7 @@ comprehensive memory bank about the family and household that enables personaliz
 
 You are called periodically — every night once the system has been running for a while, more often right after a
 fresh install while the memory bank is still being built up — to analyze everything that happened in a period and
-update the long-term memory. This run covers {PERIOD}. Today is {TODAY}.
+update the long-term memory. This run covers {PERIOD}. Today is {TODAY}.{FOLLOWS}
 
 The long-term memory has four parts:
 - the **memory bank**: what is durably true of the family — people, preferences, relationships, contacts, standing
@@ -183,6 +183,9 @@ The commands:
 {TIPS}"""
 
 # Appended to the prompt only while `ai.memory_curator.tips_destination` is set.
+# Said to every chunk of a span but the last: what it reads as open may be settled in the days it does not see.
+FOLLOWS_NOTE = " The days between this period and today are curated in the runs that follow this one."
+
 TIPS_PROMPT = """
 ## Tips for other Keeps
 Other households run their own Keep, and the Keeps share tips in the Telegram group "{TIPS_DESTINATION}". 
@@ -296,6 +299,14 @@ class LongTermMemoryCurator:
     reply. The memos are where the bank gets shorter: lookup material moves out of it into them."""
 
     _curation_lock = threading.Lock()
+    _backfilling = False
+
+    @classmethod
+    def backfilling(cls) -> bool:
+        """True while a span of several chunks is between its first chunk and its last: the
+        watch list is then that of a past day — items the chunks still to come will settle —
+        and nothing should act on it."""
+        return cls._backfilling
 
     def __init__(self,
                  floxy_db: FloxyDatabase = None,
@@ -438,8 +449,14 @@ class LongTermMemoryCurator:
                          f"so it ends at {period_end:%H:%M}")
                     summary['period_end'] = period_end.isoformat(timespec='minutes')
                 info(f"Rem: chunk {index}/{total} — {period_start:%Y-%m-%d %H:%M} .. {period_end:%Y-%m-%d %H:%M}")
+                more_follow = index < total
+                if more_follow != cls._backfilling:
+                    cls._backfilling = more_follow
+                    info(f"Rem: chunk {index}/{total} — " + ("the watch list is a past day's until the last chunk"
+                                                             if more_follow else "the last chunk, the watch list is today's again"))
                 try:
-                    metadata = cls._curate_period(curator, period_start, period_end, history, record=total == 1)
+                    metadata = cls._curate_period(curator, period_start, period_end, history, record=total == 1,
+                                                  more_follow=more_follow)
                 except Exception as e:
                     error(f"Rem: chunk {index}/{total} failed: {type(e).__name__}: {e} — carrying on with the next")
                     metadata = None
@@ -462,6 +479,7 @@ class LongTermMemoryCurator:
                 history.add_context_message("system", cls.span_note(summary), time.time(), source=HISTORY_SOURCE)
             return summary
         finally:
+            cls._backfilling = False
             cls._curation_lock.release()
 
     @staticmethod
@@ -503,13 +521,13 @@ class LongTermMemoryCurator:
 
     @classmethod
     def _curate_period(cls, curator: 'LongTermMemoryCurator', period_start, period_end, history,
-                       record: bool = True) -> dict:
+                       record: bool = True, more_follow: bool = False) -> dict:
         """One period, lock already held: curate, run the commands, save the bank and its debug
         log and, when `record`, leave the completion in the history. The commands run before
         the bank is written: the bank keeps only a pointer to what the commands move into a
         procedure or a memo, so a refused `save_procedure` or `save_memo` must be known before
         the bank is replaced — its text is then kept in the bank. A period with no interactions changes nothing."""
-        new_memory, metadata = curator.curate_memory(period_start, period_end)
+        new_memory, metadata = curator.curate_memory(period_start, period_end, more_follow=more_follow)
         if metadata.get('empty'):
             info("Rem: nothing happened in this period — memory bank unchanged.")
             return metadata
@@ -560,7 +578,8 @@ class LongTermMemoryCurator:
                       period_start: datetime | date = None,
                       period_end: datetime | date = None,
                       lookback_days: int = 1,
-                      lookahead_days: int = 5):
+                      lookahead_days: int = 5,
+                      more_follow: bool = False):
         """
         Run memory curation over the interactions of a period.
 
@@ -569,6 +588,7 @@ class LongTermMemoryCurator:
             period_end: Last moment of the period, exclusive (default: now)
             lookback_days: How many days back the default period_start reaches
             lookahead_days: How many days of calendar to include (default: 5)
+            more_follow: The period is a chunk of a span and later chunks cover the days after it
 
         A bare date means midnight at its start. Both ends are accepted as dates or datetimes so a
         nightly run says "since yesterday's midnight" and a first-run curation says "since 14:03".
@@ -620,7 +640,7 @@ class LongTermMemoryCurator:
         trace(f"Loaded {len(current_memory)} bytes of long term memory.")
 
         return self._curate_with_data(interaction_history, calendar_data, current_memory,
-                                      period=(period_start, period_end))
+                                      period=(period_start, period_end), more_follow=more_follow)
 
     @staticmethod
     def word_count(text: str) -> int:
@@ -723,7 +743,8 @@ class LongTermMemoryCurator:
                           interaction_history: str,
                           calendar_data: str,
                           current_memory: str,
-                          period: tuple[datetime, datetime] | None = None):
+                          period: tuple[datetime, datetime] | None = None,
+                          more_follow: bool = False):
         """
         Internal method to run curation with provided data.
 
@@ -732,6 +753,7 @@ class LongTermMemoryCurator:
             calendar_data: Calendar events text
             current_memory: Current memory bank text
             period: (start, end) the history was taken from; None describes it as "the recent interactions"
+            more_follow: later runs curate the days after the period (FOLLOWS_NOTE)
 
         Returns:
             Tuple of (updated_memory_text, metadata_dict)
@@ -761,6 +783,7 @@ class LongTermMemoryCurator:
             .replace("{WATCH_WORD_LIMIT}", str(WatchList.NOTE_WORD_LIMIT)) \
             .replace("{PROCEDURE_WHEN_CHARS}", str(Procedures.WHEN_CHARS)) \
             .replace("{PERIOD}", period_text) \
+            .replace("{FOLLOWS}", FOLLOWS_NOTE if more_follow else "") \
             .replace("{STT_NOTE}", STT_NOTE if voice_enabled else "") \
             .replace("{TIPS}", self._tips_prompt()) \
             .replace("{IN_PROMPT}", self._in_prompt())
