@@ -8,6 +8,7 @@ import pytest
 
 from assistant.llm import create_llm, local_only_class, parse_llm_config, tier_api_key_name
 from assistant.llm.Ds4LLM import Ds4LLM
+from assistant.llm.Ds4Replay import ReplayStore
 from assistant.llm.OpenAICompatibleLLM import OpenAICompatibleLLM
 from assistant.llm.PrefillTracker import LogSource, PrefillTracker
 from common import ConfigSchema
@@ -61,6 +62,8 @@ def _clean_class_state(monkeypatch):
         monkeypatch.setattr(tracker, "tps", tracker.tps)
         monkeypatch.setattr(tracker, "_observed", tracker._observed)
         monkeypatch.setattr(tracker, "_held", [])
+    for backend in (OpenAICompatibleLLM, Ds4LLM):
+        monkeypatch.setattr(backend, "_replay_store", ReplayStore(None))   # in memory: never the install's cache/
     OpenAICompatibleLLM._models_checked.clear()
     OpenAICompatibleLLM._discovered_models.clear()
     OpenAICompatibleLLM._discovery_failed.clear()

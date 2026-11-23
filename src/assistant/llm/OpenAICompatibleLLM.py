@@ -59,12 +59,14 @@ from .AbstractLLM import LLMPreempted, Thinking
 from .BackgroundSlot import BackgroundSlot
 from .CacheBreakTracker import CacheBreakTracker
 from .ChatGPTLLM import ChatGPTLLM
+from .Ds4Replay import ReplayStore, replay, split_thinking
 from .PrefillTracker import PrefillTracker
 from assistant.commands.formats import QwenFormat as qwen
 from assistant.commands.formats.CommandFormats import CommandFormats
 from assistant.commands.formats.KeepFormat import KeepFormat
 from common.ConfigManager import config
 from common.logging import error, info, trace, fine, note
+from common.Paths import CACHE_DIR
 
 
 class _Content:
@@ -95,9 +97,17 @@ class OpenAICompatibleLLM(ChatGPTLLM):
     LABEL = "openai-compatible"        # what the log lines carry
     DEFAULT_MODEL: str | None = None   # unset: the first model the server lists
     DEFAULT_BASE_URL = 'http://127.0.0.1:8000/v1'
+    # Whether a pre-heat of a prompt that ends on a reply closes it with a stub user turn. Not
+    # here: oMLX stores its snapshot a few tokens before the prompt's end, and with a stub that
+    # is past where the next turn's own message begins — the turn then falls back to the
+    # snapshot before it and prefills the tail again (measured 2026-11-23 on a 2.9k-token
+    # prompt: 2048 tokens restored and 11.6 s with the stub, 2884 and 1.1 s without).
+    PRE_HEAT_STUB_AFTER_REPLY = False
+    REPLAY_FILE = 'openai_compatible_replay.json'   # under cache/: the replay store's file
+    _replay_store: ReplayStore | None = None
     RETURN_PROGRESS = True             # ask for `prompt_progress` chunks (a subclass with a log needs none)
     # Measured on an M-series Mac with a 27B model at 4 bits; each reply refines it.
-    _prefill = PrefillTracker("openai-compatible", None, seed_tps=800.0)
+    _prefill = PrefillTracker("openai-compatible", None, seed_tps=100.0)
     DEFAULT_REASONING_EFFORT = 'low'
     THINKING_REASONING_EFFORT = 'high'   # Thinking.FULL
     MORE_REASONING_EFFORT = 'medium'     # the floor of Thinking.MORE
@@ -311,6 +321,11 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         cls = type(self)
         with cls._pre_heat_lock:
             pending, cls._pre_heat_pending = cls._pre_heat_pending, None
+            if pending is not None and self._slot.interactive_active:
+                # A turn arrived meanwhile: it prefills the prompt itself and its end brings
+                # the next pre-heat; this one beside it would only halve its speed.
+                trace(f"{self.LABEL} pre-heat: the prompt deferred meanwhile is dropped — a request is in flight")
+                pending = None
             if pending is None:
                 cls._pre_heat_in_flight = False
         if pending is not None:
@@ -330,13 +345,13 @@ class OpenAICompatibleLLM(ChatGPTLLM):
             return
         client = self.client.with_options(
             timeout=httpx.Timeout(self.PRE_HEAT_READ_TIMEOUT_S, connect=self.CONNECT_TIMEOUT_S))
-        if not messages or messages[-1].get('role') != 'user':
+        tail = messages[-1].get('role') if messages else None
+        if tail == 'assistant' and not self.PRE_HEAT_STUB_AFTER_REPLY:
+            trace(f"{self.LABEL} pre-heat: the prompt ends on a reply and goes out as it is — no stub user turn")
+        elif tail != 'user':
             # The next request ends in a user turn, and so must this one; the real query
             # displaces the stub at the tail. With no user turn yet the stub stands after the
-            # shared system prefix. After a reply it makes that reply a past turn: a server
-            # renders its last turn another way while nothing follows it (ds4 writes the
-            # reasoning out, `<think>…</think>`, where a past turn has a bare `</think>`),
-            # and the pre-heat would prefill a reply the next request never sends.
+            # shared system prefix.
             trace(f"{self.LABEL} pre-heat: the prompt ends without a user turn — a stub one closes it")
             messages = messages + [{'role': 'user', 'content': ' '}]
         kwargs = self._request_kwargs(messages, Thinking.NORMAL, stream=True)
@@ -377,10 +392,23 @@ class OpenAICompatibleLLM(ChatGPTLLM):
 
     # --- the request ---------------------------------------------------------------------------
 
+    @classmethod
+    def replay_store(cls) -> ReplayStore:
+        """The one side store every instance of the class fills and replays from (the tiers
+        share the server and its cache)."""
+        if cls._replay_store is None:
+            cls._replay_store = ReplayStore(CACHE_DIR / cls.REPLAY_FILE, cls.LABEL)
+        return cls._replay_store
+
     def _prepare_messages(self, messages: list[dict]) -> list[dict]:
-        """The converted messages as this server wants them; the hook a subclass rewrites the
-        history in (ds4's replay)."""
-        return messages
+        """The converted messages with every assistant row as the model wrote it, its reasoning
+        in `reasoning_content` (`Ds4Replay`). Keep's history drops the reasoning and the round
+        that follows a command carries it as a <thinking> block in the row: sent as they are,
+        a turn reads one way while it runs and another once it is history, and the server
+        prefills everything from its first reply again (oMLX with Qwen, 2026-11-23: 2.6k
+        tokens, 36 s, where 0.8k were new). The server's chat template decides what the
+        reasoning of a past turn renders as — the same in every request either way."""
+        return replay(messages, self.replay_store())
 
     def _request_kwargs(self, messages: list[dict], thinking: Thinking | bool, stream: bool) -> dict:
         messages = self._prepare_messages(self._convert_anthropic_content(messages))
@@ -416,8 +444,11 @@ class OpenAICompatibleLLM(ChatGPTLLM):
 
     @staticmethod
     def _prompt_text(messages: list[dict]) -> str:
-        """The prompt as one text, for the prefill tracker's forecast."""
-        return "\n".join(CacheBreakTracker.flatten(messages))
+        """The prompt as one text, for the prefill tracker's forecast — a row's <thinking> block
+        left out, as the history holds the row, so a round compares with the turns after it."""
+        visible = [{**m, 'content': split_thinking(m['content'])[1]}
+                   if m.get('role') == 'assistant' and isinstance(m.get('content'), str) else m for m in messages]
+        return "\n".join(CacheBreakTracker.flatten(visible))
 
     def _take_progress(self, token: int | None, chunk) -> bool:
         """A streamed chunk's `prompt_progress`, when it carries one, handed to the prefill
@@ -520,8 +551,9 @@ class OpenAICompatibleLLM(ChatGPTLLM):
         return withheld
 
     def _remember(self, reply: str, reasoning: str, verbatim: str, sent: list[dict]):
-        """A finished reply and the messages it answered as they went out, for a subclass that
-        keeps what the model wrote (ds4's replay store)."""
+        """A finished reply and the messages it answered as they went out: the replay store
+        keeps the reasoning and the content behind the row Keep's history will hold."""
+        self.replay_store().remember_reply(reply, reasoning, verbatim)
 
     def create_streaming_completion(self, messages: list[dict], thinking: Thinking | bool = Thinking.NORMAL,
                                     volatile_tail: int = 0, follow_up: bool = False) -> Generator[str, None, None]:

@@ -34,8 +34,9 @@ class ReplayStore:
 
     LIMIT = 400
 
-    def __init__(self, path: Path | None = DEFAULT_PATH):
+    def __init__(self, path: Path | None = DEFAULT_PATH, label: str = "ds4"):
         self.path = path
+        self.label = label
         self.turns: dict[str, dict] = {}    # assistant row (stripped) → {"reasoning", "content"}
         self._loaded = path is None
 
@@ -46,11 +47,11 @@ class ReplayStore:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             self.turns = data.get("turns", {})
-            info(f"ds4 replay store loaded from {self.path}: {len(self.turns)} turn(s)")
+            info(f"{self.label} replay store loaded from {self.path}: {len(self.turns)} turn(s)")
         except FileNotFoundError:
-            trace(f"ds4 replay store: no {self.path} yet — starting empty")
+            trace(f"{self.label} replay store: no {self.path} yet — starting empty")
         except (OSError, ValueError) as e:
-            note(f"ds4 replay store: {self.path} unreadable ({e}) — starting empty")
+            note(f"{self.label} replay store: {self.path} unreadable ({e}) — starting empty")
 
     def save(self):
         if self.path is None:
@@ -61,7 +62,7 @@ class ReplayStore:
             tmp.write_text(json.dumps({"turns": self.turns}, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, self.path)
         except OSError as e:
-            note(f"ds4 replay store: could not write {self.path} ({e}) — kept in memory only")
+            note(f"{self.label} replay store: could not write {self.path} ({e}) — kept in memory only")
 
     def remember_reply(self, reply: str, reasoning: str, content: str):
         """One finished reply: `reply` the text Keep stores as the assistant row (thinking
@@ -70,13 +71,13 @@ class ReplayStore:
         self._ensure_loaded()
         key = reply.strip()
         if not key or not (reasoning or content != key):
-            trace("ds4 replay store: a plain reply with nothing to remember")
+            trace(f"{self.label} replay store: a plain reply with nothing to remember")
             return
         self.turns.pop(key, None)
         self.turns[key] = {"reasoning": reasoning, "content": content}
         while len(self.turns) > self.LIMIT:
             del self.turns[next(iter(self.turns))]
-        trace(f"ds4 replay store: reply remembered ({len(reasoning)} reasoning chars)")
+        trace(f"{self.label} replay store: reply remembered ({len(reasoning)} reasoning chars)")
         self.save()
 
     def turn(self, key: str) -> dict | None:
@@ -99,7 +100,7 @@ def replay(messages: list[dict], store: ReplayStore) -> list[dict]:
     own thinking block, within the request, still goes as the reasoning). The stored content
     stands in only when it is the row's text: a reply whose call the server parsed out of it
     stores the text before the call, and the row then goes as Keep holds it."""
-    out, replayed = [], 0
+    out, replayed, reasoned = [], 0, 0
     for message in messages:
         if message.get("role") != "assistant" or not isinstance(message.get("content"), str):
             out.append(message)
@@ -113,6 +114,7 @@ def replay(messages: list[dict], store: ReplayStore) -> list[dict]:
             rebuilt["reasoning_content"] = reasoning
         out.append(rebuilt)
         replayed += verbatim
-    if replayed:
-        trace(f"ds4 replay: {replayed} assistant row(s) sent as the model wrote them")
+        reasoned += bool(reasoning)
+    if replayed or reasoned:
+        trace(f"{store.label} replay: {replayed} assistant row(s) sent as the model wrote them, {reasoned} with their reasoning")
     return out

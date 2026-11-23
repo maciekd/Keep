@@ -108,7 +108,7 @@ from collections import deque
 from urllib.parse import urlparse
 
 from .Ds4DiskCacheSweeper import Ds4DiskCacheSweeper
-from .Ds4Replay import ReplayStore, replay
+from .Ds4Replay import ReplayStore
 from .OpenAICompatibleLLM import OpenAICompatibleLLM, _Content
 from .PrefillTracker import LogFormat, PrefillTracker, is_local_host, parse_last
 from .BackgroundSlot import BackgroundSlot
@@ -218,6 +218,11 @@ class Ds4LLM(OpenAICompatibleLLM):
     NAME = "DS4"
     LABEL = "ds4"
     DEFAULT_MODEL = 'deepseek-v4.1-flash'
+    REPLAY_FILE = 'ds4_replay.json'
+    # ds4 renders its last turn another way while nothing follows it (the reasoning written out,
+    # `<think>…</think>`, where a past turn has a bare `</think>`): without the stub the
+    # pre-heat would prefill a reply the next request never sends.
+    PRE_HEAT_STUB_AFTER_REPLY = True
     DEFAULT_LOG_PATH = '~/Documents/ds4/ds4-server.log'   # where the server's log goes on the host that runs it
     RETURN_PROGRESS = False   # ds4-server streams no progress; the bar reads its log
     # Measured on V4.1 Flash, cold 24k–30k prompts, 2026-10-21; each reply's usage refines it.
@@ -290,23 +295,12 @@ class Ds4LLM(OpenAICompatibleLLM):
 
     # --- the replay ---------------------------------------------------------------------------
 
-    @classmethod
-    def replay_store(cls) -> ReplayStore:
-        """The one side store every Ds4LLM instance fills and replays from (the tiers share
-        the server and its one live context)."""
-        if cls._replay_store is None:
-            cls._replay_store = ReplayStore()
-        return cls._replay_store
-
-    def _prepare_messages(self, messages: list[dict]) -> list[dict]:
-        return replay(messages, self.replay_store())
-
     def _remember(self, reply: str, reasoning: str, verbatim: str, sent: list[dict]):
         """Give the replay store what the next request needs to send this reply back as the
         model wrote it: `reply` as Keep's history will hold it, the reasoning, the content.
         A reply the model ended itself also leaves the server's checkpoint of the dialog up to
         it, which `_pre_heat_needed` asks for."""
-        self.replay_store().remember_reply(reply, reasoning, verbatim)
+        super()._remember(reply, reasoning, verbatim, sent)
         if self._last_stop_reason != 'stop':
             trace(f"ds4: the reply ended with '{self._last_stop_reason}' — the server keeps no checkpoint of it")
             return
