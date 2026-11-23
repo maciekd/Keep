@@ -219,6 +219,7 @@ class _Request:
     ran_out: bool = False                     # the clock's estimate ran out before the server said anything (logged once)
     bar_up: bool = False                      # the bar this request waits behind is drawn
     late_logged: bool = False                 # "too little left to start a bar" is logged once
+    waited: bool = False                      # another request was in flight when it was sent: its own clock says nothing of its prefill
 
     @property
     def generating(self) -> bool:
@@ -273,9 +274,9 @@ class PrefillTracker:
         with self._lock:
             self._last_token += 1
             token = self._last_token
+            queued = len(self._requests)
             self._requests.append(_Request(token, interactive, time.monotonic(), anchor, on_work=on_work,
-                                           prompt=prompt, forecast=forecast))
-            queued = len(self._requests) - 1
+                                           prompt=prompt, forecast=forecast, waited=queued > 0))
             self._stamp_head()
         trace(f"{self.label} prefill: started (#{token}, {'user request' if interactive else 'background'}"
               f"{f', {queued} ahead of it' if queued else ''}"
@@ -382,9 +383,12 @@ class PrefillTracker:
 
     def prefill_seconds(self, token: int | None) -> float | None:
         """How long the request's prefill took, for `observe_rate`: what the log's done line says
-        (read now), else the time from its workload line to its first token; None when neither
-        is known. Never the time since the request was sent — that counts the wait behind the
-        request ahead, and a rate from it dragged the estimate down to single digits."""
+        (read now), else the time from its workload line to its first token, else — a server
+        that reports nothing of its prefill (oMLX in front of another engine) — the time from the
+        send to the first token, or to now for a request that never got one (a pre-heat, read as
+        its stream ends). That last one only for a request sent with nothing else in flight: the
+        wait behind the request ahead, counted in, dragged the estimate down to single digits.
+        None when nothing is known."""
         with self._lock:
             request = self._find(token)
         if request is None:
@@ -395,7 +399,13 @@ class PrefillTracker:
                 return request.duration
             if request.first_token_ts and request.work_ts:
                 return request.first_token_ts - request.work_ts
-        trace(f"{self.label} prefill: #{token}'s duration unknown — no done line, no workload line; the rate estimate stands.")
+            if request.head_ts and not request.waited:
+                seconds = (request.first_token_ts or time.monotonic()) - request.head_ts
+                trace(f"{self.label} prefill: the server said nothing of #{token}'s prefill — "
+                      f"{seconds:.1f} s on our clock, from the send")
+                return seconds
+        trace(f"{self.label} prefill: #{token}'s duration unknown — no done line, no workload line, and it "
+              "waited behind another request; the rate estimate stands.")
         return None
 
     def observe_rate(self, tokens: int, seconds: float):

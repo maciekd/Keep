@@ -269,10 +269,23 @@ class TestRate:
         assert tracker.prefill_seconds(token) == pytest.approx(3.0, abs=0.2)
         tracker.end(token)
 
+    def test_a_server_that_says_nothing_is_timed_from_the_send_unless_the_request_waited(self, tracker):
         token = tracker.begin()
+        tracker._find(token).head_ts = time.monotonic() - 4.0
         tracker.first_token(token)
-        assert tracker.prefill_seconds(token) is None, "no workload line read: nothing to measure from"
+        assert tracker.prefill_seconds(token) == pytest.approx(4.0, abs=0.2)
+
+        behind = tracker.begin()
         tracker.end(token)
+        tracker._find(behind).head_ts = time.monotonic() - 4.0
+        tracker.first_token(behind)
+        assert tracker.prefill_seconds(behind) is None, "its clock holds the wait behind the request ahead"
+        tracker.end(behind)
+
+        pre_heat = tracker.begin(interactive=False)
+        tracker._find(pre_heat).head_ts = time.monotonic() - 2.0
+        assert tracker.prefill_seconds(pre_heat) == pytest.approx(2.0, abs=0.2), "no first token: until now"
+        tracker.end(pre_heat)
 
     def test_a_small_prefill_teaches_nothing_because_the_requests_fixed_start_is_most_of_it(self, tracker):
         tracker.observe_rate(135, 0.6)
