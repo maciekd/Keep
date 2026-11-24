@@ -199,3 +199,55 @@ def test_callbacks_run_when_the_intro_ends_and_at_once_after_it():
     assert fired == ["a", "b"]
     intro.on_done(lambda: fired.append("late"))
     assert fired == ["a", "b", "late"], "after the intro a callback runs right away"
+
+
+def test_a_callback_for_the_intros_start_waits_for_the_first_client_and_runs_once():
+    intro, scene, clock = make()
+    started = []
+    intro.on_started(lambda: started.append(intro.state))
+    assert started == [], "no client yet: nothing has started"
+    intro.draw(TUIScreen(80, 24), 0)
+    assert started == [FLYING], "it runs with the flight under way, long before the tabs"
+    clock.now += 0.2
+    intro.draw(TUIScreen(80, 24), 1)
+    intro.skip()
+    assert started == [FLYING]
+
+
+def test_a_callback_for_the_start_registered_once_the_intro_runs_goes_at_once():
+    intro, scene, clock = make()
+    intro.draw(TUIScreen(80, 24), 0)
+    started = []
+    intro.on_started(lambda: started.append("late"))
+    assert started == ["late"]
+
+
+def test_a_failing_start_callback_costs_neither_the_next_one_nor_the_flight():
+    intro, scene, clock = make()
+    started = []
+
+    def broken():
+        raise RuntimeError("the opening turn could not be sent")
+    intro.on_started(broken)
+    intro.on_started(lambda: started.append("second"))
+    assert intro.draw(TUIScreen(80, 24), 0) is True
+    assert started == ["second"] and intro.state == FLYING
+
+
+def test_the_start_and_the_end_of_the_intro_each_fire_their_own_callbacks():
+    intro, scene, clock = make()
+    fired = []
+    intro.on_started(lambda: fired.append("start"))
+    intro.on_done(lambda: fired.append("done"))
+    intro.draw(TUIScreen(80, 24), 0)
+    assert fired == ["start"]
+    scene.flight = scene.intro.length() - 0.1
+    clock.now += 0.2
+    intro.draw(TUIScreen(80, 24), 0)                    # landed: the title is typed
+    clock.now += len(Title.TEXT) / Title.CPS + 1
+    intro.draw(TUIScreen(80, 24), 1)                    # typed: the hold starts
+    assert fired == ["start"], "the tabs are not on screen yet"
+    clock.now += StartupIntro.HOLD_SECONDS
+    still_owned = intro.draw(TUIScreen(80, 24), 2)
+    assert intro.state == DONE and still_owned is False
+    assert fired == ["start", "done"]

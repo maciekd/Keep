@@ -315,3 +315,128 @@ class TestPrefillBar:
             assert not llm._take_progress(token, {'choices': []})
         finally:
             OpenAICompatibleLLM._prefill.end(token)
+
+
+class _InlineThread:
+    """`threading.Thread` run on `start()`: a pre-heat completes inside the test."""
+
+    def __init__(self, target=None, args=(), **_):
+        self._target, self._args = target, args
+
+    def start(self):
+        self._target(*self._args)
+
+
+SYSTEM_AND_TURN = [{'role': 'system', 'content': 'sys'},
+                   {'role': 'user', 'content': 'hello'},
+                   {'role': 'assistant', 'content': 'hi there'}]
+
+
+@pytest.mark.unit
+class TestPreHeat:
+    """The pre-heat as a server with a snapshot cache wants it (oMLX): a prompt that ends on a
+    reply goes out without a stub user turn, and a deferred one never runs beside a turn."""
+
+    @pytest.fixture(autouse=True)
+    def _inline_threads_and_a_clean_guard(self, monkeypatch):
+        monkeypatch.setattr(OpenAICompatibleLLM, "_pre_heat_in_flight", False)
+        monkeypatch.setattr(OpenAICompatibleLLM, "_pre_heat_pending", None)
+        OpenAICompatibleLLM._slot.reset()
+        with patch('assistant.llm.OpenAICompatibleLLM.threading.Thread', _InlineThread):
+            yield
+        OpenAICompatibleLLM._slot.reset()
+
+    def _pre_heat(self, llm, messages):
+        with _config({}):
+            llm.pre_heat_cache(messages)
+
+    def test_a_prompt_ending_in_a_reply_goes_out_as_it_is(self):
+        # A stub after the reply would move the server's snapshot past where the next turn begins.
+        llm = _llm(chunks=[_chunk(content="")])
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert llm.client.chat.completions.create.call_args.kwargs['messages'] == SYSTEM_AND_TURN
+
+    def test_a_prompt_without_any_turn_is_still_closed_by_a_stub_user_turn(self):
+        llm = _llm(chunks=[_chunk(content="")])
+        self._pre_heat(llm, SYSTEM_AND_TURN[:1])
+        sent = llm.client.chat.completions.create.call_args.kwargs['messages']
+        assert [m['role'] for m in sent] == ['system', 'user'] and not sent[1]['content'].strip()
+
+    def test_ds4_closes_the_same_prompt_with_the_stub_through_the_shared_code(self):
+        with _config({}):
+            ds4 = Ds4LLM()
+        ds4.client = MagicMock()
+        ds4.client.with_options.return_value = ds4.client
+        ds4.client.chat.completions.create.return_value = [_chunk(content="")]
+        with _config({}), patch.object(Ds4LLM, '_pre_heat_needed', return_value=True):
+            ds4._pre_heat(SYSTEM_AND_TURN)
+        roles = [m['role'] for m in ds4.client.chat.completions.create.call_args.kwargs['messages']]
+        assert roles == ['system', 'user', 'assistant', 'user']
+
+    def test_a_prompt_deferred_behind_a_pre_heat_is_dropped_when_a_turn_has_arrived(self):
+        llm = _llm()
+        create = llm.client.chat.completions.create
+        newer = SYSTEM_AND_TURN + [{'role': 'user', 'content': 'again'}]
+
+        def first_request(**kwargs):
+            llm.pre_heat_cache(newer)                       # deferred: one is in flight
+            OpenAICompatibleLLM._slot.interactive_begin()   # and a turn starts before it ends
+            return iter([_chunk(content="")])
+        create.side_effect = first_request
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert create.call_count == 1, "the deferred prompt would prefill beside the turn"
+        assert OpenAICompatibleLLM._pre_heat_pending is None
+
+        # The guard is free again: the pre-heat the turn's end brings goes out.
+        OpenAICompatibleLLM._slot.interactive_end()
+        create.side_effect = lambda **kwargs: iter([_chunk(content="")])
+        self._pre_heat(llm, newer)
+        assert create.call_count == 2 and create.call_args.kwargs['messages'] == newer
+
+    def test_a_prompt_deferred_behind_a_pre_heat_goes_out_when_no_turn_came(self):
+        llm = _llm()
+        create = llm.client.chat.completions.create
+        newer = SYSTEM_AND_TURN + [{'role': 'user', 'content': 'again'}]
+
+        def first_request(**kwargs):
+            llm.pre_heat_cache(newer)
+            create.side_effect = lambda **kwargs: iter([_chunk(content="")])
+            return iter([_chunk(content="")])
+        create.side_effect = first_request
+        self._pre_heat(llm, SYSTEM_AND_TURN)
+        assert [call.kwargs['messages'] for call in create.call_args_list] == [SYSTEM_AND_TURN, newer]
+        assert OpenAICompatibleLLM._pre_heat_in_flight is False
+
+
+@pytest.mark.unit
+class TestTheReplay:
+    """A reply goes back to the server as the model wrote it, so a turn reads the same while
+    it runs and once it is history."""
+
+    def test_a_past_reply_is_sent_with_the_reasoning_the_history_dropped(self):
+        llm = _llm(chunks=[_chunk(reasoning="The owner greets me."), _chunk(content="Hello Marcus.", finish_reason='stop')])
+        streamed = "".join(_stream(llm))
+        assert "The owner greets me." in streamed, "the stream carries the reasoning as a thinking block"
+        history = [{'role': 'user', 'content': 'hi'}, {'role': 'assistant', 'content': 'Hello Marcus.'},
+                   {'role': 'user', 'content': 'and now?'}]
+        with _config({}):
+            sent = llm._request_kwargs(history, False, stream=True)['messages']
+        assert sent[1] == {'role': 'assistant', 'content': 'Hello Marcus.', 'reasoning_content': 'The owner greets me.'}
+        assert sent[0] == history[0] and sent[2] == history[2]
+
+    def test_a_round_that_follows_a_command_sends_the_same_row_as_the_turns_after_it(self):
+        llm = _llm(chunks=[_chunk(reasoning="Lights first."), _chunk(content="Turning it on.", finish_reason='stop')])
+        within_the_turn = "".join(_stream(llm))   # the row as the next round of the turn carries it
+        assert within_the_turn != "Turning it on."
+        with _config({}):
+            in_the_round = llm._request_kwargs([{'role': 'assistant', 'content': within_the_turn}], False, stream=True)
+            as_history = llm._request_kwargs([{'role': 'assistant', 'content': 'Turning it on.'}], False, stream=True)
+        assert in_the_round['messages'] == as_history['messages']
+
+    def test_the_prefill_forecast_reads_a_row_without_its_thinking_block(self):
+        row = "<thinking>Lights first.</thinking>Turning it on."
+        with_block = [{'role': 'user', 'content': 'light'}, {'role': 'assistant', 'content': row}]
+        as_history = [{'role': 'user', 'content': 'light'}, {'role': 'assistant', 'content': 'Turning it on.'}]
+        assert OpenAICompatibleLLM._prompt_text(with_block) == OpenAICompatibleLLM._prompt_text(as_history)
+        assert "Lights first." in OpenAICompatibleLLM._prompt_text([{'role': 'user', 'content': row}]), \
+            "only a reply's block is reasoning"
