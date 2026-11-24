@@ -490,6 +490,8 @@ class DashboardTab(TabView):
     LTM_LAYERS = ((MemorySizes.BANK, "bank", Theme.COLOR_PINK), ("procedures", "procedures", Theme.COLOR_PURPLE),
                   ("memos", "memos", Theme.COLOR_BLUE), ("watchlist", "watch list", Theme.COLOR_TEAL))
 
+    LTM_Y_AXIS_W = 6            # a quarter-step axis has a half like 12.5KB, a column over the shared width
+
     def _draw_long_term_memory_chart(self, screen: TUIScreen, x: int, y: int, width: int, chart_h: int):
         """The memory's size per day as a stack: the bank, and on it the procedures, the memos
         and the watch list from the first day their sizes were recorded. The value is the
@@ -505,7 +507,7 @@ class DashboardTab(TabView):
         self._draw_area_chart(screen, x, y, width, chart_h, totals, Theme.COLOR_PINK,
                               "Long Term Memory", latest_str, max_value=max_kb, y_axis_format=self._format_kb,
                               layers=[layer for layer in layers if any(v is not None for v in layer[1])],
-                              aside=f"{totals[-1]:.0f} KB" if totals else "")
+                              aside=f"{totals[-1]:.0f} KB" if totals else "", y_axis_w=self.LTM_Y_AXIS_W)
 
     @staticmethod
     def _format_kb(v: float) -> str:
@@ -559,12 +561,14 @@ class DashboardTab(TabView):
                          window: int = 0, window_label: str = "", window_format=None,
                          ticks: Optional[Sequence[Tuple[float, str, Color]]] = None,
                          color_for: Optional[Callable[[float], Color]] = None,
-                         layers: Sequence[Tuple[str, Sequence[Optional[float]], Color]] = (), aside: str = ""):
+                         layers: Sequence[Tuple[str, Sequence[Optional[float]], Color]] = (), aside: str = "",
+                         y_axis_w: int = 0):
         """A chart tile with a filled line chart (`ChartImage.area`): the title strip with the
         latest value and, with a `window`, a legend for the rolling average of that many points
         traced over the line, its latest figure in parentheses (in `window_format`, the y-axis
         format by default); the y-axis labelled at 0, half and full (in `y_axis_format`,
         percent by default) unless `ticks` — (value, label, colour) — name the rules instead.
+        `y_axis_w` is the axis's width for a chart whose labels need more than `Y_AXIS_W`.
         A missing value (None) breaks the line. With nothing to show the plot is the empty
         ground with a note.
         With `layers` — (name, values, colour), aligned with `values`, which are their sums —
@@ -588,9 +592,10 @@ class DashboardTab(TabView):
             value_str = f"{aside} · {value_str}"    # what the legend must leave free
         y_axis_format = y_axis_format or self._format_pct
         window_format = window_format or y_axis_format
+        y_axis_w = y_axis_w or self.Y_AXIS_W
         chart_y = y + Tile.CARD_TOP
-        chart_x = x + 2 + self.Y_AXIS_W
-        chart_w = width - 4 - self.Y_AXIS_W
+        chart_x = x + 2 + y_axis_w
+        chart_w = width - 4 - y_axis_w
         if chart_w <= 0 or chart_h <= 0:
             return
 
@@ -605,7 +610,7 @@ class DashboardTab(TabView):
             if text:
                 row = min(chart_h - 1, int(tick / max_value * (chart_h - 1))) if max_value > 0 else 0
                 screen.set_color(label_color or color)
-                screen.write_at(x + 2, chart_y + chart_h - 1 - row, text.rjust(self.Y_AXIS_W - 1))
+                screen.write_at(x + 2, chart_y + chart_h - 1 - row, text.rjust(y_axis_w - 1))
         screen.reset_color()
 
         values = list(values)

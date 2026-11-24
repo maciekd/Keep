@@ -851,8 +851,6 @@ class TestLongTermMemoryAxis:
         labels = draw_memory_chart(150, 209)
         assert "250KB" in labels and "125KB" in labels and "500KB" not in labels
 
-    @pytest.mark.xfail(strict=True, reason="the half label of a 25 KB axis, 12.5KB, is six characters in the axis's "
-                                           "five columns: the chart's rule overwrites its B and it reads 12.5K")
     def test_the_half_of_a_25_kb_axis_is_labelled_in_full(self):
         labels = draw_memory_chart(21)
         assert "25KB" in labels and "12.5KB" in labels
