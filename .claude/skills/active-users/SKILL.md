@@ -21,6 +21,10 @@ A cell where the install was sent a reactivation push that day is drawn in the p
 `reactivation_nudge` events with `outcome = 'sent'`, on the same Stockholm calendar days (a
 `declined` or `covered` step sent nothing).
 
+Hovering a cell shows the last message the person wrote that day and the push's text, where
+telemetry holds them: an install's turn text is recorded during its first week only. A turn
+the server started itself is nobody's message.
+
 ## Facts that hold
 
 - Query PostHog with `.claude/skills/ftue-report/scripts/phq.py` (HogQL on stdin; the key is
@@ -50,7 +54,7 @@ repository or a commit.
 
 Copy `assets/template.html` and replace its `const data = {…}` object - `lede`, `notes`,
 `users`, `days` (a day's optional fourth array holds, per install, the step of the push sent
-that day, 0 for none) - and nothing else; the sample values there are fictional and show the shape.
+that day, 0 for none; its optional fifth the hover texts, as the sample shows) - and nothing else; the sample values there are fictional and show the shape.
 The stat tiles, shading and totals are computed from it. Then open the page and tell the user
 the path, the total, who the installs are and anything that stands out (a new install, one
 gone quiet, how much is the user's own machines).

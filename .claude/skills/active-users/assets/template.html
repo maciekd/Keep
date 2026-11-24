@@ -57,6 +57,16 @@
   tr.sum td { border-top: 1px solid var(--line); padding-top: 14px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
   tr.sum td.day { text-align: left; color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: .1em; }
   tr.sum td.total { text-align: right; color: var(--accent); font-size: 18px; }
+  td.cell.tip { cursor: help; }
+  #tip {
+    position: fixed; z-index: 10; display: none; width: max-content; max-width: min(380px, calc(100vw - 24px));
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
+    padding: 12px 14px; font-size: 13px; line-height: 1.45; pointer-events: none;
+  }
+  #tip div + div { margin-top: 10px; }
+  #tip b { display: block; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+  #tip .p b { color: hsl(var(--push)); }
+  #tip span { white-space: pre-wrap; overflow-wrap: anywhere; }
   footer { color: var(--muted); font-size: 13px; margin-top: 18px; display: grid; gap: 4px; }
 </style>
 </head>
@@ -68,6 +78,7 @@
   <div class="stats" id="stats"></div>
   <div class="card"><table id="grid"></table></div>
   <footer id="notes"></footer>
+  <div id="tip"></div>
 </main>
 <script>
 // The one thing a run replaces: this object. Everything below it renders from it.
@@ -84,13 +95,15 @@ const data = {
     { who: "", tag: "unnamed", id: "2a3b4c5d" },
   ],
   // A day's optional fourth entry: per install, the step of the reactivation push sent that day (0 = none).
+  // Its optional fifth: per install, what a hover shows - { said: the last message the person wrote
+  // that day, push: the reactivation message sent } with either key left out, or 0 for nothing.
   days: [
     ["Mon", "3 Mar", [72, 40, 9, 0]],
     ["Tue", "4 Mar", [65, 22, 4, 2]],
     ["Wed", "5 Mar", [98, 6, 11, 0]],
     ["Thu", "6 Mar", [120, 0, 7, 1]],
-    ["Fri", "7 Mar", [31, 0, 10, 0], [0, 1, 0, 0]],
-    ["Sat", "8 Mar", [84, 3, 0, 0], [0, 2, 0, 0]],
+    ["Fri", "7 Mar", [31, 0, 10, 0], [0, 1, 0, 0], [{ said: "Turn the porch light off at eleven." }, { push: "The tomatoes you asked about are in season now. Want the recipe?" }, 0, 0]],
+    ["Sat", "8 Mar", [84, 3, 0, 0], [0, 2, 0, 0], [0, { said: "Yes, send it!", push: "Your parcel is due tomorrow. Shall I watch it?" }, 0, 0]],
     ["Sun", "9 Mar", [12, 0, 13, 0]],
   ],
 };
@@ -105,7 +118,7 @@ const busiest = days.reduce((a, b) => sum(b[2]) > sum(a[2]) ? b : a);
 document.getElementById("lede").textContent = data.lede;
 const pushCount = days.reduce((n, d) => n + (d[3] || []).filter(Boolean).length, 0);
 document.getElementById("notes").innerHTML = (pushCount
-  ? `<span class="legend"><i></i>A day an install was sent a reactivation push (${pushCount} in all; hover a cell for its step).</span>`
+  ? `<span class="legend"><i></i>A day an install was sent a reactivation push (${pushCount} in all).</span>`
   : "") + data.notes.map(n => `<span>${n}</span>`).join("");
 document.getElementById("stats").innerHTML = [
   [grand, `messages in ${days.length} days`],
@@ -117,15 +130,42 @@ document.getElementById("stats").innerHTML = [
 const head = `<tr><th class="day"></th>${users.map(u =>
   `<th><span class="who">${u.who || u.id}</span><span class="tag">${u.tag || "&nbsp;"}</span><span class="id">${u.who ? u.id : "&nbsp;"}</span></th>`
 ).join("")}<th class="total">Total</th></tr>`;
-const body = days.map(([wd, date, vals, pushes = []]) => `<tr><td class="day"><b>${wd}</b><span>${date}</span></td>${vals.map((v, i) => {
+const body = days.map(([wd, date, vals, pushes = []], d) => `<tr><td class="day"><b>${wd}</b><span>${date}</span></td>${vals.map((v, i) => {
   const step = pushes[i];
-  const push = step ? ` push" title="Reactivation push sent (step ${step})` : "";
+  const push = (step ? " push" : "") + `" data-at="${d}:${i}`;
   if (!v) return `<td class="cell zero${push}">·</td>`;
   const a = 0.1 + 0.85 * Math.sqrt(v / max);
   return `<td class="cell${a > 0.6 ? " hot" : ""}${push}" style="--a:${a.toFixed(2)}">${v}</td>`;
 }).join("")}<td class="total">${sum(vals)}</td></tr>`).join("");
 const foot = `<tr class="sum"><td class="day">Total</td>${colTotals.map(t => `<td>${t}</td>`).join("")}<td class="total">${grand}</td></tr>`;
-document.getElementById("grid").innerHTML = head + body + foot;
+const grid = document.getElementById("grid"), tip = document.getElementById("tip");
+grid.innerHTML = head + body + foot;
+
+// The texts are what people wrote: they go in as text, never as markup.
+const part = (cls, label, text) => {
+  const div = document.createElement("div"), b = document.createElement("b"), span = document.createElement("span");
+  div.className = cls; b.textContent = label; span.textContent = text; div.append(b, span);
+  return div;
+};
+const parts = cell => {
+  const [d, i] = cell.dataset.at.split(":").map(Number);
+  const step = (days[d][3] || [])[i], { said, push } = (days[d][4] || [])[i] || {};
+  return [
+    step && part("p", `Reactivation push · step ${step}`, push || "Text not recorded."),
+    said && part("s", "Last message that day", said),
+  ].filter(Boolean);
+};
+grid.querySelectorAll("td[data-at]").forEach(cell => parts(cell).length && cell.classList.add("tip"));
+grid.addEventListener("mousemove", e => {
+  const cell = e.target.closest("td.tip");
+  if (!cell) return void (tip.style.display = "none");
+  if (tip.dataset.at !== cell.dataset.at) { tip.replaceChildren(...parts(cell)); tip.dataset.at = cell.dataset.at; }
+  tip.style.display = "block";
+  const { width, height } = tip.getBoundingClientRect();
+  tip.style.left = Math.max(12, Math.min(e.clientX + 16, innerWidth - width - 12)) + "px";
+  tip.style.top = (e.clientY + 20 + height > innerHeight ? Math.max(12, e.clientY - height - 12) : e.clientY + 20) + "px";
+});
+grid.addEventListener("mouseleave", () => tip.style.display = "none");
 </script>
 </body>
 </html>
