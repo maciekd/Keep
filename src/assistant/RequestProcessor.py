@@ -205,7 +205,9 @@ class RequestProcessor:
         # Every dialog manager this request ran a round on, so the telemetry can name the
         # commands of the whole request, not only the last round's.
         self._rounds: list = []
-        self.turn_started = time.time()  # the request's arrival; CommandProcessor hands it to the commands
+        # The request's arrival, set by process(): a handler waits in the pool for hours before
+        # its request. CommandProcessor hands it to the commands.
+        self.turn_started: float | None = None
         self._silent_end_followed_up = False
         self._cap_hit_followed_up = False
         self._cut_round_result: str | None = None  # the second cut round's command result, for the history
@@ -288,6 +290,7 @@ class RequestProcessor:
         """Prepare the turn and return the event stream (a generator; nothing runs until
         it is iterated). Returns an empty iterator when the handler was killed already."""
         self.is_performing_request = True
+        self.turn_started = time.time()
         self.my_thread_name = threading.current_thread().name
         if self.turn_gate:
             self.turn_gate.begin_turn(self.request_data.args)

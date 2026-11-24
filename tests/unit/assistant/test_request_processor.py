@@ -1,6 +1,7 @@
 import queue
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
 import httpx
@@ -2395,6 +2396,34 @@ class TestTelemetryReport:
         assert isinstance(events[-1], Done)
         get_instance.return_value.user_turn.assert_not_called()
         get_instance.return_value.assistant_turn.assert_not_called()
+
+
+class TestTurnStarted:
+    """`turn_started` is the request's arrival, not the building of the pooled handler: the
+    commands tell the turn's own log lines apart by it (`server_logs`)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_autonomous_manager(self, full_handler):
+        with patch.object(RequestProcessor, "_notify_autonomous_user_started"), \
+                patch.object(RequestProcessor, "_notify_autonomous_user_ended"):
+            yield
+
+    def test_a_handler_that_waited_in_the_pool_starts_its_turn_when_the_request_arrives(self, full_handler):
+        full_handler.is_killed = True
+        with patch("assistant.RequestProcessor.time.time", return_value=5000.0):
+            list(full_handler.process(Mock()))
+        assert full_handler.turn_started == 5000.0
+
+    def test_the_command_processor_reads_the_arrival_and_not_the_handlers_construction(self, full_handler):
+        from assistant.commands.CommandProcessor import CommandProcessor
+        processor = CommandProcessor.__new__(CommandProcessor)
+        processor.turn_started = None
+        dialog = SimpleNamespace(web_request_handler=full_handler)
+        assert processor._turn_started_for(dialog) is None  # still pooled: no turn yet
+        full_handler.is_killed = True
+        with patch("assistant.RequestProcessor.time.time", return_value=5000.0):
+            list(full_handler.process(Mock()))
+        assert processor._turn_started_for(dialog) == 5000.0
 
 
 class TestPreHeatHold:
