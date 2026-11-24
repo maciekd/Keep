@@ -2,24 +2,19 @@
 
 Keep can do all its thinking on a model running on your own hardware, so all private information stays on your machine. 
 
-On a Mac that can carry it, the installer asks where Keep should think and sets the local model up itself: choose **Local, automatic setup**. On any other machine, or for a model or server of your own, start with the default settings (Anthropic) and have Keep help you configure local AI. The first thing you'll do with Keep is change to local AI, so nothing sensitive will leave your machine.
+On a Mac that can carry it, the installer asks where Keep should think and sets the local model up itself: choose **Local, automatic setup**. On any other machine, or for a model or server of your own, start on Claude and ask Keep to move you to local AI. Do that first, before you connect anything, and nothing sensitive leaves your machine.
 
 One line of `config.yaml`, `local_backend`, is the switch between the two.
 
 ## What the installer sets up
 
-Offered on a Mac with Apple Silicon, macOS 15 or newer, 32 GB of memory and 30 GB of free disk:
+On a Mac with Apple Silicon, 32 GB of memory and 30 GB of free disk, the installer:
 
-- [oMLX](https://github.com/jundot/omlx) through Homebrew (Homebrew itself where it is missing), in the version Keep was tested with and pinned there (`brew pin`). An oMLX you already have is kept as it is.
-- The model, [Jundot/Qwen3.8-27B-oQ4e-mtp](https://huggingface.co/Jundot/Qwen3.8-27B-oQ4e-mtp), an 18 GB download into `~/.omlx/models/`.
-- oMLX as a service that starts at login (`brew services`); `start.sh` and `stop.sh` leave it alone. Stop it with `brew services stop jundot/omlx/omlx`.
-- `local_backend: openai` and the model's name in `config.yaml`, and no Anthropic key.
+- installs [oMLX](https://github.com/jundot/omlx) through Homebrew and starts it at login
+- downloads the model
+- points Keep at it, with no Anthropic key
 
-`KEEP_AI=local` in front of `bash` in the install command chooses it without the question.
-
-**Memory.** oMLX refuses to load a model, and aborts a request, above a ceiling it works out from what the other apps hold. The model with a long prompt takes about 21 GB, so on a Mac with less than 36 GB the installer sets a fixed ceiling of 22 GB (`memory.memory_guard_tier: custom` in `~/.omlx/settings.json`): macOS then compresses the other apps instead of a turn failing. On an M1 Max with 32 GB that gives about 16 tokens a second, and 75 a second reading the prompt.
-
-To go back to Claude: `local_backend: none`, and a key as `api_keys.anthropic`.
+If the setup fails, the install goes on with Claude instead.
 
 ## Supported setups
 | Model | Server                                                                                          | Local Backend | Min RAM |
