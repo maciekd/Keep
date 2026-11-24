@@ -2,7 +2,7 @@ import dataclasses
 from datetime import datetime, timedelta
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
-from .MemoryTab import MemoryTab
+from .MemoryTab import MemoryTab, size_tile
 from .ScrollableTabView import draw_scrollbar
 from .TabView import SUB_CONTENT_TOP, TabView
 from assistant import FirstRun, WatchList
@@ -135,8 +135,8 @@ def assess(item: WatchList.Item, now: datetime) -> Entry:
 
 
 class WatchListTab(TabView):
-    """The open watch items as a board in the Dashboard's tiles: four summary tiles (what needs
-    attention, the next check, the last one, how many are watched), a table sorted most urgent
+    """The open watch items as a board in the Dashboard's tiles: four summary tiles (the size of
+    the notes, the next check, the last one, how many are watched), a table sorted most urgent
     first — a state dot, a meter filling towards the next check, the last check, the cadence
     and the due date — and the selected item in full beside it (under it on a narrow screen),
     its note laid out by `widgets/Markdown`.
@@ -218,7 +218,7 @@ class WatchListTab(TabView):
             y += MemoryTab.NOTICE_ROWS + 1
         available = screen.width - Board.LEFT - Board.RIGHT_MARGIN
         Board.draw_summary(screen, self._cards, y, available,
-                           [self._attention_tile(entries), self._next_check_tile(entries, now),
+                           [self._size_tile(entries), self._next_check_tile(entries, now),
                             self._last_check_tile(entries, now), self._watching_tile(entries)])
         y += Board.SUMMARY_H + 1
 
@@ -246,17 +246,11 @@ class WatchListTab(TabView):
     # --- Summary tiles ---
 
     @staticmethod
-    def _counts(entries: List[Entry], kinds: Tuple[Kind, ...]) -> List[Tuple[str, Color]]:
-        counts = [(kind, sum(1 for entry in entries if entry.kind is kind)) for kind in kinds]
-        return [(f"{count} {kind.label}", kind.color) for kind, count in counts if count]
-
-    @classmethod
-    def _attention_tile(cls, entries: List[Entry]) -> SummaryTile:
-        segments = cls._counts(entries, (PAST_DUE, OVERDUE, CHECK_DUE, STALE))
-        if not segments:
-            return "Needs attention", "all clear", Theme.COLOR_GREEN, [("nothing overdue, nothing due", Theme.COLOR_DIM)]
-        count = sum(1 for entry in entries if entry.kind.rank <= STALE.rank)
-        return "Needs attention", str(count), segments[0][1], segments
+    def _size_tile(entries: List[Entry]) -> SummaryTile:
+        """The notes of the open items, measured as the other Memory tabs measure their text."""
+        notes = [entry.item.note for entry in entries]
+        return size_tile(sum(len(note) for note in notes), sum(len(note.split()) for note in notes),
+                         sum(len(note.splitlines()) for note in notes))
 
     @staticmethod
     def _next_check_tile(entries: List[Entry], now: datetime) -> SummaryTile:

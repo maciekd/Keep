@@ -81,8 +81,8 @@ class TestSummaryTiles:
 
     def test_a_narrow_screen_keeps_the_first_tiles_only(self, tab):
         text = text_of(draw(tab, width=70))
-        assert "Last curation" in text and "New notes" in text
-        assert "Size" not in text and "Sections" not in text
+        assert "Size" in text and "Sections" in text
+        assert "Last curation" not in text and "New notes" not in text
         assert "Marcus likes tea." in text
 
     def test_a_short_screen_gives_the_tiles_rows_to_the_document(self, tab):

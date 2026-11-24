@@ -45,6 +45,12 @@ def amount(chars: int) -> str:
     return str(chars) if chars < 1000 else f"{chars / 1000:.1f}k"
 
 
+def size_tile(chars: int, words: int, lines: int) -> SummaryTile:
+    """How much text there is — the first tile of every Memory tab."""
+    return ("Size", f"{chars / 1024:.1f} KB", Theme.COLOR_CYAN,
+            [(counted(words, "word"), Theme.COLOR_LABEL), (counted(lines, "line"), Theme.COLOR_DIM)])
+
+
 def counted(count: int, noun: str, plural: str = "") -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {plural or noun + 's'}"
 
@@ -252,19 +258,14 @@ class MemoryTab(TabView):
     # --- Summary tiles ---
 
     def _summary_tiles(self, doc: Markdown.Document) -> List[SummaryTile]:
-        tiles = [self._size_tile(), self._sections_tile(doc)]
+        tiles = [size_tile(self._stats.chars, self._stats.words, self._stats.lines), self._sections_tile(doc)]
         if self._history_index is not None:
-            return [self._snapshot_tile(), self._changes_tile()] + tiles
-        return self._live_tiles() + tiles
+            return tiles + [self._snapshot_tile(), self._changes_tile()]
+        return tiles + self._live_tiles()
 
     def _live_tiles(self) -> List[SummaryTile]:
-        """The tiles a tab puts before the two every tab has, while it shows the live text."""
+        """The tiles a tab puts after the two every tab has, while it shows the live text."""
         return []
-
-    def _size_tile(self) -> SummaryTile:
-        stats = self._stats
-        return ("Size", f"{stats.chars / 1024:.1f} KB", Theme.COLOR_CYAN,
-                [(counted(stats.words, "word"), Theme.COLOR_LABEL), (counted(stats.lines, "line"), Theme.COLOR_DIM)])
 
     def _sections_tile(self, doc: Markdown.Document) -> SummaryTile:
         sections = sum(1 for heading in doc.headings if heading.depth == 0 and heading.level)

@@ -18,9 +18,9 @@ from interfaces.console.tabs.WatchListTab import (CHECK_DUE, DUE_SOON_DAYS, ON_T
 NOW = datetime(2026, 3, 10, 12, 0)
 
 
-def item(name="parcel", every="", checked: timedelta = None, due_in: int = None, updated_days_ago=0):
+def item(name="parcel", every="", checked: timedelta = None, due_in: int = None, updated_days_ago=0, note="order 4711"):
     day = lambda offset: (NOW + timedelta(days=offset)).date().isoformat()
-    return WatchList.Item(name, "order 4711", "" if due_in is None else day(due_in), day(-30), day(-updated_days_ago),
+    return WatchList.Item(name, note, "" if due_in is None else day(due_in), day(-30), day(-updated_days_ago),
                           every, (NOW - checked).strftime("%Y-%m-%d %H:%M") if checked is not None else "")
 
 
@@ -211,10 +211,10 @@ class TestTableLayout:
 
 @pytest.mark.unit
 class TestSummaryTiles:
-    """The four tiles over the table: what needs attention, the soonest check, the latest one
+    """The four tiles over the table: the size of the notes, the soonest check, the latest one
     and how many are watched, each read from the entries."""
 
-    LABELS = ("Needs attention", "Next check", "Last check", "Watching")
+    LABELS = ("Size", "Next check", "Last check", "Watching")
     WIDE = 200
 
     @pytest.fixture(autouse=True)
@@ -240,19 +240,12 @@ class TestSummaryTiles:
         end = next((start for start in starts if start > begin), self.WIDE)
         return " | ".join(screen.row_text(begin, y, end - begin).strip() for y in (strip_y, strip_y + 2))
 
-    def test_the_attention_tile_counts_the_items_that_need_a_look_by_kind(self):
-        self.add(item("sofa-delivery", every="1d", checked=timedelta(hours=1)),
-                 item("festival-tickets", every="6h", checked=timedelta(hours=20)),
-                 item("router-firmware", every="1d"),
-                 item("passport", due_in=-1))
-        tile = self.tile("Needs attention")
-        assert tile.split(" | ")[0].split()[-1] == "3"
-        assert "1 past due" in tile and "1 overdue" in tile and "1 check due" in tile
-        assert "on track" not in tile
-
-    def test_with_nothing_due_the_attention_tile_is_all_clear(self):
-        self.add(item("sofa-delivery", every="1d", checked=timedelta(hours=1)), item("passport", due_in=10))
-        assert "all clear" in self.tile("Needs attention")
+    def test_the_size_tile_measures_the_notes_of_every_open_item(self):
+        self.add(item("sofa-delivery", note="Ordered in May.\nThe shop calls a week ahead."),
+                 item("passport", note="x" * 2048, due_in=10))
+        tile = self.tile("Size")
+        assert "2.0 KB" in tile
+        assert "10 words" in tile and "3 lines" in tile
 
     def test_the_next_check_tile_names_the_one_that_falls_first(self):
         self.add(item("sofa-delivery", every="1d", checked=timedelta(hours=1)),
@@ -288,6 +281,7 @@ class TestSummaryTiles:
         assert "nothing is polled" in self.tile("Next check")
         assert "nothing checked yet" in self.tile("Last check")
         assert "0 items" in self.tile("Watching")
+        assert "0.0 KB" in self.tile("Size")
 
 
 @pytest.mark.unit
