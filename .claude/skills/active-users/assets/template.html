@@ -7,12 +7,12 @@
 <style>
   :root {
     --bg: #f4f1ea; --card: #fffdf8; --ink: #1d1b16; --muted: #857f72; --line: #e7e1d3;
-    --heat: 24 95% 53%; --heat-ink: #4a1d00; --accent: #e8590c; --shadow: 0 30px 60px -30px rgba(60, 40, 10, .25);
+    --heat: 24 95% 53%; --heat-ink: #4a1d00; --push: 258 80% 58%; --push-ink: #fff; --accent: #e8590c; --shadow: 0 30px 60px -30px rgba(60, 40, 10, .25);
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0e0f13; --card: #16181f; --ink: #f1eee6; --muted: #8b8fa0; --line: #252833;
-      --heat: 28 100% 58%; --heat-ink: #fff3e6; --accent: #ff9a4d; --shadow: 0 30px 80px -30px rgba(0, 0, 0, .8);
+      --heat: 28 100% 58%; --heat-ink: #fff3e6; --push: 252 95% 70%; --push-ink: #fff; --accent: #ff9a4d; --shadow: 0 30px 80px -30px rgba(0, 0, 0, .8);
     }
   }
   * { box-sizing: border-box; }
@@ -47,6 +47,12 @@
   td.cell.hot { color: var(--heat-ink); }
   td.cell:hover { transform: translateY(-2px) scale(1.04); box-shadow: 0 10px 20px -10px hsl(var(--heat) / .7); }
   td.zero { color: var(--muted); font-weight: 400; opacity: .5; background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+  td.cell.push { background: hsl(var(--push) / var(--a)); box-shadow: inset 0 0 0 2px hsl(var(--push)); }
+  td.cell.push.hot { color: var(--push-ink); }
+  td.cell.push:hover { box-shadow: inset 0 0 0 2px hsl(var(--push)), 0 10px 20px -10px hsl(var(--push) / .7); }
+  td.zero.push { opacity: 1; color: hsl(var(--push)); --a: .12; }
+  .legend { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .legend i { width: 14px; height: 14px; border-radius: 4px; background: hsl(var(--push) / .5); box-shadow: inset 0 0 0 2px hsl(var(--push)); }
   td.total, th.total { text-align: right; padding-right: 14px; font-variant-numeric: tabular-nums; font-weight: 700; }
   tr.sum td { border-top: 1px solid var(--line); padding-top: 14px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
   tr.sum td.day { text-align: left; color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: .1em; }
@@ -77,13 +83,14 @@ const data = {
     { who: "Bob", tag: "", id: "8c9d0e1f" },
     { who: "", tag: "unnamed", id: "2a3b4c5d" },
   ],
+  // A day's optional fourth entry: per install, the step of the reactivation push sent that day (0 = none).
   days: [
     ["Mon", "3 Mar", [72, 40, 9, 0]],
     ["Tue", "4 Mar", [65, 22, 4, 2]],
     ["Wed", "5 Mar", [98, 6, 11, 0]],
     ["Thu", "6 Mar", [120, 0, 7, 1]],
-    ["Fri", "7 Mar", [31, 0, 10, 0]],
-    ["Sat", "8 Mar", [84, 3, 0, 0]],
+    ["Fri", "7 Mar", [31, 0, 10, 0], [0, 1, 0, 0]],
+    ["Sat", "8 Mar", [84, 3, 0, 0], [0, 2, 0, 0]],
     ["Sun", "9 Mar", [12, 0, 13, 0]],
   ],
 };
@@ -96,7 +103,10 @@ const lead = colTotals.indexOf(Math.max(...colTotals));
 const busiest = days.reduce((a, b) => sum(b[2]) > sum(a[2]) ? b : a);
 
 document.getElementById("lede").textContent = data.lede;
-document.getElementById("notes").innerHTML = data.notes.map(n => `<span>${n}</span>`).join("");
+const pushCount = days.reduce((n, d) => n + (d[3] || []).filter(Boolean).length, 0);
+document.getElementById("notes").innerHTML = (pushCount
+  ? `<span class="legend"><i></i>A day an install was sent a reactivation push (${pushCount} in all; hover a cell for its step).</span>`
+  : "") + data.notes.map(n => `<span>${n}</span>`).join("");
 document.getElementById("stats").innerHTML = [
   [grand, `messages in ${days.length} days`],
   [users.length, "active installs"],
@@ -107,10 +117,12 @@ document.getElementById("stats").innerHTML = [
 const head = `<tr><th class="day"></th>${users.map(u =>
   `<th><span class="who">${u.who || u.id}</span><span class="tag">${u.tag || "&nbsp;"}</span><span class="id">${u.who ? u.id : "&nbsp;"}</span></th>`
 ).join("")}<th class="total">Total</th></tr>`;
-const body = days.map(([wd, date, vals]) => `<tr><td class="day"><b>${wd}</b><span>${date}</span></td>${vals.map(v => {
-  if (!v) return `<td class="cell zero">·</td>`;
+const body = days.map(([wd, date, vals, pushes = []]) => `<tr><td class="day"><b>${wd}</b><span>${date}</span></td>${vals.map((v, i) => {
+  const step = pushes[i];
+  const push = step ? ` push" title="Reactivation push sent (step ${step})` : "";
+  if (!v) return `<td class="cell zero${push}">·</td>`;
   const a = 0.1 + 0.85 * Math.sqrt(v / max);
-  return `<td class="cell${a > 0.6 ? " hot" : ""}" style="--a:${a.toFixed(2)}">${v}</td>`;
+  return `<td class="cell${a > 0.6 ? " hot" : ""}${push}" style="--a:${a.toFixed(2)}">${v}</td>`;
 }).join("")}<td class="total">${sum(vals)}</td></tr>`).join("");
 const foot = `<tr class="sum"><td class="day">Total</td>${colTotals.map(t => `<td>${t}</td>`).join("")}<td class="total">${grand}</td></tr>`;
 document.getElementById("grid").innerHTML = head + body + foot;
