@@ -80,10 +80,13 @@ UNKNOWN_DESTINATION = "unknown"
 NOTE = """
 ## QUIET OWNER
 
-{name} last wrote {quiet} ago.{backoff}
+{name} last wrote {quiet} ago.{hour}{backoff}
 
 Send them one message with `post_message` that gives them a reason to come back. One destination, one message. If the history or the calendar says why they are away and a message would be unwelcome now, or nothing listed would reach them, answer NO."""
 
+# Said of a step that goes out at its hour, so a late one is not read as an unwelcome one: the
+# schedule of an owner whose last turn was at midnight is at midnight.
+THEIR_HOUR = " This is the time of day they were last active at."
 # The one thing of the schedule the model cannot work out for itself.
 BACKOFF = f" This is the last daily message, after it you write once every {FORTNIGHT_DAYS} days: say so in it."
 
@@ -106,6 +109,11 @@ class Step:
         # owner who got none: the key switched on a week into a silence, a server that was
         # down, six steps the model declined.
         return KIND_BACKOFF if self.number == DAILY_STEPS and self.sent_before else KIND_DAILY
+
+    @property
+    def at_its_hour(self) -> bool:
+        """False for the step Night mode held back: it goes out in the morning."""
+        return (self.quiet_seconds + LEAD_SECONDS) % DAY <= SLOT_SECONDS
 
     @property
     def position(self) -> str:
@@ -251,7 +259,7 @@ def due(now: Optional[float] = None, after_night: bool = False) -> Optional[Step
         trace(f"Reactivation: step {number} is due, but the last one was spent {_describe(now - last_spent)} ago "
               f"— it waits until {MIN_GAP_SECONDS // 3600} h have passed")
         return None
-    past_its_hour = (now - last_turn + LEAD_SECONDS) % DAY
+    past_its_hour = (quiet + LEAD_SECONDS) % DAY
     if past_its_hour > SLOT_SECONDS and not after_night:
         trace(f"Reactivation: step {number} is due, but {_describe(past_its_hour)} past its hour — it waits until "
               f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(now + DAY - past_its_hour))}")
@@ -285,7 +293,7 @@ def note(step: Step) -> str:
     """What the check that carries *step* is told, as a turn after its instruction: the fact
     and the ask. What to write and where it goes are the model's to work out."""
     return NOTE.format(name=config.get("owner_name") or "The owner", quiet=_describe(step.quiet_seconds),
-                       backoff=BACKOFF if step.kind == KIND_BACKOFF else "")
+                       hour=THEIR_HOUR if step.at_its_hour else "", backoff=BACKOFF if step.kind == KIND_BACKOFF else "")
 
 
 def opening(step: Step) -> str:

@@ -471,6 +471,14 @@ class TestTheNote:
         assert Reactivation.BACKOFF in back_off and Reactivation.BACKOFF not in daily
         assert f"every {Reactivation.FORTNIGHT_DAYS} days" in back_off
 
+    def test_only_a_step_at_its_hour_is_said_to_be_at_the_owners_time_of_day(self, quiet_owner):
+        at_its_hour = Reactivation.note(Reactivation.due(LAST_TURN + DAY))
+        morning = LAST_TURN + DAY + 8 * 3600
+        held_by_the_night = Reactivation.note(Reactivation.due(morning, after_night=True))
+
+        assert Reactivation.THEIR_HOUR in at_its_hour
+        assert Reactivation.THEIR_HOUR not in held_by_the_night
+
     def test_the_history_row_names_the_key_that_turns_the_messages_off(self, quiet_owner):
         # what a later chat turn has to go by when the owner says "stop writing to me"
         assert Reactivation.ENABLED_KEY in Reactivation.opening(Reactivation.due(LAST_TURN + DAY))
