@@ -1,6 +1,7 @@
 """Tests for install.sh's decision logic: the pip progress read off pip's own log, the
-API key intake, the config.yaml it writes and the state machine around the checkout
-(fresh clone, upgrade, refused directories).
+hand-over to the steps Python does (src/common/install: the API key and config.yaml, tested in
+tests/unit/common/install) and the state machine around the checkout (fresh clone, upgrade,
+refused directories).
 
 The script's functions are sourced without the trailing `main "$@"` call and driven
 one at a time. Stdout is a pipe, so the spinner (a background subshell) is off and
@@ -28,7 +29,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from common.ConfigManager import REQUIRED_KEYS
 
 from .git_sandbox import History, empty_repo, git, git_env, spawn
 from .test_start_sh import UNIT_SAFE_NAMES, UNIT_UNSAFE_NAMES
@@ -38,14 +38,17 @@ INSTALL_SH = Path(__file__).resolve().parents[2] / 'install.sh'
 # Executables a test hands the installer are checked in and told where to record by a variable:
 # macOS assesses a freshly written one on its first run, ~130 ms a file.
 DOUBLES = Path(__file__).parent / 'data' / 'install_sh'
-WORKSPACE_REQUIRED_BODY = (
-    '{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-workspace-id is required '
-    'when authenticating with an identity-linked API key; send the id of the workspace this request acts in."},'
-    '"request_id":"req_test_0000000000000000"}')
-CREDIT_TOO_LOW_BODY = (
-    '{"type":"error","error":{"type":"invalid_request_error",'
-    '"message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing '
-    'to upgrade or purchase credits."}}')
+REPO = INSTALL_SH.parent
+# `python_steps` as install.sh has it, but for the Python and the tree: this suite's own, on the
+# harness's KEEP_DIR. In a session of its own, so that it has no terminal to ask on whatever pytest
+# was started from.
+REAL_PYTHON_STEPS = (
+    'python_steps() {\n'
+    '  KEEP_DIR="$KEEP_DIR" KEEP_INSTALL_BRANCH="$BRANCH" KEEP_INSTALL_ROLE="$ROLE" KEEP_INSTALL_LOG="$LOG" \\\n'
+    '    KEEP_INSTALL_TELEMETRY_ID="$TELEMETRY_ID" KEEP_INSTALL_STEP="$STEP" KEEP_INSTALL_STEPS="$TOTAL_STEPS" \\\n'
+    f'    PYTHONPATH="{REPO}/src" "{sys.executable}" -P -c \'import os, runpy; os.setsid(); '
+    'runpy.run_module("common.install", run_name="__main__")\' </dev/null\n'
+    '}\n')
 BAR_RE = re.compile(r'^\[(.*)\] (.*)$')
 MAC, LINUX = 'Darwin', 'Linux'      # as `uname -s` names them, and KEEP_OS
 UBUNTU = 'PRETTY_NAME="Ubuntu 24.04.1 LTS"\nNAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\nID_LIKE=debian\n'
@@ -179,7 +182,7 @@ class InstallShHarness:
         prelude = (
             f'source "{self.fns}"\n'
             f'KEEP_DIR="{self.keep_dir}"; LOG="{self.log}"; REPO_URL="{repo_url}"; BRANCH=master\n'
-            'STEP_NAME=test; API_KEY=""; WORKSPACE_ID=""; VERIFY_CODE=""; ANTHROPIC_SAID=""\n'
+            'STEP_NAME=test; STEP=0; TOTAL_STEPS=9; ROLE=server; TELEMETRY_ID=""\n'
             'PY=""; CHILD_PID=""; SPINNER_PID=""; SPINNER_STATUS=""\n'
             'init_ui; TTY=""\n'
             f'OS_RELEASE="{self.os_release}"; CPUINFO="{self.dir}/cpuinfo"; MEMINFO="{self.dir}/meminfo"\n'
@@ -266,176 +269,102 @@ class TestPipStatus:
         assert text == 'resolving 2 packages'
 
 
-class TestObtainApiKey:
-    def test_environment_key_is_verified_without_a_prompt(self, harness):
-        harness.set_answers()
-        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"', ANTHROPIC_API_KEY='sk-ant-env-47L')
-        assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-env-47L')
-        assert 'Key verified' in result.stdout
-        assert harness.prompts == []
-        assert 'x-api-key: sk-ant-env-47L' in harness.curl_calls.read_text()
+INSTALL_ID = '11111111-2222-4333-8444-555555555555'
 
-    def test_rejected_environment_key_stops_the_install(self, harness):
-        harness.set_curl_code('401')
-        result = harness.run('obtain_api_key', ANTHROPIC_API_KEY='sk-ant-env-47L')
+
+def failed_event(harness) -> dict:
+    """The one event the run posted."""
+    (line,) = harness.curl_calls.read_text().splitlines()
+    return json.loads(re.search(r'-d (\{.*\}) https://', line).group(1))
+
+
+class TestConfigure:
+    """`configure`: the hand-over to the steps Python does. What comes back is the exit status —
+    and, after a failure Python has already shown, the step and the reason on the log's last two
+    lines, which is what the install report carries."""
+
+    @pytest.mark.parametrize('role, counted', [('server', 2), ('imessage_satellite', 1)])
+    def test_a_finished_run_moves_the_step_counter_past_the_steps_python_printed(self, harness, role, counted):
+        result = harness.run(f'ROLE={role}; STEP=6; python_steps() {{ return 0; }}; configure; echo "step=$STEP"')
+        assert result.returncode == 0, result.stdout
+        assert result.stdout.endswith(f'step={6 + counted}\n')
+
+    def test_a_failure_python_showed_is_reported_by_its_step_and_reason_and_not_shown_again(self, harness):
+        result = harness.run(
+            f'TELEMETRY_ID={INSTALL_ID}\n'
+            'python_steps() { printf "FAILED in step: Anthropic API key\\nFAILED: No valid API key after 3 attempts.\\n" >> "$LOG"; return 1; }\n'
+            'configure; echo went-on')
         assert result.returncode == 1
-        assert 'ANTHROPIC_API_KEY from the environment was rejected' in result.stdout
+        assert 'went-on' not in result.stdout
+        event = failed_event(harness)
+        assert event['event'] == 'install_failed'
+        assert event['properties']['step'] == 'Anthropic API key'
+        assert event['properties']['reason'] == 'No valid API key after 3 attempts.'
+        assert 'No valid API key' not in result.stdout, "the failure Python printed is printed a second time"
+        assert str(harness.log) in result.stdout and 'Re-run' in result.stdout
 
-    def test_typed_key_is_trimmed_and_a_malformed_one_never_reaches_anthropic(self, harness):
-        harness.set_answers('bogus-key', '  sk-ant-typed-47L  ')
-        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
-        assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-typed-47L')
-        assert 'does not look like an Anthropic key' in result.stdout
-        assert len(harness.prompts) == 2
-        assert harness.curl_calls.read_text().count('x-api-key:') == 1
-        assert 'bogus-key' not in harness.curl_calls.read_text()
-
-    def test_an_empty_enter_and_a_slip_of_the_paste_use_up_no_attempt(self, harness):
-        """Three attempts are three keys Anthropic was asked about."""
-        harness.set_curl(('403', ''), ('403', ''), ('200', ''))
-        harness.set_answers('', 'sk-ant-one', 'oops', '', 'sk-ant-two', '', 'bogus', 'sk-ant-three')
-        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
-        assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-three')
-        assert harness.curl_calls.read_text().count('x-api-key:') == 3
-
-    def test_enter_pressed_for_ever_ends_the_install(self, harness):
-        harness.set_answers('')
-        result = harness.run('obtain_api_key')
+    def test_a_python_that_died_without_a_word_fails_with_the_installers_own(self, harness):
+        """A crash before the package's own handling: the log may still end with an earlier run's lines."""
+        result = harness.run(f'TELEMETRY_ID={INSTALL_ID}\n'
+                             'python_steps() { echo "Traceback (most recent call last):" >> "$LOG"; return 3; }\n'
+                             'trap on_error ERR; configure; echo went-on')
         assert result.returncode == 1
-        assert not harness.curl_calls.exists() or 'x-api-key:' not in harness.curl_calls.read_text()
+        assert 'went-on' not in result.stdout and 'Unexpected error' not in result.stdout
+        event = failed_event(harness)
+        assert event['event'] == 'install_failed' and event['properties']['reason']
+        assert '✖' in result.stdout, "nothing on the screen says the install failed"
 
-    def test_three_rejected_keys_stop_the_install(self, harness):
-        harness.set_curl_code('403')
-        harness.set_answers('sk-ant-one', 'sk-ant-two', 'sk-ant-three', 'sk-ant-four')
-        result = harness.run('obtain_api_key')
+    def test_ctrl_c_in_the_python_steps_is_an_interrupted_install_not_a_failed_step(self, harness):
+        result = harness.run(f'TELEMETRY_ID={INSTALL_ID}; python_steps() {{ return 130; }}; configure; echo went-on')
+        assert result.returncode == 130
+        assert 'went-on' not in result.stdout
+        assert failed_event(harness)['properties']['reason'] == 'interrupted'
+
+    def test_the_real_steps_fail_through_configure_as_they_would_at_an_install(self, harness):
+        """End to end with the real package: a satellite whose KEEP_LAN_ACCESS is no answer."""
+        harness.keep_dir.mkdir()
+        result = harness.run(f'TELEMETRY_ID={INSTALL_ID}; ROLE=imessage_satellite; TOTAL_STEPS=7; STEP=6\n'
+                             + REAL_PYTHON_STEPS + 'configure', KEEP_LAN_ACCESS='maybe')
         assert result.returncode == 1
-        assert 'No valid API key after 3 attempts' in result.stdout
-        assert len(harness.prompts) == 3
+        assert result.stdout.count('KEEP_LAN_ACCESS=maybe') == 1
+        event = failed_event(harness)
+        assert event['properties']['step'] == 'Configuration' and 'KEEP_LAN_ACCESS' in event['properties']['reason']
+        assert not (harness.keep_dir / 'config.yaml').exists()
 
-    def test_unverifiable_key_is_kept_with_a_warning(self, harness):
-        # Offline or an Anthropic outage must not block the install; the server reports a bad key.
-        harness.set_curl_code('000')
-        harness.set_answers('sk-ant-typed-47L')
-        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
+
+class TestPythonSteps:
+    """`python_steps`: the one call into Python, with what the installer knows in the environment."""
+
+    def handed_over(self, harness, script: str = 'python_steps', **env) -> tuple[subprocess.CompletedProcess, dict]:
+        venv = harness.keep_dir / '.venv' / 'bin'
+        venv.mkdir(parents=True)
+        (venv / 'python').symlink_to(DOUBLES / 'python')
+        record = harness.dir / 'python_call'
+        result = harness.run(f'BRANCH=release; ROLE=imessage_satellite; TELEMETRY_ID={INSTALL_ID}; STEP=6; TOTAL_STEPS=7\n'
+                             + script, KEEP_TEST_PYTHON=str(record), **env)
+        return result, dict(line.split('=', 1) for line in record.read_text().splitlines())
+
+    def test_the_installs_own_python_runs_the_package_on_the_installs_own_tree(self, harness):
+        """Contract with src/common/install/__main__.py, which reads these variables."""
+        result, call = self.handed_over(harness)
         assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-typed-47L')
-        assert 'Could not verify the key right now' in result.stdout
+        assert call['args'].endswith('-m common.install')
+        assert '-P' in call['args'].split(), "the folder the installer was started in could shadow `common`"
+        assert call['PYTHONPATH'] == f'{harness.keep_dir}/src'
+        assert call['KEEP_DIR'] == str(harness.keep_dir) and call['KEEP_INSTALL_LOG'] == str(harness.log)
+        assert (call['KEEP_INSTALL_BRANCH'], call['KEEP_INSTALL_ROLE']) == ('release', 'imessage_satellite')
+        assert call['KEEP_INSTALL_TELEMETRY_ID'] == INSTALL_ID
+        assert (call['KEEP_INSTALL_STEP'], call['KEEP_INSTALL_STEPS']) == ('6', '7')
 
-    def test_key_without_a_workspace_asks_for_the_id_and_sends_it_from_then_on(self, harness):
-        """The 2026-10 beta tester: the Console's Create key dialog left unscoped makes a key
-        Anthropic refuses without an anthropic-workspace-id header. The check is a real
-        message so this 400 shows at install, not at the first chat."""
-        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY), ('200', ''))
-        harness.set_answers('sk-ant-typed-47L', 'wrkspc_01TEST')
-        result = harness.run('obtain_api_key; printf "%s %s" "$API_KEY" "$WORKSPACE_ID"')
+    def test_python_is_not_given_the_pipe_the_script_came_through(self, harness):
+        """curl | bash: stdin is the script. Whatever reads it must not be the installer's Python."""
+        result, call = self.handed_over(harness, script='echo "a line of the script" | python_steps')
         assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-typed-47L wrkspc_01TEST')
-        assert 'Scope' in result.stdout and 'Organization' in result.stdout   # names the dialog's own field
-        assert 'platform.claude.com/settings/keys' in result.stdout
-        assert 'platform.claude.com/settings/workspaces' in result.stdout
-        assert len(harness.prompts) == 2 and 'Workspace id' in harness.prompts[1]
-        first, second = harness.curl_calls.read_text().splitlines()
-        assert 'anthropic-workspace-id' not in first
-        assert 'anthropic-workspace-id: wrkspc_01TEST' in second
+        assert call['stdin'] == 'empty'
 
-    def test_enter_instead_of_a_workspace_id_asks_for_a_new_key(self, harness):
-        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY), ('200', ''))
-        harness.set_answers('sk-ant-one', '', 'sk-ant-two')
-        result = harness.run('obtain_api_key; printf "%s %s" "$API_KEY" "$WORKSPACE_ID"')
-        assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-two ')
-        assert len(harness.prompts) == 3
-        assert 'anthropic-workspace-id' not in harness.curl_calls.read_text()
-
-    def test_unknown_workspace_id_is_asked_again(self, harness):
-        not_found = '{"type":"error","error":{"type":"not_found_error","message":"Workspace `wrkspc_bad` not found."}}'
-        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY), ('404', not_found), ('200', ''))
-        harness.set_answers('sk-ant-one', 'wrkspc_bad', 'wrkspc_good')
-        result = harness.run('obtain_api_key; printf "%s" "$WORKSPACE_ID"')
-        assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('wrkspc_good')
-        assert 'does not know workspace wrkspc_bad' in result.stdout
-        assert len(harness.prompts) == 3
-
-    def test_malformed_workspace_id_never_reaches_anthropic(self, harness):
-        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY), ('200', ''))
-        harness.set_answers('sk-ant-one', 'default', 'wrkspc_01TEST')
-        result = harness.run('obtain_api_key')
-        assert result.returncode == 0, result.stdout
-        assert 'does not look like a workspace id' in result.stdout
-        assert 'default' not in harness.curl_calls.read_text()
-
-    def test_environment_workspace_id_is_sent_without_a_prompt(self, harness):
-        harness.set_answers()
-        result = harness.run('obtain_api_key', ANTHROPIC_API_KEY='sk-ant-env-47L',
-                             ANTHROPIC_WORKSPACE_ID='wrkspc_01ENV')
-        assert result.returncode == 0, result.stdout
-        assert harness.prompts == []
-        assert 'anthropic-workspace-id: wrkspc_01ENV' in harness.curl_calls.read_text()
-        assert 'wrkspc_01ENV' in result.stdout
-
-    def test_environment_key_without_a_workspace_names_the_variable_to_set(self, harness):
-        harness.set_curl(('400', WORKSPACE_REQUIRED_BODY))
-        harness.set_answers()
-        result = harness.run('obtain_api_key', ANTHROPIC_API_KEY='sk-ant-env-47L')
-        assert result.returncode == 1
-        assert 'ANTHROPIC_WORKSPACE_ID' in result.stdout
-
-    def test_other_400_keeps_the_key_and_repeats_what_anthropic_said(self, harness):
-        other = ('{"type":"error","error":{"type":"invalid_request_error",'
-                 '"message":"This organization has been disabled."}}')
-        harness.set_curl(('400', other))
-        harness.set_answers('sk-ant-typed-47L')
-        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
-        assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-typed-47L')
-        assert 'Could not verify the key right now' in result.stdout
-        assert 'organization has been disabled' in result.stdout
-
-    def test_check_is_a_message_so_an_unfunded_organization_shows_at_install(self, harness):
-        """The free count_tokens endpoint is not documented to check the balance: a key whose
-        organization has no credit could pass it and leave the first chat silent."""
-        harness.set_answers('sk-ant-typed-47L')
-        harness.run('obtain_api_key')
-        assert harness.curl_calls.read_text().split()[-1] == 'https://api.anthropic.com/v1/messages'
-
-    def test_unfunded_organization_waits_for_credit_and_checks_the_same_key_again(self, harness):
-        harness.set_curl(('400', CREDIT_TOO_LOW_BODY), ('200', ''))
-        harness.set_answers('sk-ant-typed-47L', '')
-        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
-        assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-typed-47L')
-        assert 'Key verified' in result.stdout
-        assert 'platform.claude.com/settings/billing' in result.stdout
-        assert len(harness.prompts) == 2 and 'API key' not in harness.prompts[1]
-        assert harness.curl_calls.read_text().count('x-api-key: sk-ant-typed-47L') == 2
-
-    def test_skip_keeps_a_key_whose_organization_has_no_credit(self, harness):
-        # A new Max subscriber waits 7 days for the plan's credit: the install must still finish.
-        harness.set_curl(('400', CREDIT_TOO_LOW_BODY))
-        harness.set_answers('sk-ant-typed-47L', ' SKIP ')
-        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"')
-        assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-typed-47L')
-        assert harness.curl_calls.read_text().count('x-api-key:') == 1
-
-    def test_environment_key_without_credit_is_kept_without_a_prompt(self, harness):
-        harness.set_curl(('400', CREDIT_TOO_LOW_BODY))
-        harness.set_answers()
-        result = harness.run('obtain_api_key; printf "%s" "$API_KEY"', ANTHROPIC_API_KEY='sk-ant-env-47L')
-        assert result.returncode == 0, result.stdout
-        assert result.stdout.endswith('sk-ant-env-47L')
-        assert harness.prompts == []
-
-    def test_no_terminal_and_no_environment_key_fails_with_the_workaround(self, harness):
-        # curl | bash with no /dev/tty: `read` must not wait on the pipe the script came from.
-        result = harness.run('obtain_api_key')
-        assert result.returncode == 1
-        assert 'No terminal to ask on' in result.stdout
-        assert 'set the value in the environment' in result.stdout
+    def test_its_exit_status_is_what_configure_gets(self, harness):
+        result, _ = self.handed_over(harness, script='python_steps || echo "status=$?"', KEEP_TEST_PYTHON_EXIT='4')
+        assert result.stdout.endswith('status=4\n')
 
 
 class TestWhetherThereIsATerminal:
@@ -465,52 +394,11 @@ class TestWhetherThereIsATerminal:
         assert config['imessage_satellite']['lan_access'] is False
 
     def test_a_server_install_without_a_terminal_names_the_way_out_instead_of_dying_on_its_question(self, harness):
-        result = harness.run('trap on_error ERR; init_ui; obtain_api_key', no_terminal=True)
+        harness.keep_dir.mkdir()
+        result = harness.run(REAL_PYTHON_STEPS + 'trap on_error ERR; init_ui; configure', no_terminal=True)
         assert result.returncode == 1
         assert 'ANTHROPIC_API_KEY' in result.stdout or 'environment' in result.stdout
         assert 'Unexpected error' not in result.stdout
-
-
-class TestWriteConfig:
-    def test_writes_a_private_config_with_every_required_key(self, harness):
-        harness.keep_dir.mkdir()
-        result = harness.run('API_KEY=sk-ant-typed-47L; write_config')
-        assert result.returncode == 0, result.stdout
-        config_path = harness.keep_dir / 'config.yaml'
-        assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
-        config = yaml.safe_load(config_path.read_text())
-        for key in REQUIRED_KEYS:
-            section, name = key.split('.')
-            assert config[section][name], f"{key} is empty in the written config"
-        assert config['api_keys']['anthropic'] == 'sk-ant-typed-47L'
-        assert 'anthropic_workspace' not in config['api_keys']   # a key tied to one workspace needs none
-        assert re.fullmatch(r'[A-Za-z0-9]{32}', str(config['vault']['key']))
-
-    def test_the_config_has_no_empty_line_where_the_workspace_id_would_stand(self, harness):
-        harness.keep_dir.mkdir(parents=True, exist_ok=True)
-        result = harness.run('API_KEY=sk-ant-typed-47L; write_config')
-        assert result.returncode == 0, result.stdout
-        lines = (harness.keep_dir / 'config.yaml').read_text().splitlines()
-        assert lines[lines.index('  anthropic: sk-ant-typed-47L') + 1].startswith('developer_release:')
-
-    def test_workspace_id_is_written_for_a_key_not_tied_to_one(self, harness):
-        """Contract with config.yaml: ClaudeLLM reads the id as api_keys.anthropic_workspace."""
-        harness.keep_dir.mkdir()
-        result = harness.run('API_KEY=sk-ant-typed-47L; WORKSPACE_ID=wrkspc_01TEST; write_config')
-        assert result.returncode == 0, result.stdout
-        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
-        assert config['api_keys']['anthropic_workspace'] == 'wrkspc_01TEST'
-
-    def test_developer_release_follows_the_branch_the_install_was_made_from(self, harness):
-        """restart_server pulls the branch `developer_release` names, so a master install
-        must keep following master and a release install the release branch."""
-        harness.keep_dir.mkdir()
-        assert harness.run('API_KEY=sk-ant-typed-47L; write_config').returncode == 0
-        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
-        assert config['developer_release'] is True
-        assert harness.run('BRANCH=release; API_KEY=sk-ant-typed-47L; write_config').returncode == 0
-        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
-        assert config['developer_release'] is False
 
 
 FIRST = {'readme.md': 'Keep\n', '.gitignore': 'log/\n'}
@@ -645,15 +533,26 @@ class TestTelemetry:
         assert re.search(r'^POSTHOG_PROJECT_KEY="(.*)"$', text, re.M).group(1) == Telemetry.POSTHOG_PROJECT_KEY
         assert re.search(r'^POSTHOG_HOST="(.*)"$', text, re.M).group(1) == Telemetry.POSTHOG_HOST
 
-    def test_fresh_install_mints_an_id_and_writes_it_as_the_servers(self, harness):
-        """Contract with config.yaml: the server reads the install id as telemetry.id."""
+    def test_fresh_install_mints_an_id(self, harness):
         harness.keep_dir.mkdir()
-        result = harness.run('init_telemetry; echo "id=$TELEMETRY_ID"; API_KEY=sk-ant-typed-47L; write_config')
+        result = harness.run('init_telemetry; echo "id=$TELEMETRY_ID"')
         assert result.returncode == 0, result.stdout
         minted = re.search(r'^id=(.*)$', result.stdout, re.M).group(1)
         assert re.fullmatch(r'[0-9a-f-]{36}', minted), minted
-        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
-        assert config['telemetry'] == {'enabled': True, 'id': minted}
+
+    @pytest.mark.parametrize('env, expected', [({}, f'id=[{INSTALL_ID}]'), ({'KEEP_NO_TELEMETRY': '1'}, 'id=[]')],
+                             ids=['the id', 'the opt-out'])
+    def test_a_rerun_reads_back_what_the_installer_wrote(self, harness, env, expected):
+        """The config is written by Python (common/install/InstallConfig.py) and read here with
+        awk: the id and the opt-out must come back out of the very file an install leaves."""
+        from common.install.InstallConfig import InstallConfig
+
+        from .common.install.fakes import ScriptedTerminal
+        harness.keep_dir.mkdir()
+        InstallConfig(ScriptedTerminal(), {'KEEP_DIR': str(harness.keep_dir), 'KEEP_INSTALL_BRANCH': 'release',
+                                           'KEEP_INSTALL_TELEMETRY_ID': INSTALL_ID, **env}).write_server('sk-ant-typed-47L', '')
+        result = harness.run('init_telemetry; echo "id=[$TELEMETRY_ID]"; echo "release=[$(config_value developer_release)]"')
+        assert expected in result.stdout and 'release=[false]' in result.stdout
 
     def test_rerun_reuses_the_id_the_config_holds(self, harness):
         harness.keep_dir.mkdir()
@@ -670,14 +569,11 @@ class TestTelemetry:
         assert 'id=[]' in result.stdout
         assert not harness.curl_calls.exists()
 
-    def test_environment_opt_out_sends_nothing_and_writes_the_opt_out(self, harness):
+    def test_environment_opt_out_sends_nothing(self, harness):
         harness.keep_dir.mkdir()
-        result = harness.run('init_telemetry; telemetry_started; API_KEY=sk-ant-typed-47L; write_config',
-                             KEEP_NO_TELEMETRY='1')
+        result = harness.run('init_telemetry; telemetry_started', KEEP_NO_TELEMETRY='1')
         assert result.returncode == 0, result.stdout
         assert not harness.curl_calls.exists()
-        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
-        assert config['telemetry'] == {'enabled': False}
 
     def test_event_carries_the_id_and_typed_properties_without_the_home_path(self, harness):
         result = harness.run(
@@ -712,12 +608,21 @@ class TestTelemetry:
 
 
 # main() with every step that touches the Mac or the network replaced by a line saying it ran;
-# the role, the config, the telemetry, the step counter and the summary are the real ones. The
-# terminal is taken away, so nothing here can wait on a prompt.
+# the role, the telemetry, the step counter and the summary are the real ones. The terminal is
+# taken away, so nothing here can wait on a prompt. The steps Python does are the real package for
+# a satellite, whose config asks nobody anything; for a server, whose key step would ask Anthropic,
+# they are a stand-in that prints the two step headers and leaves a config.yaml.
 MAIN = (
-    'for step in check_mac ensure_clt ensure_browser ensure_python ensure_repo ensure_venv install_requirements obtain_api_key launch; do\n'
+    'for step in check_mac ensure_clt ensure_browser ensure_python ensure_repo ensure_venv install_requirements launch; do\n'
     '  eval "$step() { echo \\"ran:$step\\"; }"\n'
     'done\n'
+    + REAL_PYTHON_STEPS.replace('python_steps()', 'real_python_steps()') +
+    'python_steps() {\n'
+    '  echo "ran:python_steps"\n'
+    '  if satellite; then real_python_steps; return; fi\n'
+    '  printf "  [%d/%d] Anthropic API key\\n  [%d/%d] Configuration\\n" $((STEP + 1)) "$TOTAL_STEPS" $((STEP + 2)) "$TOTAL_STEPS"\n'
+    '  printf "api_keys:\\n  anthropic: sk-ant-typed-47L\\nvault:\\n  key: x\\n" > "$KEEP_DIR/config.yaml"\n'
+    '}\n'
     'eval "real_$(declare -f init_ui)"\n'
     'init_ui() { real_init_ui; TTY=""; }\n'
     'main\n')
@@ -813,7 +718,7 @@ class TestSatelliteInstall:
         result = harness.run(MAIN, KEEP_ROLE=SATELLITE, KEEP_NO_TELEMETRY='1')
         assert result.returncode == 0, result.stdout
         assert ran(result) == ['check_mac', 'ensure_clt', 'ensure_python', 'ensure_repo', 'ensure_venv',
-                               'install_requirements', 'launch'], "a satellite browses nothing and asks for no key"
+                               'install_requirements', 'python_steps', 'launch'], "a satellite browses nothing"
         counted = steps(result)
         assert counted == [(n, len(counted)) for n in range(1, len(counted) + 1)], "the step counter skips or overruns"
         assert 'API key' not in result.stdout
@@ -821,12 +726,9 @@ class TestSatelliteInstall:
     def test_an_install_without_the_switch_is_still_a_server_that_asks_for_its_key(self, harness):
         result = harness.run(MAIN, KEEP_NO_TELEMETRY='1')
         assert result.returncode == 0, result.stdout
-        assert 'obtain_api_key' in ran(result)
+        assert 'python_steps' in ran(result) and 'ensure_browser' in ran(result)
         counted = steps(result)
         assert counted == [(n, len(counted)) for n in range(1, len(counted) + 1)]
-        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
-        assert 'role' not in config and 'imessage_satellite' not in config and 'watchdog' not in config
-        assert config['vault']['key']
         assert 'imessage.host' not in result.stdout
 
     def test_the_config_it_writes_is_one_the_satellite_starts_on(self, harness):
@@ -848,59 +750,6 @@ class TestSatelliteInstall:
         config = yaml.safe_load(path.read_text())
         assert re.fullmatch(r'[A-Za-z0-9]{32}', str(config['imessage_satellite']['token']))
         assert 'api_keys' not in config and 'vault' not in config
-
-    def test_the_watchdog_is_on_for_a_satellite(self, harness):
-        """Contract with common/Watchdog.KEY, which the satellite applies at each start: nobody is
-        at a satellite to start it again."""
-        from common import Watchdog
-        harness.keep_dir.mkdir()
-        assert harness.run('write_satellite_config').returncode == 0
-        assert yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())[Watchdog.KEY] is True
-
-    def test_two_installs_get_two_tokens(self, harness):
-        harness.keep_dir.mkdir()
-        tokens = set()
-        for _ in range(2):
-            assert harness.run('write_satellite_config').returncode == 0
-            tokens.add(yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())['imessage_satellite']['token'])
-        assert len(tokens) == 2
-
-    def test_the_release_line_and_the_telemetry_are_written_as_for_a_server(self, harness):
-        harness.keep_dir.mkdir()
-        assert harness.run('init_telemetry; write_satellite_config').returncode == 0
-        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
-        assert config['developer_release'] is True                      # the harness installs from master
-        assert config['telemetry']['enabled'] is True and re.fullmatch(r'[0-9a-f-]{36}', config['telemetry']['id'])
-        assert harness.run('BRANCH=release; init_telemetry; write_satellite_config', KEEP_NO_TELEMETRY='1').returncode == 0
-        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
-        assert config['developer_release'] is False and config['telemetry'] == {'enabled': False}
-
-    @pytest.mark.parametrize('env, answers, expected, asked', [
-        ({}, None, False, 0),
-        ({'KEEP_LAN_ACCESS': '1'}, ['2'], True, 0),
-        ({'KEEP_LAN_ACCESS': '0'}, ['2'], False, 0),
-        ({}, [''], False, 1),
-        ({}, ['1'], False, 1),
-        ({}, ['2'], True, 1),
-        ({}, ['yes', ' 2 '], True, 2),
-        ({}, ['a', 'b', 'c', '2'], False, 3),
-    ], ids=['no terminal', 'the variable on', 'the variable off', 'Enter', 'this Mac', 'another Mac',
-            'a wrong answer first', 'three wrong answers'])
-    def test_whether_it_answers_the_network_is_asked_once_and_closed_by_default(self, harness, env, answers, expected, asked):
-        harness.keep_dir.mkdir()
-        if answers is not None:
-            harness.set_answers(*answers)
-        result = harness.run(('TTY=/dev/tty; ' if answers is not None else '') + 'write_satellite_config', **env)
-        assert result.returncode == 0, result.stdout
-        config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
-        assert config['imessage_satellite']['lan_access'] is expected
-        assert len(harness.prompts) == asked
-
-    def test_a_lan_variable_that_is_neither_yes_nor_no_stops_the_install(self, harness):
-        harness.keep_dir.mkdir()
-        result = harness.run('write_satellite_config', KEEP_LAN_ACCESS='maybe')
-        assert result.returncode == 1
-        assert not (harness.keep_dir / 'config.yaml').exists()
 
     def test_the_summary_carries_what_the_server_needs_to_pair_and_the_grants(self, harness):
         """Contract with the server's config keys (common/imessage/Hosts): what is printed is what
@@ -943,7 +792,7 @@ class TestSatelliteInstall:
         result = harness.run(MAIN, **env)
         assert result.returncode == 0, result.stdout
         assert (harness.keep_dir / 'config.yaml').read_text() == EXISTING_SATELLITE
-        assert 'obtain_api_key' not in ran(result) and 'launch' in ran(result)
+        assert 'python_steps' not in ran(result) and 'launch' in ran(result)
         assert len(steps(result)) == steps(result)[-1][1]
         assert 'http://127.0.0.1:8901' in result.stdout and 'Zq4nB8cR2yH6sD0fG3jA7vK1mX5pL9wT' in result.stdout
         assert not harness.curl_calls.exists(), "the config's telemetry opt-out was not honoured"
@@ -1558,10 +1407,9 @@ class TestTheLinuxInstallEndToEnd:
         result = on_linux(harness, LINUX_MAIN, KEEP_NO_TELEMETRY='1')
         assert result.returncode == 0, result.stdout
         assert ran(result) == ['check_linux', 'ensure_packages', 'ensure_browser', 'ensure_python', 'ensure_repo',
-                               'ensure_venv', 'install_requirements', 'obtain_api_key', 'launch']
+                               'ensure_venv', 'install_requirements', 'python_steps', 'launch']
         counted = steps(result)
         assert counted == [(n, len(counted)) for n in range(1, len(counted) + 1)]
-        assert yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())['vault']['key']
 
     def test_lingering_is_asked_for_the_installing_user_without_sudo(self, harness):
         import pwd

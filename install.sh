@@ -8,7 +8,7 @@
 # commands drive it headless), finds or installs Python 3.12 without touching anything else on the
 # machine, clones the repository, builds the venv, asks for the Anthropic API key (and the
 # workspace it acts in, when the key is not tied to one), writes
-# config.yaml, puts a `keep` command in ~/.local/bin (the console, from any folder) and hands the
+# config.yaml — those two in Python, src/common/install, the first moment there is one —, puts a `keep` command in ~/.local/bin (the console, from any folder) and hands the
 # terminal to start.sh. Every step is idempotent: re-run the same
 # command to resume after a failure or to upgrade an existing install.
 #
@@ -68,10 +68,6 @@ main() {
   PY=""
   PY_SOURCE=""         # found | brew | uv: where the Python came from, for the install report
   TELEMETRY_ID=""
-  API_KEY=""
-  WORKSPACE_ID=""
-  VERIFY_CODE=""
-  ANTHROPIC_SAID=""
 
   init_ui
   trap on_error ERR
@@ -128,23 +124,15 @@ main() {
   step "Python packages"
   install_requirements
 
-  if satellite; then
-    step "Configuration"
-    if [ -f "$KEEP_DIR/config.yaml" ]; then
-      ok "config.yaml kept as it is"
-    else
-      write_satellite_config
+  if [ -f "$KEEP_DIR/config.yaml" ]; then
+    if ! satellite; then
+      step "Anthropic API key"
+      ok "config.yaml already exists; its key is kept"
     fi
-  elif [ -f "$KEEP_DIR/config.yaml" ]; then
-    step "Anthropic API key"
-    ok "config.yaml already exists; its key is kept"
     step "Configuration"
     ok "config.yaml kept as it is"
   else
-    step "Anthropic API key"
-    obtain_api_key
-    step "Configuration"
-    write_config
+    configure
   fi
 
   if linux; then enable_linger; fi
@@ -318,8 +306,13 @@ fail() {
   shift
   local line
   for line in "$@"; do note "$line"; done
+  give_up "$reason"
+}
+
+# give_up <reason>: the end of a failed install, once the failure has been shown.
+give_up() {
   log "FAILED in step: $STEP_NAME"
-  telemetry_event install_failed step="$STEP_NAME" reason="$reason" elapsed_s="$SECONDS"
+  telemetry_event install_failed step="$STEP_NAME" reason="$1" elapsed_s="$SECONDS"
   if [ -n "${LOG:-}" ] && [ -f "$LOG" ]; then printf '\n  %sLog: %s%s\n' "$C_DIM" "$LOG" "$C_RESET"; fi
   printf '  %sRe-run the same command to resume; finished steps are skipped.%s\n\n' "$C_DIM" "$C_RESET"
   exit 1
@@ -1198,259 +1191,39 @@ pip_status() {
   printf '[%s] %s' "$bar" "$text"
 }
 
-# ------------------------------------------------------------ 7. API key ----
+# ------------------------------------------- 7. the API key and the config ---
 
-KEYS_URL="https://platform.claude.com/settings/keys"
-WORKSPACES_URL="https://platform.claude.com/settings/workspaces"
-BILLING_URL="https://platform.claude.com/settings/billing"
+# What needs a Python is Python's: src/common/install asks for the API key, checks it with
+# Anthropic and writes config.yaml (a satellite's holds no key). It prints its own step headers
+# from where the counter stands here. What comes back is the exit status and the file — and, after
+# a failure it has already shown, the step and the reason on the log's last two lines, which is
+# what the install report carries.
+SATELLITE_PORT=8898   # imessage_satellite.port as common/install/InstallConfig.py writes it; the summary's fallback
 
-verify_api_key() {
-  # Leaves in VERIFY_CODE what Anthropic made of the key: an HTTP status, or "workspace" when
-  # the key is not tied to one workspace and Anthropic wants to be told which to use, or
-  # "bad-workspace" when the id given for it is not one the key can act in, or "credit" when
-  # the key is good but its organization has no credit; Anthropic's own words in ANTHROPIC_SAID.
-  # A real one-token message on Haiku, a fraction of a cent: the free count_tokens endpoint
-  # is not documented to check the balance, and an unfunded key that passes here leaves the
-  # first chat silent.
-  local body="$LOG.verify" code
-  local -a workspace_header=()
-  [ -z "$WORKSPACE_ID" ] || workspace_header=(-H "anthropic-workspace-id: $WORKSPACE_ID")
-  code=$(curl -sS -o "$body" --max-time 20 -w '%{http_code}' \
-    -H "x-api-key: $API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
-    ${workspace_header[@]+"${workspace_header[@]}"} \
-    -d '{"model":"claude-haiku-5-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
-    https://api.anthropic.com/v1/messages 2>>"$LOG" || true)
-  ANTHROPIC_SAID=$(sed -n 's/.*"message":"\([^"]*\)".*/\1/p' "$body" 2>/dev/null | head -n 1 || true)
-  log "key check: HTTP ${code:-none} ${ANTHROPIC_SAID:+- $ANTHROPIC_SAID}"
-  case "$code" in
-    400) case "$ANTHROPIC_SAID" in
-           *anthropic-workspace-id*required*) code=workspace ;;
-           *[Cc]redit\ balance*) code=credit ;;
-           *workspace*) [ -z "$WORKSPACE_ID" ] || code=bad-workspace ;;
-         esac ;;
-    404) case "$ANTHROPIC_SAID" in *[Ww]orkspace*) [ -z "$WORKSPACE_ID" ] || code=bad-workspace ;; esac ;;
-  esac
-  VERIFY_CODE=$code
-}
-
-explain_workspace() {
-  warn "This key's Scope is Organization, so Anthropic needs to be told which workspace to use."
-  note "The easy fix: create a new key at ${C_BOLD}$KEYS_URL${C_RESET} with Scope set to"
-  note "Default workspace (and Expires to Never). Then paste the new key here."
-  note "Or keep this key and paste a workspace id instead: it starts with wrkspc_ and is in the"
-  note "ID column at ${C_BOLD}$WORKSPACES_URL${C_RESET}."
-  printf '\n'
-}
-
-explain_credit() {
-  note "Keep uses your organization's API credit. On a Claude Max, Ultra or Team plan you get"
-  note "\$100–500 of it a month for free: claim it at claude.ai → Settings → Billing → API credits"
-  note "(link the Console organization you create this key in). Otherwise add credits at"
-  note "${C_BOLD}$BILLING_URL${C_RESET}."
-}
-
-# The key is good but its organization has no credit: wait while the user claims or buys some,
-# then check again. Returns 0 to check again, 1 to go on without credit.
-wait_for_credit() {
-  warn "The key works, but its organization has no API credit yet."
-  note "On a Claude Max, Ultra or Team plan, claim the plan's monthly credit at claude.ai → Settings →"
-  note "Billing → API credits and link this key's Console organization (a new subscription can claim"
-  note "it after 7 days on the plan). Otherwise add credits at ${C_BOLD}$BILLING_URL${C_RESET}."
-  printf '\n'
-  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    warn "Keeping ANTHROPIC_API_KEY from the environment. Keep cannot answer until the organization has credit."
-    return 1
-  fi
-  local answer=""
-  ask "Press Enter to check again, or type skip to finish without credit:" answer
-  case "$(printf '%s' "$answer" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
-    skip) warn "Keeping the key. Keep cannot answer until the organization has credit."; return 1 ;;
-  esac
-  dim "Checking again..."
-  return 0
-}
-
-obtain_api_key() {
-  API_KEY="${ANTHROPIC_API_KEY:-}"
-  WORKSPACE_ID="${ANTHROPIC_WORKSPACE_ID:-}"
-  if [ -n "$API_KEY" ]; then
-    dim "Using ANTHROPIC_API_KEY from the environment."
-  else
-    note "Keep runs on Claude. An API key is the only way to use it without breaking Anthropic's terms of service."
-    note "Create one at ${C_BOLD}$KEYS_URL${C_RESET} (it starts with sk-ant-). In the dialog:"
-    note "  Expires: Never"
-    note "  Scope:   Default workspace"
-    note "The key is stored only in $KEEP_DIR/config.yaml. Typing is hidden."
-    printf '\n'
-    explain_credit
-    printf '\n'
-  fi
-  # An attempt is a key Anthropic was asked about: an empty Enter or a slip of the paste uses none
-  # up (ten of those in a row is nobody typing, and ends the loop all the same).
-  local attempt=0 workspace_attempt=0 slips=0 asked=""
-  while :; do
-    asked=""
-    if [ -z "$API_KEY" ]; then
-      [ "$attempt" -lt 3 ] || fail "No valid API key after 3 attempts." \
-        "Re-run the installer when you have one, or pass it as ANTHROPIC_API_KEY=... in the environment."
-      [ "$slips" -lt 10 ] || fail "No API key entered." \
-        "Re-run the installer when you have one, or pass it as ANTHROPIC_API_KEY=... in the environment."
-      ask "Anthropic API key:" API_KEY secret
-      API_KEY=$(printf '%s' "$API_KEY" | tr -d '[:space:]')
-      asked=1
-    fi
-    case "$API_KEY" in
-      sk-ant-*) ;;
-      "")  warn "Nothing entered."; slips=$((slips + 1)); continue ;;
-      *)   warn "That does not look like an Anthropic key (they start with sk-ant-)."; API_KEY=""; slips=$((slips + 1)); continue ;;
-    esac
-    slips=0
-    [ -z "$asked" ] || attempt=$((attempt + 1))
-    verify_api_key
-    case "$VERIFY_CODE" in
-      200) ok "Key verified with the Anthropic API${WORKSPACE_ID:+ (workspace $WORKSPACE_ID)}"; return ;;
-      credit) if wait_for_credit; then continue; fi; return ;;
-      401|403) warn "Anthropic rejected that key (HTTP $VERIFY_CODE). Check for a typo or create a new one."; API_KEY="" ;;
-      workspace|bad-workspace)
-        if [ "$VERIFY_CODE" = workspace ]; then explain_workspace
-        else warn "Anthropic does not know workspace $WORKSPACE_ID, or this key cannot use it. Check the ID column at $WORKSPACES_URL."; fi
-        workspace_attempt=$((workspace_attempt + 1))
-        [ "$workspace_attempt" -le 3 ] || fail "No usable workspace id after 3 attempts." \
-          "Create a key with Scope set to Default workspace at $KEYS_URL and re-run the installer, or pass ANTHROPIC_WORKSPACE_ID=wrkspc_... in the environment."
-        ask "Workspace id (or press Enter to paste a new key instead):" WORKSPACE_ID
-        WORKSPACE_ID=$(printf '%s' "$WORKSPACE_ID" | tr -d '[:space:]')
-        case "$WORKSPACE_ID" in
-          wrkspc_*) continue ;;
-          "") [ -z "${ANTHROPIC_API_KEY:-}" ] || fail "ANTHROPIC_API_KEY from the environment is not tied to a workspace." \
-                "Pass ANTHROPIC_WORKSPACE_ID=wrkspc_... as well, or create a key with Scope set to Default workspace at $KEYS_URL."
-              API_KEY=""; continue ;;
-          *) warn "That does not look like a workspace id (they start with wrkspc_)."; WORKSPACE_ID=""; continue ;;
-        esac ;;
-      *) warn "Could not verify the key right now (HTTP ${VERIFY_CODE:-none}${ANTHROPIC_SAID:+: $ANTHROPIC_SAID}); keeping it, the server will tell you if it is wrong."; return ;;
-    esac
-    [ -z "${ANTHROPIC_API_KEY:-}" ] || fail "ANTHROPIC_API_KEY from the environment was rejected."
-  done
-}
-
-# -------------------------------------------------------------- 8. config ---
-
-random_secret() {
-  # head reads a fixed amount, so nothing upstream dies of SIGPIPE under pipefail.
-  head -c 96 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32
-}
-
-write_config() {
-  local vault_key
-  vault_key=$(random_secret)
-  [ "${#vault_key}" -eq 32 ] || fail "Could not generate a vault passphrase."
-  (
-    umask 077
-    cat >"$KEEP_DIR/config.yaml" <<EOF
-# Keep configuration, written by install.sh on $(date '+%Y-%m-%d'). config.example.yaml documents
-# every setting; the assistant sets up the optional integrations itself once it runs.
-api_keys:
-  anthropic: $API_KEY${WORKSPACE_ID:+
-  anthropic_workspace: $WORKSPACE_ID   # the key is not tied to one workspace, so every request names this one}
-$(if [ "$BRANCH" = master ]; then echo "developer_release: true   # installed from master, the development line; restart_server keeps following it"
-   else echo "developer_release: false  # restart_server follows the release branch; true: master, the development line"; fi)
-vault:
-  # Encrypts vault.bin, the secrets the assistant stores for you. Lose it and the vault is
-  # lost; change it and the existing vault.bin can no longer be opened.
-  key: $vault_key
-telemetry:
-  # Beta usage telemetry; config.example.yaml says what goes out. enabled: false turns it off.
-$(if [ -n "${KEEP_NO_TELEMETRY:-}" ]; then echo "  enabled: false"
-   else echo "  enabled: true"; echo "  id: $TELEMETRY_ID"; fi)
-EOF
-  )
-  ok "Wrote config.yaml (readable by you only)"
-  note "A random vault passphrase was generated for you. It lives in config.yaml: back that file up."
-}
-
-# The config of an iMessage satellite: the role, the service's section and what keeps the
-# process running and up to date. No API key and no vault — nothing on a satellite uses either,
-# and floxy_ai_server.py asks for neither under this role. The file has to be there before the
-# first start: without one ConfigManager writes the server's skeleton.
-SATELLITE_PORT=8898   # imessage_satellite.port: not the server's 8888, since a second user shares the Mac's ports
-LAN_ACCESS=false      # imessage_satellite.lan_access, settled by choose_lan_access
-
-write_satellite_config() {
-  local token
-  token=$(random_secret)
-  [ "${#token}" -eq 32 ] || fail "Could not generate the satellite's token."
-  choose_lan_access
-  (
-    umask 077
-    cat >"$KEEP_DIR/config.yaml" <<EOF
-# Keep configuration of an iMessage satellite, written by install.sh on $(date '+%Y-%m-%d'). No assistant
-# runs on this install: it serves this Mac user's Messages to a Keep server, which is given the
-# address and the token below — as imessage.host and imessage.host_token when the account is the
-# owner's own, as imessage_chat.host and imessage_chat.host_token when it is the assistant's own
-# Apple ID. config.example.yaml documents the keys.
-role: imessage_satellite
-imessage_satellite:
-  port: $SATELLITE_PORT
-  # What the Keep server must present. A secret: whoever holds it and reaches the port reads and
-  # sends this account's messages. A new value here must be entered on the server as well.
-  token: $token
-  # false: only this Mac reaches the satellite (the Keep server is another user of this Mac).
-  # true: the network does (the server is on another Mac); the token and the messages then cross
-  # it unencrypted, so only on a network you trust. Read at start.
-  lan_access: $LAN_ACCESS
-# Where the install came from. A running satellite follows the Keep server that calls it: it
-# moves itself to that server's line (release or master) and version.
-$(if [ "$BRANCH" = master ]; then echo "developer_release: true   # installed from master, the development line"
-   else echo "developer_release: false  # installed from the release branch"; fi)
-# Nobody sits at a satellite and no assistant is there to restart it, so launchd starts it again
-# within 5 minutes of dying. Applied at each start: to keep a stopped satellite down, set this to
-# false and run start.sh once more, then stop.sh.
-watchdog: true
-telemetry:
-  # The installer's own events (started, finished, or the step it failed in); a running satellite
-  # sends nothing. config.example.yaml says what goes out. enabled: false turns it off.
-$(if [ -n "${KEEP_NO_TELEMETRY:-}" ]; then echo "  enabled: false"
-   else echo "  enabled: true"; echo "  id: $TELEMETRY_ID"; fi)
-EOF
-  )
-  ok "Wrote config.yaml (readable by you only)"
-}
-
-# Whether the satellite answers the network: KEEP_LAN_ACCESS, else one question, else — with no
-# terminal to ask on — this Mac only, the answer that opens nothing.
-choose_lan_access() {
-  LAN_ACCESS=false
-  case "$(printf '%s' "${KEEP_LAN_ACCESS:-}" | tr '[:upper:]' '[:lower:]')" in
-    1|true|yes|on)  LAN_ACCESS=true
-                    dim "KEEP_LAN_ACCESS is set: the satellite will answer the network (a Keep server on another Mac)."
-                    return ;;
-    0|false|no|off) dim "KEEP_LAN_ACCESS is off: the satellite will answer this Mac only (a Keep server under another user here)."
-                    return ;;
-    "") ;;
-    *) fail "KEEP_LAN_ACCESS=${KEEP_LAN_ACCESS:-} is neither 1 nor 0." ;;
-  esac
-  if [ -z "$TTY" ]; then
-    dim "No terminal to ask on: the satellite will answer this Mac only (imessage_satellite.lan_access: false)."
-    dim "For a Keep server on another Mac, set it to true in config.yaml and run start.sh again."
+configure() {
+  local status=0 steps=2 name reason
+  if satellite; then steps=1; fi
+  python_steps || status=$?
+  if [ "$status" -eq 0 ]; then
+    STEP=$((STEP + steps))
+    STEP_NAME="Configuration"
     return
   fi
-  note "Where does your Keep server run?"
-  note "  1  on this Mac, under another user: the satellite answers this Mac only"
-  note "  2  on another Mac: the satellite answers the network, and the token and the messages"
-  note "     cross it unencrypted — only on a network you trust"
-  local answer="" attempt=0
-  while :; do
-    attempt=$((attempt + 1))
-    ask "1 or 2 (Enter for 1):" answer
-    case "$(printf '%s' "$answer" | tr -d '[:space:]')" in
-      ""|1) ok "This Mac only (lan_access: false)"; return ;;
-      2)    LAN_ACCESS=true; ok "The network (lan_access: true)"; return ;;
-    esac
-    if [ "$attempt" -ge 3 ]; then
-      warn "No 1 or 2 after 3 attempts: this Mac only. imessage_satellite.lan_access in config.yaml changes it."
-      return
-    fi
-    warn "Please answer 1 or 2."
-  done
+  [ "$status" -ne 130 ] || on_interrupt
+  name=$(tail -n 2 "$LOG" | sed -n 's/^FAILED in step: //p')
+  reason=$(tail -n 1 "$LOG" | sed -n 's/^FAILED: //p')
+  STEP_NAME=${name:-Configuration}
+  [ -n "$reason" ] || fail "The configuration did not complete (exit $status)."
+  give_up "$reason"
+}
+
+# -P: the folder the installer was started in is not where Python looks for `common`. Stdin is
+# closed to it: that may be the pipe this script came through, and every question goes to the
+# terminal.
+python_steps() {
+  KEEP_DIR="$KEEP_DIR" KEEP_INSTALL_BRANCH="$BRANCH" KEEP_INSTALL_ROLE="$ROLE" KEEP_INSTALL_LOG="$LOG" \
+    KEEP_INSTALL_TELEMETRY_ID="$TELEMETRY_ID" KEEP_INSTALL_STEP="$STEP" KEEP_INSTALL_STEPS="$TOTAL_STEPS" \
+    PYTHONPATH="$KEEP_DIR/src" "$KEEP_DIR/.venv/bin/python" -P -m common.install </dev/null
 }
 
 # --------------------------------------------------------- telemetry --------

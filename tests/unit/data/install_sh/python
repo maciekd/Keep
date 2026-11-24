@@ -1,0 +1,14 @@
+#!/bin/bash
+# install.sh's test double for the venv's python, symlinked into it: records in KEEP_TEST_PYTHON
+# what it was asked to run, the variables the installer hands over and what its stdin is, and
+# exits as KEEP_TEST_PYTHON_EXIT says.
+# Checked in, not written by the test: macOS assesses a new executable file on its first run.
+{
+  echo "args=$*"
+  for name in KEEP_DIR KEEP_INSTALL_BRANCH KEEP_INSTALL_ROLE KEEP_INSTALL_LOG KEEP_INSTALL_TELEMETRY_ID \
+              KEEP_INSTALL_STEP KEEP_INSTALL_STEPS PYTHONPATH; do
+    echo "$name=${!name-<unset>}"
+  done
+  if IFS= read -r line; then echo "stdin=$line"; else echo "stdin=empty"; fi
+} > "$KEEP_TEST_PYTHON"
+exit "${KEEP_TEST_PYTHON_EXIT:-0}"
