@@ -814,3 +814,49 @@ class TestCacheChart:
         assert smart_colour != curator_colour
         both = drawn([(SMART, 50), (CURATOR, 50)])
         assert [cell.style.fg for cell in both] == [smart_colour, curator_colour]
+
+
+LTM_X, LTM_Y, LTM_W, LTM_H = 1, 1, 60, 8
+
+
+def draw_memory_chart(*totals_kb):
+    """The Long Term Memory chart over nights whose whole memory was `totals_kb`, the bank a
+    fixed 20 KB of each (or all of a smaller one)."""
+    tab = make_tab()
+    tab.memory_word_count = 4200
+    tab.memory_log_sizes = [(f"2026-11-{10 + n:02d}", {"bank": min(20.0, total), "memos": max(0.0, total - 20.0)})
+                            for n, total in enumerate(totals_kb)]
+    screen = TUIScreen(LTM_W + 4, LTM_H + 8)
+    screen.clear_buffer()
+    tab._draw_long_term_memory_chart(screen, LTM_X, LTM_Y, LTM_W, LTM_H)
+    return [label for row in screen.next_frame for label in re.findall(r"[\d.]+KB", "".join(c.char for c in row))]
+
+
+@pytest.mark.unit
+class TestLongTermMemoryAxis:
+    @pytest.mark.parametrize("peak, ceiling", [(209, 250), (251, 500), (21, 25), (26, 50), (120, 200), (9000, 10000)])
+    def test_the_memory_charts_ceiling_is_the_next_step_above_the_peak_with_a_quarter_step_among_them(self, peak, ceiling):
+        assert DashboardTab._nice_ceil(peak, DashboardTab.LTM_CEIL_STEPS) == ceiling
+
+    @pytest.mark.parametrize("peak, ceiling", [(209, 500), (2.1, 5), (21, 50), (0.21, 0.5)])
+    def test_every_other_chart_keeps_whole_steps_since_its_axis_is_labelled_in_quarters(self, peak, ceiling):
+        assert DashboardTab._nice_ceil(peak) == pytest.approx(ceiling)
+
+    def test_a_ceiling_always_holds_its_peak(self):
+        for peak in (0.03, 0.999, 1, 2.5, 2.51, 7, 10, 99.9, 1000, 123456):
+            for steps in ((1, 2, 5, 10), DashboardTab.LTM_CEIL_STEPS):
+                assert peak <= DashboardTab._nice_ceil(peak, steps) <= peak * 2.5 + 1e-9, (peak, steps)
+
+    def test_a_memory_of_209_kb_is_drawn_on_an_axis_to_250(self):
+        labels = draw_memory_chart(150, 209)
+        assert "250KB" in labels and "125KB" in labels and "500KB" not in labels
+
+    @pytest.mark.xfail(strict=True, reason="the half label of a 25 KB axis, 12.5KB, is six characters in the axis's "
+                                           "five columns: the chart's rule overwrites its B and it reads 12.5K")
+    def test_the_half_of_a_25_kb_axis_is_labelled_in_full(self):
+        labels = draw_memory_chart(21)
+        assert "25KB" in labels and "12.5KB" in labels
+
+    def test_a_small_memory_stays_on_the_ten_kb_floor(self):
+        labels = draw_memory_chart(4)
+        assert "10KB" in labels and "5KB" in labels

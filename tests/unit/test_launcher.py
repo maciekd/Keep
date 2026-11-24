@@ -625,6 +625,46 @@ class TestResumeConversation:
 
 
 @pytest.mark.unit
+class TestOpeningTurnOnALocalModel:
+    """A local model prefills a cold prompt for minutes: its opening turn is sent as the
+    console's intro starts, a cloud model's when the intro is over."""
+
+    class FakeConsole:
+        name = "console"
+
+        def __init__(self):
+            self.at_start, self.at_end = [], []
+
+        def at_intro_start(self, fn):
+            self.at_start.append(fn)
+
+        def after_intro(self, fn):
+            self.at_end.append(fn)
+
+    @pytest.mark.parametrize("local", [True, False], ids=["a local smart tier", "a cloud smart tier"])
+    def test_the_brief_waits_for_the_intros_start_or_its_end(self, local):
+        import floxy_ai_server
+        console = self.FakeConsole()
+        server = type("Server", (), {"interfaces": [console]})()
+        with patch.object(floxy_ai_server, "_smart_tier_is_local", return_value=local), \
+                patch("assistant.FirstRun.brief_due", return_value=True), \
+                patch("assistant.FirstRun.brief", return_value="the brief"), \
+                patch("interfaces.chat.ChatHub.ChatHub.get_instance") as hub:
+            floxy_ai_server._open_first_conversation(server)
+            waiting, other = (console.at_start, console.at_end) if local else (console.at_end, console.at_start)
+            assert len(waiting) == 1 and other == []
+            hub.return_value.open_conversation.assert_not_called()
+            waiting[0]()
+        hub.return_value.open_conversation.assert_called_once_with("the brief")
+
+    def test_a_smart_tier_that_cannot_be_built_is_taken_as_a_cloud_model(self):
+        # The opening turn then waits for the intro's end, as it always did: never a boot that fails here.
+        import floxy_ai_server
+        with patch("assistant.llm.parse_llm_config", side_effect=ValueError("no such backend")):
+            assert floxy_ai_server._smart_tier_is_local() is False
+
+
+@pytest.mark.unit
 class TestFirstRunPipeline:
     def test_build_starts_the_pipeline_with_the_history_and_stop_ends_it(self, telegram_only_config, quiet_heavy_startup):
         import floxy_ai_server

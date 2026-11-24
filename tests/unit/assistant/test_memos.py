@@ -197,3 +197,33 @@ class TestCurator:
         before = Memos.version(curator.memos_dir)
         curator.run_commands('save_memo("ski-trip", "the trip in February", """Hotel Example""")')
         assert [v for v in Memos.version(curator.memos_dir) if v[0] == "wine-list.md"] == list(before)
+
+
+@pytest.mark.unit
+class TestMemorySizeTelemetry:
+    """The nightly memory event counts the memos and their words: the curator's prompt carries
+    every one of them in full, so their total is what a night costs."""
+
+    @staticmethod
+    def reported() -> dict:
+        from assistant.agents.AutonomousActionManager import AutonomousActionManager
+        with patch.object(MemoryFile, "read", return_value="Marcus lives with Charlotte."), \
+                patch("assistant.agents.AutonomousActionManager.WatchList.items", return_value=[]), \
+                patch("assistant.agents.AutonomousActionManager.Telemetry.get_instance") as telemetry:
+            AutonomousActionManager._report_memory_size()
+        words, chars, watch_items, procedures, memos, memo_words = telemetry.return_value.memory_size.call_args.args
+        return {"words": words, "procedures": procedures, "memos": memos, "memo_words": memo_words}
+
+    def test_an_install_without_memos_reports_none(self):
+        assert self.reported() == {"words": 4, "procedures": 0, "memos": 0, "memo_words": 0}
+
+    def test_every_memo_is_counted_with_its_words_and_no_procedure_among_them(self):
+        assert not Memos.run("save_memo", ["wines", "choosing a bottle", WINES])
+        one = self.reported()
+        assert one["memos"] == 1 and one["memo_words"] >= len(WINES.split())
+        assert not Memos.run("save_memo", ["plumbers", "a leak", "Dave fixes pipes on weekdays only"])
+        assert not Procedures.run("save_procedure", ["descale", "the kettle is slow", "Vinegar, then boil twice."])
+        two = self.reported()
+        assert two["memos"] == 2 and two["procedures"] == 1
+        assert two["memo_words"] - one["memo_words"] >= 6, "the second memo's six words of text are in the total"
+        assert two["words"] == one["words"], "the bank's own count never includes a memo"

@@ -1618,6 +1618,28 @@ class TestPrepareContext:
             "TestUser", "what's the plan for today?", "Nothing booked.", "VoiceToVoice", "Kitchen",
             timestamp=full_handler.turn_timestamp, time_note=full_handler.time_note)
 
+    def test_a_turn_the_server_starts_goes_out_as_the_bytes_its_history_row_renders(self, full_handler):
+        """A system turn sent with its source would read differently once it is history, and
+        the next request would prefill everything after it again."""
+        from assistant.prompt.MessageHistory import MessageHistory
+        prompt_manager = Mock()
+        prompt_manager.get_messages.return_value = []
+        prompt_manager.current_time_note.side_effect = PromptManager.current_time_note
+        full_handler.dialog_manager.ai.prefers_byte_prefix_tail.return_value = True
+        full_handler.request_context.user = "system"
+        full_handler.request_context.source = "Console"
+        full_handler.request_context.location = "Office"
+        full_handler.request_context.user_input = "The server restarted while you were answering."
+
+        with patch("assistant.RequestProcessor.BYTE_PREFIX_TAIL", True), \
+                patch("assistant.RequestProcessor.prepend_user_query_override", return_value=None):
+            full_handler._prepare_llm_context(prompt_manager)
+
+        assert full_handler.turn_timestamp is not None
+        row = {"role": "system", "content": "The server restarted while you were answering.",
+               "timestamp": full_handler.turn_timestamp, "source": "Console", "location": "Office"}
+        assert ("user", full_handler.dialog_manager.reply_to_llm) == MessageHistory._render_entry(row, 10_000)
+
     def test_the_byte_prefix_switch_off_restores_the_classic_tail(self, full_handler):
         """FLOXY_BYTE_PREFIX_TAIL=0 is the A/B lever: an LLM that asks for a byte-prefix tail
         still gets the classic one — <thinking> instruction, undated query header, nothing
@@ -2373,3 +2395,51 @@ class TestTelemetryReport:
         assert isinstance(events[-1], Done)
         get_instance.return_value.user_turn.assert_not_called()
         get_instance.return_value.assistant_turn.assert_not_called()
+
+
+class TestPreHeatHold:
+    """A turn holds the prompt manager's pre-heats from its start and ends the hold exactly
+    once, whichever way it ends (PromptManager.turn_started / turn_ended)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_autonomous_manager(self, full_handler):
+        with patch.object(RequestProcessor, "_notify_autonomous_user_started"), \
+                patch.object(RequestProcessor, "_notify_autonomous_user_ended"):
+            yield
+
+    def test_a_turn_killed_before_it_generates_ends_its_hold(self, full_handler):
+        prompt_manager = Mock()
+        full_handler.is_killed = True
+        assert list(full_handler.process(prompt_manager)) == []
+        prompt_manager.turn_started.assert_called_once_with()
+        prompt_manager.turn_ended.assert_called_once_with(False)
+
+    def test_a_turn_that_fails_while_it_is_prepared_ends_its_hold(self, full_handler):
+        prompt_manager = Mock()
+        full_handler.playback.log_ambient_noise.side_effect = RuntimeError("no microphone")
+        with pytest.raises(RuntimeError):
+            full_handler.process(prompt_manager)
+        prompt_manager.turn_started.assert_called_once_with()
+        prompt_manager.turn_ended.assert_called_once_with(False)
+
+    def test_an_answered_turn_ends_its_hold_as_closing_ahead_of_the_history_update_and_never_again(self, full_handler):
+        prompt_manager = Mock()
+        full_handler._pre_heats_held_on = prompt_manager     # as process() leaves it
+        full_handler._update_history(prompt_manager, None)
+        names = [call[0] for call in prompt_manager.mock_calls]
+        assert names.index("turn_ended") < names.index("update_history"), \
+            "the update's own pre-heat must find the gate open"
+        full_handler._end_pre_heat_hold()                    # the request's finally block
+        prompt_manager.turn_ended.assert_called_once_with(True)
+
+    def test_a_killed_turn_writes_no_history_and_leaves_the_hold_to_the_requests_end(self, full_handler):
+        prompt_manager = Mock()
+        full_handler._pre_heats_held_on = prompt_manager
+        full_handler.is_killed = True
+        full_handler._update_history(prompt_manager, None)
+        prompt_manager.turn_ended.assert_not_called()
+        full_handler._end_pre_heat_hold()
+        prompt_manager.turn_ended.assert_called_once_with(False)
+
+    def test_a_handler_that_never_started_a_turn_has_no_hold_to_end(self, full_handler):
+        full_handler._end_pre_heat_hold()     # a handler built without process(): no attribute, no error
