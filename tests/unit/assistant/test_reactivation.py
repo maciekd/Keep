@@ -520,9 +520,6 @@ class TestWhatTheCheckLeftBehind:
 
         assert kinds == [Destinations.KIND_VOICE, Destinations.KIND_CHAT, Destinations.KIND_GROUP]
 
-    @pytest.mark.xfail(strict=True, reason="_posted_kind strips a closing bracket off every candidate name — meant for "
-                                           "the record's own `)` — so a destination whose name ends in one is never "
-                                           "found and the message is reported as one to an unknown destination")
     def test_a_message_to_a_group_whose_name_ends_in_a_bracket_is_reported_as_one_to_a_group(self, quiet_owner):
         Destinations.register(Destinations.Destination("Family (home)", Destinations.KIND_GROUP, lambda text: True))
 
