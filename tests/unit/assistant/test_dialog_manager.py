@@ -395,7 +395,10 @@ def test_stream_triggers_command_execution(monkeypatch):
 
     processor.command_queue.join()
 
-    assert output[-1].endswith("done")
+    # The worker thread puts its CommandRan event in the stream when the command has run — before
+    # the last token or after it, as the machine has it: only the text has an order to assert.
+    text = [chunk for chunk in output if isinstance(chunk, str)]
+    assert text[-1].endswith("done")
     assert dm.llm_response.endswith("done")
     assert processor.invoke_command.called
     command_name, params, dialog_manager_arg = processor.invoke_command.call_args[0]
