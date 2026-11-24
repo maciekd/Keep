@@ -89,11 +89,12 @@ TEXT_CHAT = ChannelProfile(
     streams_tokens=True,
 )
 
-# The phone app's typed chat, over HTTP: no transport on the hub carries it, so a command echo
-# would go to every owner chat instead of the app — none is sent.
+# The phone app's chat (interfaces/app): a chat transport on the hub like the console's, so
+# command echoes arrive through the Notifier as lines of their own and thinking through the
+# request's own event stream.
 APP = ChannelProfile(
     name=SOURCE_APP, llm_tier="smart", brevity_directive=False, forward_thinking=False,
-    command_notifications=False, notification_ephemeral=False, notify_observers_of_commands=False,
+    command_notifications=True, notification_ephemeral=False, notify_observers_of_commands=False,
     photo_target=PHOTO_TARGET_CHAT, screenshot_allowed=True,
     streams_tokens=True,
 )

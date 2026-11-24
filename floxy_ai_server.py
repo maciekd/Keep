@@ -47,9 +47,9 @@ from common.StderrLogger import StderrLogger
 init(autoreset=True, strip=False)
 
 # Start order; stop() runs in reverse. http first (owns the Quart app), console early so
-# its log tab sees the rest of the boot, voice before telegram (the Notifier), imessage last
-# (its approvals are asked in the chats started before it).
-INTERFACE_ORDER = ("http", "console", "voice", "telegram", "imessage")
+# its log tab sees the rest of the boot, voice before telegram (the Notifier), then the phone
+# app's chat, imessage last (its approvals are asked in the chats started before it).
+INTERFACE_ORDER = ("http", "console", "voice", "telegram", "app", "imessage")
 
 
 def _interface_class(name: str):
@@ -66,6 +66,9 @@ def _interface_class(name: str):
     if name == "telegram":
         from interfaces.telegram.TelegramInterface import TelegramInterface
         return TelegramInterface
+    if name == "app":
+        from interfaces.app.AppInterface import AppInterface
+        return AppInterface
     if name == "imessage":
         from interfaces.imessage.IMessageInterface import IMessageInterface
         return IMessageInterface
@@ -78,9 +81,10 @@ def _enabled(name: str, running_as_testsuite: bool) -> bool:
     from common import ConfigStore
     if name == "http":
         return True  # every other interface registers routes on its app
-    if name in ("telegram", "console", "imessage") and running_as_testsuite:
+    if name in ("telegram", "console", "app", "imessage") and running_as_testsuite:
         # The prompt suite runs one server per worker; a console per server would mean each
-        # racing for the one TUI port and a tui.py client landing in a test server.
+        # racing for the one TUI port and a tui.py client landing in a test server — and an
+        # app chat per server each writing the one transcript file.
         info(f"{name.capitalize()} interface skipped in testsuite mode.")
         return False
     return ConfigStore.interface_enabled(name)

@@ -320,6 +320,7 @@ interfaces:
                                             # heard and plays the spoken reply itself. The server opens no microphone and
                                             # no speaker there (those need a Mac), so it needs none.
   telegram: { enabled: true }               # the bot + Notifier; also needs telegram_bot.bot_token
+  app:      { enabled: true }               # the Keep app's chat (routes under /app on the HTTP server); phones reach it only with lan_access
   imessage: { enabled: false }              # Keep as an iMessage contact of its own; needs the imessage_chat section
   console:  { enabled: true, port: 5151 }   # TUI dashboard (tui.py connects to this port)
 

@@ -59,6 +59,7 @@ GROUPS = {
     'src/interfaces/http': ('http', 'The Quart web server with /stream and /health, and the wire format the apps speak.'),
     'src/interfaces/chat': ('chat', 'The contract every chat UI shares: transports, drafts, sessions and the hub that fans notifications out.'),
     'src/interfaces/telegram': ('telegram', 'The Telegram bot as a chat transport, with voice notes transcribed by Google Cloud STT.'),
+    'src/interfaces/app': ('app', 'The phone app’s chat: a chat transport that keeps what it is told as a transcript of items, and the /app routes the apps read it over.'),
     'src/interfaces/imessage': ('imessage', 'The assistant as an iMessage contact of its own: a chat transport over the Messages account of its Apple ID, serving the people on its allowlist in plain texts.'),
     'src/interfaces/console': ('console', 'The terminal ops console: a tabbed dashboard with the Home chat, served over TCP to tui.py.'),
     'src/interfaces/console/crystal': ('crystal', 'A 90s-demo software 3D renderer that draws the console’s logo and startup intro in terminal cells.'),

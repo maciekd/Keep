@@ -1,10 +1,10 @@
 """An Interface is one way for people to reach the assistant: HTTP, VoiceToVoice, Telegram,
-the TUI console, iMessage. Each is a self-contained unit the launcher starts only when its
+the TUI console, the phone app's chat, iMessage. Each is a self-contained unit the launcher starts only when its
 `interfaces.<name>.enabled` flag says so — a disabled interface's module is never even
 imported, which is what lets a Telegram-only install boot on the base requirements.
 
 Start order (see floxy_ai_server.build): http first (it owns the Quart app the others
-register routes on), then console, voice, telegram, imessage. `stop()` runs in reverse."""
+register routes on), then console, voice, telegram, app, imessage. `stop()` runs in reverse."""
 from abc import ABC, abstractmethod
 
 from common import Platform
