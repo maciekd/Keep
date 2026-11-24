@@ -7,6 +7,8 @@
 #
 # KEY=VALUE are the installer's own variables (the top of install.sh): KEEP_AI=local,
 # ANTHROPIC_API_KEY=..., KEEP_NO_START=1, KEEP_ROLE=imessage_satellite ...
+# KEEP_NO_TELEMETRY=1 is set for you, so a test sends no install events; KEEP_NO_TELEMETRY= (empty)
+# turns that off.
 #
 #   --host <ssh host>     the machine the VMs run on (default: $KEEP_TEST_HOST). An Apple Silicon
 #                         Mac with tart (brew install openai/tools/tart) and room: a run takes the
@@ -22,6 +24,7 @@
 #   --keep always|failure|never   when the VM is left running for a look (default: failure)
 #
 #   tools/clean_install_test/run.sh list | shell <vm> | delete <vm>|all | golden
+#   tools/clean_install_test/run.sh again <vm>     the installer once more in a VM that was kept
 #
 # What a run leaves here: log/clean_install/<vm>/ with screen.log (what the user saw), install.log,
 # config.yaml without its secrets and machine.txt (Homebrew, oMLX, its settings and log).
@@ -53,7 +56,7 @@ while [ $# -gt 0 ]; do
     --unattended) UNATTENDED=1; shift ;;
     -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     list|golden) COMMAND=$1; shift ;;
-    shell|delete) COMMAND="$1 ${2:?$1 needs a VM}"; shift 2 ;;
+    shell|delete|again) COMMAND="$1 ${2:?$1 needs a VM}"; shift 2 ;;
     *=*) VARS+=("$1"); shift ;;
     *) die "unknown argument '$1' (--help)" ;;
   esac
@@ -61,13 +64,24 @@ done
 [ -n "$HOST" ] || die "name the VM host: --host <ssh host>, or KEEP_TEST_HOST in the environment"
 
 ssh "$HOST" "mkdir -p $REMOTE_DIR"
-scp -q tools/clean_install_test/host.sh "$HOST:$REMOTE_DIR/host.sh"
-remote() { ssh -t "$HOST" "cd $REMOTE_DIR && chmod +x host.sh && $*"; }
+scp -q tools/clean_install_test/host.sh tools/clean_install_test/free_disk.py "$HOST:$REMOTE_DIR/"
+TTY_FLAG=-t; [ -t 0 ] || TTY_FLAG=-T      # without a terminal here there is none to pass on
+remote() { ssh "$TTY_FLAG" "$HOST" "cd $REMOTE_DIR && chmod +x host.sh && $*"; }
+
+# fetch <vm>: what the run left on the host, into log/clean_install/<vm>/ here.
+fetch() {
+  [ -n "$1" ] || return 0
+  mkdir -p "log/clean_install/$1"
+  scp -q "$HOST:$REMOTE_DIR/runs/$1/*" "log/clean_install/$1/" 2>/dev/null || true
+  echo "What the run left: log/clean_install/$1/"
+}
 
 if [ "$COMMAND" != run ]; then
+  status=0
   # shellcheck disable=SC2086
-  remote "MACOS=$MACOS ./host.sh $COMMAND"
-  exit
+  remote "MACOS=$MACOS ./host.sh $COMMAND" || status=$?
+  case "$COMMAND" in again\ *) fetch "${COMMAND#again }" ;; esac
+  exit "$status"
 fi
 
 # The checkout as it stands, as a repository the installer can clone: a commit of the working tree
@@ -104,9 +118,5 @@ remote "MACOS=$MACOS MEMORY_GB=$MEMORY_GB DISK_GB=$DISK_GB CPUS=$CPUS KEEP_VM=$K
 
 vm=$(sed -n 's/^RESULT .* vm=\([^ ]*\) .*/\1/p' "$screen" | tr -d '\r' | tail -n 1)
 rm -f "$screen"
-if [ -n "$vm" ]; then
-  mkdir -p "log/clean_install/$vm"
-  scp -q "$HOST:$REMOTE_DIR/runs/$vm/*" "log/clean_install/$vm/" 2>/dev/null || true
-  echo "What the run left: log/clean_install/$vm/"
-fi
+fetch "$vm"
 exit "$status"

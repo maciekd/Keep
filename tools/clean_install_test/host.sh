@@ -3,8 +3,11 @@
 # it can be run there by hand too). It keeps everything under ~/keep-install-tests.
 #
 #   host.sh run [KEY=VALUE ...]   a fresh VM, the installer in it with those variables, the logs out
+#   host.sh again <vm>            the same installer command once more in a VM that was kept: the
+#                                 re-run a user does after a failure, or an upgrade
 #   host.sh list                  the test VMs that are left
 #   host.sh shell <vm>            a shell in one that is running
+#   host.sh exec <vm> <command>   one command in it
 #   host.sh delete <vm>|all       stops and deletes test VMs (the golden image stays)
 #   host.sh golden                builds the golden image if it is missing
 #
@@ -13,7 +16,7 @@
 # `branch:<name>` (install.sh and the code from GitHub) or `bundle:<file>` (a git bundle run.sh sent).
 #
 # The golden image is the vanilla macOS image (github.com/cirruslabs/macos-image-templates: a new
-# Mac with the user admin / admin, no Homebrew, no Command Line Tools) plus one ssh key. Every run
+# Mac with the user admin / admin and the Command Line Tools, without Homebrew) plus one ssh key. Every run
 # is a clone of it, so every install starts on the same clean Mac.
 set -euo pipefail
 export PATH="/opt/homebrew/bin:$PATH"
@@ -25,7 +28,7 @@ GOLDEN="keep-clean-$MACOS"
 IMAGE="ghcr.io/cirruslabs/macos-$MACOS-vanilla:latest"
 GUEST_USER=admin
 GUEST_PASSWORD=admin
-SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
+SSH_OPTS=(-o IdentitiesOnly=yes -o IdentityAgent=none -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
 
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'clean-install test: %s\n' "$*" >&2; exit 1; }
@@ -60,6 +63,18 @@ halt() {
   tart stop "$vm" --timeout 60 >/dev/null 2>&1 || true
 }
 
+# shut_down <vm>: from inside, so that what was written is on its disk — a VM that is only stopped
+# loses its last writes, and the golden image its key.
+shut_down() {
+  local vm=$1
+  guest "$vm" -- "sync; echo $GUEST_PASSWORD | sudo -S shutdown -h now" >/dev/null 2>&1 || true
+  for _ in $(seq 1 60); do
+    running "$vm" || return 0
+    sleep 2
+  done
+  halt "$vm"
+}
+
 # The one login by password: it puts the key into the golden image. ssh asks for the password
 # through SSH_ASKPASS, so nothing more has to be installed on the host.
 install_key() {
@@ -83,13 +98,15 @@ golden() {
   boot "$GOLDEN"
   install_key "$GOLDEN"
   guest "$GOLDEN" -- true || die "the key did not get into $GOLDEN"
-  halt "$GOLDEN"
+  shut_down "$GOLDEN"
   say "$GOLDEN is ready"
 }
 
-# The clone's disk is the image's until the container is grown into what `tart set` added.
+# The clone's disk is the image's size until the system's container is grown into what `tart set`
+# added — which lies behind the recovery partition, so free_disk.py took that out before the boot.
 grow_disk() {
-  guest "$1" -- "echo $GUEST_PASSWORD | sudo -S sh -c 'yes | diskutil repairDisk disk0 >/dev/null 2>&1; diskutil apfs resizeContainer disk0s2 0' >/dev/null 2>&1" || true
+  # repairDisk first: it moves the partition table's end to the end of the grown disk.
+  guest "$1" -- "echo $GUEST_PASSWORD | sudo -S sh -c 'yes | diskutil repairDisk disk0; diskutil apfs resizeContainer disk0s2 0' >/dev/null 2>&1" || true
   guest "$1" -- "df -g / | awk 'NR == 2 { print \"disk: \" \$4 \" GB free\" }'"
 }
 
@@ -111,9 +128,8 @@ EOF
       local bundle=${source#bundle:}
       [ -f "$bundle" ] || die "no such bundle: $bundle"
       scp -q -i "$KEY" "${SSH_OPTS[@]}" "$bundle" "$GUEST_USER@$(tart ip "$vm"):keep-src.bundle"
-      # The bundle is the repository the installer clones (KEEP_REPO). git comes with the Command
-      # Line Tools, which a clean Mac lacks: install.sh is taken out of the bundle only once it has
-      # put them there, so the first stretch of it runs from the copy sent beside the bundle.
+      # The bundle is the repository the installer clones (KEEP_REPO); install.sh itself is the
+      # copy sent beside it, as curl would have fetched it.
       scp -q -i "$KEY" "${SSH_OPTS[@]}" "${bundle%.bundle}.install.sh" "$GUEST_USER@$(tart ip "$vm"):keep-src-install.sh"
       guest "$vm" -- "cat > ~/keep-install.sh" <<EOF
 #!/bin/bash
@@ -135,26 +151,38 @@ run() {
   say "A clean Mac: $vm (macOS $MACOS, $memory GB of memory, $disk GB of disk, $cpus cores)"
   tart clone "$GOLDEN" "$vm"
   tart set "$vm" --memory $((memory * 1024)) --cpu "$cpus" --disk-size "$disk"
+  python3 "$DIR/free_disk.py" "$HOME/.tart/vms/$vm/disk.img" >/dev/null
   boot "$vm"
   grow_disk "$vm"
   if [ "${UNATTENDED:-0}" = 1 ]; then
-    # Nobody types a password: sudo asks for none in this VM, so Homebrew's installer and the
-    # Command Line Tools go through. An attended run leaves sudo as a new Mac has it.
+    # Nobody types: sudo asks for no password in this VM and Homebrew's installer is told not to
+    # wait for a key (NONINTERACTIVE, its own variable). An attended run leaves both as a new Mac
+    # has them.
     guest "$vm" -- "echo $GUEST_PASSWORD | sudo -S sh -c 'echo \"$GUEST_USER ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/keep-test'" 2>/dev/null
+    set -- NONINTERACTIVE=1 "$@"
   fi
+  # A test is not a tester: no install events unless the run asks for them (KEEP_NO_TELEMETRY=).
+  case " $* " in *" KEEP_NO_TELEMETRY="*) ;; *) set -- KEEP_NO_TELEMETRY=1 "$@" ;; esac
   write_install_script "$vm" "$source" "$@"
   say "The installer ($source${*:+, with $*}); the guest's password is '$GUEST_PASSWORD'"
-  # -tt: the installer asks on /dev/tty, and an attended run is typed into from here.
-  guest "$vm" -tt -- "~/keep-install.sh" 2>&1 | tee "$out/screen.log" || status=${PIPESTATUS[0]}
-  say "The installer ended with status $status"
-  collect "$vm" "$out"
-  printf 'RESULT status=%s vm=%s out=%s\n' "$status" "$vm" "$out"
+  install "$vm" "$out" || status=$?
   if [ "$keep" = never ] || { [ "$keep" = failure ] && [ "$status" -eq 0 ]; }; then
     halt "$vm"; tart delete "$vm"
     echo "The VM is deleted."
   else
     echo "The VM is left running:  host.sh shell $vm   (delete it with: host.sh delete $vm)"
   fi
+  return "$status"
+}
+
+# install <vm> <out>: the installer in the guest, its screen kept, what it left collected.
+install() {
+  local vm=$1 out=$2 status=0
+  # -tt: the installer asks on /dev/tty, and an attended run is typed into from here.
+  guest "$vm" -tt -- "~/keep-install.sh" 2>&1 | tee -a "$out/screen.log" || status=${PIPESTATUS[0]}
+  say "The installer ended with status $status"
+  collect "$vm" "$out"
+  printf 'RESULT status=%s vm=%s out=%s\n' "$status" "$vm" "$out"
   return "$status"
 }
 
@@ -172,6 +200,9 @@ case "${1:-}" in
   golden) golden ;;
   list) tart list --source local | awk 'NR == 1 || $2 ~ /^keep-(test|clean)-/' ;;
   shell) [ -n "${2:-}" ] || die "usage: host.sh shell <vm>"; guest "$2" -tt -- ;;
+  again) [ -n "${2:-}" ] || die "usage: host.sh again <vm>"; mkdir -p "$DIR/runs/$2"; install "$2" "$DIR/runs/$2" ;;
+  collect) [ -n "${2:-}" ] || die "usage: host.sh collect <vm>"; mkdir -p "$DIR/runs/$2"; collect "$2" "$DIR/runs/$2" ;;
+  exec) [ -n "${3:-}" ] || die "usage: host.sh exec <vm> <command>"; vm=$2; shift 2; guest "$vm" -- "$@" ;;
   delete)
     [ -n "${2:-}" ] || die "usage: host.sh delete <vm>|all"
     for vm in $(tart list --quiet --source local | grep '^keep-test-'); do

@@ -255,9 +255,19 @@ Settled since:
 
 ## Status
 
-Steps 1 and 2 of the order of work are built (2026-11-24). Nothing of step 2 has run end to end: the gate, the
-detection of an installed oMLX and model, and a small real download were run on the development Mac; the Homebrew
-install, the build of oMLX, the service and the proof run only over fakes. "To verify on a real Mac" above stands.
+Steps 1 and 2 of the order of work are built (2026-11-24).
+
+Run end to end on 2026-11-24 with `tools/clean_install_test/run.sh` — a fresh macOS 15.7 VM with 32 GB of memory
+and no Homebrew, `KEEP_AI=local`, unattended: Homebrew's installer, the tap at the pinned commit, the build of
+oMLX 0.8.3 (4 min 20 s), the pin, the 22 GB ceiling (oMLX keeps it when it completes its settings file), the
+model's download (17.5 GB), the service, the proof, the config and the summary; the server then started on that
+config without an Anthropic key, every tier on the local model. On the development Mac (M1 Max, 32 GB) the path
+where oMLX and the model are already installed ran too, the question answered at the terminal.
+
+Still open of "To verify on a real Mac" above: a turn with Keep's real prompt, the periodic check, vision and the
+nightly curation on the local model alone; the model's load on a real 32 GB Mac that never had oMLX (the VM's
+Metal reports a 21 GB working set, a real Mac's differs); the download bar and Homebrew's password prompt as a
+person sees them, which an unattended run does not show.
 
 Where the code differs from the text above:
 
