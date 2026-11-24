@@ -104,10 +104,28 @@ class TestClear:
         bottom = bottom_bar(tab)
         prompt_manager.message_history.render_for_display.assert_called_with("voice")
         assert "v show text window" in bottom
-        assert any("the voice window" in line for line in tab.prompt_lines)
+        assert "the voice window" in "".join(detail for _, detail in tab.bands.values())
 
-    def test_scroll_keys_still_work(self, tab):
-        tab.display_height = 5
-        wrapped = tab.line_wrap
-        assert tab.handle_input('w') is True
-        assert tab.line_wrap is not wrapped
+    def test_scroll_keys_still_work(self, tab, prompt_manager):
+        prompt_manager.prompt = "\n".join(f"line {i}" for i in range(100))
+        bottom_bar(tab)
+        assert tab.handle_input('up') is True
+        assert tab.scroll_offset == 1
+        assert tab.handle_input('w') is False   # the document always wraps
+
+
+class TestDocument:
+    def test_the_history_opens_under_a_band_naming_its_window(self, tab):
+        screen = TUIScreen(80, 30)
+        tab.draw(screen, 0)
+        rows = [screen.row_text(0, y, 80) for y in range(screen.height)]
+        band = next(y for y, row in enumerate(rows) if "MESSAGES" in row)
+        assert "the text window" in rows[band]
+        assert any("Prompt" in row for row in rows[:band])
+        assert any("User: hi" in row for row in rows[band:])
+
+    def test_markers_are_not_drawn(self, tab):
+        screen = TUIScreen(80, 30)
+        tab.draw(screen, 0)
+        text = "".join(screen.row_text(0, y, 80) for y in range(screen.height))
+        assert "# Prompt" not in text and "**" not in text
