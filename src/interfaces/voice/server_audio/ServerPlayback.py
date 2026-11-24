@@ -15,6 +15,9 @@ from .DynamicServerVolumeController import DynamicServerVolumeController
 from .PlaySound import PlaySound
 
 FIRST_CHUNK_WAIT = 30.0     # the worker starts at the first token; this long without audio and it gives up
+# The unmute after a reply the mics had no part in (a phone played it): each goes back to the
+# state the mute found it in, an open follow-up window included.
+RESUME = "resume"
 
 
 class ServerPlayback:
@@ -233,6 +236,11 @@ class ServerPlayback:
         self.audio_thread.join(timeout=2.0)
 
         trace("We're done playing sound - notify all clients to start listening for wake word again.")
+        self.release_outposts(reply_text)
+
+    def release_outposts(self, reply_text: str):
+        """The end-of-reply unmute, without the drain: tell the outposts to listen again —
+        'listen' if the reply asked the user a question, else 'wakeword'."""
         self.speech_analyzer.clean()
         if "?" in reply_text:
             command = "listen"
@@ -265,12 +273,49 @@ class ServerPlayback:
                 self._broadcast_outpost_command(command)
                 return
             self._outposts_muted = False
-            if self._mute_generation != ServerPlayback._mute_generation:
-                note("Reply finished, but a newer request has taken over the outpost mute — "
-                     "leaving the unmute to it so we don't open mics while its reply is speaking.")
+            self._unmute_if_owner_locked(command)
+
+    def release_after_client_playback(self, remaining: float):
+        """The end-of-reply unmute of a reply the client played (a phone): the mics were
+        muted at its first chunk so a phone speaking in the room is not transcribed, and
+        the phone is still playing for `remaining` seconds after the server streamed the
+        last chunk. Hold the mute that long, then put every mic back where it was
+        (RESUME) — the reply was no turn of theirs, so a follow-up window one of them had
+        open stays open. No-op when this reply never muted."""
+        with ServerPlayback._mute_lock:
+            if not self._outposts_muted:
+                trace("Client-played reply never muted the outposts — nothing to release.")
                 return
-            ServerPlayback._active_mute_generation = 0
-            self._broadcast_outpost_command(command)
+            # From here the release owns the unmute: the handler's finally-block failsafe
+            # must not take it for a reply that ended mid-speech.
+            self._outposts_muted = False
+        if remaining <= 0:
+            info("Client-played reply is over — the outposts resume where they were.")
+            self._resume_outposts()
+            return
+        info(f"Client-played reply: holding the outpost mute {remaining:.1f}s more, "
+             f"until the client has played what was streamed.")
+        timer = threading.Timer(remaining, self._resume_outposts)
+        timer.daemon = True
+        timer.start()
+
+    def _resume_outposts(self):
+        # Runs on: the request thread, or the timer thread of release_after_client_playback.
+        try:
+            with ServerPlayback._mute_lock:
+                self._unmute_if_owner_locked(RESUME)
+        except Exception as e:
+            error(f"Failed to release the outpost mute after a client-played reply: {e!r}")
+
+    def _unmute_if_owner_locked(self, command: str):
+        """Broadcast the unmute unless a newer reply has claimed the mute since. Caller
+        MUST hold _mute_lock: the check and the broadcast are atomic (see release_outposts)."""
+        if self._mute_generation != ServerPlayback._mute_generation:
+            note("Reply finished, but a newer request has taken over the outpost mute — "
+                 "leaving the unmute to it so we don't open mics while its reply is speaking.")
+            return
+        ServerPlayback._active_mute_generation = 0
+        self._broadcast_outpost_command(command)
 
     def _wait_for_playback_to_drain(self) -> bool:
         """Wait until the playback worker has consumed the queued audio. Bounded: returns
@@ -374,8 +419,9 @@ class ServerPlayback:
         the filler audible, and the still-open listen window accepted it as a follow-up.)
 
         Idempotent within a reply: the first caller claims the mute and broadcasts 'stop';
-        later callers are no-ops. Paired with the end-of-reply unmute (finish_reply) and
-        the restore_outposts_if_muted failsafe."""
+        later callers are no-ops. Paired with the end-of-reply unmute (finish_reply, or
+        release_after_client_playback for a reply the client plays) and the
+        restore_outposts_if_muted failsafe."""
         with ServerPlayback._mute_lock:
             if self._outposts_muted:
                 return
@@ -399,13 +445,14 @@ class ServerPlayback:
         self._mute_generation = ServerPlayback._mute_generation
         ServerPlayback._active_mute_generation = self._mute_generation
 
-    def restore_outposts_if_muted(self):
+    def restore_outposts_if_muted(self, command: str = "wakeword"):
         """Failsafe pairing for the 'stop' broadcast. While speaking we mute the local
         mic outposts ('stop'); they're unmuted again only by finish_reply at the end of
         the reply. If this request is killed or errors in between (barge-in, TTS/stream
         failure, is_killed) that unmute never runs — and since a muted mic can't produce
         the next query, nothing ever unmutes it and the whole local-outpost flow wedges
-        until restart. Re-broadcast 'wakeword' here so they always recover.
+        until restart. Re-broadcast 'wakeword' here so they always recover — or RESUME
+        (`command`) for a reply the client was playing, which was no turn of the mics'.
 
         But only if we're still the mute owner: on barge-in the superseding request mutes
         again with a newer generation, and unmuting from this stale finally would open the
@@ -425,6 +472,6 @@ class ServerPlayback:
                      "the newer reply is still speaking.")
                 return
             ServerPlayback._active_mute_generation = 0
-            info("Reply ended without the normal outpost unmute (killed/errored mid-speech) — "
-                 "broadcasting 'wakeword' so local mics don't stay muted.")
-            self._broadcast_outpost_command("wakeword")
+            info(f"Reply ended without the normal outpost unmute (killed/errored mid-speech) — "
+                 f"broadcasting '{command}' so local mics don't stay muted.")
+            self._broadcast_outpost_command(command)

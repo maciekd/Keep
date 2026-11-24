@@ -491,6 +491,94 @@ class TestRestoreOutpostsIfMuted:
 
 
 # ---------------------------------------------------------------------------
+# TestReleaseAfterClientPlayback
+# ---------------------------------------------------------------------------
+
+class _HeldTimer:
+    """threading.Timer that the test fires itself."""
+    def __init__(self, delay, fn):
+        self.delay, self.fn, self.started = delay, fn, False
+
+    def start(self):
+        self.started = True
+
+
+class TestReleaseAfterClientPlayback:
+    """A reply a phone plays muted the local mics at its first chunk; its normal end
+    unmutes them when the phone is through with the audio, and puts each back where it was."""
+
+    @pytest.fixture
+    def broadcasts(self):
+        with patch.object(ServerPlayback, "_broadcast_outpost_command") as mock_bc:
+            yield mock_bc
+
+    @pytest.fixture
+    def timers(self):
+        created = []
+
+        def make(delay, fn):
+            created.append(_HeldTimer(delay, fn))
+            return created[-1]
+        with patch(f"{MOD}.threading.Timer", side_effect=make):
+            yield created
+
+    def test_mute_is_held_for_the_audio_the_client_still_plays(self, playback, broadcasts, timers):
+        playback.ensure_outposts_muted()
+        broadcasts.reset_mock()
+
+        playback.release_after_client_playback(2.4)
+
+        broadcasts.assert_not_called()
+        assert [(t.delay, t.started) for t in timers] == [(2.4, True)]
+        timers[0].fn()
+        broadcasts.assert_called_once_with("resume")
+        assert ServerPlayback._active_mute_generation == 0
+
+    def test_normal_end_leaves_nothing_to_the_mid_speech_failsafe(self, playback, broadcasts, timers):
+        playback.ensure_outposts_muted()
+        playback.release_after_client_playback(2.4)
+        broadcasts.reset_mock()
+
+        with patch(f"{MOD}.info") as mock_info:
+            playback.restore_outposts_if_muted("resume")
+
+        broadcasts.assert_not_called()
+        mock_info.assert_not_called()
+
+    def test_audio_already_played_resumes_at_once(self, playback, broadcasts, timers):
+        playback.ensure_outposts_muted()
+        broadcasts.reset_mock()
+        playback.release_after_client_playback(-0.3)
+        broadcasts.assert_called_once_with("resume")
+        assert timers == []
+
+    def test_newer_reply_that_muted_meanwhile_keeps_its_mute(self, playback, broadcasts, timers):
+        playback.ensure_outposts_muted()
+        playback.release_after_client_playback(5.0)
+        _new_playback().ensure_outposts_muted()     # the next turn starts speaking
+        broadcasts.reset_mock()
+
+        with patch(f"{MOD}.note"):
+            timers[0].fn()
+
+        broadcasts.assert_not_called()
+        assert ServerPlayback._active_mute_generation != 0
+
+    def test_reply_that_never_muted_broadcasts_nothing(self, playback, broadcasts, timers):
+        playback.release_after_client_playback(1.0)
+        broadcasts.assert_not_called()
+        assert timers == []
+
+    def test_killed_mid_speech_still_falls_back(self, playback, broadcasts):
+        """No release ran: the handler's finally is the one unmute left."""
+        playback.ensure_outposts_muted()
+        broadcasts.reset_mock()
+        playback.restore_outposts_if_muted("resume")
+        broadcasts.assert_called_once_with("resume")
+        assert playback._outposts_muted is False
+
+
+# ---------------------------------------------------------------------------
 # TestEnsureOutpostsMuted
 # ---------------------------------------------------------------------------
 

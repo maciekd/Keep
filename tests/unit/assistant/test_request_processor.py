@@ -1946,11 +1946,37 @@ class TestWaitForAudioAndNotifyOutposts:
         full_handler._wait_for_audio_and_notify_outposts()
         full_handler.playback.finish_reply.assert_not_called()
 
-    def test_client_streamed_audio_does_not_touch_playback(self, full_handler):
+    def test_client_streamed_audio_does_not_drain_the_server_speakers(self, full_handler):
         full_handler.request_context.text_only = False
         full_handler.request_context.server_sound = False
         full_handler._wait_for_audio_and_notify_outposts()
         full_handler.playback.finish_reply.assert_not_called()
+
+    def test_client_streamed_reply_holds_the_mute_for_the_audio_still_unplayed(self, full_handler):
+        """Three seconds of audio streamed within one: the phone plays two more."""
+        full_handler.request_context.server_sound = False
+        second = b"\0" * RequestProcessor.CLIENT_AUDIO_BYTES_PER_SECOND
+        with patch("assistant.RequestProcessor.time.time", return_value=100.0):
+            full_handler._deliver_audio_chunk(second)
+            full_handler._deliver_audio_chunk(second * 2)
+        with patch("assistant.RequestProcessor.time.time", return_value=101.0):
+            full_handler._wait_for_audio_and_notify_outposts()
+        full_handler.playback.release_after_client_playback.assert_called_once_with(2.0)
+
+    def test_client_that_ran_dry_between_rounds_plays_the_next_chunk_from_its_arrival(self, full_handler):
+        full_handler.request_context.server_sound = False
+        second = b"\0" * RequestProcessor.CLIENT_AUDIO_BYTES_PER_SECOND
+        with patch("assistant.RequestProcessor.time.time", return_value=100.0):
+            full_handler._deliver_audio_chunk(second)
+        with patch("assistant.RequestProcessor.time.time", return_value=105.0):
+            full_handler._deliver_audio_chunk(second)
+            full_handler._wait_for_audio_and_notify_outposts()
+        full_handler.playback.release_after_client_playback.assert_called_once_with(1.0)
+
+    def test_server_played_chunks_count_for_no_client_playback(self, full_handler):
+        full_handler.request_context.server_sound = True
+        full_handler._deliver_audio_chunk(b"\0" * 4800)
+        assert full_handler._client_playback_ends_at == 0
 
     def test_server_sound_finishes_reply_with_llm_response(self, full_handler):
         full_handler.request_context.text_only = False
@@ -2113,6 +2139,43 @@ class TestGenerateEvents:
         full_handler.request_context.text_only = True
         events = self._run(full_handler, stream_response=dict(side_effect=RequestKilledException))
         assert events == []
+
+    def test_phone_turn_that_completes_is_released_not_restored_as_mid_speech(self, full_handler):
+        """The real playback: the normal end takes the mute, so the finally block's
+        failsafe finds nothing to restore and logs no mid-speech fallback."""
+        from interfaces.voice.server_audio.ServerPlayback import ServerPlayback
+        full_handler.request_context.server_sound = False
+        full_handler.playback = ServerPlayback(Mock(loop=None), Mock(), lambda: False)
+        with patch.object(ServerPlayback, "_broadcast_outpost_command") as broadcast, \
+             patch("interfaces.voice.server_audio.ServerPlayback.threading.Timer") as timer, \
+             patch("interfaces.voice.server_audio.ServerPlayback.info") as playback_info:
+            full_handler.playback.ensure_outposts_muted()
+
+            def speak():
+                full_handler._deliver_audio_chunk(b"\0" * RequestProcessor.CLIENT_AUDIO_BYTES_PER_SECOND * 30)
+                yield AudioChunk(b"")
+            events = self._run(full_handler, stream_response=dict(return_value=speak()),
+                               _wait_for_audio_and_notify_outposts=dict(
+                                   side_effect=lambda: RequestProcessor._wait_for_audio_and_notify_outposts(full_handler)))
+
+        ServerPlayback._mute_generation = ServerPlayback._active_mute_generation = 0   # class-wide: not the next test's
+
+        assert isinstance(events[-1], Done)
+        assert [call.args[0] for call in broadcast.call_args_list] == ["stop"]
+        assert 29 < timer.call_args.args[0] <= 30
+        assert not any("mid-speech" in str(call) for call in playback_info.call_args_list)
+
+    def test_phone_turn_killed_mid_speech_is_restored_by_the_failsafe(self, full_handler):
+        full_handler.request_context.server_sound = False
+        events = self._run(full_handler, stream_response=dict(side_effect=RequestKilledException))
+        assert events == []
+        full_handler.playback.release_after_client_playback.assert_not_called()
+        full_handler.playback.restore_outposts_if_muted.assert_called_once_with("resume")
+
+    def test_server_played_turn_killed_mid_speech_goes_back_to_the_wake_word(self, full_handler):
+        full_handler.request_context.server_sound = True
+        self._run(full_handler, stream_response=dict(side_effect=RequestKilledException))
+        full_handler.playback.restore_outposts_if_muted.assert_called_once_with("wakeword")
 
     def test_stream_error_yields_notice_with_the_exception_message_and_no_done(self, full_handler):
         """The 2026-09-17 missing OPENAI_API_KEY: never reached a server, so there is no

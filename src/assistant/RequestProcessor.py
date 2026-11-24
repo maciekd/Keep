@@ -391,6 +391,9 @@ class RequestProcessor:
             self.playback.enqueue(chunk)
             return None
         fine("Streaming " + str(len(chunk)) + " bytes of audio.")
+        # The client starts on a chunk when it has played the ones before it, or now if it had run dry.
+        self._client_playback_ends_at = (max(self._client_playback_ends_at, time.time())
+                                         + len(chunk) / self.CLIENT_AUDIO_BYTES_PER_SECOND)
         return chunk
 
     def _iter_until_killed(self, gen: Generator) -> Generator:
@@ -821,9 +824,20 @@ class RequestProcessor:
         except Exception as e:
             error(f"Telemetry report failed: {e}")
 
+    # Every synthesizer delivers 16-bit mono PCM at 24 kHz.
+    CLIENT_AUDIO_BYTES_PER_SECOND = 24000 * 2
+    # When the client will have played the audio streamed to it so far (0: none streamed).
+    _client_playback_ends_at = 0.0
+
     def _wait_for_audio_and_notify_outposts(self):
-        if not self.ctx.text_only and self.ctx.server_sound and self.playback:
+        if self.ctx.text_only or not self.playback:
+            return
+        if self.ctx.server_sound:
             self.playback.finish_reply(self.dialog_manager.llm_response)
+        else:
+            # A reply the client plays: the local mics, muted at its first chunk, come back
+            # when the client is through with what was streamed — not when the stream ends.
+            self.playback.release_after_client_playback(self._client_playback_ends_at - time.time())
 
     # Set when the cache-served first round of this request failed
     _cached_round_failed = False
@@ -1087,7 +1101,9 @@ class RequestProcessor:
         """Failsafe unmute for a reply killed/errored mid-speech; see
         ServerPlayback.restore_outposts_if_muted."""
         if self.playback:
-            self.playback.restore_outposts_if_muted()
+            # A reply the client played was no turn of the local mics': they resume where
+            # they were instead of being reset to the wake word.
+            self.playback.restore_outposts_if_muted("wakeword" if self.ctx.server_sound else "resume")
 
     def _end_pre_heat_hold(self, closing: bool = False):
         """End this turn's hold on the pre-heats (PromptManager.turn_started), once."""

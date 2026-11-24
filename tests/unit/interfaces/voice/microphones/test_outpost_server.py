@@ -146,6 +146,22 @@ class TestOutpostServer:
         assert received == ["listen"]
         writer.write.assert_called_once_with(b"<listen>\n")
 
+    def test_resume_reaches_a_tcp_outpost_as_the_wakeword_it_knows(self):
+        """`<wakeword>` is a contract with the TCP outposts, which know no `resume`."""
+        server = OutpostServer()
+        received = []
+        server.add_command_listener(received.append)
+        writer = MagicMock()
+        writer.write = Mock()
+        writer.drain = AsyncMock()
+        writer.get_extra_info = Mock(return_value=("192.0.2.7", 1234))
+        server.clients = {writer}
+
+        asyncio.run(server.broadcast_command("resume"))
+
+        assert received == ["resume"]
+        writer.write.assert_called_once_with(b"<wakeword>\n")
+
     def test_listener_exception_does_not_block_tcp_delivery(self):
         """A buggy listener must not abort the broadcast — TCP outposts still
         need the command. Otherwise a single misbehaving local subscriber

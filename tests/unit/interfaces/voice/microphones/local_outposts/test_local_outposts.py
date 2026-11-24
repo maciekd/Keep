@@ -2814,6 +2814,40 @@ class TestManagerCommandRouting:
         manager.on_command("wakeword")
         assert all(not o.muted and o.awaiting_wakeword for o in manager.outposts)
 
+    def test_resume_after_a_mute_keeps_an_open_follow_up_window(self, fake_timers):
+        """A phone turn mutes every mic and resumes them: the kitchen mic that was waiting
+        for a follow-up still is, with its timers running again; the idle one stays idle."""
+        manager = self._manager_with_outposts()
+        kitchen, hall = manager.outposts
+        kitchen.on_listen()
+
+        manager.on_command("stop")
+        manager.on_command("resume")
+
+        assert not kitchen.muted and not hall.muted
+        assert kitchen.awaiting_wakeword is False and hall.awaiting_wakeword is True
+        assert kitchen._no_words_timer is not None and not kitchen._no_words_timer.cancelled
+        assert hall._no_words_timer is None
+        fake_timers.fire("no follow-up spoken")
+        assert kitchen.awaiting_wakeword is True
+
+    def test_phone_turn_through_the_playback_leaves_the_follow_up_window_open(self, fake_timers):
+        """The mute and the release of a client-played reply, broadcast for real to the mics."""
+        from unittest.mock import Mock, patch
+        from interfaces.voice.server_audio.ServerPlayback import ServerPlayback
+        manager = self._manager_with_outposts()
+        kitchen = manager.outposts[0]
+        kitchen.on_listen()
+        playback = ServerPlayback(Mock(loop=None), Mock(), lambda: False)
+
+        with patch.object(ServerPlayback, "_broadcast_outpost_command", side_effect=manager.on_command):
+            playback.ensure_outposts_muted()
+            assert kitchen.muted
+            playback.release_after_client_playback(0)
+            playback.restore_outposts_if_muted("resume")    # the request's finally block
+
+        assert not kitchen.muted and kitchen.awaiting_wakeword is False
+
     def test_commands_ignored_when_inactive(self):
         manager = self._manager_with_outposts()
         manager._active = False

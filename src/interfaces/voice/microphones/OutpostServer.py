@@ -7,6 +7,8 @@ from assistant.AssistantEvents import observers
 
 
 DRAIN_TIMEOUT = 5
+# What a TCP outpost is sent for a command only the in-process listeners know.
+TCP_COMMANDS = {"resume": "wakeword"}
 
 
 class OutpostServer:
@@ -134,6 +136,9 @@ class OutpostServer:
         if not self.clients:
             trace("No TCP-connected Outposts to notify")
             return
+
+        # A TCP outpost knows 'stop', 'listen' and 'wakeword' alone.
+        command = TCP_COMMANDS.get(command, command)
 
         # Create a copy of clients set to avoid modification during iteration
         clients_copy = self.clients.copy()

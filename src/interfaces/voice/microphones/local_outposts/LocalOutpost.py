@@ -807,6 +807,17 @@ class LocalOutpost:
         self._cancel_listen_timers()
         self._reset_accumulator()
 
+    def on_resume(self):
+        """Unmuted after a reply that was no turn of this mic's (a phone played it): back to
+        what the mute found — idle stays idle, and a follow-up window the mute paused
+        opens again with fresh timers."""
+        self.muted = False
+        self._muted_at = None
+        if self.awaiting_wakeword:
+            return
+        info(f"[{self.label}] unmuted with its follow-up window still open — listening on.")
+        self._begin_listen_window()
+
     def _check_mute_watchdog(self):
         """Failsafe against a stuck mute. The server unmutes us ('listen'/'wakeword')
         when a reply ends; if that broadcast never arrives (server killed/errored

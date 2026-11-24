@@ -301,6 +301,9 @@ class LocalOutpostManager:
         elif command == "wakeword":
             for o in outposts:
                 o.on_wakeword()
+        elif command == "resume":
+            for o in outposts:
+                o.on_resume()
         else:
             trace(f"Local outposts ignoring unknown command: {command}")
 
