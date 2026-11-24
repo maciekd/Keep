@@ -108,7 +108,7 @@ everything that still holds. `when` says when to load it, keep this under 48 cha
 `delete_memo(name: str)` — when its subject is over.
 
 ## Posting a message somewhere else
-Your reply goes back to whoever asked. To say something somewhere else — in the owner's chats, in a Telegram group you
+Your reply goes back to whoever asked, on the channel they wrote from — never post to that chat. To say something somewhere else — in the owner's chats, in a Telegram group you
 are in, through a room's speakers — post it:
 
 `post_message(destination: str, text: str)`
