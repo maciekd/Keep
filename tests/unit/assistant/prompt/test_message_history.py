@@ -784,10 +784,10 @@ class TestRenderForDisplay:
             {"role": "system", "content": "iMessage received: hi", "timestamp": ts},
         ]
         out = section.render_for_display()
-        assert "### Marcus (14:40, VoiceToVoice in Kitchen)" in out
+        assert "## Marcus (14:40, VoiceToVoice in Kitchen)" in out
         assert "turn off the lights" in out
-        assert "### Assistant (14:40)" in out
-        assert "### System (14:40)" in out
+        assert "## Assistant (14:40)" in out
+        assert "## System (14:40)" in out
         assert "iMessage received: hi" in out
 
     def test_shows_the_bytes_the_llm_gets_so_a_long_turn_shows_cut(self):
@@ -1312,7 +1312,7 @@ class TestCommandResults:
         ])
         shown = section.render_for_display("voice")
         assert "home text" in shown and "web text" in shown
-        headers = [line for line in shown.splitlines() if line.startswith("### Command result")]
+        headers = [line for line in shown.splitlines() if line.startswith("## Command result")]
         assert len(headers) == 2
         assert "voice window only" in headers[0] and "window only" not in headers[1]
         assert "home text" not in section.render_for_display("text")
@@ -1552,7 +1552,7 @@ class TestToolkitEvictionStubs:
 
     def test_the_prompt_tab_shows_the_stub(self):
         section, _ = self._section_after_eviction()
-        under_header = section.render_for_display().split("### System (", 1)[1].split("\n### ", 1)[0]
+        under_header = section.render_for_display().split("## System (", 1)[1].split("\n## ", 1)[0]
         assert "browser" in under_header
 
 

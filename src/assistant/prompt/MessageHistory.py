@@ -776,9 +776,9 @@ class MessageHistory:
         The rows are the window get_history_messages() sends (_window: rendered,
         compressed, trimmed), so every body is byte for byte what the LLM receives —
         a superseded browse snapshot shows collapsed, a long turn shows cut. Each row
-        gets an h3 header (name/time/source; a preloaded row says whose window it is) so
-        MarkdownTabView colours it; the entries before the trim cutoff are summarised in
-        a single leading note.
+        gets an h2 header (name/time/source; a preloaded row says whose window it is),
+        one level under the prompt's own sections; the entries before the trim cutoff
+        are summarised in a single leading note.
         """
         entries = self.get_merged_entries()
         if not entries:
@@ -791,7 +791,7 @@ class MessageHistory:
             cutoff = datetime.fromtimestamp(self._trim_cutoff).strftime('%H:%M:%S')
             blocks.append(f"_{trimmed} older entries (before {cutoff}) trimmed from the window — not sent._")
         for entry, _, content in window:
-            blocks.append(f"### {self._display_header(entry)}\n{content}")
+            blocks.append(f"## {self._display_header(entry)}\n{content}")
         return "\n\n".join(blocks)
 
     @classmethod

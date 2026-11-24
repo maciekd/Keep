@@ -1,22 +1,26 @@
-from typing import List
+from typing import List, Optional
 
 from assistant.ChannelProfile import WINDOW_TEXT, WINDOW_VOICE
 from common.logging import info
-from .MarkdownTabView import MarkdownTabView
+from .ScrollableTabView import ScrollableTabView
 from .TabView import SUB_CONTENT_TOP
 from interfaces.console.framework.TUIScreen import TUIScreen
+from interfaces.console.widgets import Markdown
 
 RECENT_MINUTES = 30
 CLEAR_TODAY = 'c'
 CLEAR_RECENT = 'r'
 CONFIRM_HINT = " Clear today's dialog history? y/n "
 CONFIRM_RECENT_HINT = f" Clear the last {RECENT_MINUTES} minutes of dialog history? y/n "
+TEXT_X = 2   # the document's left edge, a column of air inside the tab
+MESSAGES_BAND = "MESSAGES"
 
 
-class PromptTab(MarkdownTabView):
+class PromptTab(ScrollableTabView):
     """Prompt viewer tab showing the current prompt from PromptManager — the system prompt
     and the history window of one channel, the text window until `v` flips it to the voice
-    window (ChannelProfile.window) — with the developer's two clears, each confirmed with
+    window (ChannelProfile.window) — laid out as a document by the Markdown widget, the
+    history opened by a band of its own; with the developer's two clears, each confirmed with
     `y`: `c` wipes today's dialog history so a test can start over, `r` only the last
     RECENT_MINUTES of it so a test can be run again with the day's earlier dialog in place."""
 
@@ -24,7 +28,11 @@ class PromptTab(MarkdownTabView):
         super().__init__()
         self.prompt_manager = prompt_manager
         self.prompt_lines: List[str] = []
+        self.bands = {}
         self.last_cache_key = None
+        self._version = 0   # bumped whenever prompt_lines change
+        self._layout_key = None
+        self._doc: Optional[Markdown.Document] = None
         self.window = WINDOW_TEXT
         self._confirm_clear = None   # the clear key waiting for its `y`
         self._status = ""   # the outcome of the last clear, shown in place of the key hints
@@ -36,37 +44,32 @@ class PromptTab(MarkdownTabView):
         start_y = SUB_CONTENT_TOP
         display_height = screen.height - start_y - 1
         self.display_height = display_height
+        text_w = screen.width - TEXT_X - 3   # a column for the scrollbar and one of air before it
 
-        if self.line_wrap:
-            wrap_width = screen.width - 3
-            display_lines = []
-            for line in self.prompt_lines:
-                display_lines.extend(self.word_wrap(line.rstrip('\n\r'), wrap_width))
-        else:
-            display_lines = [l.rstrip('\n\r') for l in self.prompt_lines]
-
-        total_lines = len(display_lines)
+        rows = self._document(text_w).rows
+        total_lines = len(rows)
         self.total_lines = total_lines
+        self.scroll_offset = min(self.scroll_offset, max(0, total_lines - display_height))
         start_line = max(0, total_lines - display_height - self.scroll_offset)
-        visible_lines = display_lines[start_line:start_line + display_height] if display_height > 0 else []
-        self.seek_code_block(display_lines, start_line)
 
-        # Reserve rightmost column for scrollbar when content overflows
-        has_scrollbar = total_lines > display_height
-        content_width = screen.width - 3 if has_scrollbar else screen.width - 2
+        for k in range(max(0, display_height)):
+            y = start_y + k
+            screen.reset_color()
+            screen.write_at(1, y, " " * (screen.width - 2))
+            if start_line + k < total_lines:
+                Markdown.draw_row(screen, TEXT_X, y, text_w, rows[start_line + k])
 
-        y = start_y
-        for line in visible_lines:
-            self.draw_formatted_line(screen, 1, y, line, content_width)
-            y += 1
-
-        screen.reset_color()
-        for clear_y in range(y, start_y + display_height):
-            screen.write_at(1, clear_y, " " * content_width)
-
-        if has_scrollbar:
+        if total_lines > display_height:
             self.draw_scrollbar(screen, screen.width - 1, start_y, total_lines, display_height)
         self.draw_bottom_bar(screen, self._hints(), total_lines, display_height)
+
+    def _document(self, width: int) -> Markdown.Document:
+        """The prompt laid out `width` cells wide, kept until the prompt or the width changes."""
+        key = (self._version, width)
+        if key != self._layout_key or self._doc is None:
+            self._doc = Markdown.layout([line.rstrip('\n\r') for line in self.prompt_lines], width, bands=self.bands)
+            self._layout_key = key
+        return self._doc
 
     def _hints(self) -> str:
         if self._confirm_clear:
@@ -74,7 +77,7 @@ class PromptTab(MarkdownTabView):
         if self._status:
             return f" {self._status} "
         other = WINDOW_VOICE if self.window == WINDOW_TEXT else WINDOW_TEXT
-        return (f" {self.wrap_hint}  ↑↓ scroll  PgUp/PgDn page  v show {other} window  "
+        return (f" ↑↓ scroll  PgUp/PgDn page  v show {other} window  "
                 f"{CLEAR_TODAY} clear  {CLEAR_RECENT} clear {RECENT_MINUTES}m ")
 
     def on_deactivate(self):
@@ -100,6 +103,8 @@ class PromptTab(MarkdownTabView):
             self.window = WINDOW_VOICE if self.window == WINDOW_TEXT else WINDOW_TEXT
             info(f"PromptTab: showing the {self.window} history window")
             return True
+        if key == 'w':   # the document always wraps
+            return False
         return self.handle_scroll_input(key, self.scroll_total(len(self.prompt_lines)))
 
     @staticmethod
@@ -124,7 +129,7 @@ class PromptTab(MarkdownTabView):
         after it as message turns at request time."""
         try:
             if not self.prompt_manager:
-                self.prompt_lines = ["No PromptManager available"]
+                self._show(["No PromptManager available"])
                 return
 
             prompt_text = self.prompt_manager.prompt
@@ -137,14 +142,16 @@ class PromptTab(MarkdownTabView):
             if cache_key == self.last_cache_key:
                 return
 
-            history_md = message_history.render_for_display(self.window)
-            combined = (
-                prompt_text.rstrip()
-                + f"\n\n# ── MESSAGES (sent as turns after the prompt — the {self.window} window) ──\n\n"
-                + history_md
-                + "\n"
-            )
-            self.prompt_lines = combined.splitlines(keepends=True)
+            prompt = prompt_text.rstrip().splitlines()
+            history = message_history.render_for_display(self.window).splitlines()
+            self.prompt_lines = prompt + [""] + history
+            self.bands = {len(prompt) + 1: (MESSAGES_BAND, f"sent as turns after the prompt · the {self.window} window")}
             self.last_cache_key = cache_key
+            self._version += 1
         except Exception as e:
-            self.prompt_lines = [f"Error reading prompt: {str(e)}"]
+            self._show([f"Error reading prompt: {str(e)}"])
+
+    def _show(self, lines: List[str]):
+        if lines != self.prompt_lines:
+            self.prompt_lines, self.bands, self.last_cache_key = lines, {}, None
+            self._version += 1
