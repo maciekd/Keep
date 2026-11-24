@@ -59,3 +59,38 @@ def test_the_helpers_follow_a_patched_current(monkeypatch):
     assert Platform.machine() != on_the_mac and "Mac" not in Platform.machine()
     refusal = Platform.mac_only("The Photos library")
     assert "The Photos library" in refusal and "Linux" in refusal
+
+
+# The machine's facts the installer's local AI gate reads (common/install/AiChoice.py).
+@pytest.mark.parametrize("system, chip, silicon", [(Platform.MAC, "arm64", True), (Platform.MAC, "x86_64", False),
+                                                   (Platform.LINUX, "arm64", False), (Platform.LINUX, "aarch64", False)])
+def test_apple_silicon_is_an_arm_mac_and_no_other_arm_machine(monkeypatch, system, chip, silicon):
+    monkeypatch.setattr(Platform, "current", lambda: system)
+    monkeypatch.setattr(Platform.platform, "machine", lambda: chip)
+    assert Platform.is_apple_silicon() is silicon
+
+
+@pytest.mark.parametrize("system, reported, version", [(Platform.MAC, "15.6.1", 15), (Platform.MAC, "26.0", 26), (Platform.MAC, "14", 14),
+                                                       (Platform.MAC, "", 0), (Platform.LINUX, "15.6.1", 0)],
+                         ids=["Sequoia", "Tahoe", "no minor", "unreadable", "Linux"])
+def test_the_macos_version_is_its_major_number_and_none_off_a_mac(monkeypatch, system, reported, version):
+    monkeypatch.setattr(Platform, "current", lambda: system)
+    monkeypatch.setattr(Platform.platform, "mac_ver", lambda: (reported, ("", "", ""), "arm64"))
+    assert Platform.macos_version() == version
+
+
+@pytest.mark.parametrize("system", [Platform.MAC, Platform.LINUX])
+@pytest.mark.parametrize("pages, gb", [(32 * 2 ** 30 // 4096, 32), (int(31.3 * 2 ** 30) // 4096, 32), (int(3.8 * 2 ** 30) // 4096, 4),
+                                       (36 * 2 ** 30 // 4096, 36)], ids=["a Mac's 32", "a kernel's 31.3", "a machine sold as 4", "36"])
+def test_memory_is_what_the_machine_was_sold_with_on_either_system(monkeypatch, system, pages, gb):
+    """A Linux kernel reports what is left after its own reservations: rounded up, as install.sh's ram_gb does."""
+    monkeypatch.setattr(Platform, "current", lambda: system)
+    monkeypatch.setattr(Platform.os, "sysconf", lambda name: {"SC_PHYS_PAGES": pages, "SC_PAGE_SIZE": 4096}[name])
+    assert Platform.memory_gb() == gb
+
+
+def test_memory_that_cannot_be_read_is_none_not_a_crash(monkeypatch):
+    def unreadable(name):
+        raise ValueError("unrecognized configuration name")
+    monkeypatch.setattr(Platform.os, "sysconf", unreadable)
+    assert Platform.memory_gb() == 0

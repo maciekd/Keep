@@ -5,6 +5,7 @@ the whole TUI reads as one piece. A new colour belongs here, not in the tab that
 Three groups: the surfaces things sit on, the text levels from bright to faint, and the
 accents — each with a deep companion a bar or column shades up from and a dim tint for the
 ground behind it."""
+from common import Palette
 from interfaces.console.framework.TUIScreen import Color
 
 LEFT_MARGIN = 5
@@ -18,51 +19,41 @@ def mix(a: Color, b: Color, t: float) -> Color:
 
 
 # Surfaces, darkest first; the screen's own ground is TUIScreen.BACKGROUND, black.
-COLOR_PANEL_BG = Color(14, 16, 24)       # a tile's body, a table's striped row
-COLOR_TITLE_BG = Color(24, 27, 40)       # a tile's title strip, a table header, an unselected tab
-COLOR_SELECTED_BG = Color(36, 42, 68)    # the row or item under the cursor
-COLOR_GRID = Color(38, 42, 60)           # chart rules, bar-row fill, a scrollbar's track
+COLOR_PANEL_BG = Color(*Palette.PANEL_BG)       # a tile's body, a table's striped row
+COLOR_TITLE_BG = Color(*Palette.TITLE_BG)       # a tile's title strip, a table header, an unselected tab
+COLOR_SELECTED_BG = Color(*Palette.SELECTED_BG)    # the row or item under the cursor
+COLOR_GRID = Color(*Palette.GRID)           # chart rules, bar-row fill, a scrollbar's track
 
 # Text, brightest first.
-COLOR_BRIGHT = Color(225, 230, 240)      # what must stand out: a selected tab, bold
-COLOR_TEXT = Color(204, 209, 222)        # body text
-COLOR_TITLE = Color(176, 183, 204)       # titles and column headers
-COLOR_LABEL = Color(140, 147, 166)       # labels, secondary text
-COLOR_DIM = Color(92, 98, 118)           # hints, units, what is switched off
-COLOR_FAINT = Color(68, 73, 92)          # rules and asides that should barely register
+COLOR_BRIGHT = Color(*Palette.BRIGHT)      # what must stand out: a selected tab, bold
+COLOR_TEXT = Color(*Palette.TEXT)        # body text
+COLOR_TITLE = Color(*Palette.TITLE)       # titles and column headers
+COLOR_LABEL = Color(*Palette.LABEL)       # labels, secondary text
+COLOR_DIM = Color(*Palette.DIM)           # hints, units, what is switched off
+COLOR_FAINT = Color(*Palette.FAINT)          # rules and asides that should barely register
 
 # Accents.
-COLOR_CYAN = Color(64, 200, 255)
-COLOR_TEAL = Color(70, 215, 200)
-COLOR_GREEN = Color(70, 230, 150)
-COLOR_YELLOW = Color(255, 205, 80)
-COLOR_ORANGE = Color(255, 150, 70)
-COLOR_RED = Color(255, 90, 90)
-COLOR_PINK = Color(255, 105, 180)
-COLOR_PURPLE = Color(175, 130, 255)
-COLOR_BLUE = Color(110, 150, 255)
+COLOR_CYAN = Color(*Palette.CYAN)
+COLOR_TEAL = Color(*Palette.TEAL)
+COLOR_GREEN = Color(*Palette.GREEN)
+COLOR_YELLOW = Color(*Palette.YELLOW)
+COLOR_ORANGE = Color(*Palette.ORANGE)
+COLOR_RED = Color(*Palette.RED)
+COLOR_PINK = Color(*Palette.PINK)
+COLOR_PURPLE = Color(*Palette.PURPLE)
+COLOR_BLUE = Color(*Palette.BLUE)
 
 # The ground behind an accent: a meter's track, a plate under text of that colour.
-COLOR_CYAN_DIM = Color(14, 42, 58)
-COLOR_GREEN_DIM = Color(14, 50, 36)
-COLOR_YELLOW_DIM = Color(56, 44, 16)
-COLOR_RED_DIM = Color(58, 20, 22)
-COLOR_PINK_DIM = Color(58, 24, 44)
-COLOR_BLUE_DIM = Color(24, 34, 62)
+COLOR_CYAN_DIM = Color(*Palette.CYAN_DIM)
+COLOR_GREEN_DIM = Color(*Palette.GREEN_DIM)
+COLOR_YELLOW_DIM = Color(*Palette.YELLOW_DIM)
+COLOR_RED_DIM = Color(*Palette.RED_DIM)
+COLOR_PINK_DIM = Color(*Palette.PINK_DIM)
+COLOR_BLUE_DIM = Color(*Palette.BLUE_DIM)
 
 # The colour a bar or meter starts from before it reaches its own: a neighbouring, deeper
 # hue, so a fill reads as a gradient and not as a slab.
-DEEP = {
-    COLOR_CYAN: Color(40, 80, 225),
-    COLOR_TEAL: Color(0, 110, 150),
-    COLOR_GREEN: Color(0, 125, 140),
-    COLOR_YELLOW: Color(225, 95, 40),
-    COLOR_ORANGE: Color(190, 50, 70),
-    COLOR_RED: Color(150, 20, 70),
-    COLOR_PINK: Color(125, 60, 220),
-    COLOR_PURPLE: Color(70, 70, 210),
-    COLOR_BLUE: Color(70, 60, 180),
-}
+DEEP = {Color(*accent): Color(*companion) for accent, companion in Palette.DEEP.items()}
 
 
 def deep(color: Color) -> Color:

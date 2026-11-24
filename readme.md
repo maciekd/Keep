@@ -35,7 +35,7 @@ By default, Keep runs on an <b>Opus + Fable hybrid</b>. Keep stores everything o
 Estimated Anthropic API <b>cost</b> is $80-200 / month. On a Claude Max, Ultra or Team plan you get <b>$100–500 of free</b> API credits.
 
 ### …or 100% local AI
-**[Keep also works great with local AI](docs/local-ai.md)**
+**[Keep also works great with local AI](docs/local-ai.md)**: on a Mac with Apple Silicon and 32 GB of memory the installer sets it up for you.
 
 ### Safety
 Keep has <b>no shell access</b>, only dedicated toolkits for what it needs (home, mail, calendar and so on). Sensitive commands, such as sending an email, need <b>your approval</b> first. Safe by design, not by promise.

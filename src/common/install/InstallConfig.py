@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from common import PrivateFile
+from common.install.LocalRunner import LocalModel
 from common.install.Terminal import InstallFailed, Terminal
 
 SATELLITE_ROLE = "imessage_satellite"
@@ -33,16 +34,19 @@ class InstallConfig:
         self.path = Path(env["KEEP_DIR"]) / "config.yaml"
         self.from_master = env.get("KEEP_INSTALL_BRANCH") == "master"
 
-    def write_server(self, api_key: str, workspace: str) -> None:
+    def write_server(self, api_key: str, workspace: str, local: LocalModel | None = None) -> None:
+        """With *local* the install thinks on that model and holds no Anthropic key."""
         lines = [
             f"# Keep configuration, written by install.sh on {self.terminal.today()}. config.example.yaml documents",
             "# every setting; the assistant sets up the optional integrations itself once it runs.",
-            "api_keys:",
-            f"  anthropic: {scalar(api_key)}",
         ]
-        if workspace:
-            lines.append(f"  anthropic_workspace: {scalar(workspace)}   "
-                         "# the key is not tied to one workspace, so every request names this one")
+        if local:
+            lines += self._local(local)
+        else:
+            lines += ["api_keys:", f"  anthropic: {scalar(api_key)}"]
+            if workspace:
+                lines.append(f"  anthropic_workspace: {scalar(workspace)}   "
+                             "# the key is not tied to one workspace, so every request names this one")
         lines += [
             "developer_release: true   # installed from master, the development line; restart_server keeps following it"
             if self.from_master else
@@ -57,6 +61,23 @@ class InstallConfig:
         ]
         self._write(lines)
         self.terminal.note("A random vault passphrase was generated for you. It lives in config.yaml: back that file up.")
+
+    @staticmethod
+    def _local(local: LocalModel) -> list[str]:
+        lines = [
+            "",
+            "# Keep thinks on this Mac: the model below, served by oMLX (github.com/jundot/omlx), which",
+            "# Homebrew starts at login (brew services). For Claude instead: local_backend: none, and a key",
+            "# as api_keys.anthropic. docs/local-ai.md has more.",
+            "local_backend: openai",
+            "openai_compatible:",
+            f"  model: {scalar(local.model)}",
+        ]
+        if local.base_url:
+            lines.append(f"  base_url: {scalar(local.base_url)}")
+        if local.api_key:
+            lines.append(f"  api_key: {scalar(local.api_key)}   # the one in oMLX's own settings")
+        return lines
 
     def write_satellite(self) -> None:
         """No API key and no vault: nothing on a satellite uses either. The file has to be there

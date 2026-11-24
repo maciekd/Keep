@@ -255,5 +255,23 @@ Settled since:
 
 ## Status
 
-Step 1 of the order of work is built (2026-11-24): `src/common/install/` with `Terminal`, `AnthropicKey`,
-`InstallConfig`, and `install.sh` calling it through `configure`. Step 2 has not been started.
+Steps 1 and 2 of the order of work are built (2026-11-24). Nothing of step 2 has run end to end: the gate, the
+detection of an installed oMLX and model, and a small real download were run on the development Mac; the Homebrew
+install, the build of oMLX, the service and the proof run only over fakes. "To verify on a real Mac" above stands.
+
+Where the code differs from the text above:
+
+- **The pin is a commit of the tap, not the release tag.** The tag `v0.8.3` still carries the formula of 0.8.2 —
+  a formula cannot hold the checksum of the release it is tagged in — so `LocalRunner.TAP_COMMIT` names the
+  commit that bumps the formula to 0.8.3.
+- **The model's bar reads the folder, not `huggingface_hub`'s callbacks**: the total comes from the hub's file
+  list at the pinned commit, the progress from the bytes on disk, part files included. Nothing of the library's
+  internals is relied on, and a resumed download starts its bar where it stopped.
+- **`KEEP_AI=local` fails the install where the local setup fails.** Asked at the terminal, a failed local setup
+  goes on with Claude as planned; asked for by name in the environment, nobody is there to give a key.
+- **Homebrew's installer runs on the terminal itself**, with its own output, since it asks for the password.
+- **An oMLX already answering on the port outside the service is left running** and the service is not started
+  beside it: the second one would die on the port again and again.
+- **The disk gate counts what is already downloaded** of the model.
+- **The bash bars** (the clone, the packages) are drawn without colour: the spinner clips its line by counting
+  characters. They say the percentage, and the packages' bar the time left from the pace so far.

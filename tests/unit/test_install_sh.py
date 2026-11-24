@@ -1,5 +1,5 @@
 """Tests for install.sh's decision logic: the pip progress read off pip's own log, the
-hand-over to the steps Python does (src/common/install: the API key and config.yaml, tested in
+hand-over to the steps Python does (src/common/install: the AI model and config.yaml, tested in
 tests/unit/common/install) and the state machine around the checkout (fresh clone, upgrade,
 refused directories).
 
@@ -49,7 +49,7 @@ REAL_PYTHON_STEPS = (
     f'    PYTHONPATH="{REPO}/src" "{sys.executable}" -P -c \'import os, runpy; os.setsid(); '
     'runpy.run_module("common.install", run_name="__main__")\' </dev/null\n'
     '}\n')
-BAR_RE = re.compile(r'^\[(.*)\] (.*)$')
+BAR_RE = re.compile(r'^([█░]*) +(\d+)% (.*)$')
 MAC, LINUX = 'Darwin', 'Linux'      # as `uname -s` names them, and KEEP_OS
 UBUNTU = 'PRETTY_NAME="Ubuntu 24.04.1 LTS"\nNAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\nID_LIKE=debian\n'
 DEBIAN = 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"\nVERSION_ID="12"\nID=debian\n'
@@ -242,8 +242,9 @@ class TestPipStatus:
         out = self.raw(harness, log, expected, offset)
         match = BAR_RE.match(out)
         assert match, f"no progress bar in {out!r}"
-        bar, text = match.groups()
+        bar, percent, text = match.groups()
         assert len(bar) == 24, f"bar is not 24 cells wide: {bar!r}"
+        assert bar.count('█') == int(percent) * 24 // 100, f"the bar and its percentage disagree: {out!r}"
         return bar.count('█'), text
 
     def test_resolving_pass_fills_the_first_half(self, harness):
@@ -268,8 +269,106 @@ class TestPipStatus:
         _, text = self.status(harness, earlier + PIP_RESOLVING, expected=4, offset=len(earlier) + 1)
         assert text == 'resolving 2 packages'
 
+    def test_the_time_left_follows_from_the_pace_so_far(self, harness):
+        """Half done after 100 seconds: about as long again. The third argument is the bash
+        SECONDS the pip step started at."""
+        harness.log.write_text(PIP_DOWNLOADING)
+        result = harness.run('SECONDS=130; pip_status 1 4 30')
+        assert result.returncode == 0, result.stderr
+        assert '50%' in result.stdout and '2 min left' in result.stdout
+
+    def test_no_time_is_promised_in_the_first_seconds(self, harness):
+        harness.log.write_text(PIP_DOWNLOADING)
+        assert 'left' not in harness.run('SECONDS=33; pip_status 1 4 30').stdout
+
+    def test_the_line_carries_no_colour_codes(self, harness):
+        """The spinner clips its line to the terminal's width by counting characters."""
+        harness.log.write_text(PIP_DOWNLOADING + 'Receiving objects:  53% (4/8)\r')
+        colours = 'C_CYAN=$(printf "\\033[36m"); C_DIM=$(printf "\\033[2m"); C_RESET=$(printf "\\033[0m"); '
+        result = harness.run(colours + 'pip_status 1 4; echo; clone_status')
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.count('█') == 24 and '\033' not in result.stdout
+
+
+class TestTheBarsOfTheSpinnerLine:
+    """`progress_bar`, `time_left` and `clone_status`: what the spinner shows beside its label
+    while git clones and pip installs."""
+
+    @pytest.mark.parametrize('percent, filled', [(0, 0), (4, 0), (50, 12), (53, 12), (99, 23), (100, 24), (140, 24)])
+    def test_the_bar_is_always_24_cells(self, harness, percent, filled):
+        bar = harness.run(f'progress_bar {percent}').stdout
+        assert (bar.count('█'), bar.count('░')) == (filled, 24 - filled)
+
+    @pytest.mark.parametrize('percent, elapsed, said', [(50, 100, '2 min'), (25, 100, '5 min'), (90, 90, 'minute'), (50, 2000, '33 min')])
+    def test_the_time_left_is_what_the_pace_so_far_leaves(self, harness, percent, elapsed, said):
+        assert said in harness.run(f'time_left {percent} {elapsed}').stdout
+
+    @pytest.mark.parametrize('percent, elapsed', [(5, 100), (50, 5), (100, 300), (0, 300)],
+                             ids=['too little done to tell', 'too early to tell', 'done', 'nothing done'])
+    def test_no_time_is_guessed_where_there_is_nothing_to_tell_it_from(self, harness, percent, elapsed):
+        result = harness.run(f'time_left {percent} {elapsed}; echo "status=$?"')
+        assert result.stdout == 'status=0\n'
+
+    @pytest.mark.parametrize('progress, percent, phase', [
+        ('Receiving objects:  12% (1/8)\rReceiving objects:  53% (4/8), 1.20 MiB | 3.00 MiB/s\r', 53, 'receiving objects'),
+        ('remote: Counting objects: 100% (8/8), done.\nremote: Compressing objects:  40% (2/5)\r', 40, 'compressing objects'),
+        ('Receiving objects: 100% (8/8), done.\nResolving deltas:   7% (1/14)\r', 7, 'resolving deltas'),
+    ], ids=['receiving', 'the remote compressing', 'the phase after'])
+    def test_the_clone_is_as_far_as_gits_last_progress_line_says(self, harness, progress, percent, phase):
+        """Contract with `git clone --progress`: "<phase>: <n>% (…)", redrawn with a carriage return."""
+        harness.log.write_text("--- git clone (release): git clone --progress\nCloning into '/Users/marcus/Keep'...\n" + progress)
+        result = harness.run('clone_status')
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.count('█') == percent * 24 // 100 and f'{phase} {percent}%' in result.stdout
+
+    @pytest.mark.parametrize('log', ["Cloning into '/Users/marcus/Keep'...\n", ''], ids=['before the first progress line', 'an empty log'])
+    def test_a_clone_that_has_not_reported_yet_shows_no_bar(self, harness, log):
+        harness.log.write_text(log)
+        result = harness.run('clone_status; echo "status=$?"')
+        assert result.stdout == 'status=0\n'
+
 
 INSTALL_ID = '11111111-2222-4333-8444-555555555555'
+ACCENT_NAMES = ('GREEN', 'RED', 'YELLOW', 'CYAN')
+
+
+class TestThePalette:
+    """Contract with src/common/Palette.py: install.sh runs before there is a checkout, so it
+    carries its own copy of the accents it draws in, at each colour depth — the same ones
+    common/install/Terminal.py draws the Python steps in."""
+
+    INIT_UI = INSTALL_SH.read_text().split('\ninit_ui() {', 1)[1].split('\n}\n', 1)[0]
+
+    def carried(self, pattern: str) -> dict:
+        return {name: value for name, value in re.findall(r"C_([A-Z]+)=\$'\\033\[" + pattern + "m'", self.INIT_UI)}
+
+    def test_with_every_colour_the_accents_are_the_palettes_own(self):
+        from common import Palette
+        assert self.carried(r'38;2;(\d+;\d+;\d+)') == {name: '{};{};{}'.format(*getattr(Palette, name)) for name in ACCENT_NAMES}
+
+    def test_with_256_colours_they_are_the_nearest_of_them(self):
+        from common import Palette
+        assert self.carried(r'38;5;(\d+)') == {name: str(Palette.nearest_256(getattr(Palette, name))) for name in ACCENT_NAMES}
+
+    def test_the_plain_colours_under_that_are_the_ones_python_falls_back_to(self):
+        from common.install.Terminal import ACCENTS
+        assert self.carried(r'(3\d)') == {name.upper(): basic for name, (_, basic) in ACCENTS.items()}
+
+    @pytest.mark.parametrize('env, code', [
+        ({'TERM': 'xterm-256color', 'COLORTERM': 'truecolor'}, '38;2;'), ({'TERM': 'xterm-256color', 'COLORTERM': '24bit'}, '38;2;'),
+        ({'TERM': 'xterm-256color', 'COLORTERM': ''}, '38;5;'), ({'TERM': 'xterm', 'COLORTERM': ''}, '[32m'),
+    ], ids=['truecolor', '24bit', 'Terminal before macOS 26', 'a terminal of 16'])
+    def test_the_depth_is_chosen_as_python_chooses_it(self, env, code):
+        """The same variables give the same depth in `Terminal._depth`."""
+        from common.install.Terminal import BASIC, CUBE, TRUE_COLOUR, Terminal
+        script = ('init_ui() {' + self.INIT_UI.replace('[ -t 1 ]', 'true') + '\n}\ninit_ui; printf "%s" "$C_GREEN"')
+        drawn = spawn(['bash', '-c', script], env={'PATH': os.environ['PATH'], **env}, timeout=30).stdout
+        assert code in drawn
+        assert Terminal._depth(env) == {'38;2;': TRUE_COLOUR, '38;5;': CUBE, '[32m': BASIC}[code]
+
+    def test_a_pipe_gets_no_colour_whatever_the_terminal_claims(self, harness):
+        result = harness.run('printf "%s" "[$C_GREEN$C_CYAN$C_BOLD]"', TERM='xterm-256color', COLORTERM='truecolor')
+        assert result.stdout == '[]'
 
 
 def failed_event(harness) -> dict:
@@ -356,6 +455,12 @@ class TestPythonSteps:
         assert call['KEEP_INSTALL_TELEMETRY_ID'] == INSTALL_ID
         assert (call['KEEP_INSTALL_STEP'], call['KEEP_INSTALL_STEPS']) == ('6', '7')
 
+    def test_what_the_user_set_for_the_ai_model_reaches_python(self, harness):
+        """Contract with common/install/AiChoice.py, which reads KEEP_AI; install.sh only passes
+        its environment on."""
+        _, call = self.handed_over(harness, KEEP_AI='local')
+        assert call['KEEP_AI'] == 'local'
+
     def test_python_is_not_given_the_pipe_the_script_came_through(self, harness):
         """curl | bash: stdin is the script. Whatever reads it must not be the installer's Python."""
         result, call = self.handed_over(harness, script='echo "a line of the script" | python_steps')
@@ -395,7 +500,8 @@ class TestWhetherThereIsATerminal:
 
     def test_a_server_install_without_a_terminal_names_the_way_out_instead_of_dying_on_its_question(self, harness):
         harness.keep_dir.mkdir()
-        result = harness.run(REAL_PYTHON_STEPS + 'trap on_error ERR; init_ui; configure', no_terminal=True)
+        harness.home.mkdir(parents=True, exist_ok=True)      # the gate for local AI looks under ~/.omlx
+        result = harness.run(REAL_PYTHON_STEPS + 'trap on_error ERR; init_ui; configure', no_terminal=True, HOME=str(harness.home))
         assert result.returncode == 1
         assert 'ANTHROPIC_API_KEY' in result.stdout or 'environment' in result.stdout
         assert 'Unexpected error' not in result.stdout
@@ -446,6 +552,16 @@ class TestEnsureRepo:
         assert result.stdout.endswith(str(final_log))
         assert 'git clone' in final_log.read_text()
         assert not list(harness.dir.glob('keep-install*')), "the parked log was not moved back"
+
+    def test_the_clone_reports_its_progress_and_the_spinner_stops_reading_it_after(self, harness):
+        """Git prints its percentages only to a terminal unless told to: the log is no terminal."""
+        origin = harness.dir / 'origin'
+        make_origin(origin)
+        result = harness.run('open_log; ensure_repo; printf "status=[%s] log=%s" "$SPINNER_STATUS" "$LOG"', repo_url=str(origin))
+        assert result.returncode == 0, result.stdout
+        assert 'status=[]' in result.stdout
+        log = Path(result.stdout.rsplit('log=', 1)[1]).read_text()
+        assert re.search(r'^--- git clone.*--progress', log, re.M)
 
     def test_rerun_fast_forwards_an_existing_checkout(self, harness):
         origin = harness.dir / 'origin'
@@ -620,7 +736,7 @@ MAIN = (
     'python_steps() {\n'
     '  echo "ran:python_steps"\n'
     '  if satellite; then real_python_steps; return; fi\n'
-    '  printf "  [%d/%d] Anthropic API key\\n  [%d/%d] Configuration\\n" $((STEP + 1)) "$TOTAL_STEPS" $((STEP + 2)) "$TOTAL_STEPS"\n'
+    '  printf "  [%d/%d] AI model\\n  [%d/%d] Configuration\\n" $((STEP + 1)) "$TOTAL_STEPS" $((STEP + 2)) "$TOTAL_STEPS"\n'
     '  printf "api_keys:\\n  anthropic: sk-ant-typed-47L\\nvault:\\n  key: x\\n" > "$KEEP_DIR/config.yaml"\n'
     '}\n'
     'eval "real_$(declare -f init_ui)"\n'
@@ -822,6 +938,7 @@ class TestSatelliteInstall:
         assert (harness.keep_dir / 'config.yaml').read_text() == EXISTING_SERVER
         assert steps(result)[-1] == (9, 9)
         assert 'imessage.host' not in result.stdout
+        assert 'AI model' in result.stdout and 'python_steps' not in ran(result)
 
     MAC = a_mac()
 
@@ -1658,3 +1775,77 @@ class TestTheKeepCommand:
         result = harness.run(MAIN, KEEP_NO_TELEMETRY='1', **role)
         assert result.returncode == 0, result.stdout
         assert (harness.bin_dir / 'keep').exists() == written
+
+
+LOCAL_SERVER = ('local_backend: openai\nopenai_compatible:\n  model: Qwen3.8-27B-oQ4e-mtp\nvault:\n  key: x\n'
+                f'telemetry:\n  enabled: true\n  id: {INSTALL_ID}\n')
+CLOUD_SERVER = f'api_keys:\n  anthropic: sk-ant-typed-47L\nvault:\n  key: x\ntelemetry:\n  enabled: true\n  id: {INSTALL_ID}\n'
+
+
+class TestALocalAiInstall:
+    """What bash says of an install on a local model: it reads `local_backend` back from the
+    config.yaml Python wrote (src/common/install), for the summary and the install report."""
+
+    def finished(self, harness) -> dict:
+        events = [json.loads(re.search(r'-d (\{.*\}) https://', line).group(1)) for line in harness.curl_calls.read_text().splitlines()]
+        return next(event for event in events if event['event'] == 'install_finished')['properties']
+
+    @pytest.mark.parametrize('config, kind', [
+        (LOCAL_SERVER, 'ai=local'), ('local_backend: ollama\n', 'ai=local'), ('local_backend: "ds4"   # ours\n', 'ai=local'),
+        ('local_backend: None\n', 'ai=cloud'), ('local_backend: none   # the default\n', 'ai=cloud'), (CLOUD_SERVER, 'ai=cloud'),
+    ], ids=['openai', 'ollama', 'ds4, quoted', 'None', 'none with a comment', 'no key'])
+    def test_local_is_any_backend_but_none(self, harness, config, kind):
+        """Contract with config.yaml's `local_backend` key (config.example.yaml)."""
+        existing_install(harness, config)
+        assert harness.run('printf "[%s]" "$(telemetry_ai)"').stdout == f'[{kind}]'
+
+    def test_a_satellite_thinks_nowhere(self, harness):
+        existing_install(harness, EXISTING_SATELLITE)
+        assert harness.run('ROLE=imessage_satellite; printf "[%s]" "$(telemetry_ai)"').stdout == '[]'
+
+    def test_the_config_python_wrote_is_read_back_as_local_with_its_model(self, harness):
+        from common.install.InstallConfig import InstallConfig
+        from common.install.LocalRunner import LocalModel
+
+        from .common.install.fakes import ScriptedTerminal
+        harness.keep_dir.mkdir()
+        env = {'KEEP_DIR': str(harness.keep_dir), 'KEEP_INSTALL_BRANCH': 'release', 'KEEP_INSTALL_TELEMETRY_ID': INSTALL_ID}
+        InstallConfig(ScriptedTerminal(), env).write_server('', '', LocalModel('Qwen3.8-27B-oQ4e-mtp', 'http://127.0.0.1:8011/v1', 'omlx-key-47L'))
+        result = harness.run('echo "backend=[$(config_value local_backend)] model=[$(config_value openai_compatible model)]"; '
+                             'echo "$(telemetry_ai)"; init_telemetry; echo "id=[$TELEMETRY_ID]"')
+        assert 'backend=[openai] model=[Qwen3.8-27B-oQ4e-mtp]' in result.stdout
+        assert 'ai=local' in result.stdout and f'id=[{INSTALL_ID}]' in result.stdout
+
+    @pytest.mark.parametrize('config, kind', [(LOCAL_SERVER, 'local'), (CLOUD_SERVER, 'cloud')])
+    def test_the_install_report_says_where_the_install_thinks(self, harness, config, kind):
+        existing_install(harness, config)
+        result = harness.run(MAIN)
+        assert result.returncode == 0, result.stdout
+        assert self.finished(harness)['ai'] == kind
+
+    def test_a_satellites_report_carries_no_ai(self, harness):
+        existing_install(harness, EXISTING_SATELLITE.replace('enabled: false', f'enabled: true\n  id: {INSTALL_ID}'))
+        result = harness.run(MAIN, KEEP_ROLE=SATELLITE)
+        assert result.returncode == 0, result.stdout
+        assert 'ai' not in self.finished(harness)
+
+    def test_the_summary_says_the_model_runs_here_and_how_to_go_back(self, harness):
+        existing_install(harness, LOCAL_SERVER)
+        said = harness.run('summary').stdout
+        assert 'Qwen3.8-27B-oQ4e-mtp' in said and 'oMLX' in said
+        assert 'local_backend: none' in said and 'api_keys.anthropic' in said
+        its_own = harness.run('local_ai_summary').stdout
+        assert its_own.strip() and its_own in said
+        assert 'privat' not in its_own.lower(), "telemetry is on: a local install is not called private"
+
+    def test_a_cloud_installs_summary_says_nothing_of_it(self, harness):
+        existing_install(harness, CLOUD_SERVER)
+        result = harness.run('summary')
+        assert result.returncode == 0, result.stdout
+        assert 'oMLX' not in result.stdout and 'local_backend' not in result.stdout
+
+    def test_a_linux_servers_summary_says_nothing_of_it_either(self, harness):
+        existing_install(harness, CLOUD_SERVER)
+        result = harness.run('LINGER=on; summary', KEEP_OS=LINUX)
+        assert result.returncode == 0, result.stdout
+        assert 'oMLX' not in result.stdout

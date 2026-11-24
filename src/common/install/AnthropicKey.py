@@ -147,7 +147,7 @@ class AnthropicKey:
 
     def _explain_key(self) -> None:
         t = self.terminal
-        t.note("Keep runs on Claude. An API key is the only way to use it without breaking Anthropic's terms of service.")
+        t.note("Keep will run on Claude. An API key is the only way to use it without breaking Anthropic's terms of service.")
         t.note(f"Create one at {t.bold(KEYS_URL)} (it starts with sk-ant-). In the dialog:")
         t.note("  Expires: Never")
         t.note("  Scope:   Default workspace")

@@ -53,7 +53,7 @@ GROUPS = {
     'src/integrations/x': ('x', 'Searching X posts through xAI’s server-side search.'),
     'src/common': ('common', 'Shared plumbing: config, logging, paths, the SQLite database, system monitors, the version and the updater that moves an install to newer code.'),
     'src/common/vault': ('vault', 'The encrypted secret store and the redactor that keeps secrets away from LLM providers.'),
-    'src/common/install': ('install', 'The installer’s steps that need a Python — the API key and the config.yaml of a new install — run by install.sh once the venv is built.'),
+    'src/common/install': ('install', 'The installer’s steps that need a Python — Claude’s API key or a local model set up on the Mac, and the config.yaml of a new install — run by install.sh once the venv is built.'),
     'src/common/imessage': ('imessage', 'What must run next to Messages.app: reading chat.db, resolving contacts, sending by AppleScript and showing the typing dots, behind the one MessagesHost interface a consumer calls in-process or over HTTP — and the satellite process that serves it from another Mac.'),
     'src/interfaces': ('interfaces', 'One package per way of reaching the assistant; the launcher only imports the enabled ones.'),
     'src/interfaces/http': ('http', 'The Quart web server with /stream and /health, and the wire format the apps speak.'),

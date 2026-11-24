@@ -235,3 +235,46 @@ def test_typing_dots_over_the_real_seam_end_as_a_value_and_touch_nothing():
     result = host.typing("iMessage;-;+46701740605", True)
     assert (result.showing, result.reason) == (False, TYPING_FAILED)
     assert host.typing_indicator.showing() == []
+
+
+# The installer's local AI (common/install/LocalRunner). Should a guard let one through: the
+# formula does not exist, and the runner is a scratch one.
+@pytest.mark.unit
+@pytest.mark.parametrize("command", [["brew", "install", "keep/no-such-tap/no-such-formula"],
+                                     ["/opt/homebrew/bin/brew", "services", "restart", "no-such-formula"],
+                                     ["brew", "list", "--versions", "no-such-formula"]],
+                         ids=["install", "by its own path", "a command that only answers"])
+def test_this_macs_homebrew_cannot_be_run(command):
+    with pytest.raises(RuntimeError, match="Homebrew"):
+        subprocess.run(command, capture_output=True, timeout=10)
+
+
+def _a_runner(home=None):
+    from common.install.LocalRunner import LocalRunner
+    from .common.install.fakes import ScriptedTerminal
+    return LocalRunner(ScriptedTerminal(), {}, home) if home else LocalRunner(ScriptedTerminal(), {})
+
+
+@pytest.mark.unit
+def test_a_local_ai_runner_that_names_no_home_is_not_given_this_macs_omlx_folder(tmp_path, monkeypatch):
+    """~/.omlx holds the settings oMLX starts on: `ensure_settings` writes there."""
+    from pathlib import Path
+    from common import Platform
+    monkeypatch.setattr(Platform, "memory_gb", lambda: 32)
+    runner = _a_runner()
+    real = Path.home() / ".omlx"
+    assert runner.home != real and real not in runner.home.parents
+    assert runner.settings_path().parent == runner.home and runner.models_dir().parent == runner.home
+    assert _a_runner(tmp_path).home == tmp_path, "a home a test names is no longer the one it gets"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("call, what", [(lambda runner: runner.files(), "Hugging Face"),
+                                        (lambda runner: runner.download(runner.home / "models" / "no-such-model"), "Hugging Face"),
+                                        (lambda runner: runner.install_brew(), "Homebrew"),
+                                        (lambda runner: runner.models(), "oMLX"),
+                                        (lambda runner: runner.complete(), "oMLX")],
+                         ids=["the model's file list", "the download", "Homebrew's installer", "the server's models", "a completion"])
+def test_the_local_ai_runner_reaches_nothing_outside_the_process(tmp_path, call, what):
+    with pytest.raises(RuntimeError, match=what):
+        call(_a_runner(tmp_path))

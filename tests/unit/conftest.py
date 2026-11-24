@@ -94,6 +94,12 @@ class _NoRelaunchPopen(subprocess.Popen):
         # Improvement and every build command send. `claude auth status` is local and stays allowed.
         if words and Path(words[0]).name == "claude" and "-p" in words:
             raise RuntimeError("a unit test tried to send a request through this machine's Claude Code")
+        # The installer's local AI (common/install/LocalRunner): unstubbed, `brew` would tap, build
+        # and pin oMLX on the developer's Mac and start it as a launchd service. Every brew command
+        # is refused, the ones that only answer too; the runner's tests fake its `output` and the
+        # terminal's `run`.
+        if words and Path(words[0]).name == "brew":
+            raise RuntimeError(f"a unit test tried to run this Mac's Homebrew: {words}")
         super().__init__(args, *rest, **kwargs)
 
 
@@ -306,6 +312,43 @@ def isolated_imessage_typing_record(tmp_path_factory):
     keeps that record in a scratch file."""
     from common.imessage import LocalMessagesHost
     LocalMessagesHost.TYPING_RECORD = tmp_path_factory.mktemp("imessage_typing") / "imessage_typing_windows.json"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def isolated_local_ai(tmp_path_factory):
+    """No unit test reaches this Mac's local AI (common/install/LocalRunner). A runner that names
+    no home of its own gets a scratch folder for ~/.omlx — the settings oMLX starts on and 18 GB
+    of model live there. And what goes out of the process is refused while it is the real thing:
+    Hugging Face (a download of the model), Homebrew's installer (fetched and run on the
+    terminal) and the oMLX on port 8000 (a completion loads the model into the developer's
+    memory). A test that puts its own `requests.get` / `requests.post` or its own
+    `huggingface_hub` entry in place is let through to the method under test."""
+    import requests
+    from common.install import LocalRunner as module
+    scratch = tmp_path_factory.mktemp("omlx_home")
+    runner, real_init = module.LocalRunner, module.LocalRunner.__init__
+    real_get, real_post = requests.get, requests.post
+
+    def init(self, terminal, env, home=None):
+        real_init(self, terminal, env, home or scratch)
+
+    def the_real_hub(name):
+        import huggingface_hub
+        return getattr(huggingface_hub, name).__module__.startswith("huggingface_hub")
+
+    def guarded(method, is_real, what):
+        def guard(self, *args, **kwargs):
+            if is_real():
+                raise RuntimeError(f"a unit test tried to reach {what}")
+            return method(self, *args, **kwargs)
+        return guard
+
+    runner.__init__ = init
+    runner.files = guarded(runner.files, lambda: the_real_hub("HfApi"), "Hugging Face for the local model's files")
+    runner.download = guarded(runner.download, lambda: the_real_hub("snapshot_download"), "Hugging Face for a download of the local model")
+    runner.install_brew = guarded(runner.install_brew, lambda: requests.get is real_get, "Homebrew's installer")
+    runner.models = guarded(runner.models, lambda: requests.get is real_get, "this Mac's oMLX")
+    runner.complete = guarded(runner.complete, lambda: requests.post is real_post, "this Mac's oMLX for a completion")
 
 
 @pytest.fixture(autouse=True, scope="session")

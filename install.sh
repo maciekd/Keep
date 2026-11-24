@@ -6,8 +6,9 @@
 #
 # Checks the Mac, offers to install Chrome where there is none (the web search and the browse
 # commands drive it headless), finds or installs Python 3.12 without touching anything else on the
-# machine, clones the repository, builds the venv, asks for the Anthropic API key (and the
-# workspace it acts in, when the key is not tied to one), writes
+# machine, clones the repository, builds the venv, settles the AI model — Claude, with
+# its API key (and the workspace it acts in, when the key is not tied to one), or on a Mac that
+# can carry it a local model the installer sets up itself (oMLX through Homebrew) —, writes
 # config.yaml — those two in Python, src/common/install, the first moment there is one —, puts a `keep` command in ~/.local/bin (the console, from any folder) and hands the
 # terminal to start.sh. Every step is idempotent: re-run the same
 # command to resume after a failure or to upgrade an existing install.
@@ -21,7 +22,10 @@
 # Environment overrides (all optional):
 #   KEEP_DIR           where to install            (default: ~/Keep); the variable must
 #                      reach bash, not curl:  curl ... | KEEP_DIR=~/somewhere bash
-#   ANTHROPIC_API_KEY  skips the API key prompt
+#   ANTHROPIC_API_KEY  skips the API key prompt, and the question of where Keep thinks
+#   KEEP_AI=local|cloud  answers that question without asking: local sets up oMLX and its model
+#                      on this Mac (Apple Silicon, macOS 15, 32 GB of memory, 30 GB of disk — and
+#                      the install fails where that fails), cloud is Claude
 #   ANTHROPIC_WORKSPACE_ID  the workspace (wrkspc_...) a key not tied to one workspace acts in;
 #                      skips that prompt. A key created for one workspace needs none.
 #   KEEP_NO_START=1    stop after installing instead of launching start.sh
@@ -126,8 +130,8 @@ main() {
 
   if [ -f "$KEEP_DIR/config.yaml" ]; then
     if ! satellite; then
-      step "Anthropic API key"
-      ok "config.yaml already exists; its key is kept"
+      step "AI model"
+      ok "config.yaml already exists; its AI settings are kept"
     fi
     step "Configuration"
     ok "config.yaml kept as it is"
@@ -140,7 +144,7 @@ main() {
   summary
   # shellcheck disable=SC2046,SC2086
   telemetry_event install_finished elapsed_s="$SECONDS" python="$PY_SOURCE" ${BROWSER_STATE:+browser=$BROWSER_STATE} \
-    commit="$(git -C "$KEEP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" $(telemetry_role)
+    commit="$(git -C "$KEEP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" $(telemetry_role) $(telemetry_ai)
   launch
 }
 
@@ -242,7 +246,23 @@ init_ui() {
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
     IS_TTY=1
     C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_RESET=$'\033[0m'
-    C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_CYAN=$'\033[36m'
+    # The console's accents (src/common/Palette.py; this script runs before there is a checkout, so
+    # it carries its own copy and tests/unit/test_install_sh.py holds the two together): as they
+    # are where the terminal has every colour, the nearest of the 256 where its name says it has
+    # those — Terminal before macOS 26 —, the plain ANSI colours otherwise. Accents only: the text
+    # stays in the terminal's own foreground, whatever its background.
+    case "${COLORTERM:-}" in
+      truecolor|24bit)
+        C_GREEN=$'\033[38;2;70;230;150m'; C_RED=$'\033[38;2;255;90;90m'
+        C_YELLOW=$'\033[38;2;255;205;80m'; C_CYAN=$'\033[38;2;64;200;255m' ;;
+      *)
+        case "${TERM:-}" in
+          *256color*)
+            C_GREEN=$'\033[38;5;78m'; C_RED=$'\033[38;5;203m'; C_YELLOW=$'\033[38;5;221m'; C_CYAN=$'\033[38;5;81m' ;;
+          *)
+            C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_CYAN=$'\033[36m' ;;
+        esac ;;
+    esac
   else
     IS_TTY=""
     C_BOLD=""; C_DIM=""; C_RESET=""; C_GREEN=""; C_RED=""; C_YELLOW=""; C_CYAN=""
@@ -289,7 +309,7 @@ holds_only_our_log() {
 step() {
   STEP=$((STEP + 1))
   STEP_NAME="$1"
-  printf '\n  %s[%d/%d]%s %s%s%s\n' "$C_CYAN" "$STEP" "$TOTAL_STEPS" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"
+  printf '\n  %s[%d/%d]%s %s%s%s\n' "$C_DIM" "$STEP" "$TOTAL_STEPS" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"
   log ""
   log "=== [$STEP/$TOTAL_STEPS] $1"
 }
@@ -1102,7 +1122,9 @@ ensure_repo() {
     mv "$LOG" "$parked"
     rmdir "$KEEP_DIR/log"
     LOG="$parked"
-    run "git clone ($BRANCH)" git clone --branch "$BRANCH" "$REPO_URL" "$KEEP_DIR"
+    SPINNER_STATUS="clone_status"
+    run "git clone ($BRANCH)" git clone --progress --branch "$BRANCH" "$REPO_URL" "$KEEP_DIR"
+    SPINNER_STATUS=""
     mkdir -p "$KEEP_DIR/log"
     mv "$parked" "$final"
     LOG="$final"
@@ -1110,6 +1132,31 @@ ensure_repo() {
   local rev
   rev=$(git -C "$KEEP_DIR" log -1 --format='%h  %s' 2>/dev/null || echo "?")
   ok "At $rev"
+}
+
+# clone_status: how far the clone is, read off git's own progress lines ("Receiving objects:  53%
+# (…)", each redrawn in place with a carriage return) at the end of the log.
+clone_status() {
+  local last percent
+  last=$(tail -c 400 "$LOG" 2>/dev/null | tr '\r' '\n' | grep -E '^(remote: )?[A-Za-z ]+: +[0-9]+%' | tail -n 1 || true)
+  percent=$(printf '%s' "$last" | sed -E 's/^(remote: )?[A-Za-z ]+: +([0-9]+)%.*/\2/')
+  [ -n "$percent" ] || return 0
+  printf '%s %s' "$(progress_bar "$percent")" "$(printf '%s' "$last" | sed -E 's/^(remote: )?([A-Za-z ]+): +([0-9]+)%.*/\2 \3%/' | tr '[:upper:]' '[:lower:]')"
+}
+
+# progress_bar <percent>: the bar of the spinner's line, 24 cells. Without colour codes: the spinner
+# clips its line to the terminal's width by counting characters.
+progress_bar() {
+  local filled=$(($1 * 24 / 100))
+  [ "$filled" -le 24 ] || filled=24
+  printf '%s%s' "$(printf '%*s' "$filled" '' | sed 's/ /█/g')" "$(printf '%*s' $((24 - filled)) '' | sed 's/ /░/g')"
+}
+
+# time_left <percent> <seconds so far>: "about 3 min left", once enough has passed to tell.
+time_left() {
+  [ "$1" -ge 10 ] && [ "$1" -lt 100 ] && [ "$2" -ge 10 ] || return 0
+  local left=$(($2 * (100 - $1) / $1))
+  if [ "$left" -lt 60 ]; then printf ', under a minute left'; else printf ', about %d min left' $(((left + 30) / 60)); fi
 }
 
 # ------------------------------------------------------------- 5. venv -----
@@ -1141,9 +1188,9 @@ install_requirements() {
   note "Downloading Python packages (including speech-identification and language models); takes 1-10 minutes."
   local offset
   offset=$(($(wc -c <"$LOG") + 1))
-  SPINNER_STATUS="pip_status $offset $PIP_EXPECTED_PACKAGES"
+  SPINNER_STATUS="pip_status $offset $PIP_EXPECTED_PACKAGES $SECONDS"
   if linux; then
-    SPINNER_STATUS="pip_status $offset $PIP_EXPECTED_PACKAGES_LINUX"
+    SPINNER_STATUS="pip_status $offset $PIP_EXPECTED_PACKAGES_LINUX $SECONDS"
     # torch's default build for Linux x86_64 is the CUDA one, gigabytes that speaker identification
     # has no use for; PyTorch's own index has the CPU build (common/RequirementsChecker.py passes
     # the same index, so an update does not swap the build).
@@ -1157,14 +1204,15 @@ install_requirements() {
 TORCH_CPU_INDEX="https://download.pytorch.org/whl/cpu"
 PIP_EXPECTED_PACKAGES_LINUX=230   # PIP_EXPECTED_PACKAGES without what only a Mac installs (the pyobjc frameworks, MLX)
 
-# pip_status <log offset> <expected package count>: progress read off pip's own output.
+# pip_status <log offset> <expected package count> <SECONDS at the start>: progress read off pip's own output.
 # Pip works in passes: it resolves first, printing "Collecting <pkg>" per package while it
 # fetches metadata, then downloads every wheel ("Downloading <file> (<size>)", unindented),
 # builds the few source-only packages and finally unpacks. The bar spans the first two
 # passes, which is where the time goes on a fresh Mac, scaled by the package count of a
-# full install since pip only reveals the total at the end; the text says what it is doing.
+# full install since pip only reveals the total at the end; the text says what it is doing and,
+# from the pace so far, about how long is left.
 pip_status() {
-  local out n_collect n_down n_total total text filled bar
+  local out n_collect n_down n_total total text percent
   out=$(tail -c +"$1" "$LOG" 2>/dev/null || true)
   case "$out" in
     *"Installing collected packages"*)
@@ -1186,15 +1234,15 @@ pip_status() {
   total=$(($2 * 2))
   n_total=$((n_collect + n_down))
   [ "$n_total" -le "$total" ] || n_total=$total
-  filled=$((n_total * 24 / total))
-  bar=$(printf '%*s' "$filled" '' | sed 's/ /█/g')$(printf '%*s' $((24 - filled)) '')
-  printf '[%s] %s' "$bar" "$text"
+  percent=$((n_total * 100 / total))
+  printf '%s %3d%% %s%s' "$(progress_bar "$percent")" "$percent" "$text" "$(time_left "$percent" $((SECONDS - ${3:-$SECONDS})))"
 }
 
-# ------------------------------------------- 7. the API key and the config ---
+# ------------------------------------------ 7. the AI model and the config ---
 
-# What needs a Python is Python's: src/common/install asks for the API key, checks it with
-# Anthropic and writes config.yaml (a satellite's holds no key). It prints its own step headers
+# What needs a Python is Python's: src/common/install settles the AI model — it asks for the API
+# key and checks it with Anthropic, or sets up a local model on a Mac that can carry one (KEEP_AI,
+# read there, answers for the user) — and writes config.yaml (a satellite's holds no key). It prints its own step headers
 # from where the counter stands here. What comes back is the exit status and the file — and, after
 # a failure it has already shown, the step and the reason on the log's last two lines, which is
 # what the install report carries.
@@ -1341,6 +1389,18 @@ config_trouble() {
 # The role as an event property — for a satellite only, so a server's events stay as they were.
 telemetry_role() { if satellite; then printf 'role=%s' "$ROLE"; fi; }
 
+# local_ai: whether config.yaml puts the install on a local model (`local_backend` other than none).
+local_ai() {
+  local backend
+  backend=$(config_value local_backend | tr '[:upper:]' '[:lower:]')
+  [ -n "$backend" ] && [ "$backend" != none ]
+}
+
+telemetry_ai() {
+  if satellite; then return; fi
+  if local_ai; then printf 'ai=local'; else printf 'ai=cloud'; fi
+}
+
 telemetry_started() {
   local fresh=true
   [ ! -f "$KEEP_DIR/config.yaml" ] || fresh=false
@@ -1461,8 +1521,19 @@ summary() {
   note "Console    $(console_command)"
   note "Upgrade    re-run the install command"
   printf '\n'
+  local_ai_summary
   launcher_tip
   browser_summary
+}
+
+# What an install on a local model is told: where the model runs and how to go back.
+local_ai_summary() {
+  local model
+  local_ai || return 0
+  model=$(config_value openai_compatible model)
+  note "${C_BOLD}Keep thinks on this Mac${C_RESET}: ${model:-a local model}, served by oMLX, which starts at login"
+  note "(brew services). For Claude instead: local_backend: none in config.yaml, and a key as api_keys.anthropic."
+  printf '\n'
 }
 
 # A Linux server is a systemd unit on a machine that usually has no screen: the summary says how

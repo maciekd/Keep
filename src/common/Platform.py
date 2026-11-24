@@ -6,6 +6,9 @@ fails otherwise), so a test patches `Platform.current` and runs the other system
 whichever machine it is on. The module imports nothing of the tree: `RequirementsChecker` and the
 iMessage satellite use it before anything else is loadable.
 """
+import math
+import os
+import platform
 import sys
 
 MAC, LINUX = "mac", "linux"
@@ -33,6 +36,29 @@ def sys_platform() -> str:
     (`; sys_platform == "darwin"`) is written against."""
     system = current()
     return next((raw for raw, name in _NAMES.items() if name == system), system)
+
+
+def is_apple_silicon() -> bool:
+    return is_mac() and platform.machine() == "arm64"
+
+
+def macos_version() -> int:
+    """The major version of macOS (15, 26); 0 off a Mac or when it cannot be read."""
+    if not is_mac():
+        return 0
+    try:
+        return int(platform.mac_ver()[0].split(".")[0])
+    except ValueError:
+        return 0
+
+
+def memory_gb() -> int:
+    """The machine's memory in whole GB, rounded up (a kernel reports a little under what is
+    installed); 0 when it cannot be read."""
+    try:
+        return math.ceil(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 2 ** 30)
+    except (ValueError, OSError):
+        return 0
 
 
 def machine() -> str:

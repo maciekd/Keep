@@ -11,6 +11,7 @@ import yaml
 from common.ConfigManager import REQUIRED_KEYS, ConfigManager
 from common.install import InstallConfig as module
 from common.install.InstallConfig import InstallConfig
+from common.install.LocalRunner import LocalModel
 from common.install.Terminal import InstallFailed
 
 from .fakes import ScriptedTerminal
@@ -93,6 +94,55 @@ class TestTheServersConfig:
         server(tmp_path, workspace='wrkspc_01TEST')
         lines = [line for line in (tmp_path / 'config.yaml').read_text().splitlines() if not line.lstrip().startswith('#')]
         assert all(re.match(r'^( {2})?[a-z_]+:( \S.*)?$', line) for line in lines), lines
+
+
+def local(tmp_path, model=LocalModel('Qwen3.8-27B-oQ4e-mtp'), **kwargs) -> dict:
+    installer(tmp_path, **kwargs).write_server('', '', model)
+    return written(tmp_path)
+
+
+@pytest.mark.unit
+class TestTheLocalServersConfig:
+    """Contract with config.yaml's `local_backend` and `openai_compatible` keys, which the server
+    reads at start (config.example.yaml documents them)."""
+
+    def test_it_names_the_backend_and_the_model_and_holds_no_anthropic_key(self, tmp_path):
+        config = local(tmp_path)
+        assert config['local_backend'] == 'openai'
+        assert config['openai_compatible'] == {'model': 'Qwen3.8-27B-oQ4e-mtp'}
+        assert 'api_keys' not in config
+        assert stat.S_IMODE((tmp_path / 'config.yaml').stat().st_mode) == 0o600
+
+    def test_it_is_a_config_the_server_starts_on(self, tmp_path):
+        """No key is asked for at start: the smart tier of a local install reads none."""
+        local(tmp_path)
+        config = loaded(tmp_path / 'config.yaml')
+        assert config.missing_required(REQUIRED_KEYS) == []
+        assert re.fullmatch(r'[A-Za-z0-9]{32}', str(config.get('vault.key')))
+
+    def test_an_address_and_a_key_of_the_users_omlx_are_written_only_when_there_are_any(self, tmp_path):
+        config = local(tmp_path, LocalModel('Qwen3.8-27B-oQ4e-mtp', 'http://127.0.0.1:8011/v1', 'omlx-key-47L'))
+        assert config['openai_compatible'] == {'model': 'Qwen3.8-27B-oQ4e-mtp', 'base_url': 'http://127.0.0.1:8011/v1',
+                                               'api_key': 'omlx-key-47L'}
+
+    def test_a_key_yaml_would_misread_comes_back_as_it_was(self, tmp_path):
+        config = local(tmp_path, LocalModel('Qwen3.8-27B-oQ4e-mtp', '', 'no'))
+        assert config['openai_compatible']['api_key'] == 'no'
+
+    def test_the_rest_is_what_a_cloud_install_gets(self, tmp_path):
+        config = local(tmp_path, branch='release')
+        assert config['developer_release'] is False and config['telemetry'] == {'enabled': True, 'id': INSTALL_ID}
+
+    def test_the_file_says_how_to_go_back_to_claude(self, tmp_path):
+        local(tmp_path)
+        text = (tmp_path / 'config.yaml').read_text()
+        assert 'local_backend: none' in text and 'api_keys.anthropic' in text
+
+    def test_every_key_is_on_a_line_of_its_own_as_the_scripts_read_it(self, tmp_path):
+        local(tmp_path, LocalModel('Qwen3.8-27B-oQ4e-mtp', 'http://127.0.0.1:8011/v1', 'omlx-key-47L'))
+        lines = [line for line in (tmp_path / 'config.yaml').read_text().splitlines() if not line.lstrip().startswith('#')]
+        assert 'local_backend: openai' in lines
+        assert not any('{' in line or line.count(': ') > 1 and '#' not in line for line in lines)
 
 
 @pytest.mark.unit
