@@ -74,8 +74,12 @@ class TestATurn:
             hub.complete_command_notification(second, "failed after 4s")
             return True
 
+        def thinking_folded():
+            # The commands run on the stream's thread: they wait for the session to have drawn the round.
+            return any(item["kind"] == "thinking" and item["done"] for item in transcript.items())
+
         hub.assistant = FakeAssistant([Thinking("let me ", 10), Thinking("see", 20), ThinkingDone(0.2),
-                                       RoundEnd(""), run_commands,
+                                       RoundEnd(""), thinking_folded, run_commands,
                                        Token("78 %."), RoundEnd("78 %."), Done("78 %.")])
         transport.submit("bubble-1", "is the car charged?")
         assert wait_until(lambda: idle(hub, transport))

@@ -306,6 +306,15 @@ def isolated_imessage_chat_state(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def isolated_app_chat_transcript(tmp_path_factory):
+    """No unit test reads or writes the install's cache/app_chat.json — what the phones show of
+    the owner's chat, with its photos beside it: an app interface the launcher builds keeps its
+    transcript in a scratch folder."""
+    from interfaces.app import AppInterface
+    AppInterface.CACHE_DIR = tmp_path_factory.mktemp("app_chat")
+
+
+@pytest.fixture(autouse=True, scope="session")
 def isolated_imessage_typing_record(tmp_path_factory):
     """No unit test reads or writes the install's cache/imessage_typing_windows.json — the names
     of the dots windows a real host left open: a host built without an indicator of its own

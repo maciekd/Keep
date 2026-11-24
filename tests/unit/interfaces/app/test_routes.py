@@ -65,6 +65,8 @@ def read_events(app, path, until, act=None):
                 *whole, rest = rest.split(b"\n")
                 lines += [json.loads(line) for line in whole]
                 if any(until(line) for line in lines):
+                    # The stream never ends by itself, and leaving the block waits for it.
+                    await connection.disconnect()
                     return lines
     return asyncio.run(run())
 

@@ -24,6 +24,7 @@ def telegram_only_config():
         'interfaces.voice.enabled': False,
         'interfaces.console.enabled': False,
         'interfaces.telegram.enabled': True,
+        'interfaces.app.enabled': False,
         'telegram_bot.bot_token': 'test-token',
     }
     with patch.object(config, 'get', side_effect=lambda key, default=None: overrides.get(key, real_get(key, default))):
@@ -183,7 +184,8 @@ class TestCrashTraces:
 class TestInterfaceFlags:
     def test_voice_is_off_unless_the_config_says_so(self, quiet_heavy_startup):
         real_get = config.get
-        overrides = {'interfaces.console.enabled': False, 'interfaces.telegram.enabled': False}
+        overrides = {'interfaces.console.enabled': False, 'interfaces.telegram.enabled': False,
+                     'interfaces.app.enabled': False}
         # No interfaces.voice key at all: the default decides.
         with patch.object(config, 'get', side_effect=lambda key, default=None:
                           overrides.get(key, default if key == 'interfaces.voice.enabled' else real_get(key, default))):
@@ -202,7 +204,7 @@ class TestInterfaceFlags:
     def test_every_interface_flag_is_honoured(self, quiet_heavy_startup):
         real_get = config.get
         overrides = {'interfaces.voice.enabled': False, 'interfaces.console.enabled': False,
-                     'interfaces.telegram.enabled': False}
+                     'interfaces.telegram.enabled': False, 'interfaces.app.enabled': False}
         with patch.object(config, 'get', side_effect=lambda key, default=None: overrides.get(key, real_get(key, default))):
             import floxy_ai_server
             server = floxy_ai_server.build(8999, running_as_testsuite=False)
@@ -212,12 +214,29 @@ class TestInterfaceFlags:
         finally:
             server.stop()
 
+    def test_the_app_chat_is_on_the_hub_unless_the_config_says_otherwise(self, quiet_heavy_startup):
+        from interfaces.chat.ChatHub import ChatHub
+        real_get = config.get
+        overrides = {'interfaces.voice.enabled': False, 'interfaces.console.enabled': False,
+                     'interfaces.telegram.enabled': False}
+        # No interfaces.app key at all: the default decides.
+        with patch.object(config, 'get', side_effect=lambda key, default=None:
+                          overrides.get(key, default if key == 'interfaces.app.enabled' else real_get(key, default))):
+            import floxy_ai_server
+            server = floxy_ai_server.build(8999, running_as_testsuite=False)
+        try:
+            assert [i.name for i in server.interfaces] == ["http", "app"]
+            assert server.interface("app").transport in ChatHub.get_instance().transports
+        finally:
+            server.stop()
+
     def test_the_imessage_chat_is_built_only_when_its_flag_is_on(self, quiet_heavy_startup):
         """Off by default: an install that never set the flag starts no poll of a Messages account."""
         from assistant.integration.IntegrationMonitor import IntegrationMonitor
         real_get = config.get
         overrides = {'interfaces.voice.enabled': False, 'interfaces.console.enabled': False,
-                     'interfaces.telegram.enabled': False, 'interfaces.imessage.enabled': True,
+                     'interfaces.telegram.enabled': False, 'interfaces.app.enabled': False,
+                     'interfaces.imessage.enabled': True,
                      'imessage_chat.owners': [], 'imessage_chat.guests': [], 'imessage_chat.bots': []}
         import floxy_ai_server
         from interfaces.imessage.IMessageTransport import IMessageTransport
