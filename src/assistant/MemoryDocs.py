@@ -9,7 +9,11 @@ deleted version is copied to the log folder first, which is a debugging trail th
 
 A subclass states its folder, its log folder, its words for itself and its command names. The
 commands and the memory curator's command block both go through `run`.
+
+`load_all` — the LLM's load command, never the curator's reading — stamps each file it found in
+`USED_FILE` (`last_used`), which the console's Memory tabs show as when a file was last used.
 """
+import json
 import re
 import threading
 from datetime import datetime
@@ -39,6 +43,8 @@ class MemoryDocs:
     # The longest `when` a save may write, and how much of one the index carries: every file costs
     # its index line in every prompt, so the line is as short as a watch item's.
     WHEN_CHARS = WatchList.INDEX_NOTE_CHARS
+    # When the LLM last loaded each file, by name: {"vklass-login": "2026-11-24T08:15:02"}.
+    USED_FILE: Path = None
 
     lock = threading.RLock()
 
@@ -143,8 +149,51 @@ class MemoryDocs:
                 return cls._unknown(cls.DELETE, name, directory)
             cls._log_copy(name, current, log_dir or cls.LOG_DIR)
             cls._path(name, directory).unlink()
+            if directory == cls.DIR:
+                cls._stamp_use([cls.slug(name)], None)
         info(f"{cls._label()}: '{cls.slug(name)}' deleted (last version in the log)")
         return ""
+
+    @classmethod
+    def _read_used(cls) -> dict:
+        try:
+            used = json.loads(cls.USED_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return used if isinstance(used, dict) else {}
+
+    @classmethod
+    def last_used(cls) -> dict[str, datetime]:
+        """When the LLM last loaded each file, by name; a file never loaded is absent."""
+        used = {}
+        for name, stamp in cls._read_used().items():
+            try:
+                used[name] = datetime.fromisoformat(stamp)
+            except (TypeError, ValueError):
+                continue
+        return used
+
+    @classmethod
+    def _stamp_use(cls, names: list[str], stamp: str | None):
+        """`names` loaded at `stamp`, or with None never loaded — a deleted file's record goes with it."""
+        if not names:
+            return
+        with cls.lock:
+            used = cls._read_used()
+            for name in names:
+                if stamp:
+                    used[name] = stamp
+                else:
+                    used.pop(name, None)
+            try:
+                cls.USED_FILE.parent.mkdir(parents=True, exist_ok=True)
+                partial = cls.USED_FILE.with_suffix(".tmp")
+                partial.write_text(json.dumps(used, indent=1, sort_keys=True), encoding="utf-8")
+                partial.replace(cls.USED_FILE)
+            except OSError as e:
+                info(f"{cls._label()}: could not record the use of {', '.join(names)}: {e}")
+                return
+        trace(f"{cls._label()}: {'used' if stamp else 'use forgotten'} — {', '.join(names)}")
 
     @classmethod
     def _unknown(cls, command: str, name: str, directory: Path) -> str:
@@ -167,7 +216,10 @@ class MemoryDocs:
         names = [n for n in names if n and n.strip()]
         if not names:
             return f"{cls.LOAD} failed: expected a {cls.NOUN} name. Available: " + (", ".join(cls.names()) or "none")
-        return "\n\n".join(cls.load(name) for name in names)
+        answer = "\n\n".join(cls.load(name) for name in names)
+        found = list(dict.fromkeys(cls.slug(name) for name in names if cls._path(name, cls.DIR).is_file()))
+        cls._stamp_use(found, datetime.now().isoformat(timespec="seconds"))
+        return answer
 
     @classmethod
     def render_index(cls, directory: Path = None) -> str:

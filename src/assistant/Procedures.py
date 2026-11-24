@@ -12,13 +12,14 @@ from pathlib import Path
 
 from assistant.MemoryDocs import MemoryDocs
 from common.logging import info
-from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
+from common.Paths import CACHE_DIR, MEMORY_DIR, MEMORY_LOG_DIR
 from common.vault.Redactor import redact_for_storage
 
 
 class Procedures(MemoryDocs):
     DIR = MEMORY_DIR / "procedures"
     LOG_DIR = MEMORY_LOG_DIR / "procedures"
+    USED_FILE = CACHE_DIR / "procedures_used.json"
     NOUN = "procedure"
     PLURAL = "procedures"
     LOAD = "load_procedure"

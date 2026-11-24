@@ -334,6 +334,7 @@ def isolated_memory_stores(tmp_path_factory):
     WatchList.WATCHLIST_DIR, WatchList.LOG_DIR = root / "watchlist", root / "log" / "watchlist"
     Procedures.DIR, Procedures.LOG_DIR = root / "procedures", root / "log" / "procedures"
     Memos.DIR, Memos.LOG_DIR = root / "memos", root / "log" / "memos"
+    Procedures.USED_FILE, Memos.USED_FILE = root / "procedures_used.json", root / "memos_used.json"
     VoiceCandidates.CANDIDATES_DIR, VoiceCandidates.LOG_DIR = root / "voice_candidates", root / "log" / "voice_id"
     LongTermMemoryCurator.MEMORY_LOG_DIR = root / "log"
 

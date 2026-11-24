@@ -60,8 +60,8 @@ class MemoryTab(TabView):
     long-term memory, `_live_text` being the part, read as a document in the Dashboard's tiles.
     Summary tiles on top (how much there is, how it is divided, and what the tab adds), an
     outline of the sections on the left from 110 columns — each with a meter of its share, its
-    parts with a gray one on the same scale, and the one being read highlighted —
-    and the text itself, laid out by `widgets/Markdown`: no
+    parts with a gray one on the same scale, a tab's own `COLUMN` after it under column titles,
+    and the one being read highlighted — and the text itself, laid out by `widgets/Markdown`: no
     markdown marker is shown, each section has its own accent. ↑↓ and PgUp/PgDn scroll, n/p
     jump a section.
     A tab with `HAS_HISTORY` also browses the snapshots in `log_dir` with ←→ (the bank's: what
@@ -84,7 +84,11 @@ class MemoryTab(TabView):
     OUTLINE_MAX_W = 46
     OUTLINE_METER_W = 6
     OUTLINE_SIZE_W = 5
-    TEXT_MAX_W = 120                     # a line longer than this is hard to read back from its end
+    # A column the outline adds after each section's size, under column titles: its title
+    # ("" for none) and width; `_column_cell` fills it.
+    COLUMN = ""
+    COLUMN_W = 5
+    TEXT_MAX_W = 120                    # a line longer than this is hard to read back from its end
     SCAN_EVERY = 30                      # frames between looks at the snapshot directory
     END = 1 << 30                        # a scroll position past any document: `_settle` brings it to the last page
     CHANGE_LEAD = 3                      # rows of context above the first change a snapshot opens on
@@ -153,7 +157,8 @@ class MemoryTab(TabView):
         gutter = 2 if self._has_diff else 0
         outline_w = 0
         if screen.width >= self.OUTLINE_MIN_SCREEN:
-            outline_w = max(self.OUTLINE_MIN_W, min(self.OUTLINE_MAX_W, available * 26 // 100))
+            extra = self.COLUMN_W + 2 if self.COLUMN else 0
+            outline_w = max(self.OUTLINE_MIN_W + extra, min(self.OUTLINE_MAX_W + extra, available * 26 // 100))
             doc = self._layout(self._text_width(available - outline_w - Board.GAP, gutter))
             if len(self._outline_entries(doc)) < 2:
                 outline_w = 0
@@ -307,10 +312,17 @@ class MemoryTab(TabView):
         at_end = self._top > 0 and self._top >= len(doc.rows) - self._room
         return self._top + self._room - 1 if at_end else self._top
 
+    def _column_cell(self, section: str) -> Tuple[str, Color]:
+        """The `COLUMN` cell of the section titled `section`."""
+        return "", Theme.COLOR_DIM
+
     def _draw_outline(self, screen: TUIScreen, x: int, y: int, width: int, height: int, doc: Markdown.Document):
         entries = self._outline_entries(doc)
         sections = [entry for entry in entries if entry.depth <= 0]
-        room = self._room
+        has_diff = self._has_diff
+        column = bool(self.COLUMN) and not has_diff
+        column_w = self.COLUMN_W + 2 if column else 0
+        room = self._room - column    # a row goes to the column titles
         if len(entries) > room and sections:
             entries = sections
         Tile.draw_card(screen, self._cards, x, y, width, height, "Outline",
@@ -319,11 +331,17 @@ class MemoryTab(TabView):
         chosen = max((k for k, entry in enumerate(entries) if entry.row <= focus), default=-1)
         self._outline_top = Board.scrolled(self._outline_top, len(entries), room, chosen)
         largest = max((entry.size for entry in sections), default=0) or 1
-        has_diff = self._has_diff
         right_edge = x + width - 2
+        top_y = y + Tile.CARD_TOP + column
+        if column:
+            screen.set_color(Theme.COLOR_DIM)
+            screen.write_at(x + 4, top_y - 1, "Name")
+            screen.write_at(right_edge - column_w - 4, top_y - 1, "Size")
+            screen.write_at(right_edge - len(self.COLUMN), top_y - 1, self.COLUMN)
+            screen.reset_color()
 
         for k, entry in enumerate(entries[self._outline_top:self._outline_top + room]):
-            row_y = y + Tile.CARD_TOP + k
+            row_y = top_y + k
             current = self._outline_top + k == chosen
             part = entry.depth > 0
             right_w = 0
@@ -342,11 +360,16 @@ class MemoryTab(TabView):
             else:
                 # Every meter is on one scale — the largest section fills it — so a part's gray
                 # bar reads against its section's: a part of half the section is half as long.
-                right_w = self.OUTLINE_METER_W + 1 + self.OUTLINE_SIZE_W
+                right_w = self.OUTLINE_METER_W + 1 + self.OUTLINE_SIZE_W + column_w
                 color = Theme.COLOR_LABEL if part else entry.accent
                 Tile.draw_meter(screen, right_edge - right_w, row_y, self.OUTLINE_METER_W, min(1.0, entry.size / largest), color)
                 screen.set_color(Theme.COLOR_DIM)
-                screen.write_at(right_edge - self.OUTLINE_SIZE_W, row_y, amount(entry.size).rjust(self.OUTLINE_SIZE_W))
+                screen.write_at(right_edge - column_w - self.OUTLINE_SIZE_W, row_y,
+                                amount(entry.size).rjust(self.OUTLINE_SIZE_W))
+                if column and not part:
+                    text, color = self._column_cell(entry.title)
+                    screen.set_color(color)
+                    screen.write_at(right_edge - self.COLUMN_W, row_y, fit(text, self.COLUMN_W).rjust(self.COLUMN_W))
             screen.reset_color()
             name_x = x + 6 if part else x + 4
             if not part:
@@ -359,8 +382,7 @@ class MemoryTab(TabView):
             screen.reset_color()
             if current:
                 screen.tint_row(x, row_y, width, Theme.COLOR_SELECTED_BG)
-        draw_scrollbar(screen, x + width - 1, y + Tile.CARD_TOP, len(entries), room,
-                       len(entries) - room - self._outline_top)
+        draw_scrollbar(screen, x + width - 1, top_y, len(entries), room, len(entries) - room - self._outline_top)
         screen.reset_color()
 
     # --- The document ---

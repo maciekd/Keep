@@ -7,12 +7,13 @@ mechanics are `MemoryDocs`). Unlike a procedure a memo is kept current — `save
 it, `delete_memo` removes it, and the memory curator may do both.
 """
 from assistant.MemoryDocs import MemoryDocs
-from common.Paths import MEMORY_DIR, MEMORY_LOG_DIR
+from common.Paths import CACHE_DIR, MEMORY_DIR, MEMORY_LOG_DIR
 
 
 class Memos(MemoryDocs):
     DIR = MEMORY_DIR / "memos"
     LOG_DIR = MEMORY_LOG_DIR / "memos"
+    USED_FILE = CACHE_DIR / "memos_used.json"
     NOUN = "memo"
     PLURAL = "memos"
     LOAD = "load_memo"
