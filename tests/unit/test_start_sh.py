@@ -327,9 +327,12 @@ class TestCliStartSh:
         (tmp_path / 'log').mkdir()
         report = tmp_path / 'server_report'
         (tmp_path / 'floxy_ai_server.py').write_text(
+            # Renamed into place: the test takes the file's existence for the whole report, and on
+            # a slow runner it read the file between its creation and its write.
             'import os, pathlib\n'
-            f'pathlib.Path({str(report)!r}).write_text('
-            '  f"{os.getsid(0)} {os.getpid()} {os.path.exists(\'log/cli_start.tty\')}")\n')
+            f'part = pathlib.Path({str(report) + ".part"!r})\n'
+            'part.write_text(f"{os.getsid(0)} {os.getpid()} {os.path.exists(\'log/cli_start.tty\')}")\n'
+            f'part.rename({str(report)!r})\n')
         script = tmp_path / 'scripts' / 'cli_start.sh'
         script.parent.mkdir()
         script.write_text(CLI_START_SH.read_text())

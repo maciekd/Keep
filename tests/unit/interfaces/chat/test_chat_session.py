@@ -1057,12 +1057,19 @@ class TestAlbums:
 
     def test_text_beside_a_photo_whose_download_never_ended_is_still_a_turn(self, session, hub, transport):
         """Nobody called `photo_dropped`: the album gave up on the download by itself."""
-        session.ALBUM_DEBOUNCE_SECONDS = 0.005
-        session.ALBUM_DOWNLOAD_TIMEOUT_SECONDS = 0.03
+        # No timer of the album fires by itself here: on a slow runner the photo's debounce ran out
+        # between the two calls below, and the text became a turn of its own with no album to say
+        # what was missing.
+        session.ALBUM_DEBOUNCE_SECONDS = session.PHOTO_DEBOUNCE_SECONDS = self.HELD
+        session.ALBUM_DOWNLOAD_TIMEOUT_SECONDS = self.HELD
         assistant = FakeAssistant([None])
         hub.assistant = assistant
         session.expect_photo("Anna", None)
         session.submit(msg(text="What plant is this?"))
+        self._debounce_runs_out(session)
+        assert session._album is not None and not assistant.requests  # still within the download's time
+        session.ALBUM_DOWNLOAD_TIMEOUT_SECONDS = 0
+        self._debounce_runs_out(session)
         assert wait_until(lambda: assistant.requests)
         context, query = assistant.requests[0][0], assistant.requests[0][1]
         assert query.endswith("What plant is this?") and "1 photo(s)" in query
