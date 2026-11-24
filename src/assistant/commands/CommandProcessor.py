@@ -124,6 +124,7 @@ class CommandProcessor:
         # names the calls left in a sentence.
         self._mid_line = False
         self._reply_read = ""
+        self._dropped_blocks: list[str] = []
         self.thinking_buffer = ""
         self.thinking_content_buffer = ""
         self.in_thinking_tag = False
@@ -515,6 +516,7 @@ class CommandProcessor:
         self.thinking_start_time = None
         self._mid_line = False
         self._reply_read = ""
+        self._dropped_blocks = []
 
     def start_new_reply(self):
         """A later reply fed through the same processor (the autonomous check keeps one for
@@ -579,6 +581,11 @@ class CommandProcessor:
             return remainder
         if remainder is not None:
             info(f"A complete call block without a call in it — dropped, the reply goes on after it: {content[:80]!r}")
+            block = content.removesuffix(remainder)
+            if self._EMPTY_BLOCK_TAGS_RE.sub("", block).strip():
+                self._dropped_blocks.append(block.strip())
+            else:
+                trace("The dropped block was empty — nothing to tell the LLM")
             return remainder
         error("Could not find command, will truncate response.")
         return ""
@@ -984,9 +991,11 @@ class CommandProcessor:
         wrote it, backticks included, when the caller has it: it shows a code fence."""
         flushed = self._flush(dialog_manager)
         read, self._reply_read = self.without_dropped_thinking(self._reply_read), ""
+        dropped, self._dropped_blocks = self._dropped_blocks, []
         if not self.reply_cut:   # behind the cut nothing was read
             self._log_calls_in_prose(read)
             self._report_unknown_calls(read, raw if raw is not None else read, dialog_manager)
+            self._report_dropped_blocks(dropped, raw if raw is not None else read, dialog_manager)
         return flushed
 
     def _flush(self, dialog_manager) -> str | None:
@@ -1066,11 +1075,36 @@ class CommandProcessor:
             return
         names = ", ".join(dict.fromkeys(name for name, _ in calls))
         error(f"The reply calls what is no command ({names}) and ran nothing — shown as text: {lines[:300]}")
-        self._report_not_run(f"{names} is not a command: nothing was run.", lines, dialog_manager, shown=True)
+        self._report_not_run(f"{names} is not a command: nothing was run.", lines, dialog_manager,
+                             fate="The user saw it as text.")
 
-    def _report_not_run(self, what: str, leftover: str, dialog_manager, shown: bool = False):
-        """Queue `what` for the circle-back round, with the text it is about quoted — dropped
-        from the reply, or with `shown` a line the user read as text."""
+    # The tags an empty call block is made of: closers, and openers that name nothing.
+    _EMPTY_BLOCK_TAGS_RE = re.compile(r"</[^<>]*>|<[^<>=]*>")
+
+    def _report_dropped_blocks(self, dropped: list[str], raw: str, dialog_manager):
+        """Tell the model, in a round of its own, that a closed call block held no call that
+        could be read (prod: `<parameter=post_message>` where `<function=post_message>`
+        belongs): it was dropped, and a reply that was nothing else reached the user as
+        silence. Held back as for `_report_unknown_calls`: from a reply that ran a command,
+        and from one that shows code."""
+        if not dropped:
+            return
+        blocks = "\n".join(dropped)
+        if self.commands_dispatched or self.unterminated_command_report is not None:
+            info(f"{len(dropped)} call block(s) without a call, in a reply that ran {self.commands_dispatched} "
+                 f"command(s) — dropped, not reported: {blocks[:300]!r}")
+            return
+        if any(mark in raw for mark in self._CODE_MARKS):
+            trace(f"{len(dropped)} call block(s) without a call, in a reply that shows code — taken for the sample: {blocks[:300]!r}")
+            return
+        error(f"The reply's call block holds no call that could be read and nothing ran: {blocks[:300]!r}")
+        self._report_not_run("Nothing was run: the call block names no function in the syntax this prompt teaches.",
+                             blocks, dialog_manager, fate="The user did not see it.")
+
+    def _report_not_run(self, what: str, leftover: str, dialog_manager,
+                        fate: str = "Nothing after that point in the reply reached the user either."):
+        """Queue `what` for the circle-back round, with the text it is about quoted and its
+        `fate`: what the user saw of it."""
         if dialog_manager is None:
             info("No dialog to circle back through (autonomous run) — the dropped call is only logged.")
             return
@@ -1080,7 +1114,6 @@ class CommandProcessor:
         text = leftover.strip()
         if len(text) > self.UNTERMINATED_COMMAND_SHOWN_CHARS:
             text = text[:self.UNTERMINATED_COMMAND_SHOWN_CHARS] + "…"
-        fate = "The user saw it as text." if shown else "Nothing after that point in the reply reached the user either."
         self.unterminated_command_report = f"{what} {fate} Received: {text}"
 
     def _killed(self, dialog_manager) -> bool:
