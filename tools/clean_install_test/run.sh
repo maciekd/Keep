@@ -22,9 +22,19 @@
 #                         every answer as a variable. Without it the run is yours to type into —
 #                         the installer's questions, and the password (admin) where sudo asks.
 #   --keep always|failure|never   when the VM is left running for a look (default: failure)
+#   --model full|seeded|partial   the local model (KEEP_AI=local): downloaded in full by the
+#                         installer (default, 18 GB), put into the guest beforehand so nothing is
+#                         downloaded (seeded), or all but its smallest weight file, which the
+#                         installer then downloads — its bar and its resuming are seen (partial).
+#                         The last two need `save-model <vm>` once, on a VM that has the model.
 #
 #   tools/clean_install_test/run.sh list | shell <vm> | delete <vm>|all | golden
 #   tools/clean_install_test/run.sh again <vm>     the installer once more in a VM that was kept
+#   tools/clean_install_test/run.sh save-model <vm>   keeps a VM's downloaded model on the host
+#   tools/clean_install_test/run.sh fresh [--screen]  a clean Mac with nothing run in it, and what
+#                         to paste into its Terminal: the install done by hand over screen sharing,
+#                         where the system's consent dialogs show. --screen opens it right away.
+#   tools/clean_install_test/run.sh screen <vm>    screen sharing with a VM (user admin, password admin)
 #
 # What a run leaves here: log/clean_install/<vm>/ with screen.log (what the user saw), install.log,
 # config.yaml without its secrets and machine.txt (Homebrew, oMLX, its settings and log).
@@ -36,7 +46,7 @@ cd "$(dirname "$0")/../.."
 
 HOST="${KEEP_TEST_HOST:-}"
 SOURCE=worktree
-MACOS=sequoia; MEMORY_GB=32; DISK_GB=120; CPUS=8; KEEP_VM=failure; UNATTENDED=0
+MACOS=sequoia; MEMORY_GB=32; DISK_GB=120; CPUS=8; KEEP_VM=failure; UNATTENDED=0; MODEL=full; SCREEN=0
 REMOTE_DIR=keep-install-tests
 VARS=()
 COMMAND=run
@@ -54,9 +64,11 @@ while [ $# -gt 0 ]; do
     --cpus) CPUS=$2; shift 2 ;;
     --keep) KEEP_VM=$2; shift 2 ;;
     --unattended) UNATTENDED=1; shift ;;
+    --model) MODEL=$2; shift 2 ;;
+    --screen) SCREEN=1; shift ;;
     -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    list|golden) COMMAND=$1; shift ;;
-    shell|delete|again) COMMAND="$1 ${2:?$1 needs a VM}"; shift 2 ;;
+    list|golden|fresh) COMMAND=$1; shift ;;
+    shell|delete|again|save-model|screen) COMMAND="$1 ${2:?$1 needs a VM}"; shift 2 ;;
     *=*) VARS+=("$1"); shift ;;
     *) die "unknown argument '$1' (--help)" ;;
   esac
@@ -76,13 +88,50 @@ fetch() {
   echo "What the run left: log/clean_install/$1/"
 }
 
-if [ "$COMMAND" != run ]; then
-  status=0
-  # shellcheck disable=SC2086
-  remote "MACOS=$MACOS ./host.sh $COMMAND" || status=$?
-  case "$COMMAND" in again\ *) fetch "${COMMAND#again }" ;; esac
-  exit "$status"
-fi
+# screen <vm>: the guest's own screen sharing, through a tunnel over the host (the guest's address
+# is the host's alone). The port is the guest address's last number over 5900.
+screen() {
+  local ip port
+  ip=$(ssh "$HOST" "cd $REMOTE_DIR && ./host.sh ip $1" | tr -d '\r')
+  [ -n "$ip" ] || die "no address for $1: is it running? (list)"
+  port=$((5900 + ${ip##*.}))
+  ssh -f -N -o ExitOnForwardFailure=yes -L "$port:$ip:5900" "$HOST" 2>/dev/null || true    # a tunnel left from before serves too
+  echo "Screen sharing with $1: vnc://localhost:$port   (user admin, password admin)"
+  open "vnc://admin@localhost:$port"
+}
+
+# The line a person pastes into the guest's Terminal: the readme's command, for this branch.
+install_line() {
+  local branch
+  case "$SOURCE" in branch:*) branch=${SOURCE#branch:} ;; *) branch=$(git symbolic-ref --short HEAD) ;; esac
+  if [ "$branch" = release ]; then
+    echo "curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/release/install.sh | bash"
+  else
+    echo "curl -fsSL https://raw.githubusercontent.com/maciekd/Keep/$branch/install.sh | KEEP_BRANCH=$branch bash"
+  fi
+}
+
+case "$COMMAND" in
+  run) ;;
+  screen\ *) screen "${COMMAND#screen }"; exit ;;
+  fresh)
+    out=$(mktemp)
+    remote "MACOS=$MACOS MEMORY_GB=$MEMORY_GB DISK_GB=$DISK_GB CPUS=$CPUS MODEL=$MODEL ./host.sh fresh" | tee "$out"
+    vm=$(sed -n 's/^READY vm=\([^ ]*\) .*/\1/p' "$out" | tr -d '\r' | tail -n 1)
+    rm -f "$out"
+    [ -n "$vm" ] || die "the VM did not come up"
+    printf '\nIn its Terminal (what is pushed to GitHub is what installs, not this checkout):\n\n  %s\n\n' "$(install_line)"
+    echo "Screen sharing:  tools/clean_install_test/run.sh screen $vm"
+    echo "When done:       tools/clean_install_test/run.sh delete $vm"
+    if [ "$SCREEN" = 1 ]; then screen "$vm"; fi
+    exit ;;
+  *)
+    status=0
+    # shellcheck disable=SC2086
+    remote "MACOS=$MACOS ./host.sh $COMMAND" || status=$?
+    case "$COMMAND" in again\ *) fetch "${COMMAND#again }" ;; esac
+    exit "$status" ;;
+esac
 
 # The checkout as it stands, as a repository the installer can clone: a commit of the working tree
 # (the tracked and the untracked files, never the ignored ones — config.yaml, the logs) made in a
@@ -113,7 +162,7 @@ quoted=""
 for pair in ${VARS[@]+"${VARS[@]}"}; do quoted+=" $(printf '%q' "$pair")"; done
 screen=$(mktemp)
 status=0
-remote "MACOS=$MACOS MEMORY_GB=$MEMORY_GB DISK_GB=$DISK_GB CPUS=$CPUS KEEP_VM=$KEEP_VM UNATTENDED=$UNATTENDED SOURCE=$SOURCE ./host.sh run$quoted" \
+remote "MACOS=$MACOS MEMORY_GB=$MEMORY_GB DISK_GB=$DISK_GB CPUS=$CPUS KEEP_VM=$KEEP_VM UNATTENDED=$UNATTENDED MODEL=$MODEL SOURCE=$SOURCE ./host.sh run$quoted" \
   | tee "$screen" || status=${PIPESTATUS[0]}
 
 vm=$(sed -n 's/^RESULT .* vm=\([^ ]*\) .*/\1/p' "$screen" | tr -d '\r' | tail -n 1)
