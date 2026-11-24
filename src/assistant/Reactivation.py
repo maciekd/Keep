@@ -321,7 +321,8 @@ def _posted_kind(params: str) -> str:
     cut that names a destination is it."""
     pieces = params.split(",")
     for cut in range(len(pieces), 0, -1):
-        destination = Destinations.find(",".join(pieces[:cut]).strip().strip("\"'`)"))
+        written = ",".join(pieces[:cut]).strip()
+        destination = Destinations.find(written) or Destinations.find(written.strip("\"'`)"))
         if destination:
             return destination.kind
     trace(f"Reactivation: no destination answers to the start of post_message({params[:40]}…)")
