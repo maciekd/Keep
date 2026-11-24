@@ -1,0 +1,6 @@
+#!/bin/bash
+# autostart.sh's test double for `ioreg`: the Mac's logins in the one line the real one prints —
+# another user's (9001) and, when KEEP_TEST_LOGIN is set, this user's with that audit session id.
+mine=""
+[ -z "$KEEP_TEST_LOGIN" ] || mine=",{\"kCGSSessionOnConsoleKey\"=Yes,\"kCGSSessionUserIDKey\"=$UID,\"kCGSSessionAuditIDKey\"=$KEEP_TEST_LOGIN,\"kCGSessionLoginDoneKey\"=Yes}"
+echo "    \"IOConsoleUsers\" = ({\"kCGSSessionAuditIDKey\"=9001,\"kCGSSessionUserIDKey\"=${UID}9}$mine)"

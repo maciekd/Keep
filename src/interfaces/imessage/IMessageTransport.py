@@ -55,7 +55,8 @@ from common.DraftPlaceholder import is_draft_placeholder
 from common.RateLimiter import RateLimiter
 from common.imessage import Hosts
 from common.imessage.Handles import is_group_guid
-from common.imessage.MessagesHost import GroupChat, HostHealth, Message, MessagesHost, NO_ACCESS, NO_DATABASE
+from common.imessage.MessagesHost import (ENDED_LOGIN, GroupChat, HostHealth, Message, MessagesHost, NO_ACCESS,
+                                          NO_DATABASE)
 from common.logging import error, info, note, trace
 from interfaces.chat import FallbackNotice
 from interfaces.chat.ChatTransport import ChatTransport
@@ -308,6 +309,8 @@ class IMessageTransport(Integration, ChatTransport):
             return SatelliteHints.problem(self.host.address, health, SECTION, NAME)
         if health.reason == NO_DATABASE:
             return health.detail
+        if health.reason == ENDED_LOGIN:
+            return f"{SatelliteHints.ended_login()} ({health.detail})"
         return f"{SatelliteHints.full_disk_access()} ({health.detail})" if health.reason == NO_ACCESS else health.detail
 
     def check_health(self) -> bool:

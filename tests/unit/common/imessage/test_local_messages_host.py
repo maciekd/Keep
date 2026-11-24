@@ -17,7 +17,7 @@ from common.imessage import MessagesSender as sender_module
 from common.imessage.Contacts import Contacts
 from common.imessage.LocalMessagesHost import LocalMessagesHost
 from common.imessage.MessagesDatabase import MessagesDatabase
-from common.imessage.MessagesHost import (Attachment, AttachmentData, Count, GroupChat, GroupList, HostHealth, Message,
+from common.imessage.MessagesHost import (Attachment, AttachmentData, Count, ENDED_LOGIN, GroupChat, GroupList, HostHealth, Message,
                                           MessageBatch, MessagesHost, NO_DATABASE, Recipient, SatelliteStatus,
                                           SendResult, TYPING_FAILED, TYPING_NO_ACCESSIBILITY, TYPING_NO_NAME,
                                           TYPING_NO_ROW, TypingResult, UNREACHABLE)
@@ -63,6 +63,12 @@ class TestTheCalls:
         opened = host.health(refresh=True)
         assert opened.ok and opened.contacts == 4, "two numbers, each with its 9-digit suffix"
         assert host.health().contacts == 4
+
+    def test_a_host_whose_process_outlives_its_login_is_not_healthy(self, host):
+        from common import LoginSession
+        with patch.object(LoginSession, "ended", return_value="loginwindow 4100, now 4200"):
+            health = host.health()
+        assert (health.ok, health.reason) == (False, ENDED_LOGIN) and "4200" in health.detail
 
     def test_health_names_the_accounts_own_addresses(self, host, chat):
         chat.execute("UPDATE chat SET last_addressed_handle = 'keep@example.com', account_login = 'E:keep@example.com'")

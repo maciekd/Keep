@@ -107,6 +107,39 @@ class TestAutostart:
         assert 'start.sh ran' not in result.stdout
         assert len(harness.restart_log()) == 1 and 'start.sh is already running' in harness.restart_log()[0]
 
+    def login(self, harness, started_in: str | None, now: str | None):
+        """The login the running process recorded at launch, and this user's login now."""
+        if started_in:
+            (harness.root / 'cache').mkdir(exist_ok=True)
+            (harness.root / 'cache' / 'login_session').write_text(started_in + '\n')
+        harness.env['KEEP_TEST_LOGIN'] = now
+
+    def test_a_server_started_in_a_login_that_has_ended_is_restarted(self, harness):
+        # WindowServer restarted: the old process still listens, but reaches no app of the new login.
+        harness.server(listening=True, process=True)
+        self.login(harness, '4100', '4200')
+        result = harness.run()
+        assert 'start.sh ran' in result.stdout
+        assert 'ended' in harness.restart_log()[0]
+        assert not (harness.root / 'cache' / 'login_session').exists()
+        assert 'start.sh ran' not in harness.run().stdout, "a new process that recorded no login is restarted over and over"
+
+    @pytest.mark.parametrize('started_in, now', [('4100', '4100'), (None, '4200'), ('4100', None)])
+    def test_a_server_is_left_alone_unless_its_login_is_known_to_have_ended(self, harness, started_in, now):
+        harness.server(listening=True, process=True)
+        self.login(harness, started_in, now)
+        result = harness.run()
+        assert 'start.sh ran' not in result.stdout
+        assert 'already running' in harness.restart_log()[0]
+
+    def test_a_server_of_an_ended_login_is_not_restarted_beside_a_start_sh_in_flight(self, harness):
+        harness.server(listening=True, process=True)
+        self.login(harness, '4100', '4200')
+        harness.env['KEEP_TEST_START_SH_RUNNING'] = '1'
+        result = harness.run()
+        assert 'start.sh ran' not in result.stdout
+        assert 'start.sh is already running' in harness.restart_log()[0]
+
     def test_no_console_is_opened_either_way(self, harness):
         for listening in (False, True):
             harness.server(listening=listening, process=listening)
@@ -130,6 +163,13 @@ class TestSatellite:
         harness.satellite(listening=False, process=False)
         result = harness.run()
         assert 'start.sh ran' in result.stdout
+
+    def test_a_satellite_started_in_a_login_that_has_ended_is_restarted(self, harness):
+        harness.satellite(listening=True, process=True)
+        (harness.root / 'cache').mkdir()
+        (harness.root / 'cache' / 'login_session').write_text('4100\n')
+        harness.env['KEEP_TEST_LOGIN'] = '4200'
+        assert 'start.sh ran' in harness.run().stdout
 
     def test_a_satellite_listening_on_its_own_port_is_left_alone(self, harness):
         harness.satellite(listening=True, process=False)

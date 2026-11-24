@@ -10,9 +10,9 @@ from assistant.integration.Integration import HealthWarning, Integration
 from common.ConfigManager import config
 from common.imessage import Hosts
 from common.imessage.Handles import is_group_guid, prefer_handle
-from common.imessage.MessagesHost import (Attachment, GroupChat, HostHealth, Message, MessageBatch, MessagesHost,
-                                          NO_ACCESS, NO_DATABASE, Recipient, SCHEDULE_COMPLETED, SCHEDULE_FAILED,
-                                          UNREACHABLE)
+from common.imessage.MessagesHost import (Attachment, ENDED_LOGIN, GroupChat, HostHealth, Message, MessageBatch,
+                                          MessagesHost, NO_ACCESS, NO_DATABASE, Recipient, SCHEDULE_COMPLETED,
+                                          SCHEDULE_FAILED, UNREACHABLE)
 from common.logging import info, trace, error, fine
 from assistant.PromptInjectionDetector import is_prompt_injection
 from assistant.tools.MediaAnalyzer import media_analyzer, media_kind, KIND_VIDEO
@@ -140,6 +140,8 @@ class IMessageIntegration(Integration, Feed, SmsCodeReader):
             return SatelliteHints.problem(self.host.address, health, CONFIG_SECTION, self.name)
         if health.reason == NO_DATABASE:
             return health.detail
+        if health.reason == ENDED_LOGIN:
+            return f"{SatelliteHints.ended_login()} ({health.detail})"
         return f"{self._full_disk_access_hint()} ({health.detail})"
 
     def check_health(self) -> bool:
