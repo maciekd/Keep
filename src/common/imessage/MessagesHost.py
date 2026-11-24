@@ -18,6 +18,7 @@ from typing import Optional
 # HostHealth.reason
 NO_DATABASE = "no_database"     # chat.db does not exist: Messages.app was never set up for this user
 NO_ACCESS = "no_access"         # chat.db is there and cannot be read: macOS keeps the process out (Full Disk Access)
+ENDED_LOGIN = "ended_login"     # chat.db reads, but the process outlives the login it started in: no send reaches Messages
 # ... and of a host on another Mac, before its chat.db is even asked about
 NOT_CONFIGURED = "not_configured"   # no usable address or no token: nothing was sent
 UNREACHABLE = "unreachable"     # no connection, or no answer in time

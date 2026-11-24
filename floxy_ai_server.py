@@ -39,7 +39,7 @@ from colorama import init
 import common.DevelopmentConfig as DevelopmentConfig
 from common.DevelopmentConfig import PREPEND_USER_QUERY_OVERRIDE
 from common.logging import error, info, trace, note
-from common import ConfigMigrations, Migrations, Platform, Role, UncaughtExceptions, Version
+from common import ConfigMigrations, LoginSession, Migrations, Platform, Role, UncaughtExceptions, Version
 from common.ConfigManager import config, REQUIRED_KEYS
 from common.RequirementsChecker import RequirementsChecker
 from common.StderrLogger import StderrLogger
@@ -636,6 +636,7 @@ def _launch():
     port, testsuite = _parse_args()
     RequirementsChecker.verify_or_exit()
     Migrations.run()
+    LoginSession.record()
     role = Role.current()
     if role == Role.IMESSAGE_SATELLITE and not Platform.is_mac():
         _refuse_to_start("satellite", [Platform.mac_only("An iMessage satellite"),

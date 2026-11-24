@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from common import Platform, Version
 from common.Paths import AISERVER_DIR
 from common.imessage import Hosts, Satellite, Wire
-from common.imessage.MessagesHost import (BAD_ANSWER, HostHealth, NO_ACCESS, NO_DATABASE, NOT_CONFIGURED, REFUSED,
+from common.imessage.MessagesHost import (BAD_ANSWER, ENDED_LOGIN, HostHealth, NO_ACCESS, NO_DATABASE, NOT_CONFIGURED, REFUSED,
                                           SatelliteStatus, TYPING_NO_ACCESSIBILITY, TYPING_NO_MESSAGES,
                                           TYPING_NO_WINDOW, TYPING_NOT_ON_CONSOLE, TYPING_SCREEN_LOCKED)
 from common.imessage.ServerFollower import FOLLOWED_BRANCHES
@@ -36,6 +36,15 @@ def _start_command() -> str:
     if re.search(r"[\s'\"$`\\]", script):
         script = '"' + script.replace("~", "$HOME", 1).replace('"', '\\"') + '"'
     return script
+
+
+def ended_login(address: str = "") -> str:
+    """The process that holds the account — the satellite at `address`, or this server — outlives
+    the login it was started in, and nothing it sends reaches Messages."""
+    who = f"the iMessage satellite at {address}" if address else "this Keep server"
+    return (f"{who} runs in a login of its macOS user that has ended (WindowServer restarted, or the user logged "
+            f"out): it reads Messages but sends nothing. It is restarted from the current login of that user — "
+            f"logging out and in again does it at once, or ./stop.sh && ./start.sh in its Keep folder there")
 
 
 def full_disk_access(address: str = "") -> str:
@@ -145,6 +154,8 @@ def problem(address: str, health: HostHealth, section: str, integration: str) ->
                 f"({health.detail})")
     if health.reason == NO_ACCESS:
         return f"{full_disk_access(address)} ({health.detail})"
+    if health.reason == ENDED_LOGIN:
+        return f"{ended_login(address)} ({health.detail})"
     if health.reason == NO_DATABASE:
         return (f"Messages.app is not set up on the satellite's Mac ({address}): the user signs in to iMessage "
                 f"there, in the macOS user Keep runs as ({health.detail})")

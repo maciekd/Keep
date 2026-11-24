@@ -12,6 +12,11 @@
 # running is asked of this user's processes of this checkout only (scripts/role.sh), so the Keep
 # server of the Mac's other user never passes for this install's process — the satellite of a
 # second macOS user would otherwise not start at that user's login.
+# A process that is up but was started in a login that has ended (WindowServer restarted, a log out
+# it outlived) is restarted: it still answers on its port, but nothing it sends reaches Messages or
+# Terminal. The login is its audit session id, which the process records at launch in
+# cache/login_session (common/LoginSession.py). The file goes before the restart: a new process that
+# records none is left alone, not restarted every time the watchdog fires.
 # macOS only. On Linux systemd starts the server (the user unit keep.service, scripts/service.sh).
 cd "$(dirname "$0")"
 
@@ -26,11 +31,29 @@ if [ "$os" = Linux ]; then
     exit 1
 fi
 
+# The audit session ids of this user's logins, one a line (LoginSession.current reads the same).
+logins() {
+    ioreg -n Root -d1 -w0 2>/dev/null | grep '"IOConsoleUsers"' | tr '{' '\n' \
+        | grep -E "\"kCGSSessionUserIDKey\"=$me[,}]" | sed -nE 's/.*"kCGSSessionAuditIDKey"=([0-9]+).*/\1/p'
+}
+start_sh_in_flight() { [ -n "$(own_processes '(^|[ /])start\.sh( |$)')" ]; }
+
 if [ -n "$(own_listeners $up_port)" ] || [ -n "$(own_processes "$KEEP_PROCESS")" ]; then
-    rlog "a $what is already running — nothing to start"
-    exit 0
+    started_in=$(cat cache/login_session 2>/dev/null)
+    now=$(logins)
+    if [ -z "$started_in" ] || [ -z "$now" ] || grep -qxF -- "$started_in" <<< "$now"; then
+        rlog "a $what is already running — nothing to start"
+        exit 0
+    fi
+    if start_sh_in_flight; then
+        rlog "a start.sh is already running — nothing to start"
+        exit 0
+    fi
+    rlog "the running $what was started in a login that has ended ($started_in, now $(echo $now)) — restarting it"
+    rm -f cache/login_session
+    exec ./start.sh
 fi
-if [ -n "$(own_processes '(^|[ /])start\.sh( |$)')" ]; then
+if start_sh_in_flight; then
     rlog "a start.sh is already running — nothing to start"
     exit 0
 fi

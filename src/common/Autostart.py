@@ -3,7 +3,8 @@
 (System Settings > General > Login Items & Extensions > Open at Login).
 
 `autostart.sh` starts the server the way it always starts — start.sh, through Terminal, so the
-Mac's grants apply — and opens no console; a server that is already up is left alone. The
+Mac's grants apply — and opens no console; a server that is already up is left alone, unless the
+login it was started in has ended (`common/LoginSession`). The
 first-time setup registers the item with the Desktop shortcut (`assistant/FirstRun`); an iMessage
 satellite, which has no setup, registers it at its first start that can read Messages
 (`common/imessage/Satellite.stay_up`). The user removes it in that pane. The applet lives in the

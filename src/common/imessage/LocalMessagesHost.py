@@ -1,10 +1,11 @@
 import base64
 from typing import Optional
 
+from common import LoginSession
 from common.imessage.Contacts import Contacts
 from common.imessage.MessagesDatabase import MessagesDatabase
-from common.imessage.MessagesHost import (AttachmentData, Count, GroupList, HostHealth, MessageBatch, MessagesHost,
-                                          Recipient, SendResult, TYPING_FAILED, TYPING_NO_NAME, TypingResult)
+from common.imessage.MessagesHost import (AttachmentData, Count, ENDED_LOGIN, GroupList, HostHealth, MessageBatch,
+                                          MessagesHost, Recipient, SendResult, TYPING_FAILED, TYPING_NO_NAME, TypingResult)
 from common.imessage.MessagesSender import MessagesSender
 from common.imessage.TypingIndicator import TypingIndicator
 from common.logging import info
@@ -43,6 +44,10 @@ class LocalMessagesHost(MessagesHost):
         if reason:
             info(f"iMessage host: not healthy ({reason}): {detail}")
             return HostHealth(False, reason, detail, len(self.contacts))
+        ended = LoginSession.ended()
+        if ended:
+            info(f"iMessage host: not healthy ({ENDED_LOGIN}): {ended}")
+            return HostHealth(False, ENDED_LOGIN, ended, len(self.contacts))
         if refresh:
             self.database.probe_schema()
             self.contacts.refresh()

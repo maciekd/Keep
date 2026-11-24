@@ -68,6 +68,13 @@ class TestSend:
         assert result.unauthorized
         assert "not authorized" in result.error.lower() and "Automation" in result.error
 
+    def test_a_send_script_that_does_not_compile_is_a_process_outliving_its_login(self):
+        # The scripts are fixed text: only Messages' terms going missing makes them fail to compile.
+        with run(returncode=1, stdout="",
+                 stderr="150:157: syntax error: Expected class name but found identifier. (-2741)"):
+            result = MessagesSender().send("+46701740605", "hi")
+        assert result.error == module.ENDED_LOGIN_ERROR and not result.unauthorized
+
     def test_generic_failure_returns_stderr(self):
         with run(returncode=1, stdout="", stderr="something exploded"):
             result = MessagesSender().send("+12345678901", "hi")

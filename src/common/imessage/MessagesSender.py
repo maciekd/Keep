@@ -21,6 +21,11 @@ APPLESCRIPT_RESULT_IMESSAGE = "sent:imessage"
 APPLESCRIPT_RESULT_SMS = "sent:sms"
 APPLESCRIPT_RESULT_GROUP = "sent:group"
 UNAUTHORIZED_ERROR = "not authorized to control Messages (System Settings → Privacy & Security → Automation)"
+# The send scripts are fixed text, so their failing to compile means osascript could not load the
+# terms of Messages: the process outlives its user's login (WindowServer restarted, a log out).
+ENDED_LOGIN_ERROR = ("Messages cannot be scripted from this Keep process (-2741): it runs in a login of its macOS "
+                     "user that has ended. Keep is restarted from the current login — logging that user out and in "
+                     "does it, or ./stop.sh && ./start.sh in its Keep folder there")
 # osascript waits as long as macOS's consent dialog stays unanswered, so a first send on a Mac nobody
 # looks at ends here and not in UNAUTHORIZED_ERROR — the text is all the assistant has to tell the two apart.
 TIMEOUT_ERROR = (f"no answer from Messages within {APPLESCRIPT_TIMEOUT} s — at a first send this is usually macOS "
@@ -170,6 +175,10 @@ class MessagesSender:
             if "-1743" in stderr or "not authorized" in stderr.lower():
                 error(f"iMessage send unauthorized: grant Automation permission to control Messages. stderr={stderr}")
                 return SendResult(error=UNAUTHORIZED_ERROR, unauthorized=True)
+            if "(-2741)" in stderr:
+                error(f"iMessage send to {handle}: Messages' scripting terms could not be loaded — the process "
+                      f"outlives its login. stderr={stderr}")
+                return SendResult(error=ENDED_LOGIN_ERROR)
             error(f"iMessage send to {handle} failed: rc={result.returncode} stderr={stderr}")
             return SendResult(error=stderr or f"osascript exit {result.returncode}")
 

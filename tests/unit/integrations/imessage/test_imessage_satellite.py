@@ -11,7 +11,7 @@ from assistant.integration.Integration import HealthWarning
 from common import Version
 from common.ConfigManager import config
 from common.imessage import Hosts, Wire
-from common.imessage.MessagesHost import (BAD_ANSWER, HostHealth, NO_ACCESS, NO_DATABASE, NOT_CONFIGURED, REFUSED,
+from common.imessage.MessagesHost import (BAD_ANSWER, ENDED_LOGIN, HostHealth, NO_ACCESS, NO_DATABASE, NOT_CONFIGURED, REFUSED,
                                           Recipient, SatelliteStatus, SendResult, UNREACHABLE)
 from common.imessage.RemoteMessagesHost import RemoteMessagesHost
 from integrations.imessage.IMessageIntegration import IMessageIntegration
@@ -152,6 +152,12 @@ class TestASatelliteThatCannotBeUsed:
         assert SatelliteHints.full_disk_access() not in said, "the server's own hint sends the owner to the wrong Mac"
         steps = said.split("show_full_disk_access_setting()")[0]
         assert "Terminal" in steps and "start.sh" in steps, "the way out is given before the commands that do not help"
+
+    def test_a_satellite_from_an_ended_login_is_to_be_restarted_from_the_current_one(self, integration):
+        integration.host.health_answer = HostHealth(False, ENDED_LOGIN, "loginwindow 4100, now 4200", satellite=status())
+        said = str(failure(integration))
+        assert ADDRESS in said and "start.sh" in said and "4200" in said
+        assert "Full Disk Access" not in said and not isinstance(failure(integration), PermissionError)
 
     def test_a_satellite_mac_without_messages_says_where_to_sign_in(self, integration):
         integration.host.health_answer = HostHealth(False, NO_DATABASE, "chat.db does not exist", satellite=status())
