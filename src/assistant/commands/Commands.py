@@ -2177,10 +2177,17 @@ class Commands:
             trace(f"post_message: {len(text) - len(redacted)} chars of vault values redacted before sending")
         # The room's speakers must not wait for the very turn that is posting (a spoken
         # "tell the kitchen…" would wait on itself): the context says which turn that is.
-        failure = Destinations.send(destination, redacted, sender=self._current_context)
-        if not failure and Destinations.find(destination).kind == Destinations.KIND_CHAT:
+        sender = self._current_context
+        failure = Destinations.send(destination, redacted, sender=sender)
+        if failure:
+            return failure
+        reached = Destinations.find(destination)
+        if reached.kind == Destinations.KIND_CHAT:
             Reactivation.assistant_wrote()
-        return failure or None
+        if reached.is_asking(sender):
+            info(f"post_message: {reached.name!r} is the asking conversation — the post is the turn's reply")
+            sender.answered_by_post = True
+        return None
 
     # The watch list, the procedures and the memos: the argument handling lives with the stores
     # (the memory curator's command block runs the same commands through them).

@@ -548,7 +548,8 @@ class TelegramTransport(Integration, ChatTransport):
                 info(f"Telegram [{chat_id}]: title {title!r} already taken, destination named {name!r}")
             Destinations.register(Destinations.Destination(
                 name, Destinations.KIND_GROUP, lambda text, cid=chat_id: self._post_to_chat(cid, text),
-                aliases=(str(chat_id),) if title else ()))
+                aliases=(str(chat_id),) if title else (),
+                serves=lambda sender, cid=chat_id: sender.source == self.source and sender.conversation == cid))
             self._group_destinations.append(name)
         if not groups:
             trace("Telegram: no group on allowed_chat_ids, no group destination")

@@ -1338,6 +1338,17 @@ class TestDestinations:
             chat.transport.stop()
             assert Destinations.find(ALICE) is None
 
+    def test_a_destination_is_the_asking_conversation_only_for_a_turn_from_that_very_chat(self, started):
+        from assistant.AssistantRequest import RequestContext
+        source = started.transport.source
+        from_marcus = RequestContext(source=source, conversation=DIRECT)
+        from_family = RequestContext(source=source, conversation=FAMILY)
+        elsewhere = RequestContext(source="telegram", conversation=DIRECT)
+        marcus, family = Destinations.find("Marcus"), Destinations.find("Family")
+        assert marcus.is_asking(from_marcus) and family.is_asking(from_family)
+        assert not marcus.is_asking(from_family) and not family.is_asking(from_marcus)
+        assert not marcus.is_asking(elsewhere)
+
     def test_a_failed_send_comes_back_as_the_error_never_as_delivered(self, started):
         started.host.chat_answer = SendResult(error="timeout sending iMessage")
         answer = Destinations.send("Charlotte", "Dinner is ready")

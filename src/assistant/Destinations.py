@@ -59,6 +59,19 @@ class Destination:
     # False for a destination that is found by its name and left out of the prompt's list: a
     # person's second address, which is not a name to show.
     listed: bool = True
+    # True when the destination is the very conversation the posting turn came from (handed
+    # that turn's RequestContext): a post there is the turn's reply, not a message elsewhere.
+    # None for a destination no turn can come from (a room's speakers).
+    serves: Callable[..., bool] | None = None
+
+    def is_asking(self, sender) -> bool:
+        if sender is None or self.serves is None:
+            return False
+        try:
+            return bool(self.serves(sender))
+        except Exception as e:
+            error(f"Destination {self.name!r}: serves raised {type(e).__name__}: {e}")
+            return False
 
     def answers_to(self, name: str) -> bool:
         wanted = _key(name)

@@ -759,6 +759,9 @@ class RequestProcessor:
             return False
         if any(dm.llm_response.strip() for dm in self._rounds):
             return False
+        if self.ctx.answered_by_post:
+            trace("Request ends without reply text, but a post_message to the asking conversation said it")
+            return False
         ran = self._command_names()
         if not ran:
             return False
