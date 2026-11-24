@@ -75,6 +75,16 @@ class TestWhenLimit:
         spaced = "paying   at\n" + " " * Procedures.WHEN_CHARS + "shop.example"
         assert Procedures.save("shop", spaced, BODY, pd, log) == ""
 
+    def test_the_label_written_into_a_when_is_not_stored_and_not_counted(self, pd, log):
+        fits = "x" * Procedures.WHEN_CHARS
+        assert Procedures.save("shop", f"When: {fits}", BODY, pd, log) == ""
+        assert Procedures.when(Procedures.read("shop", pd)) == fits
+
+    def test_a_label_an_older_file_holds_twice_is_left_out_of_the_index(self, pd, log):
+        pd.mkdir(parents=True, exist_ok=True)
+        (pd / "ice.md").write_text(f"# ice\nWhen: When: making ice\n\n{BODY}\n", encoding="utf-8")
+        assert Procedures.when(Procedures.read("ice", pd)) == "making ice"
+
     def test_a_refused_replacement_leaves_the_procedure_as_it_was(self, pd, log):
         Procedures.save("shop", "paying", BODY, pd, log)
         assert Procedures.save("shop", "z" * (Procedures.WHEN_CHARS + 1), "new steps", pd, log)

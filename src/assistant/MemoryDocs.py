@@ -79,8 +79,16 @@ class MemoryDocs:
         """The file's `When:` line — what the index says about it."""
         for line in text.splitlines()[:5]:
             if line.startswith(cls.WHEN_PREFIX):
-                return line[len(cls.WHEN_PREFIX):].strip()
+                return cls._unlabelled(line)
         return ""
+
+    @classmethod
+    def _unlabelled(cls, when_text: str) -> str:
+        """`when` without the `When:` label: a model that has read a file writes the label into the value."""
+        when_text = " ".join(when_text.split())
+        while when_text.lower().startswith(cls.WHEN_PREFIX.lower()):
+            when_text = when_text[len(cls.WHEN_PREFIX):].strip()
+        return when_text
 
     @classmethod
     def _log_copy(cls, name: str, text: str, log_dir: Path):
@@ -98,7 +106,9 @@ class MemoryDocs:
             return f"{cls.SAVE} failed: the name must contain letters or digits"
         if not text.strip():
             return f"{cls.SAVE} failed: the {cls.NOUN} text is empty"
-        when_text = " ".join(when_text.split())
+        labelled, when_text = when_text, cls._unlabelled(when_text)
+        if labelled.split() != when_text.split():
+            trace(f"{cls._label()}: '{slug}' — the `{cls.WHEN_PREFIX}` label was written into `when`, dropped")
         if len(when_text) > cls.WHEN_CHARS:
             info(f"{cls._label()}: save of '{slug}' refused — `when` is {len(when_text)} chars, limit {cls.WHEN_CHARS}")
             return (f"{cls.SAVE} failed: `when` is {len(when_text)} chars, the limit is {cls.WHEN_CHARS} — "
