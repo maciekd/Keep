@@ -1,4 +1,6 @@
 """The Qwen `<tool_call>` format: rendering the texts, reading the model's calls, streaming."""
+from unittest.mock import Mock
+
 import pytest
 
 from assistant.commands.CommandProcessor import CommandProcessor
@@ -225,12 +227,49 @@ class TestStreaming:
         assert "Sure, done." in out and "And that." in out and OPEN not in out
 
     def test_a_stream_cut_inside_the_block_reports_the_unterminated_command(self, processor):
-        from unittest.mock import Mock
         cut = self.REPLY[:self.REPLY.index("Kitchen")]
         out = self._stream(processor, list(cut), Mock(is_killed=False))  # the report needs a dialog
         assert processor.calls == []
         assert OPEN not in (out or "")
         assert "dim" in (processor.take_unterminated_command_report() or "")
+
+    # A call opened with the wrong tag: closed as a function, every parameter in place.
+    MISNAMED = (f"{OPEN}\n<parameter=dim>\n<parameter=light_name>\nKitchen lamp\n</parameter>\n"
+                f"<parameter=dim_percentage>\n40\n</parameter>\n</function>\n{CLOSE}")
+
+    @pytest.mark.parametrize("pieces", [list, lambda reply: [reply]])
+    def test_a_block_that_names_no_function_is_reported_and_never_run(self, processor, pieces):
+        out = self._stream(processor, pieces(self.MISNAMED), Mock(is_killed=False))
+        assert processor.calls == [] and not out.strip()
+        report = processor.take_unterminated_command_report()
+        assert "Kitchen lamp" in report and "Nothing was run" in report
+
+    def test_the_report_quotes_the_block_alone_and_the_prose_around_it_is_shown(self, processor):
+        out = self._stream(processor, [f"On it.\n{self.MISNAMED}\nAnything else?"], Mock(is_killed=False))
+        report = processor.take_unterminated_command_report()
+        assert "On it." in out and "Anything else?" in out and OPEN not in out
+        assert "Kitchen lamp" in report and "Anything else?" not in report
+
+    @pytest.mark.parametrize("reply", [
+        f"{OPEN}\n{CLOSE}\nDone.",
+        f"{OPEN}\n<function>\n</function>\n{CLOSE}",
+        MISNAMED + "\n" + block("dim", ("light_name", "Kitchen lamp"), ("dim_percentage", "40")),
+        f"A call looks like this:\n```\n{MISNAMED}\n```",
+    ], ids=["empty", "empty function", "written again, right", "shown as code"])
+    def test_no_report_where_a_round_to_tell_the_model_would_be_for_nothing(self, processor, reply):
+        processor.invoke_command = lambda name, params, dm: setattr(processor, "commands_dispatched", processor.commands_dispatched + 1)
+        self._stream(processor, [reply], Mock(is_killed=False))
+        assert processor.take_unterminated_command_report() is None
+
+    def test_a_dropped_block_is_not_reported_with_the_next_reply(self, processor):
+        self._stream(processor, [self.MISNAMED], Mock(is_killed=False))
+        processor.start_new_reply()
+        self._stream(processor, ["All good."], Mock(is_killed=False))
+        assert processor.take_unterminated_command_report() is None
+
+    def test_an_autonomous_run_has_no_dialog_to_report_to(self, processor):
+        self._stream(processor, [self.MISNAMED])
+        assert processor.take_unterminated_command_report() is None
 
 
 class TestCut:
