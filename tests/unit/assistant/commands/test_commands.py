@@ -954,6 +954,38 @@ class TestCmdPostMessage:
             commands_instance.cmd_post_message("owner", "The parcel is at the door")
             wrote.assert_called_once()
 
+    def test_a_post_to_the_asking_conversation_marks_the_turn_answered(self, commands_instance):
+        from assistant import Destinations
+        from assistant.AssistantRequest import RequestContext
+        Destinations.register(Destinations.Destination(
+            "Charlotte", Destinations.KIND_CHAT, lambda text: True,
+            serves=lambda sender: sender.conversation == "chat-charlotte"))
+        elsewhere = RequestContext(conversation="chat-frances")
+        commands_instance._current_context = elsewhere
+        commands_instance.cmd_post_message("Charlotte", "hi")
+        assert not elsewhere.answered_by_post
+        asking = RequestContext(conversation="chat-charlotte")
+        commands_instance._current_context = asking
+        commands_instance.cmd_post_message("Charlotte", "hi")
+        assert asking.answered_by_post
+
+    def test_a_refused_post_to_the_asking_conversation_leaves_the_turn_unanswered(self, commands_instance):
+        from assistant import Destinations
+        from assistant.AssistantRequest import RequestContext
+        Destinations.register(Destinations.Destination(
+            "Charlotte", Destinations.KIND_CHAT, lambda text: "the daily limit is reached", serves=lambda sender: True))
+        asking = RequestContext(conversation="chat-charlotte")
+        commands_instance._current_context = asking
+        assert commands_instance.cmd_post_message("Charlotte", "hi").startswith("post_message failed")
+        assert not asking.answered_by_post
+
+    def test_a_post_outside_any_turn_is_nobody_s_answer(self, commands_instance):
+        from assistant import Destinations
+        Destinations.register(Destinations.Destination(
+            "Charlotte", Destinations.KIND_CHAT, lambda text: True, serves=lambda sender: True))
+        commands_instance._current_context = None
+        assert commands_instance.cmd_post_message("Charlotte", "hi") is None
+
 
 # ---------------------------------------------------------------------------
 # TestCmdScheduleAndCaffeinate

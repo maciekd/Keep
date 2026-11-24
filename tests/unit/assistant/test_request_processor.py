@@ -890,6 +890,10 @@ class TestHandleBackgroundCommands:
         dm.llm_response = "Nothing new on the rumour front."
         assert self._end_request(handler, dm) == []
 
+    def test_a_post_message_to_the_asking_conversation_is_the_reply_so_no_extra_round(self, handler):
+        handler.ctx.answered_by_post = True
+        assert self._end_request(handler, self._silent_dm("school_day_brief(tomorrow)", "post_message(Marcus, 08:00)")) == []
+
     def test_a_silent_reply_without_any_command_is_left_silent(self, handler):
         assert self._end_request(handler, self._silent_dm()) == []
 

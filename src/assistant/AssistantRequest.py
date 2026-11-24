@@ -42,6 +42,9 @@ class RequestContext:
     # from the outpost's stt_ms (ms from speech end to transcript send). None for clients
     # that don't report it (phones).
     speech_end_epoch: Optional[float] = None
+    # Set when a `post_message` of this turn went to the conversation it came from: the
+    # reply is said, and the request owes no round to say it (RequestProcessor._reply_owed).
+    answered_by_post: bool = False
 
     @property
     def display_name(self) -> str:

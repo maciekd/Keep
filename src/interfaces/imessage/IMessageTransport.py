@@ -1347,7 +1347,7 @@ class IMessageTransport(Integration, ChatTransport):
                 continue
             claimed = Destinations.claim(Destinations.Destination(
                 candidate, kind, lambda text, chat=target: self._post(chat, text), aliases=aliases, label=label,
-                listed=listed))
+                listed=listed, serves=lambda sender, chat=target: self._asked_from(sender, chat)))
             if claimed is not None:
                 if candidate != names[0]:
                     info(f"iMessage chat: the destination name {names[0]!r} is not free — registered as {candidate!r}")
@@ -1357,6 +1357,12 @@ class IMessageTransport(Integration, ChatTransport):
                     self._kept.keep_name(key, target)
                 return
         info(f"iMessage chat: no free destination name for {names[0]!r} — it is no destination")
+
+    def _asked_from(self, sender, chat: str) -> bool:
+        """Whether the turn *sender* is came from *chat* — a person's handle or a group's
+        guid, the turn's conversation a chat guid."""
+        return (sender.source == self.source and isinstance(sender.conversation, str)
+                and recipient_key(sender.conversation) == recipient_key(chat))
 
     def _drop_destinations(self):
         """Take back the registrations this transport made — those very ones: a name that is
