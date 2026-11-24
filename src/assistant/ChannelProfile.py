@@ -12,6 +12,7 @@ from common.logging import info, trace
 
 SOURCE_VOICE = "VoiceToVoice"
 SOURCE_TEXT_CHAT = "TextChat"
+SOURCE_APP = "App"
 SOURCE_TELEGRAM = "Telegram"
 SOURCE_CONSOLE = "Console"
 SOURCE_IMESSAGE = "iMessage"
@@ -88,6 +89,15 @@ TEXT_CHAT = ChannelProfile(
     streams_tokens=True,
 )
 
+# The phone app's typed chat, over HTTP: no transport on the hub carries it, so a command echo
+# would go to every owner chat instead of the app — none is sent.
+APP = ChannelProfile(
+    name=SOURCE_APP, llm_tier="smart", brevity_directive=False, forward_thinking=False,
+    command_notifications=False, notification_ephemeral=False, notify_observers_of_commands=False,
+    photo_target=PHOTO_TARGET_CHAT, screenshot_allowed=True,
+    streams_tokens=True,
+)
+
 TELEGRAM = ChannelProfile(
     name=SOURCE_TELEGRAM, llm_tier="smart", brevity_directive=False, forward_thinking=False,
     command_notifications=True, notification_ephemeral=True, notify_observers_of_commands=False,
@@ -128,6 +138,7 @@ AUTONOMOUS = ChannelProfile(
 PROFILES = {
     SOURCE_VOICE: VOICE_TO_VOICE,
     SOURCE_TEXT_CHAT: TEXT_CHAT,
+    SOURCE_APP: APP,
     SOURCE_TELEGRAM: TELEGRAM,
     SOURCE_CONSOLE: CONSOLE,
     SOURCE_IMESSAGE: IMESSAGE,

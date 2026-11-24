@@ -119,6 +119,16 @@ class TestCommandProcessorReadsProfile:
         assert fake.on_thinking_chunk.called is forwarded
         assert fake.on_thinking_done.called is forwarded
 
+    def test_a_command_of_the_phone_apps_chat_is_echoed_to_no_chat(self, processor):
+        """`App` is the source the iOS app's typed chat sends — a contract with that app. No
+        transport carries it, so an echo would land in every owner chat instead."""
+        processor.commands.echo_text = Mock(return_value="turn_on(kitchen)")
+        with patch("assistant.commands.CommandProcessor.notifier") as notifier:
+            assert processor._echo_command("turn_on", ["kitchen"], "kitchen", self._dm("App")) is None
+            assert not notifier.return_value.send_command_notification.called
+            processor._echo_command("turn_on", ["kitchen"], "kitchen", self._dm("TextChat"))
+            assert notifier.return_value.send_command_notification.called
+
     def test_profile_for_reads_ctx_source(self, processor):
         assert processor._profile_for(self._dm("Telegram")) is TELEGRAM
         assert processor._profile_for(None) is AUTONOMOUS
