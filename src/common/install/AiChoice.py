@@ -14,6 +14,7 @@ MIN_MACOS = 15            # the oMLX formula's own floor
 MIN_MEMORY_GB = 32        # the model and a long prompt take about 21 GB
 MIN_FREE_GB = 30          # the model, oMLX and its disk cache; what is here of the model already counts
 ATTEMPTS = 3
+MANUAL, NOT_ASKED = "manual", "not_asked"      # what the install report says beside CLOUD and LOCAL
 ASK_KEEP = "start on Claude and ask Keep to move you to local AI"
 
 
@@ -26,6 +27,8 @@ class AiChoice:
         self.terminal = terminal
         self.env = env
         self.wanted = env.get(ENV_CHOICE, "").strip().lower()
+        self.lacks = ""             # for the install report: the requirement not met, as one word
+        self.answer = NOT_ASKED     # and what was answered: cloud, local or manual; env_… from KEEP_AI
 
     @property
     def explicit(self) -> bool:
@@ -43,8 +46,10 @@ class AiChoice:
                 raise InstallFailed(f"{ENV_CHOICE}={LOCAL}, but {missing}.",
                                     f"For your own local model, {ASK_KEEP}: it sets it up with you.")
             t.dim(f"{ENV_CHOICE}={LOCAL}: setting up {LocalRunner.MODEL_LABEL} on this Mac.")
+            self.answer = f"env_{LOCAL}"
             return LOCAL
         if self.wanted == CLOUD:
+            self.answer = f"env_{CLOUD}"
             return CLOUD
         if missing:
             t.dim(f"Local AI is not set up by the installer here: {missing}.")
@@ -56,17 +61,23 @@ class AiChoice:
 
     def missing(self) -> str:
         """The first requirement this machine does not meet, in words; "" when it meets them all."""
+        self.lacks = ""
         if not Platform.is_mac():
+            self.lacks = "mac"
             return "it sets one up on a Mac only"
         if not Platform.is_apple_silicon():
+            self.lacks = "apple_silicon"
             return "this Mac has an Intel chip, and the model needs Apple Silicon"
         version, memory, free = Platform.macos_version(), Platform.memory_gb(), self.free_gb()
         have = min(self.runner().downloaded_gb(), LocalRunner.DOWNLOAD_GB)
         if version < MIN_MACOS:
+            self.lacks = "macos"
             return f"this Mac runs macOS {version or '?'}, and local AI needs macOS {MIN_MACOS}"
         if memory < MIN_MEMORY_GB:
+            self.lacks = "memory"
             return f"this Mac has {memory or '?'} GB of memory, and local AI needs {MIN_MEMORY_GB} GB"
         if free < MIN_FREE_GB - have:
+            self.lacks = "disk"
             return f"the disk has {free} GB free, and local AI needs {MIN_FREE_GB - have} GB"
         return ""
 
@@ -92,15 +103,19 @@ class AiChoice:
         for attempt in range(1, ATTEMPTS + 1):
             answer = "".join(t.ask("Choice [1]:").split())
             if answer in ("", "1"):
+                self.answer = CLOUD
                 return CLOUD
             if answer == "2":
+                self.answer = LOCAL
                 return LOCAL
             if answer == "3":
+                self.answer = MANUAL
                 t.dim(f"For your own model or server, {ASK_KEEP}: it sets it up with you.")
                 return CLOUD
             if attempt < ATTEMPTS:
                 t.warn("Please answer 1, 2 or 3.")
         t.warn(f"No 1, 2 or 3 after {ATTEMPTS} attempts: going on with Claude.")
+        self.answer = CLOUD
         return CLOUD
 
     def _option(self, number: str, name: str, description: str) -> None:

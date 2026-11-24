@@ -49,7 +49,8 @@ REAL_PYTHON_STEPS = (
     f'    PYTHONPATH="{REPO}/src" "{sys.executable}" -P -c \'import os, runpy; os.setsid(); '
     'runpy.run_module("common.install", run_name="__main__")\' </dev/null\n'
     '}\n')
-BAR_RE = re.compile(r'^([█░]*) +(\d+)% (.*)$')
+BAR_RE = re.compile(r'^([█░]*) +(\d+)%(?: · [^·]* left)? · (.*)$')
+BAR_CELLS = 16      # a fresh Terminal window is 80 columns: the bar leaves room for what the line says
 MAC, LINUX = 'Darwin', 'Linux'      # as `uname -s` names them, and KEEP_OS
 UBUNTU = 'PRETTY_NAME="Ubuntu 24.04.1 LTS"\nNAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\nID_LIKE=debian\n'
 DEBIAN = 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"\nVERSION_ID="12"\nID=debian\n'
@@ -243,21 +244,21 @@ class TestPipStatus:
         match = BAR_RE.match(out)
         assert match, f"no progress bar in {out!r}"
         bar, percent, text = match.groups()
-        assert len(bar) == 24, f"bar is not 24 cells wide: {bar!r}"
-        assert bar.count('█') == int(percent) * 24 // 100, f"the bar and its percentage disagree: {out!r}"
+        assert len(bar) == BAR_CELLS, f"bar is not {BAR_CELLS} cells wide: {bar!r}"
+        assert bar.count('█') == int(percent) * BAR_CELLS // 100, f"the bar and its percentage disagree: {out!r}"
         return bar.count('█'), text
 
     def test_resolving_pass_fills_the_first_half(self, harness):
-        # 2 of 4 expected packages resolved, none downloaded: 2 of 8 units → 6 of 24 cells.
+        # 2 of 4 expected packages resolved, none downloaded: 2 of 8 units → a quarter of the cells.
         # The indented metadata downloads of the resolve pass must not count as wheels.
-        assert self.status(harness, PIP_RESOLVING, expected=4) == (6, 'resolving 2 packages')
+        assert self.status(harness, PIP_RESOLVING, expected=4) == (BAR_CELLS // 4, 'resolving 2 packages')
 
     def test_download_pass_names_the_wheel_and_fills_the_second_half(self, harness):
-        assert self.status(harness, PIP_DOWNLOADING, expected=4) == (12, 'downloading numpy 2.1.0 (13.5 MB)')
+        assert self.status(harness, PIP_DOWNLOADING, expected=4) == (BAR_CELLS // 2, 'downloading numpy 2.1.0 (13.5 MB)')
 
     def test_more_packages_than_expected_never_overflow_the_bar(self, harness):
         filled, _ = self.status(harness, PIP_DOWNLOADING, expected=1)
-        assert filled == 24
+        assert filled == BAR_CELLS
 
     def test_build_and_unpack_passes_show_as_words(self, harness):
         # pip prints nothing per package in these passes, so a bar would only stand still.
@@ -287,17 +288,17 @@ class TestPipStatus:
         colours = 'C_CYAN=$(printf "\\033[36m"); C_DIM=$(printf "\\033[2m"); C_RESET=$(printf "\\033[0m"); '
         result = harness.run(colours + 'pip_status 1 4; echo; clone_status')
         assert result.returncode == 0, result.stderr
-        assert result.stdout.count('█') == 24 and '\033' not in result.stdout
+        assert result.stdout.count('█') == BAR_CELLS and '\033' not in result.stdout
 
 
 class TestTheBarsOfTheSpinnerLine:
     """`progress_bar`, `time_left` and `clone_status`: what the spinner shows beside its label
     while git clones and pip installs."""
 
-    @pytest.mark.parametrize('percent, filled', [(0, 0), (4, 0), (50, 12), (53, 12), (99, 23), (100, 24), (140, 24)])
-    def test_the_bar_is_always_24_cells(self, harness, percent, filled):
+    @pytest.mark.parametrize('percent, filled', [(0, 0), (4, 0), (50, 8), (53, 8), (99, 15), (100, 16), (140, 16)])
+    def test_the_bar_keeps_its_width(self, harness, percent, filled):
         bar = harness.run(f'progress_bar {percent}').stdout
-        assert (bar.count('█'), bar.count('░')) == (filled, 24 - filled)
+        assert (bar.count('█'), bar.count('░')) == (filled, BAR_CELLS - filled)
 
     @pytest.mark.parametrize('percent, elapsed, said', [(50, 100, '2 min'), (25, 100, '5 min'), (90, 90, 'minute'), (50, 2000, '33 min')])
     def test_the_time_left_is_what_the_pace_so_far_leaves(self, harness, percent, elapsed, said):
@@ -319,7 +320,7 @@ class TestTheBarsOfTheSpinnerLine:
         harness.log.write_text("--- git clone (release): git clone --progress\nCloning into '/Users/marcus/Keep'...\n" + progress)
         result = harness.run('clone_status')
         assert result.returncode == 0, result.stderr
-        assert result.stdout.count('█') == percent * 24 // 100 and f'{phase} {percent}%' in result.stdout
+        assert result.stdout.count('█') == percent * BAR_CELLS // 100 and f'{phase} {percent}%' in result.stdout
 
     @pytest.mark.parametrize('log', ["Cloning into '/Users/marcus/Keep'...\n", ''], ids=['before the first progress line', 'an empty log'])
     def test_a_clone_that_has_not_reported_yet_shows_no_bar(self, harness, log):
@@ -401,6 +402,29 @@ class TestConfigure:
         assert event['properties']['reason'] == 'No valid API key after 3 attempts.'
         assert 'No valid API key' not in result.stdout, "the failure Python printed is printed a second time"
         assert str(harness.log) in result.stdout and 'Re-run' in result.stdout
+
+    REPORTING = ('python_steps() { printf "report: ai_offered=yes\nreport: ai_choice=local\n'
+                 'report: ai_fallback=oMLX does not answer on port 8000.\nreport: ai_setup_s=312\nreport: owner=Marcus\n" >> "$LOG"; return %d; }\n')
+
+    def test_what_python_logged_for_the_report_goes_out_with_the_finished_install(self, harness):
+        """Only this run's lines, and only the ai_ facts: the log still holds an earlier run's."""
+        harness.log.write_text('report: ai_choice=cloud\nreport: ai_offered=memory\n')
+        result = harness.run(f'TELEMETRY_ID={INSTALL_ID}\n' + self.REPORTING % 0
+                             + 'configure; telemetry_event install_finished ${REPORT[@]+"${REPORT[@]}"}')
+        assert result.returncode == 0, result.stdout + result.stderr
+        properties = failed_event(harness)['properties']
+        assert properties['ai_offered'] == 'yes' and properties['ai_choice'] == 'local'
+        assert properties['ai_fallback'] == 'oMLX does not answer on port 8000.' and properties['ai_setup_s'] == 312
+        assert 'owner' not in properties
+
+    def test_what_python_logged_for_the_report_goes_out_with_the_failed_install_too(self, harness):
+        result = harness.run(f'TELEMETRY_ID={INSTALL_ID}\n'
+                             + (self.REPORTING % 1).replace('return 1', 'printf "FAILED in step: AI model\nFAILED: No terminal to ask on.\n" >> "$LOG"; return 1')
+                             + 'configure')
+        assert result.returncode == 1
+        event = failed_event(harness)
+        assert event['event'] == 'install_failed' and event['properties']['step'] == 'AI model'
+        assert event['properties']['ai_choice'] == 'local' and event['properties']['ai_setup_s'] == 312
 
     def test_a_python_that_died_without_a_word_fails_with_the_installers_own(self, harness):
         """A crash before the package's own handling: the log may still end with an earlier run's lines."""

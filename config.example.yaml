@@ -482,7 +482,8 @@ approve_guarded_commands: false
 
 # Beta usage telemetry (assistant/Telemetry.py). An install is known by `id` alone, a random
 # value install.sh writes here (the server, when it is missing on the first start); the events
-# are the install itself (started, finished, or the step it failed in), one per user turn, one per
+# are the install itself (started, finished, or the step it failed in; whether it runs on Claude or
+# on a local model, and where a local setup was offered, chosen or failed), one per user turn, one per
 # assistant turn (with the names of the commands it ran, never their arguments), one per
 # integration switched on or off, one per TUI tab opened, the size of the memory (word and item
 # counts) after a curation, the number of indexed photos and messages and the size of the prompt

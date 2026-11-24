@@ -156,3 +156,36 @@ class TestTheVariable:
         with pytest.raises(InstallFailed) as failure:
             choice(None, KEEP_AI='local').choose()
         assert said in failure.value.reason
+
+
+@pytest.mark.unit
+class TestWhatTheInstallReportIsTold:
+    """`lacks` and `answer`: what `__main__` logs for the install event — one word each, never the
+    sentence the user read."""
+
+    @pytest.mark.parametrize('answers, answer', [(['1'], 'cloud'), (['2'], 'local'), (['3'], 'manual'), (['x', 'y', 'z'], 'cloud')],
+                             ids=['Claude', 'local', 'a setup of their own', 'no answer in three'])
+    def test_the_answer_at_the_question_is_told_apart(self, machine, answers, answer):
+        asking = choice(answers)
+        asking.choose()
+        assert (asking.lacks, asking.answer) == ('', answer)
+
+    @pytest.mark.parametrize('value', ['local', 'cloud'])
+    def test_an_answer_from_the_environment_says_so(self, machine, value):
+        asking = choice(['3'], KEEP_AI=value)
+        asking.choose()
+        assert asking.answer == f'env_{value}'
+
+    @pytest.mark.parametrize('lacking, word', [({'memory': 16}, 'memory'), ({'macos': 14}, 'macos'), ({'free': 5}, 'disk'),
+                                               ({'silicon': False}, 'apple_silicon'), ({'system': Platform.LINUX}, 'mac')])
+    def test_a_machine_that_cannot_names_what_it_lacks_and_was_asked_nothing(self, machine, lacking, word):
+        machine(**lacking)
+        asking = choice(['2'])
+        asking.choose()
+        assert (asking.lacks, asking.answer) == (word, 'not_asked')
+
+    def test_nobody_to_ask_is_not_an_answer(self, machine):
+        asking = choice(None)
+        asking.choose()
+        assert (asking.lacks, asking.answer) == ('', 'not_asked')
+

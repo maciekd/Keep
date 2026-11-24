@@ -89,6 +89,11 @@ class Terminal:
         with open(self.log_path, "a") as f:
             f.write(ANSI.sub("", text) + "\n")
 
+    def report(self, name: str, value) -> None:
+        """A fact for the install report: `install.sh` reads these lines of this run back from the
+        log and sends them with its own event (it holds the telemetry, and the opt-out)."""
+        self.log(f"report: {name}={' '.join(str(value).split())}")
+
     def step(self, name: str) -> None:
         self.step_number += 1
         self.step_name = name

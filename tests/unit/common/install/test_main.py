@@ -49,6 +49,8 @@ def ai(monkeypatch):
     class Choice:
         def __init__(self, terminal, env):
             self.explicit = state['explicit']
+            self.lacks = ''
+            self.answer = state['choice']
 
         def choose(self):
             return state['choice']
@@ -137,6 +139,36 @@ class TestTheLocalModel:
     def test_the_cloud_sets_up_nothing_on_this_mac(self, tmp_path, env, key_step, ai):
         assert entry.main(env) == 0
         assert ai['set_up'] == 0 and 'local_backend' not in self.config(tmp_path)
+
+    def reported(self, tmp_path) -> dict:
+        """The facts logged for install.sh's event — contract with its `configure`: "report: name=value"."""
+        return dict(line[len('report: '):].split('=', 1) for line in logged(tmp_path) if line.startswith('report: '))
+
+    def test_the_install_report_is_told_what_was_offered_and_answered(self, tmp_path, env, key_step, ai):
+        ai['choice'] = LOCAL
+        entry.main(env)
+        report = self.reported(tmp_path)
+        assert (report['ai_offered'], report['ai_choice']) == ('yes', LOCAL)
+        assert report['ai_setup_s'].isdigit() and 'ai_fallback' not in report
+
+    def test_a_fallback_to_claude_is_reported_with_its_reason(self, tmp_path, env, key_step, ai):
+        ai.update(choice=LOCAL, outcome=InstallFailed('oMLX does not answer on port 8000.', 'Its log: var/log/omlx.log'))
+        entry.main(env)
+        report = self.reported(tmp_path)
+        assert report['ai_fallback'] == 'oMLX does not answer on port 8000.' and report['ai_setup_s'].isdigit()
+
+    def test_the_cloud_reports_no_local_setup(self, tmp_path, env, key_step, ai):
+        entry.main(env)
+        report = self.reported(tmp_path)
+        assert report['ai_choice'] == CLOUD and 'ai_setup_s' not in report and 'ai_fallback' not in report
+
+    def test_a_failed_install_still_ends_its_log_with_the_step_and_the_reason(self, tmp_path, env, key_step, ai):
+        """install.sh reads the failure off the log's last two lines: no report line may follow them."""
+        ai.update(choice=LOCAL, explicit=True, outcome=InstallFailed('oMLX does not answer on port 8000.'))
+        assert entry.main(env) == 1
+        lines = logged(tmp_path)
+        assert lines[-2].startswith('FAILED in step: ') and lines[-1] == 'FAILED: oMLX does not answer on port 8000.'
+        assert self.reported(tmp_path)['ai_choice'] == LOCAL
 
     @pytest.mark.parametrize('failure', [InstallFailed('oMLX does not answer on port 8000.', 'Its log: var/log/omlx.log'),
                                          RuntimeError('the tap moved')], ids=['a failure it names', 'an error nobody foresaw'])

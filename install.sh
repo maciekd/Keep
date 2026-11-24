@@ -72,6 +72,7 @@ main() {
   PY=""
   PY_SOURCE=""         # found | brew | uv: where the Python came from, for the install report
   TELEMETRY_ID=""
+  REPORT=()            # name=value facts the Python steps logged for the install report (configure)
 
   init_ui
   trap on_error ERR
@@ -144,7 +145,7 @@ main() {
   summary
   # shellcheck disable=SC2046,SC2086
   telemetry_event install_finished elapsed_s="$SECONDS" python="$PY_SOURCE" ${BROWSER_STATE:+browser=$BROWSER_STATE} \
-    commit="$(git -C "$KEEP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" $(telemetry_role) $(telemetry_ai)
+    commit="$(git -C "$KEEP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" $(telemetry_role) $(telemetry_ai) ${REPORT[@]+"${REPORT[@]}"}
   launch
 }
 
@@ -332,7 +333,7 @@ fail() {
 # give_up <reason>: the end of a failed install, once the failure has been shown.
 give_up() {
   log "FAILED in step: $STEP_NAME"
-  telemetry_event install_failed step="$STEP_NAME" reason="$1" elapsed_s="$SECONDS"
+  telemetry_event install_failed step="$STEP_NAME" reason="$1" elapsed_s="$SECONDS" ${REPORT[@]+"${REPORT[@]}"}
   if [ -n "${LOG:-}" ] && [ -f "$LOG" ]; then printf '\n  %sLog: %s%s\n' "$C_DIM" "$LOG" "$C_RESET"; fi
   printf '  %sRe-run the same command to resume; finished steps are skipped.%s\n\n' "$C_DIM" "$C_RESET"
   exit 1
@@ -1144,19 +1145,22 @@ clone_status() {
   printf '%s %s' "$(progress_bar "$percent")" "$(printf '%s' "$last" | sed -E 's/^(remote: )?([A-Za-z ]+): +([0-9]+)%.*/\2 \3%/' | tr '[:upper:]' '[:lower:]')"
 }
 
-# progress_bar <percent>: the bar of the spinner's line, 24 cells. Without colour codes: the spinner
-# clips its line to the terminal's width by counting characters.
+# progress_bar <percent>: the bar of the spinner's line, 16 cells — a fresh Terminal window is 80
+# columns, and the line has more to say. Without colour codes: the spinner clips its line to the
+# terminal's width by counting characters.
 progress_bar() {
-  local filled=$(($1 * 24 / 100))
-  [ "$filled" -le 24 ] || filled=24
-  printf '%s%s' "$(printf '%*s' "$filled" '' | sed 's/ /█/g')" "$(printf '%*s' $((24 - filled)) '' | sed 's/ /░/g')"
+  local cells=16 filled
+  filled=$(($1 * cells / 100))
+  [ "$filled" -le "$cells" ] || filled=$cells
+  printf '%s%s' "$(printf '%*s' "$filled" '' | sed 's/ /█/g')" "$(printf '%*s' $((cells - filled)) '' | sed 's/ /░/g')"
 }
 
-# time_left <percent> <seconds so far>: "about 3 min left", once enough has passed to tell.
+# time_left <percent> <seconds so far>: " · 3 min left", once enough has passed to tell. It stands
+# before the text of what is happening, which is what a narrow terminal clips.
 time_left() {
   [ "$1" -ge 10 ] && [ "$1" -lt 100 ] && [ "$2" -ge 10 ] || return 0
   local left=$(($2 * (100 - $1) / $1))
-  if [ "$left" -lt 60 ]; then printf ', under a minute left'; else printf ', about %d min left' $(((left + 30) / 60)); fi
+  if [ "$left" -lt 60 ]; then printf ' · under a minute left'; else printf ' · %d min left' $(((left + 30) / 60)); fi
 }
 
 # ------------------------------------------------------------- 5. venv -----
@@ -1235,7 +1239,7 @@ pip_status() {
   n_total=$((n_collect + n_down))
   [ "$n_total" -le "$total" ] || n_total=$total
   percent=$((n_total * 100 / total))
-  printf '%s %3d%% %s%s' "$(progress_bar "$percent")" "$percent" "$text" "$(time_left "$percent" $((SECONDS - ${3:-$SECONDS})))"
+  printf '%s %3d%%%s · %s' "$(progress_bar "$percent")" "$percent" "$(time_left "$percent" $((SECONDS - ${3:-$SECONDS})))" "$text"
 }
 
 # ------------------------------------------ 7. the AI model and the config ---
@@ -1245,13 +1249,19 @@ pip_status() {
 # read there, answers for the user) — and writes config.yaml (a satellite's holds no key). It prints its own step headers
 # from where the counter stands here. What comes back is the exit status and the file — and, after
 # a failure it has already shown, the step and the reason on the log's last two lines, which is
-# what the install report carries.
+# what the install report carries — with the `report:` lines it logged on the way (ai_offered,
+# ai_choice, ai_fallback, ai_setup_s), which go out as properties of install_finished or install_failed.
 SATELLITE_PORT=8898   # imessage_satellite.port as common/install/InstallConfig.py writes it; the summary's fallback
 
 configure() {
-  local status=0 steps=2 name reason
+  local status=0 steps=2 name reason offset line
   if satellite; then steps=1; fi
+  offset=$(($( { wc -c <"$LOG"; } 2>/dev/null || echo 0) + 1))
   python_steps || status=$?
+  # What it logged for the install report, of this run alone (the log holds the earlier runs too):
+  # what local AI was offered, what was answered, why a local setup fell back, how long it took.
+  while IFS= read -r line; do REPORT+=("$line"); done \
+    < <(tail -c +"$offset" "$LOG" 2>/dev/null | sed -n 's/^report: \(ai_[a-z_]*=.*\)$/\1/p')
   if [ "$status" -eq 0 ]; then
     STEP=$((STEP + steps))
     STEP_NAME="Configuration"
