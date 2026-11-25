@@ -3,6 +3,7 @@ package may import."""
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 import yaml
@@ -12,6 +13,8 @@ from common.install.AiChoice import CLOUD, LOCAL
 from common.install.LocalRunner import LocalModel
 from common.install.Terminal import InstallFailed
 from common.Paths import SRC_DIR
+
+NO_NETWORK = Path(__file__).parents[2] / 'data' / 'install_sh' / 'no_network'
 
 
 @pytest.fixture
@@ -217,13 +220,14 @@ def test_the_variable_reaches_the_real_choice(tmp_path, env, key_step, monkeypat
 @pytest.mark.unit
 def test_the_package_imports_nothing_of_the_assistant_and_nothing_that_reads_the_config(tmp_path):
     """It runs for a satellite too, and before there is a config.yaml: `ConfigManager` would write
-    the server's skeleton where the installer is about to write the real file."""
+    the server's skeleton where the installer is about to write the real file. `requests` is not
+    what is asked about and was half of the process's time: the script tests' stand-in takes its place."""
     config = tmp_path / 'config.yaml'
     script = ('import sys\nimport common.install.__main__\n'
               'trees = ("assistant", "integrations", "interfaces")\n'
               'print(sorted(n for n in sys.modules if n.split(".")[0] in trees or n == "common.ConfigManager"))\n')
     result = subprocess.run([sys.executable, '-P', '-c', script], capture_output=True, text=True, timeout=60,
-                            env={**os.environ, 'PYTHONPATH': str(SRC_DIR), 'FLOXY_CONFIG': str(config)})
+                            env={**os.environ, 'PYTHONPATH': f'{NO_NETWORK}:{SRC_DIR}', 'FLOXY_CONFIG': str(config)})
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.strip() == '[]'
     assert not config.exists()
