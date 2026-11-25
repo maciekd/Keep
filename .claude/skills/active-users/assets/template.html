@@ -40,18 +40,26 @@
   td.day b { font-weight: 600; }
   td.day span { color: var(--muted); font-size: 13px; margin-left: 6px; }
   td.cell {
-    text-align: center; height: 54px; border-radius: 12px; font-size: 17px; font-weight: 600;
+    text-align: center; height: 54px; border-radius: 12px; font-size: 16px; font-weight: 600;
     font-variant-numeric: tabular-nums; background: hsl(var(--heat) / var(--a)); color: var(--ink);
     transition: transform .15s ease, box-shadow .15s ease;
   }
   td.cell.hot { color: var(--heat-ink); }
   td.cell:hover { transform: translateY(-2px) scale(1.04); box-shadow: 0 10px 20px -10px hsl(var(--heat) / .7); }
   td.zero { color: var(--muted); font-weight: 400; opacity: .5; background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+  td.zero.kept { opacity: 1; }
+  td.zero.kept .k { font-weight: 600; opacity: 1; }
+  td.zero.kept:not(.push) .k { color: var(--ink); }
+  .pair { white-space: nowrap; }
+  .pair .k { font-weight: 500; opacity: .75; }
+  .pair .sep { font-weight: 400; opacity: .4; margin: 0 .22em; }
+  .pair .none { font-weight: 400; opacity: .5; }
   td.cell.push { background: hsl(var(--push) / var(--a)); box-shadow: inset 0 0 0 2px hsl(var(--push)); }
   td.cell.push.hot { color: var(--push-ink); }
   td.cell.push:hover { box-shadow: inset 0 0 0 2px hsl(var(--push)), 0 10px 20px -10px hsl(var(--push) / .7); }
   td.zero.push { opacity: 1; color: hsl(var(--push)); --a: .12; }
   .legend { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .legend .pair { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
   .legend i { width: 14px; height: 14px; border-radius: 4px; background: hsl(var(--push) / .5); box-shadow: inset 0 0 0 2px hsl(var(--push)); }
   td.total, th.total { text-align: right; padding-right: 14px; font-variant-numeric: tabular-nums; font-weight: 700; }
   tr.sum td { border-top: 1px solid var(--line); padding-top: 14px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
@@ -66,6 +74,7 @@
   #tip div + div { margin-top: 10px; }
   #tip b { display: block; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
   #tip .p b { color: hsl(var(--push)); }
+  #tip .k b { color: var(--accent); }
   #tip span { white-space: pre-wrap; overflow-wrap: anywhere; }
   footer { color: var(--muted); font-size: 13px; margin-top: 18px; display: grid; gap: 4px; }
 </style>
@@ -83,10 +92,11 @@
 <script>
 // The one thing a run replaces: this object. Everything below it renders from it.
 const data = {
-  lede: "Messages sent to the AI per install and day, 3–9 March 2031, Stockholm time. Sunday the 9th runs to about 14:00.",
+  lede: "Messages from Keep and to it per install and day, 3–9 March 2031, Stockholm time. Sunday the 9th runs to about 14:00.",
   notes: [
     "One column is one install, so a household with several people counts as one.",
     "Turns the server starts itself during setup are counted too.",
+    "Keep's restart and update notices are not counted.",
   ],
   users: [
     { who: "Marcus", tag: "prod", id: "0a1b2c3d" },
@@ -94,17 +104,19 @@ const data = {
     { who: "Bob", tag: "", id: "8c9d0e1f" },
     { who: "", tag: "unnamed", id: "2a3b4c5d" },
   ],
-  // A day's optional fourth entry: per install, the step of the reactivation push sent that day (0 = none).
-  // Its optional fifth: per install, what a hover shows - { said: the last message the person wrote
-  // that day, push: the reactivation message sent } with either key left out, or 0 for nothing.
+  // A day: per install, the messages the person sent, then the messages Keep sent on its own.
+  // Its optional fifth entry: per install, the step of the reactivation push sent that day (0 = none).
+  // Its optional sixth: per install, what a hover shows - { said: the last message the person wrote
+  // that day, kept: the last one Keep sent on its own, push: the reactivation message sent } with
+  // any key left out, or 0 for nothing.
   days: [
-    ["Mon", "3 Mar", [72, 40, 9, 0]],
-    ["Tue", "4 Mar", [65, 22, 4, 2]],
-    ["Wed", "5 Mar", [98, 6, 11, 0]],
-    ["Thu", "6 Mar", [120, 0, 7, 1]],
-    ["Fri", "7 Mar", [31, 0, 10, 0], [0, 1, 0, 0], [{ said: "Turn the porch light off at eleven." }, { push: "The tomatoes you asked about are in season now. Want the recipe?" }, 0, 0]],
-    ["Sat", "8 Mar", [84, 3, 0, 0], [0, 2, 0, 0], [0, { said: "Yes, send it!", push: "Your parcel is due tomorrow. Shall I watch it?" }, 0, 0]],
-    ["Sun", "9 Mar", [12, 0, 13, 0]],
+    ["Mon", "3 Mar", [72, 40, 9, 0], [6, 2, 0, 0]],
+    ["Tue", "4 Mar", [65, 22, 4, 2], [4, 1, 1, 0]],
+    ["Wed", "5 Mar", [98, 6, 11, 0], [9, 0, 0, 0]],
+    ["Thu", "6 Mar", [120, 0, 7, 1], [5, 0, 2, 0], [], [{ kept: "The washing machine is done." }, 0, 0, 0]],
+    ["Fri", "7 Mar", [31, 0, 10, 0], [3, 1, 0, 0], [0, 1, 0, 0], [{ said: "Turn the porch light off at eleven." }, { push: "The tomatoes you asked about are in season now. Want the recipe?" }, 0, 0]],
+    ["Sat", "8 Mar", [84, 3, 0, 0], [7, 1, 0, 0], [0, 2, 0, 0], [0, { said: "Yes, send it!", push: "Your parcel is due tomorrow. Shall I watch it?" }, 0, 0]],
+    ["Sun", "9 Mar", [12, 0, 13, 0], [1, 1, 0, 1], [], [0, { kept: "Good morning. The ferry at 08:10 is cancelled." }, 0, 0]],
   ],
 };
 const { users, days } = data;
@@ -112,16 +124,24 @@ const sum = a => a.reduce((x, y) => x + y, 0);
 const max = Math.max(...days.flatMap(d => d[2]));
 const colTotals = users.map((_, i) => sum(days.map(d => d[2][i])));
 const grand = sum(colTotals);
+const keptTotals = users.map((_, i) => sum(days.map(d => d[3][i])));
+const keptGrand = sum(keptTotals);
+// Keep's own messages in front of the person's, a dot for none on one side.
+const pair = (k, v) => {
+  const n = x => x ? x : `<span class="none">·</span>`;
+  return `<span class="pair"><span class="k">${n(k)}</span><span class="sep">/</span>${n(v)}</span>`;
+};
 const lead = colTotals.indexOf(Math.max(...colTotals));
 const busiest = days.reduce((a, b) => sum(b[2]) > sum(a[2]) ? b : a);
 
 document.getElementById("lede").textContent = data.lede;
-const pushCount = days.reduce((n, d) => n + (d[3] || []).filter(Boolean).length, 0);
-document.getElementById("notes").innerHTML = (pushCount
-  ? `<span class="legend"><i></i>A day an install was sent a reactivation push (${pushCount} in all).</span>`
-  : "") + data.notes.map(n => `<span>${n}</span>`).join("");
+const pushCount = days.reduce((n, d) => n + (d[4] || []).filter(Boolean).length, 0);
+document.getElementById("notes").innerHTML = `<span class="legend">${pair(2, 12)}Keep sent 2 messages on its own that day, the install's people wrote 12. The shade follows theirs.</span>`
+  + (pushCount ? `<span class="legend"><i></i>A day an install was sent a reactivation push (${pushCount} in all).</span>` : "")
+  + data.notes.map(n => `<span>${n}</span>`).join("");
 document.getElementById("stats").innerHTML = [
-  [grand, `messages in ${days.length} days`],
+  [grand, `messages to Keep in ${days.length} days`],
+  [keptGrand, "messages Keep sent on its own"],
   [users.length, "active installs"],
   [Math.round(100 * colTotals[lead] / grand) + "%", "from the busiest install, " + (users[lead].who || users[lead].id)],
   [sum(busiest[2]), "on the busiest day, " + busiest[0] + " " + busiest[1]],
@@ -130,14 +150,14 @@ document.getElementById("stats").innerHTML = [
 const head = `<tr><th class="day"></th>${users.map(u =>
   `<th><span class="who">${u.who || u.id}</span><span class="tag">${u.tag || "&nbsp;"}</span><span class="id">${u.who ? u.id : "&nbsp;"}</span></th>`
 ).join("")}<th class="total">Total</th></tr>`;
-const body = days.map(([wd, date, vals, pushes = []], d) => `<tr><td class="day"><b>${wd}</b><span>${date}</span></td>${vals.map((v, i) => {
-  const step = pushes[i];
+const body = days.map(([wd, date, vals, kept, pushes = []], d) => `<tr><td class="day"><b>${wd}</b><span>${date}</span></td>${vals.map((v, i) => {
+  const step = pushes[i], k = kept[i];
   const push = (step ? " push" : "") + `" data-at="${d}:${i}`;
-  if (!v) return `<td class="cell zero${push}">·</td>`;
+  if (!v) return `<td class="cell zero${k ? " kept" : ""}${push}">${k ? pair(k, 0) : "·"}</td>`;
   const a = 0.1 + 0.85 * Math.sqrt(v / max);
-  return `<td class="cell${a > 0.6 ? " hot" : ""}${push}" style="--a:${a.toFixed(2)}">${v}</td>`;
-}).join("")}<td class="total">${sum(vals)}</td></tr>`).join("");
-const foot = `<tr class="sum"><td class="day">Total</td>${colTotals.map(t => `<td>${t}</td>`).join("")}<td class="total">${grand}</td></tr>`;
+  return `<td class="cell${a > 0.6 ? " hot" : ""}${push}" style="--a:${a.toFixed(2)}">${pair(k, v)}</td>`;
+}).join("")}<td class="total">${pair(sum(kept), sum(vals))}</td></tr>`).join("");
+const foot = `<tr class="sum"><td class="day">Total</td>${colTotals.map((t, i) => `<td>${pair(keptTotals[i], t)}</td>`).join("")}<td class="total">${pair(keptGrand, grand)}</td></tr>`;
 const grid = document.getElementById("grid"), tip = document.getElementById("tip");
 grid.innerHTML = head + body + foot;
 
@@ -149,10 +169,11 @@ const part = (cls, label, text) => {
 };
 const parts = cell => {
   const [d, i] = cell.dataset.at.split(":").map(Number);
-  const step = (days[d][3] || [])[i], { said, push } = (days[d][4] || [])[i] || {};
+  const step = (days[d][4] || [])[i], { said, kept, push } = (days[d][5] || [])[i] || {};
   return [
     step && part("p", `Reactivation push · step ${step}`, push || "Text not recorded."),
-    said && part("s", "Last message that day", said),
+    kept && part("k", "Keep's last message that day", kept),
+    said && part("s", "Their last message that day", said),
   ].filter(Boolean);
 };
 grid.querySelectorAll("td[data-at]").forEach(cell => parts(cell).length && cell.classList.add("tip"));
