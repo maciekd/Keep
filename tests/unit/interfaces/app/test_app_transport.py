@@ -7,7 +7,8 @@ import pytest
 from PIL import Image
 
 from assistant.AssistantEvents import Done, RoundEnd, Thinking, ThinkingDone, Token
-from interfaces.app.AppTransport import CONVERSATION, AppDraft, AppTransport
+from interfaces.app import AppTransport as app_transport
+from interfaces.app.AppTransport import CONVERSATION, MAX_PICTURES, AppDraft, AppTransport, PicturesRefused
 from interfaces.app.Transcript import Transcript
 from interfaces.chat.ChatHub import ChatHub
 from interfaces.chat.ChatTypes import PHASE_COMMANDS, PHASE_THINKING, Progress
@@ -123,6 +124,56 @@ class TestATurn:
         assert wait_until(lambda: idle(hub, transport))
         assert kinds(transcript) == ["user"]
         assert hub.assistant.stream_obj.killed
+
+
+class TestPicturesIn:
+    def test_a_message_with_pictures_is_one_request_carrying_them_all(self, hub, transport, transcript):
+        hub.assistant = FakeAssistant([Token("A lawn"), RoundEnd("A lawn"), Done("A lawn")])
+        assert transport.submit("bubble-1", "what is this?", "Marcus", [png(40, 30), png(8, 8)])
+        assert wait_until(lambda: hub.assistant.requests and idle(hub, transport))
+        ((req, query),) = hub.assistant.requests
+        assert (req.user, query) == ("Marcus", "what is this?")
+        assert [image["media_type"] for image in hub.assistant.images[0]] == ["image/jpeg", "image/jpeg"]
+
+    def test_pictures_without_a_word_are_a_message(self, hub, transport, transcript):
+        hub.assistant = FakeAssistant([Token("A cat"), RoundEnd("A cat"), Done("A cat")])
+        assert transport.submit("bubble-1", "  ", pictures=[png(4, 4)])
+        assert wait_until(lambda: hub.assistant.requests and idle(hub, transport))
+        assert len(hub.assistant.images[0]) == 1
+        assert transcript.item("bubble-1")["text"] == ""
+
+    def test_the_bubble_names_each_picture_by_address_and_size_a_contract_with_the_apps(self, transport, transcript):
+        transport.submit("bubble-1", "look", pictures=[png(40, 30)])
+        (image,) = transcript.item("bubble-1")["images"]
+        assert set(image) == {"url", "width", "height"}
+        assert (image["width"], image["height"]) == (40, 30)
+        data, content_type = transcript.media(image["url"].rsplit("/", 1)[1])
+        assert content_type == "image/jpeg" and Image.open(io.BytesIO(data)).size == (40, 30)
+
+    def test_a_picture_larger_than_vision_reads_is_kept_at_the_size_it_is_sent_on_in(self, transport, transcript):
+        transport.submit("bubble-1", "look", pictures=[png(4000, 1000)])
+        (image,) = transcript.item("bubble-1")["images"]
+        assert (image["width"], image["height"]) == (2048, 512)
+
+    def test_a_picture_that_cannot_be_read_refuses_the_message_and_leaves_no_bubble(self, transport, transcript,
+                                                                                    monkeypatch):
+        monkeypatch.setattr(app_transport, "picture_as_jpeg", lambda data: None)
+        with pytest.raises(PicturesRefused):
+            transport.submit("bubble-1", "look", pictures=[b"not a picture"])
+        assert transcript.items() == []
+
+    def test_more_pictures_than_a_message_may_carry_are_refused(self, transport, transcript):
+        with pytest.raises(PicturesRefused):
+            transport.submit("bubble-1", "look", pictures=[png(2, 2)] * (MAX_PICTURES + 1))
+        assert transcript.items() == []
+
+    def test_a_message_sent_again_under_its_id_is_no_second_turn(self, hub, transport, transcript, monkeypatch):
+        received = []
+        monkeypatch.setattr(hub, "receive", lambda transport, message: received.append(message))
+        assert transport.submit("bubble-1", "look", pictures=[png(4, 4)])
+        assert transport.submit("bubble-1", "look", pictures=[png(4, 4)])
+        assert len(received) == 1
+        assert len(transcript.item("bubble-1")["images"]) == 1
 
 
 class TestDraft:

@@ -2,7 +2,9 @@
 
 Status: phases 1 and 2 built 2026-11-24, on the server and in the iOS app, and run in the
 simulator against the real transport with a scripted assistant — not yet on a phone or against
-a real Keep. Phase 3 (pictures in) is not built: the plus button still does nothing.
+a real Keep. Phase 3 (pictures in) built 2026-11-25: the app's own model and connection were run
+against the real routes, a message with pictures sent from the simulator — the photo picker, the
+camera, paste and drop have not been used by hand yet.
 
 Today the iOS app's chat posts to `/stream` and reads back plain text: no commands, no working
 line, no thinking, nothing the server says unasked, no approvals. The console and Telegram get
@@ -50,7 +52,7 @@ appeared under, which a later change does not move), and by kind —
 
 | Kind | Fields | Comes from |
 |---|---|---|
-| `user` | `text`, `images` | `/app/send` (the id is the app's) |
+| `user` | `text`, `images` (each `url`, `width`, `height`; the bytes under `/app/media/`) | `/app/send` (the id is the app's) |
 | `assistant` | `html`, `final` | a `Draft`: `update` / `finalize` / `discard` |
 | `thinking` | `text`, `done`, `seconds` | `Progress.thinking_text` |
 | `command` | `text`, `state` (`running` `done` `failed`), `detail` | `send_command_line` / `finish_command_line` |
@@ -71,7 +73,7 @@ state wins). Whole, not appended: `RichText.repair_markdown` rewrites text that 
 
 | Route | Body |
 |---|---|
-| `POST /app/send` | `id`, `text`, `user`; multipart with the images in phase 3 |
+| `POST /app/send` | `id`, `text`, `user` as JSON; with pictures a multipart form of the same fields and an `image` part per picture (10 at most) |
 | `POST /app/stop` | — `ChatSession.cancel()` |
 | `POST /app/approval` | `token`, `decision` |
 | `POST /app/secret` | `token`, `value` (null cancels) — goes to `hub.claim_secret`, never logged, never an item |
@@ -79,6 +81,13 @@ state wins). Whole, not appended: `RichText.repair_markdown` rewrites text that 
 
 An answer to a question that is no longer open is a 410. A server without the routes answers
 404 on `/app/events`: the app then says the server needs an update.
+
+A message's pictures are re-encoded on the way in (`picture_as_jpeg`: any format, 2048 px at
+most) and go to the session as one photo message with the text as its caption. A send under an
+id the transcript already holds is answered 200 and starts no second turn — an app that did
+not hear the first answer sends again. Too many pictures or one that cannot be read is a 400
+with the reason; a server older than pictures answers a form with 400 `empty message`, which the
+app reads as "needs an update".
 
 ## The server
 
@@ -170,8 +179,8 @@ look is worked on without a server.
    line; stop; replay. In the app: the connection, the transcript, those views.
 2. **What the server starts.** Approvals, secrets, photos and videos out, `attended()`, the
    "New" line.
-3. **Pictures in.** The plus button: the photo picker, staged thumbnails over the composer,
-   one request per album as the console sends it.
+3. **Pictures in.** The plus button: the photo picker and the camera, paste and drop, staged
+   thumbnails over the composer, one request per album as the console sends it.
 4. **Later, each its own plan.**
    - The result behind a command row (tap to read it): `finish_command_line` carries no result
      today, and one can be 200 KB — a fetch by item id, with a cap.

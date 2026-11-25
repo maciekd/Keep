@@ -1,10 +1,12 @@
 """The /app routes on a real Quart app, over a transport on a real ChatHub."""
 import asyncio
+import io
 import json
 import logging
 import threading
 
 import pytest
+from PIL import Image
 from quart import Quart
 
 from assistant.AssistantEvents import Done, RoundEnd, Token
@@ -49,6 +51,30 @@ def post(app, path, body):
         response = await app.test_client().post(path, json=body)
         return response.status_code, await response.get_json()
     return asyncio.run(run())
+
+
+def post_form(app, path, fields, pictures):
+    """A message as an app sends it with pictures: a form, an `image` part for each."""
+    boundary = "keep-test-boundary"
+    body = b""
+    for name, value in fields.items():
+        body += f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+    for number, data in enumerate(pictures):
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{number}.jpg"\r\n'
+                 f'Content-Type: image/jpeg\r\n\r\n').encode() + data + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+
+    async def run():
+        response = await app.test_client().post(
+            path, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        return response.status_code, await response.get_json()
+    return asyncio.run(run())
+
+
+def jpeg(width: int, height: int) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), (40, 200, 40)).save(out, format="JPEG")
+    return out.getvalue()
 
 
 def read_events(app, path, until, act=None):
@@ -135,6 +161,25 @@ class TestSend:
 
     def test_an_empty_message_is_refused(self, app):
         assert post(app, "/app/send", {"id": "bubble-1", "text": " "})[0] == 400
+
+    def test_a_form_with_pictures_is_one_turn_carrying_them_a_contract_with_the_apps(self, app, hub, transport):
+        hub.assistant = FakeAssistant([Token("A lawn"), RoundEnd("A lawn"), Done("A lawn")])
+        fields = {"id": "bubble-1", "text": "what is this?", "user": "Charlotte"}
+        assert post_form(app, "/app/send", fields, [jpeg(40, 30), jpeg(8, 8)])[0] == 200
+        assert wait_until(lambda: hub.assistant.requests)
+        ((req, query),) = hub.assistant.requests
+        assert (req.user, query, len(hub.assistant.images[0])) == ("Charlotte", "what is this?", 2)
+        sizes = [(image["width"], image["height"]) for image in transport.transcript.item("bubble-1")["images"]]
+        assert sizes == [(40, 30), (8, 8)]
+        assert wait_until(lambda: not hub.session_for(transport, CONVERSATION).busy)
+
+    def test_a_form_with_more_pictures_than_a_message_carries_is_refused_with_the_reason(self, app, transport):
+        status, answer = post_form(app, "/app/send", {"id": "bubble-1", "text": ""}, [jpeg(2, 2)] * 11)
+        assert status == 400 and answer["error"]
+        assert transport.transcript.items() == []
+
+    def test_a_form_without_text_or_pictures_is_refused(self, app):
+        assert post_form(app, "/app/send", {"id": "bubble-1", "text": ""}, [])[0] == 400
 
     def test_stop_cancels_the_reply_in_flight(self, app, hub, transport):
         gate = threading.Event()

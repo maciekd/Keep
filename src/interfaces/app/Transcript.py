@@ -213,8 +213,10 @@ class Transcript:
         return path.read_bytes(), mimetypes.guess_type(media_id)[0] or "application/octet-stream"
 
     def _forget_media(self, item: dict) -> None:
-        for key in ("url", "poster"):
-            address = item.get(key) or ""
+        """The files an item names: its own, a video's still, the pictures of a user's message."""
+        addresses = [item.get("url"), item.get("poster")] + [image.get("url") for image in item.get("images") or []]
+        for address in addresses:
+            address = address or ""
             if address.startswith(MEDIA_ROUTE) and _MEDIA_ID.match(address[len(MEDIA_ROUTE):]):
                 (self._media / address[len(MEDIA_ROUTE):]).unlink(missing_ok=True)
 

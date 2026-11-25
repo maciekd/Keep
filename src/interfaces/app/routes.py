@@ -1,6 +1,6 @@
 """The phone apps' side of the chat, under `/app`: one long response of events, a JSON
 object per line, and plain POSTs for what the app does — so each has a status the app
-can show. No call names the phone: there is one conversation, and the cursor is the app's own.
+can show. A message with pictures is the one POST that is a form and not JSON. No call names the phone: there is one conversation, and the cursor is the app's own.
 
 Whoever reaches the address is the owner, as for `/stream`."""
 import asyncio
@@ -9,7 +9,7 @@ import json
 from quart import Blueprint, Response, request
 
 from common.logging import info, trace
-from interfaces.app.AppTransport import AppTransport
+from interfaces.app.AppTransport import AppTransport, PicturesRefused
 from interfaces.chat.ChatTypes import DECISION_APPROVE, DECISION_DENY
 
 HEARTBEAT_SECONDS = 15.0
@@ -60,8 +60,20 @@ def build_blueprint(transport: AppTransport) -> Blueprint:
 
     @bp.route('/send', methods=['POST'])
     async def send():
-        body = await request.get_json(silent=True) or {}
-        if not transport.submit(str(body.get('id') or ''), str(body.get('text') or ''), str(body.get('user') or '')):
+        # With pictures the message is a form: the same fields, and an `image` part per picture.
+        pictures = []
+        if request.mimetype == 'multipart/form-data':
+            body = await request.form
+            pictures = [part.read() for part in (await request.files).getlist('image')]
+        else:
+            body = await request.get_json(silent=True) or {}
+        try:
+            # The pictures are re-encoded on the way in: off the event loop.
+            taken = await asyncio.to_thread(transport.submit, str(body.get('id') or ''), str(body.get('text') or ''),
+                                            str(body.get('user') or ''), pictures)
+        except PicturesRefused as e:
+            return {"error": str(e)}, 400
+        if not taken:
             return {"error": "empty message"}, 400
         return {"ok": True}, 200
 

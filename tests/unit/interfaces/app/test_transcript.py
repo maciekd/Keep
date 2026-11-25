@@ -141,6 +141,14 @@ class TestCap:
         transcript.upsert("new", "user", text="now")
         assert transcript.media(media_id) is None
 
+    def test_a_dropped_message_takes_its_pictures_along(self, transcript, clock):
+        url = transcript.add_media(b"jpeg-bytes", "jpg")
+        transcript.upsert("sent", "user", text="look", images=[{"url": url, "width": 4, "height": 3}])
+        media_id = url.rsplit("/", 1)[1]
+        clock.now += transcript_module.MAX_AGE_SECONDS + 1
+        transcript.upsert("new", "user", text="now", images=[])
+        assert transcript.media(media_id) is None
+
 
 class TestMedia:
     @pytest.mark.parametrize("media_id", ["../app_chat.json", "..%2Fconfig.yaml", "", "abc.jpg", "/etc/passwd"])

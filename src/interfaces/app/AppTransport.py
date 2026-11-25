@@ -1,6 +1,7 @@
 """The phone app as a chat transport: what the chat layer renders (drafts, command lines,
 notices, photos, approval and secret prompts) becomes items of the `Transcript` the apps draw,
-and what is typed in an app goes to the hub as an `IncomingMessage`.
+and what is typed in an app — with the pictures staged beside it — goes to the hub as an
+`IncomingMessage`.
 
 One conversation ("app"), always the owner's — as the console has "tui": whoever reaches the
 HTTP address is the owner, and every phone shows the same list. A secret typed into an app's
@@ -17,9 +18,11 @@ from common.ConfigManager import config
 from common.logging import info, trace
 from interfaces.app.Transcript import Transcript, new_id
 from interfaces.chat.ChatTransport import ChatTransport
-from interfaces.chat.ChatTypes import PHASE_THINKING, PHASE_WAITING, IncomingMessage, Progress
+from interfaces.chat.ChatTypes import KIND_PHOTO, PHASE_THINKING, PHASE_WAITING, Attachment, IncomingMessage, Progress
+from interfaces.chat.MediaIntake import picture_as_jpeg
 
 CONVERSATION = "app"
+MAX_PICTURES = 10       # in one message, as many as the console's composer stages
 
 KIND_USER = "user"
 KIND_ASSISTANT = "assistant"
@@ -50,6 +53,10 @@ def working_facts(progress: Progress) -> dict:
     return {"phase": progress.phase, "elapsed": round(progress.elapsed, 1),
             "output_tokens": progress.output_tokens, "rate": round(progress.rate, 1),
             "prefill": round(progress.prefill, 1), "commands": progress.commands}
+
+
+class PicturesRefused(Exception):
+    """The pictures sent with a message cannot be taken: why, in a few words the app shows."""
 
 
 class AppDraft:
@@ -173,22 +180,48 @@ class AppTransport(ChatTransport):
 
     # --- from the apps ------------------------------------------------------------------------
 
-    def submit(self, item_id: str, text: str, user: str = "") -> bool:
-        """A message typed in an app, under the id the app gave its bubble. False for an
-        empty one."""
+    def submit(self, item_id: str, text: str, user: str = "", pictures: list = ()) -> bool:
+        """A message typed in an app, under the id the app gave its bubble, with the pictures
+        staged beside it (their bytes): a text message, or a photo message carrying every
+        picture with the text as its caption, as the console sends one. False for an empty
+        message; `PicturesRefused` for pictures that cannot be taken. An id the list already
+        holds is an app sending again what did arrive: taken, and no second turn."""
         text = (text or "").strip()
-        if not text:
+        pictures = list(pictures)
+        if not text and not pictures:
             trace("App chat: empty message ignored")
             return False
-        self.transcript.upsert(item_id or new_id(), KIND_USER, text=text, images=[])
+        if item_id and self.transcript.item(item_id) is not None:
+            info(f"App chat: message {item_id} is in the list already, sent again — no second turn")
+            return True
+        jpegs = self._as_jpegs(pictures)
+        self.transcript.upsert(item_id or new_id(), KIND_USER, text=text,
+                               images=[self._keep_picture(jpeg) for jpeg in jpegs])
         if self._hub is None:
             info("App chat: no chat hub attached, cannot send the message")
             self.send_text(CONVERSATION, "Sorry, the chat is not connected to the assistant.")
             return True
-        info(f"App chat: {text}")
-        self._hub.receive(self, IncomingMessage(conversation=CONVERSATION, sender=user or config.get_owner_name(),
-                                                message_id=item_id, text=text))
+        info(f"App chat: {text or '[no text]'}" + (f" (+{len(jpegs)} picture(s))" if jpegs else ""))
+        message = IncomingMessage(conversation=CONVERSATION, sender=user or config.get_owner_name(),
+                                  message_id=item_id, text=text)
+        if jpegs:
+            message.kind = KIND_PHOTO
+            message.attachments = [Attachment(jpeg, "image/jpeg", "photo") for jpeg in jpegs]
+        self._hub.receive(self, message)
         return True
+
+    @staticmethod
+    def _as_jpegs(pictures: list) -> list:
+        """The pictures as the vision tier reads them, whatever an app sent them as."""
+        if len(pictures) > MAX_PICTURES:
+            info(f"App chat: {len(pictures)} pictures in one message, more than the {MAX_PICTURES} it may carry — refused")
+            raise PicturesRefused(f"more than {MAX_PICTURES} pictures")
+        jpegs = [picture_as_jpeg(data) for data in pictures]
+        unread = sum(jpeg is None for jpeg in jpegs)
+        if unread:
+            info(f"App chat: {unread} of {len(pictures)} picture(s) could not be read — the message is refused")
+            raise PicturesRefused("a picture could not be read")
+        return jpegs
 
     def interrupt(self) -> None:
         if self._hub is None:
@@ -260,9 +293,13 @@ class AppTransport(ChatTransport):
         return True
 
     def _add_photo(self, data: bytes, caption: str, album: str) -> None:
+        self.transcript.upsert(new_id(), KIND_MEDIA, media="photo", poster="", caption=caption, album=album,
+                               **self._keep_picture(data))
+
+    def _keep_picture(self, data: bytes) -> dict:
+        """A picture kept beside the log, as an item names it: its address and its size."""
         extension, width, height = self._picture_facts(data)
-        self.transcript.upsert(new_id(), KIND_MEDIA, media="photo", url=self.transcript.add_media(data, extension),
-                               poster="", caption=caption, width=width, height=height, album=album)
+        return {"url": self.transcript.add_media(data, extension), "width": width, "height": height}
 
     @staticmethod
     def _picture_facts(data: bytes) -> tuple[str, int, int]:
