@@ -1,4 +1,8 @@
 """The app chat's item log: sequence numbers, replay from a cursor, the cap, listeners, the file."""
+import json
+import threading
+from types import SimpleNamespace
+
 import pytest
 
 from interfaces.app import Transcript as transcript_module
@@ -93,6 +97,28 @@ class TestReplay:
         lines = replay(transcript, after=cursor)
         assert lines[0] == {"reset": True}
         assert ids(lines[1:]) == ["c", "d", "e"]
+
+    def test_a_cursor_older_than_the_removals_still_remembered_starts_over(self, transcript, monkeypatch):
+        """A removal the log has forgotten cannot be told: the app would keep the item for ever."""
+        monkeypatch.setattr(transcript_module, "MAX_TOMBSTONES", 2)
+        for name in "abcd":
+            transcript.upsert(name, "user", text=name)
+        saw_them_all = replay(transcript)[-1]["seq"]
+        transcript.remove("a")
+        saw_the_first_removal = saw_them_all + 1
+        transcript.remove("b")
+        transcript.remove("c")
+        lines = replay(transcript, after=saw_them_all)
+        assert lines[0] == {"reset": True} and ids(lines[1:]) == ["d"]
+        assert ids(replay(transcript, after=saw_the_first_removal)) == [("removed", "b"), ("removed", "c")]
+
+    def test_an_item_that_comes_back_under_its_id_is_not_told_as_removed(self, transcript):
+        transcript.upsert("a", "user", text="hi")
+        cursor = replay(transcript)[-1]["seq"]
+        transcript.remove("a")
+        transcript.upsert("a", "user", text="hi again")
+        lines = replay(transcript, after=cursor)
+        assert ids(lines) == ["a"] and lines[0]["item"]["text"] == "hi again"
 
     def test_a_current_cursor_gets_nothing(self, transcript):
         transcript.upsert("a", "user", text="hi")
@@ -189,6 +215,51 @@ class TestFile:
 
     def test_an_unreadable_file_starts_an_empty_log(self, tmp_path, clock):
         (tmp_path / transcript_module.FILE_NAME).write_text("{not json")
+        assert Transcript(tmp_path, autosave=False, clock=clock).items() == []
+
+    @pytest.mark.xfail(strict=True, reason="Transcript._load catches neither the AttributeError of a `removed` "
+                       "that is no object nor the KeyError its _trim raises for an item without `at`: the "
+                       "constructor raises, and with it AppInterface.start and the server's boot")
+    @pytest.mark.parametrize("state", [
+        {"log": "l", "seq": 2, "floor": 0, "removed": [], "entries": []},
+        {"log": "l", "seq": 2, "floor": 0, "removed": {}, "entries": [{"seq": 1, "item": {"id": "a", "kind": "user"}}]},
+    ], ids=["the removals as a list", "an item without its time"])
+    def test_a_file_of_another_shape_starts_an_empty_log_too(self, tmp_path, clock, state):
+        (tmp_path / transcript_module.FILE_NAME).write_text(json.dumps(state))
+        transcript = Transcript(tmp_path, autosave=False, clock=clock)
+        transcript.upsert("b", "user", text="hi")
+        assert [item["id"] for item in transcript.items()] == ["b"]
+
+    def test_a_save_that_cannot_be_written_leaves_the_log_in_use(self, tmp_path, clock):
+        (tmp_path / "taken").write_text("a file where the folder should be")
+        transcript = Transcript(tmp_path / "taken", autosave=False, clock=clock)
+        transcript.upsert("a", "user", text="hi")
+        transcript.flush()
+        transcript.upsert("b", "user", text="more")
+        assert [item["id"] for item in transcript.items()] == ["a", "b"]
+
+    def test_a_burst_of_changes_is_one_save_and_the_next_change_is_saved_again(self, tmp_path, clock, monkeypatch):
+        timers = []
+
+        class Timer:
+            def __init__(self, delay, save):
+                self.save = save
+                timers.append(self)
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(transcript_module, "threading",
+                            SimpleNamespace(Timer=Timer, RLock=threading.RLock, Lock=threading.Lock))
+        transcript = Transcript(tmp_path, clock=clock)
+        for text in ("Hel", "Hello", "Hello there"):
+            transcript.upsert("a", "assistant", html=text)
+        assert len(timers) == 1 and not (tmp_path / transcript_module.FILE_NAME).exists()
+        timers[0].save()
+        assert Transcript(tmp_path, autosave=False, clock=clock).item("a")["html"] == "Hello there"
+        transcript.remove("a")
+        assert len(timers) == 2
+        timers[1].save()
         assert Transcript(tmp_path, autosave=False, clock=clock).items() == []
 
 
