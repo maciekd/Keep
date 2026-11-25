@@ -274,6 +274,9 @@ class CommandParser:
                     return -1
                 i = end + 3
                 continue
+            if (in_double_quote or in_single_quote) and self._is_escape(content, i):
+                i += 2
+                continue
             if ch == '"' and not in_single_quote:
                 in_double_quote = not in_double_quote
             elif ch == "'" and track_single and not in_double_quote:
@@ -423,7 +426,7 @@ class CommandParser:
                 buf: list[str] = []
                 while i < n:
                     c = raw[i]
-                    if c == '\\' and i + 1 < n and raw[i + 1] in ('"', "'", '`', '\\'):
+                    if cls._is_escape(raw, i):
                         buf.append(raw[i + 1])
                         i += 2
                         continue
@@ -542,6 +545,9 @@ class CommandParser:
                     return False
                 i = end + 3
                 continue
+            if (in_double_quote or in_single_quote) and self._is_escape(content, i):
+                i += 2
+                continue
             if ch == '"' and not in_single_quote:
                 in_double_quote = not in_double_quote
             elif ch == "'" and track_single and not in_double_quote:
@@ -562,6 +568,14 @@ class CommandParser:
                     close_count += 1
             i += 1
         return open_count > 0 and close_count >= open_count
+
+    _ESCAPABLE = ('"', "'", '`', '\\')
+
+    @classmethod
+    def _is_escape(cls, content: str, i: int) -> bool:
+        """Whether a backslash at `i` escapes the character behind it — inside a quoted value,
+        where `_scan` reads the pair as that character, so an escaped quote closes nothing."""
+        return content[i] == '\\' and i + 1 < len(content) and content[i + 1] in cls._ESCAPABLE
 
     def _names(self) -> re.Pattern:
         """Every `name(` of the known commands, the longest name first where two start alike."""

@@ -957,3 +957,25 @@ class TestRunDispatcher:
     def test_unknown_command_returns_error_string(self, commands):
         result = commands.run("does_not_exist", ["whatever"])
         assert "Unknown command" in result
+
+
+class TestEscapedQuoteInACall:
+    """An escaped quote inside a quoted value closes nothing: the call ends at its own bracket."""
+
+    TV = 'remember("the 77\\" TV is upstairs (the old one went to Frances)")'
+
+    @pytest.fixture
+    def parser(self):
+        return CommandParser(["remember", "turn_on"])
+
+    def test_the_call_is_read_whole_and_the_reply_after_it_is_not_part_of_it(self, parser):
+        reply = f"{self.TV}\n\nNoted (both of them)."
+        assert parser.extract_all_commands(reply) == [("remember", ['the 77" TV is upstairs (the old one went to Frances)'])]
+
+    def test_a_stream_sees_the_call_complete_at_its_closing_bracket(self, parser):
+        complete = [n for n in range(1, len(self.TV) + 1) if parser.find_complete_command(self.TV[:n], streaming=True)]
+        assert complete == [len(self.TV)]
+
+    def test_an_escaped_backslash_before_the_closing_quote_escapes_nothing(self, parser):
+        reply = 'remember("the share is \\\\")\nturn_on("Hall")'
+        assert parser.extract_all_commands(reply) == [("remember", ["the share is \\"]), ("turn_on", ["Hall"])]
