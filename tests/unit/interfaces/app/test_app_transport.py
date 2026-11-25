@@ -279,3 +279,78 @@ class TestAfterARestart:
         assert command["state"] == "failed"
         assert approval["outcome"]
         assert notice["html"] == "A notice"
+
+
+class TestWithoutAHub:
+    """Before the interface has started the transport, or after it stopped it."""
+
+    def test_a_message_keeps_its_bubble_and_is_answered_that_nothing_is_connected(self, transport, transcript):
+        assert transport.submit("bubble-1", "anyone there?")
+        user, notice = transcript.items()
+        assert (user["id"], user["kind"], user["text"]) == ("bubble-1", "user", "anyone there?")
+        assert notice["kind"] == "notice" and notice["html"].strip()
+
+    def test_an_answer_is_reported_as_not_taken_and_stop_is_harmless(self, transport, transcript):
+        ref = transport.send_approval_prompt(CONVERSATION, "t1", "Send?", "")
+        assert transport.answer_approval("t1", "approve") is False
+        assert transport.answer_secret("t2", "hunter2") is False
+        transport.interrupt()
+        assert transcript.item(ref)["outcome"] == ""
+
+    def test_stopping_ends_the_working_line_and_writes_the_log(self, hub, transport, transcript, tmp_path):
+        woken = []
+        _, subscription = transcript.subscribe(0, "", lambda: woken.append(1))
+        transport.send_text(CONVERSATION, "The door is locked")
+        transport.reply_started(CONVERSATION)
+        subscription.drain()
+        transport.stop()
+        assert subscription.drain() == [{"working": None}]
+        assert [item["html"] for item in Transcript(tmp_path, autosave=False).items()] == ["The door is locked"]
+        assert transport.submit("bubble-2", "still there?")     # no hub any more: answered, not raised
+        assert kinds(transcript)[-2:] == ["user", "notice"]
+
+
+class TestWhatCannotBeShownAsAsked:
+    def test_a_picture_that_cannot_be_read_is_sent_without_a_size(self, transport, transcript):
+        assert transport.send_photo(CONVERSATION, b"not a picture at all", "From the porch")
+        (item,) = transcript.items()
+        assert (item["width"], item["height"], item["caption"]) == (0, 0, "From the porch")
+        data, _ = transcript.media(item["url"].rsplit("/", 1)[-1])
+        assert data == b"not a picture at all"
+
+    def test_a_video_without_a_poster_frame_names_none(self, transport, transcript):
+        transport.send_video(CONVERSATION, b"mp4-bytes", "Driveway")
+        (item,) = transcript.items()
+        assert (item["media"], item["poster"], item["width"], item["height"]) == ("video", "", 0, 0)
+        assert transcript.media(item["url"].rsplit("/", 1)[-1]) == (b"mp4-bytes", "video/mp4")
+
+    def test_text_of_spaces_alone_is_no_notice(self, transport, transcript):
+        assert transport.send_text(CONVERSATION, " \n ") is False
+        assert transcript.items() == []
+
+
+class TestPrompts:
+    def test_a_question_asked_again_under_its_token_is_one_card(self, transport, transcript):
+        first = transport.send_approval_prompt(CONVERSATION, "t1", "Send the email?", "To Alice")
+        again = transport.send_approval_prompt(CONVERSATION, "t1", "Send the email?", "To Alice and Bob")
+        assert first == again
+        (card,) = transcript.items()
+        assert card["details"] == "To Alice and Bob"
+
+    def test_an_approval_and_a_secret_under_one_token_are_two_cards(self, transport, transcript):
+        transport.send_approval_prompt(CONVERSATION, "t1", "Send?", "")
+        transport.send_secret_prompt(CONVERSATION, "t1", "Password", "")
+        assert kinds(transcript) == ["approval", "secret"]
+
+    def test_a_card_closed_without_a_word_still_reads_as_closed(self, transport, transcript):
+        """The apps fold a card on a non-empty outcome: an empty one would leave its buttons up."""
+        ref = transport.send_secret_prompt(CONVERSATION, "t1", "Password", "For the router")
+        transport.close_secret_prompt(CONVERSATION, ref, "")
+        card = transcript.item(ref)
+        assert card["outcome"] and (card["token"], card["title"], card["details"]) == ("t1", "Password", "For the router")
+
+    def test_closing_a_card_the_log_no_longer_holds_brings_nothing_back(self, transport, transcript):
+        ref = transport.send_approval_prompt(CONVERSATION, "t1", "Send?", "")
+        transcript.remove(ref)
+        transport.close_approval_prompt(CONVERSATION, ref, "Approved")
+        assert transcript.items() == []

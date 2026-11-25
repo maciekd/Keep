@@ -240,6 +240,19 @@ class TestGroupDestinations:
         assert [cid for cid, _ in sent] == [-5, -5]
         assert "".join(html for _, html in sent) == "a" * 5000
 
+    def test_a_group_is_the_asking_conversation_only_for_a_telegram_turn_from_that_group(self):
+        """A post_message there is then the turn's reply, and the request owes no extra round."""
+        from assistant import Destinations
+        from assistant.AssistantRequest import RequestContext
+        t = _make_transport(allowed=(111, -5, -7))
+        t._application.bot.get_chat = self._get_chat({-5: "Family", -7: "Board"})
+        asyncio.run(t._register_group_destinations())
+        family, board = Destinations.find("Family"), Destinations.find("Board")
+        from_family = RequestContext(source=t.source, conversation=-5)
+        assert family.is_asking(from_family) and not board.is_asking(from_family)
+        assert not family.is_asking(RequestContext(source=t.source, conversation=111))
+        assert not family.is_asking(RequestContext(source="iMessage", conversation=-5))
+
     def test_a_changed_allow_list_registers_the_groups_again_and_stop_drops_them(self):
         from assistant import Destinations
         t = _make_transport(allowed=(-5,))

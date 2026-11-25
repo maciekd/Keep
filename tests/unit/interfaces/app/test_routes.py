@@ -99,6 +99,24 @@ class TestEvents:
             return (await app.test_client().get("/app/events?after=soon")).status_code
         assert asyncio.run(run()) == 400
 
+    def test_a_quiet_stream_is_kept_open_with_an_empty_line(self, app, monkeypatch):
+        """A phone tells a dead connection from a quiet chat by these."""
+        monkeypatch.setattr(routes, "HEARTBEAT_SECONDS", 0.01)
+        lines = read_events(app, "/app/events", lambda line: line == {})
+        assert lines[-2:] == [{"live": True}, {}]
+
+    def test_a_change_after_a_quiet_spell_still_arrives(self, app, transport, monkeypatch):
+        monkeypatch.setattr(routes, "HEARTBEAT_SECONDS", 0.01)
+        seen = []
+
+        def quiet_then_changed(line):
+            seen.append(line)
+            if line == {} and seen.count({}) == 1:
+                transport.send_text(CONVERSATION, "The door is locked")
+            return "item" in line
+        lines = read_events(app, "/app/events", quiet_then_changed)
+        assert lines[-1]["item"]["html"] == "The door is locked"
+
     def test_the_line_fields_are_a_contract_with_the_apps(self, app, transport):
         transport.transcript.upsert("bubble-1", "user", text="hi", images=[])
         lines = read_events(app, "/app/events", lambda line: "item" in line)
@@ -173,6 +191,20 @@ class TestSecret:
         thread.join(timeout=FAILURE_BOUND)
         assert result["d"] == "cancel"
 
+    def test_a_value_that_is_no_text_is_refused_and_the_question_stays_open(self, app, hub, transport):
+        seen, result = [], {}
+        thread = threading.Thread(target=lambda: result.update(
+            d=hub.request_secret("Door code", "", lambda value: seen.append(value) or "Stored",
+                                 timeout=FAILURE_BOUND)), daemon=True)
+        thread.start()
+        assert wait_until(lambda: transport.transcript.items())
+        token = transport.transcript.items()[0]["token"]
+        assert post(app, "/app/secret", {"token": token, "value": 4711})[0] == 400
+        assert seen == [] and transport.transcript.items()[0]["outcome"] == ""
+        assert post(app, "/app/secret", {"token": token, "value": "4711"})[0] == 200
+        thread.join(timeout=FAILURE_BOUND)
+        assert seen == ["4711"]
+
     def test_a_secret_nobody_asked_for_is_gone(self, app):
         assert post(app, "/app/secret", {"token": "stale", "value": "x"})[0] == 410
 
@@ -185,6 +217,15 @@ class TestMedia:
             response = await app.test_client().get(transport.transcript.item("p")["url"])
             return response.status_code, response.mimetype, await response.get_data()
         assert asyncio.run(run()) == (200, "image/jpeg", b"jpeg-bytes")
+
+    def test_a_video_player_gets_the_byte_range_it_asks_for_a_contract_with_the_apps(self, app, transport):
+        data = bytes(range(64))
+        url = transport.transcript.add_media(data, "mp4")
+
+        async def run():
+            response = await app.test_client().get(url, headers={"Range": "bytes=8-23"})
+            return response.status_code, response.headers.get("Content-Range"), await response.get_data()
+        assert asyncio.run(run()) == (206, "bytes 8-23/64", data[8:24])
 
     def test_an_unknown_id_is_not_found(self, app):
         async def run():

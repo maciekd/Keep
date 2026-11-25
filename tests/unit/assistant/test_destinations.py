@@ -238,3 +238,29 @@ class TestListeners:
         Destinations.add_listener(broken)
         recording("owner", KIND_CHAT)
         assert Destinations.names() == ["owner"]
+
+
+@pytest.mark.unit
+class TestTheAskingConversation:
+    """`is_asking`: whether a post to the destination is the reply of the turn that posts."""
+
+    def test_a_destination_no_turn_comes_from_is_never_the_asking_one(self):
+        from assistant.AssistantRequest import RequestContext
+        kitchen = Destination("Kitchen", KIND_VOICE, lambda text: True)
+        assert kitchen.is_asking(RequestContext(conversation="kitchen")) is False
+
+    def test_a_check_that_raises_is_a_no_and_the_post_is_still_delivered(self):
+        from assistant.AssistantRequest import RequestContext
+
+        def serves(sender):
+            raise KeyError("conversation")
+        sent = []
+        Destinations.register(Destination("Charlotte", KIND_CHAT, lambda text: sent.append(text) or True, serves=serves))
+        assert Destinations.send("Charlotte", "Dinner is ready") == "" and sent == ["Dinner is ready"]
+        assert Destinations.find("Charlotte").is_asking(RequestContext(conversation="chat-charlotte")) is False
+
+    def test_an_answer_that_is_no_bool_is_read_by_its_truth(self):
+        from assistant.AssistantRequest import RequestContext
+        asked = RequestContext(conversation="chat-charlotte")
+        assert Destination("Charlotte", KIND_CHAT, lambda text: True, serves=lambda sender: "yes").is_asking(asked) is True
+        assert Destination("Charlotte", KIND_CHAT, lambda text: True, serves=lambda sender: None).is_asking(asked) is False
