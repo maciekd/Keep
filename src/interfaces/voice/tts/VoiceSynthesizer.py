@@ -58,6 +58,17 @@ class VoiceSynthesizer(ABC):
         """`tts.emotions`: whether the voice performs emotion tags at all (off by default)."""
         return bool((config.get('tts', {}) or {}).get('emotions', False))
 
+    @classmethod
+    def ready(cls) -> bool:
+        """Whether the engine can speak now. False for one that is still fetching or loading
+        its model: VoiceFactory then goes on to the next engine without constructing this one."""
+        return True
+
+    @classmethod
+    def not_ready_reason(cls) -> str:
+        """What a not-ready engine is waiting for, for the log."""
+        return ""
+
     def impl_name(self) -> str:
         """Human-readable name of the actual synthesizer doing the work.
         Decorators (e.g. caching) override to report the wrapped impl."""

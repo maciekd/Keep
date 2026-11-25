@@ -5,7 +5,7 @@
 
 # Server speaker playback + mic capture: macOS only, like the local mic outposts below — a Linux server
 # opens no audio device (common/Platform.py)
-sounddevice==0.4.6 ; sys_platform == "darwin"
+sounddevice==0.5.6 ; sys_platform == "darwin"
 # Decodes audio files on every platform (speaker id through torchaudio, speechbrain, supertonic)
 soundfile==0.12.1
 
@@ -15,6 +15,8 @@ websocket-client==1.8.0
 ormsgpack==1.12.2
 google-cloud-texttospeech==2.38.0
 supertonic==1.3.1
+# Fish Local TTS: Drama 3 through MLX (Apple Silicon only); imported only once the engine is switched on
+mlx-audio==0.6.8 ; sys_platform == "darwin"
 
 # Speaker identification. On Linux install this file with PyTorch's CPU wheel index, as
 # RequirementsChecker.install does (--extra-index-url https://download.pytorch.org/whl/cpu):
