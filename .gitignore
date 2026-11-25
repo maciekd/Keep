@@ -1,5 +1,6 @@
 # --- runtime state: config, secrets, databases, sessions -------------------------------------
 config.yaml
+config.yaml.*
 config.dummy.yaml
 config.json
 vault.bin
