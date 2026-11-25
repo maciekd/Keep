@@ -134,14 +134,16 @@ case "$COMMAND" in
 esac
 
 # The checkout as it stands, as a repository the installer can clone: a commit of the working tree
-# (the tracked and the untracked files, never the ignored ones — config.yaml, the logs) made in a
-# throwaway clone, so this checkout's index, branches and stash are not touched.
+# (the tracked and the untracked files, never the ignored ones — config.yaml, the logs — and never
+# a copy somebody made of config.yaml, whatever it is called: it holds the install's secrets) made
+# in a throwaway clone, so this checkout's index, branches and stash are not touched.
 bundle_worktree() {
   local work index tree commit
   work=$(mktemp -d)
   index="$work/index"
   cp "$(git rev-parse --git-path index)" "$index"
   GIT_INDEX_FILE="$index" git add -A
+  GIT_INDEX_FILE="$index" git rm -q --cached --ignore-unmatch -- ':(top,glob)config.yaml*' ':(top,glob)config.yml*'
   tree=$(GIT_INDEX_FILE="$index" git write-tree)
   commit=$(git commit-tree "$tree" -p HEAD -m "The working tree, for a clean-install test")
   git clone -q --shared --no-checkout . "$work/repo"
