@@ -1,11 +1,9 @@
-import queue
 import sys
 import threading
 import time
 from typing import Iterator, Optional, ClassVar, List, Tuple
 
-import numpy as np
-
+from .ClauseBatcher import speakable_units, to_pcm16_24k
 from .VoiceSynthesizer import VoiceSynthesizer
 from assistant.integration.Integration import Integration
 from common.logging import error, info, trace
@@ -19,11 +17,9 @@ class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
     Speaks Keep's replies with the Supertonic model on this machine's CPU: no network and no API
     key.
 
-    Runs the Supertonic ONNX model (Supertone/supertonic). It is batch-only, so LLM text chunks
-    are buffered and flushed at clause boundaries to keep first-audio latency low while
-    preserving prosodic context. Output is 24 kHz / mono / int16 PCM to match the rest of the
-    pipeline (Supertonic natively emits 44.1 kHz float32, which is resampled and packed to
-    int16)."""
+    Runs the Supertonic ONNX model (Supertone/supertonic). It is batch-only, so the LLM's text
+    is cut into clause and sentence units (ClauseBatcher) and its 44.1 kHz float32 audio packed
+    as the pipeline's 24 kHz int16 PCM."""
 
     CONFIG_SECTION = "supertonic"
 
@@ -35,11 +31,6 @@ class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
         return local_only_mode()
 
     SUPERTONIC_SAMPLE_RATE = 44100
-    OUTPUT_SAMPLE_RATE = 24000
-
-    CLAUSE_PUNCT = set(",.?!:;—-")
-    SENTENCE_PUNCT = set(".?!")
-    MIN_WORDS_FLUSH = 20  # safety net only — primary trigger is clause/sentence punctuation
 
     # Sleep before the None sentinel so the client/sounddevice can finish draining
     # its playback buffer. Without this, the tail of the last clause sometimes gets
@@ -187,40 +178,11 @@ class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
             self.audio_queue.put(None)
             return
 
-        buffer = ""
-        chunks_emitted = 0
         try:
-            while True:
-                if self.is_closed:
-                    break
-                try:
-                    chunk = self.text_queue.get(timeout=0.5)
-                except queue.Empty:
-                    continue
-
-                if chunk is None:
-                    if buffer.strip():
-                        steps = self._first_chunk_steps if chunks_emitted == 0 else self._total_steps
-                        self._synth_and_emit(buffer, tts, style, steps)
-                    break
-
-                if not chunk:
-                    continue
-                buffer += chunk
-
-                # Mode flips after the first emit: first chunk prioritises latency
-                # (split on earliest clause punct), subsequent chunks prioritise
-                # prosody (batch up to the latest sentence-end so the model has
-                # more context per call).
-                while True:
-                    is_first = chunks_emitted == 0
-                    mode = 'first' if is_first else 'batch'
-                    speakable, buffer = self._pop_speakable(buffer, mode)
-                    if speakable is None:
-                        break
-                    steps = self._first_chunk_steps if is_first else self._total_steps
-                    self._synth_and_emit(speakable, tts, style, steps)
-                    chunks_emitted += 1
+            # The opener takes fewer diffusion steps for a fast first sound; the batched
+            # units after it have the playback time to afford more.
+            for text, is_first in speakable_units(self.text_queue, lambda: self.is_closed):
+                self._synth_and_emit(text, tts, style, self._first_chunk_steps if is_first else self._total_steps)
         except Exception as e:
             error(f"Supertonic synthesis error: {e}")
         finally:
@@ -229,44 +191,6 @@ class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
             if not self.is_closed and self.END_OF_STREAM_GRACE_S > 0:
                 time.sleep(self.END_OF_STREAM_GRACE_S)
             self.audio_queue.put(None)
-
-    @classmethod
-    def _pop_speakable(cls, buffer: str, mode: str = 'first') -> Tuple[Optional[str], str]:
-        """Try to extract one speakable unit from the front of `buffer`.
-
-        mode='first'  — split at the earliest clause-punctuation boundary
-                        (",.?!:;—-"). Optimises for first-sound latency: flush
-                        as soon as any speakable fragment exists.
-        mode='batch'  — split at the **latest** sentence-end (".?!") in the
-                        buffer, batching multiple complete sentences into one
-                        synth call. Optimises for prosody (the model gets full
-                        sentence context) once we're already producing audio.
-
-        Both modes fall back to `MIN_WORDS_FLUSH` as a safety net so a
-        punctuation-free stream still flushes eventually. Returns
-        (speakable_or_None, remainder)."""
-        if mode == 'first':
-            for i, ch in enumerate(buffer):
-                if ch in cls.CLAUSE_PUNCT:
-                    return buffer[:i + 1], buffer[i + 1:]
-        else:  # 'batch' — find the rightmost sentence-end and flush through it
-            cut = -1
-            for i, ch in enumerate(buffer):
-                if ch in cls.SENTENCE_PUNCT:
-                    cut = i
-            if cut >= 0:
-                return buffer[:cut + 1], buffer[cut + 1:]
-
-        words = buffer.split()
-        if len(words) >= cls.MIN_WORDS_FLUSH:
-            # Flush all complete words, keep the trailing partial word (if buffer
-            # doesn't end on whitespace) so we never cut mid-word.
-            if buffer and not buffer[-1].isspace():
-                cut = buffer.rfind(' ')
-                if cut > 0:
-                    return buffer[:cut], buffer[cut:]
-            return buffer, ""
-        return None, buffer
 
     @staticmethod
     def _strip_unsupported_chars(text: str, tts) -> str:
@@ -317,7 +241,7 @@ class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
                 speed=self._speed,
                 silence_duration=0.0,
             )
-            pcm = self._to_pcm16_24k(wav)
+            pcm = to_pcm16_24k(wav, self.SUPERTONIC_SAMPLE_RATE)
         except Exception as e:
             error(f"Supertonic synth failed for {text!r}: {e}")
             return
@@ -332,31 +256,6 @@ class SupertonicVoiceSynthesizer(VoiceSynthesizer, Integration):
             dur_s = 0.0
         trace(f"Supertonic synth ({total_steps} steps): {text!r} ({len(text)} chars) → "
               f"{dur_s:.2f}s audio in {(time.time() - t0) * 1000:.0f}ms ({len(pcm)} bytes PCM)")
-
-    @classmethod
-    def _to_pcm16_24k(cls, wav) -> bytes:
-        """Convert Supertonic's float32 @ 44.1 kHz → int16 mono @ 24 kHz raw PCM bytes."""
-        arr = np.asarray(wav, dtype=np.float32)
-        if arr.ndim > 1:
-            # Supertonic returns shape (1, samples) — channels-first. Pick the longer
-            # axis as the sample axis and mean over the shorter (channel) axis so this
-            # works for either layout.
-            channel_axis = 0 if arr.shape[0] <= arr.shape[1] else 1
-            arr = arr.mean(axis=channel_axis)
-        if arr.size == 0:
-            return b""
-
-        # Linear resample 44100 → 24000. Speech-grade quality; no scipy dep needed.
-        src_n = arr.size
-        dst_n = int(round(src_n * cls.OUTPUT_SAMPLE_RATE / cls.SUPERTONIC_SAMPLE_RATE))
-        if dst_n <= 0:
-            return b""
-        xs = np.linspace(0.0, src_n - 1, dst_n, dtype=np.float64)
-        resampled = np.interp(xs, np.arange(src_n, dtype=np.float64), arr).astype(np.float32)
-
-        clipped = np.clip(resampled, -1.0, 1.0)
-        pcm = (clipped * 32767.0).astype(np.int16)
-        return pcm.tobytes()
 
     def _join_threads(self) -> None:
         if self.synthesis_thread and self.synthesis_thread.is_alive():

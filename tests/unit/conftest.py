@@ -219,6 +219,25 @@ def _no_real_accessibility():
 
 _accessibility_module._frameworks = _no_real_accessibility
 
+# Fish Local TTS fetches 24 GB from Hugging Face and loads them into the Mac's memory. Both go
+# through one function each, refused here; the tests put a fake hub and a fake model in their
+# place, and the folders the model and the install's own voice live in point away from this Mac.
+import interfaces.voice.tts.FishLocalModel as _fish_local_module
+
+
+def _no_real_fish_download(build, target):
+    raise RuntimeError(f"a unit test tried to download {build.repo} from Hugging Face")
+
+
+def _no_real_fish_load(path):
+    raise RuntimeError(f"a unit test tried to load the Fish Local model at {path} into memory")
+
+
+_fish_local_module._hub_download = _no_real_fish_download
+_fish_local_module._mlx_load = _no_real_fish_load
+_fish_local_module.MODELS_DIR = _NO_SUCH_MAC / "fish_local" / "models"
+_fish_local_module.VOICE_DIR = _NO_SUCH_MAC / "fish_local" / "voice"
+
 
 @pytest.fixture(autouse=True)
 def integrations_enabled_unless_said_otherwise():

@@ -6,6 +6,7 @@ from .CartesiaSonicVoiceSynthesizer import CartesiaSonicVoiceSynthesizer
 from .Chirp3VoiceSynthesizer import Chirp3VoiceSynthesizer
 from .ElevenLabsVoiceSynthesizer import ElevenLabsVoiceSynthesizer
 from .FishAudioVoiceSynthesizer import FishAudioVoiceSynthesizer
+from .FishLocalVoiceSynthesizer import FishLocalVoiceSynthesizer
 from .GeminiVoiceSynthesizer import GeminiVoiceSynthesizer
 from .GrokVoiceSynthesizer import GrokVoiceSynthesizer
 from .SupertonicVoiceSynthesizer import SupertonicVoiceSynthesizer
@@ -13,7 +14,8 @@ from .VoiceSynthesizer import VoiceSynthesizer
 
 # Every TTS engine, in the order a request tries them: the first one that is enabled in
 # `enabled_integrations` and has its config keys speaks. ElevenLabs is on by default, so a
-# voice install with only its key speaks through it; the others are opt-in alternatives.
+# voice install with only its key speaks through it; the others are opt-in alternatives. Of the
+# two local ones Fish Local stands first: while its model is not ready, Supertonic speaks.
 ENGINES: list[type] = [
     ElevenLabsVoiceSynthesizer,
     GeminiVoiceSynthesizer,
@@ -21,6 +23,7 @@ ENGINES: list[type] = [
     CartesiaSonicVoiceSynthesizer,
     FishAudioVoiceSynthesizer,
     GrokVoiceSynthesizer,
+    FishLocalVoiceSynthesizer,
     SupertonicVoiceSynthesizer,
 ]
 
@@ -36,7 +39,7 @@ def engine_order(lang: str | None) -> list[type]:
 
 def create_voice(lang: str | None) -> VoiceSynthesizer | None:
     """Build the TTS synthesizer for a request language: the first engine in engine_order
-    that is enabled and configured, behind the on-disk CachedVoiceSynthesizer. None when
+    that is enabled, ready and configured, behind the on-disk CachedVoiceSynthesizer. None when
     no engine can speak — the request then runs text-only, which DialogManager handles.
 
     Every call returns a fresh instance. The backends are cheap to construct (they connect
@@ -51,6 +54,9 @@ def create_voice(lang: str | None) -> VoiceSynthesizer | None:
         name = cls.config_name()
         if not cls.enabled(config):
             skipped.append(f"{name} disabled")
+            continue
+        if not cls.ready():
+            skipped.append(f"{name} not ready ({cls.not_ready_reason()})")
             continue
         impl = cls()
         missing = impl.missing_config_keys()

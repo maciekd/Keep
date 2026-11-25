@@ -278,3 +278,30 @@ def test_a_local_ai_runner_that_names_no_home_is_not_given_this_macs_omlx_folder
 def test_the_local_ai_runner_reaches_nothing_outside_the_process(tmp_path, call, what):
     with pytest.raises(RuntimeError, match=what):
         call(_a_runner(tmp_path))
+
+
+# Guarded since Fish Local TTS (interfaces/voice/tts/FishLocalModel): its download and its load
+# each go through one function, which the conftest refuses.
+@pytest.mark.unit
+@pytest.mark.parametrize("call, what", [
+    (lambda fish, build, folder: fish._hub_download(build, folder), "Hugging Face"),
+    (lambda fish, build, folder: fish._mlx_load(folder), "into memory"),
+], ids=["the download", "the load"])
+def test_the_fish_local_model_is_neither_fetched_nor_loaded(tmp_path, call, what):
+    from interfaces.voice.tts import FishLocalModel as fish
+    with pytest.raises(RuntimeError, match=what):
+        call(fish, fish.BUILDS[fish.DEFAULT_QUANT], tmp_path)
+
+
+@pytest.mark.unit
+def test_an_unstubbed_fish_local_run_fails_without_touching_this_mac(tmp_path, monkeypatch):
+    """What a test that forgot its fakes gets: a failed run with the refusal as its reason,
+    and folders that are not this Mac's model cache or the install's voice."""
+    from pathlib import Path
+    from interfaces.voice.tts import FishLocalModel as fish
+    assert Path.home() / ".cache" not in fish.MODELS_DIR.parents
+    assert fish.VOICE_DIR != fish.CACHE_DIR / "fish_local"
+    monkeypatch.setattr(fish, "MODELS_DIR", tmp_path)
+    run = fish.FishLocalModel(fish.Settings())
+    with pytest.raises(RuntimeError, match="Hugging Face"):
+        run.prepare()

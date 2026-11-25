@@ -10,7 +10,8 @@
 # Use the names list_integrations shows: Arlo, Aseko Pool, CalDAV, Google, Google Docs, iCloud, IMAP Mail, iMessage, Indigo,
 # HEOS, Microsoft 365, Philips Hue, Photos, Plejd, Reminders, Ring, Self Improvement, Sonos, Telegram Feed, Tesla, X, YR Weather.
 # The TTS engines voice speaks through are integrations too — ElevenLabs TTS (on by default on cloud AI),
-# Gemini TTS, Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Supertonic TTS (on by default instead of
+# Gemini TTS, Chirp 3 HD, Cartesia Sonic TTS, Fish Audio TTS, Grok TTS, Fish Local TTS (a local model, see
+# tts.fish_local), Supertonic TTS (on by default instead of
 # ElevenLabs with local_backend set, so nothing spoken leaves the machine): a request speaks through the
 # first enabled and configured one, Swedish preferring Gemini TTS, so a Swedish install enables Gemini TTS
 # (needs google_service_account) and a different English engine means enabling it and disabling
@@ -700,7 +701,7 @@ language: en-US         # drives TTS synthesis language for every engine that ac
 
 tts:
   # Emotion tags: the LLM directs the voice with audio tags ([laughs], [whispers], [sarcastic]) and the
-  # engine performs them. Needs an engine that can (ElevenLabs v3/v4, Cartesia, Gemini, Fish); off, the
+  # engine performs them. Needs an engine that can (ElevenLabs v3/v4, Cartesia, Gemini, Fish, Fish Local); off, the
   # LLM is not told about tags and any it writes are stripped before synthesis. Optional, default false.
   emotions: false
   # Names the LLM addresses people by. A listed name loses the comma before it (", Sam" is
@@ -718,6 +719,16 @@ tts:
   fish:
     model: s2.1-pro-free # free through 2026-08-31; also: s2.1-pro, s2-pro, s1
     reference_id: YOUR_FISH_AUDIO_VOICE_REFERENCE_ID  # voice id from the fish.audio voice library
+  # Fish Local TTS: Fish Audio's open-weight Drama 3 on this Mac's GPU (Apple Silicon), nothing spoken leaves
+  # the machine. enable_integration("Fish Local TTS") downloads the model once (list_integrations shows the
+  # progress; Supertonic or the next enabled engine speaks meanwhile). The weights are under the Fish Audio
+  # Community License, which is yours to meet (commercial use is free under USD 500,000 of annual revenue).
+  # fish_local:
+  #   quant: 4bit    # 3bit | 4bit | 8bit: a 20 / 24 / 42 GB download, for a Mac with 32 / 48 / 64 GB of memory
+  #   # Without a voice the first start makes one of this install's own (cache/fish_local/voice.wav; delete it
+  #   # and restart_integration for another). Or a clip of about 15 s to speak in the voice of:
+  #   voice: ~/voices/mine.wav
+  #   voice_text: "What is said in the clip."
   supertonic:
     voice: M1            # voice style name; see Supertone/supertonic on HuggingFace for the full list
     first_chunk_steps: 5 # diffusion steps for the opener — fewer = lower first-audio latency

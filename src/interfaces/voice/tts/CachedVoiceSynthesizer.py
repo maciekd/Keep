@@ -32,6 +32,12 @@ class CachedVoiceSynthesizer(VoiceSynthesizer):
     def impl_name(self) -> str:
         return self.impl.impl_name()
 
+    def ready(self) -> bool:
+        return self.impl.ready()
+
+    def not_ready_reason(self) -> str:
+        return self.impl.not_ready_reason()
+
     def set_request_language(self, lang):
         super().set_request_language(lang)
         self.impl.set_request_language(lang)
