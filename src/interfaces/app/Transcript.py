@@ -228,11 +228,12 @@ class Transcript:
         self._save_timer.daemon = True
         self._save_timer.start()
 
-    def flush(self) -> None:
-        """Write the log to its file now."""
+    def flush(self, closed: bool = False) -> None:
+        """Write the log to its file now. *closed* says nothing follows: only such a file is
+        the whole log, so only it is continued under its name by the next run."""
         with self._lock:
             self._save_timer = None
-            state = {"log": self.log, "seq": self._seq, "floor": self._floor,
+            state = {"log": self.log, "closed": closed, "seq": self._seq, "floor": self._floor,
                      "removed": self._removed, "entries": list(self._entries.values())}
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -251,11 +252,20 @@ class Transcript:
             state = json.loads(self._path.read_text(encoding="utf-8"))
             self._entries = {entry["item"]["id"]: entry for entry in state["entries"]}
             self._removed = {item_id: int(seq) for item_id, seq in state["removed"].items()}
-            self._seq, self._floor, self.log = int(state["seq"]), int(state["floor"]), state["log"]
+            self._seq, self._floor, log = int(state["seq"]), int(state["floor"]), state["log"]
+            closed = state.get("closed") is True
         except (OSError, ValueError, KeyError, TypeError) as e:
             error(f"App transcript: {self._path} is unreadable ({e}), starting an empty log")
             self._entries, self._removed, self._seq, self._floor = {}, {}, 0, 0
             return
         with self._lock:
             self._trim()
+        if closed:
+            self.log = log
+            self.flush()    # open again: a run that is killed must not leave a file that says closed
+        else:
+            # The file was saved up to SAVE_DELAY_SECONDS behind a run that never closed it, so
+            # numbers above its last may be in a phone already: under a new name every cursor
+            # starts over instead of skipping what reuses them.
+            info(f"App transcript: {self._path.name} was not closed by the last run, continuing as a new log")
         info(f"App transcript: {len(self._entries)} item(s) loaded, at {self._seq}")
