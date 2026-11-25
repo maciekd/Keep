@@ -587,13 +587,20 @@ class ChatHub(SingletonMixin):
             self._pending_secrets.pop(token, None)
         return result
 
-    def claim_secret(self, transport: ChatTransport, conversation, value: str, who: str = "user") -> bool:
+    def claim_secret(self, transport: ChatTransport, conversation, value: str, who: str = "user",
+                     token: Optional[str] = None) -> bool:
         """A transport offers an incoming text: False when no secret prompt is open in that
         conversation (the text is ordinary chat), True when this call consumed it — the
-        transport must then drop the text. The value goes to `accept` and nowhere else."""
+        transport must then drop the text. The value goes to `accept` and nowhere else. A
+        transport whose prompt is a field of its own names the prompt's *token*: a value typed
+        into another prompt than the open one is not taken."""
         with self._approvals_lock:
             entry = self._pending_secret_at(transport, conversation)
             if entry is None:
+                return False
+            if token is not None and token != entry["token"]:
+                info(f"Secret [{entry['token'][:8]}]: a value for another prompt [{token[:8]}] from "
+                     f"{transport.name} [{conversation}] not taken")
                 return False
             token = entry["token"]
             if entry["future"].done() or entry["claiming"]:

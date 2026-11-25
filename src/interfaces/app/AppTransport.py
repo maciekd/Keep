@@ -215,7 +215,7 @@ class AppTransport(ChatTransport):
         if value is None:
             taken = self._hub.cancel_secret(token, "app")
         else:
-            taken = self._hub.claim_secret(self, CONVERSATION, value, "app")
+            taken = self._hub.claim_secret(self, CONVERSATION, value, "app", token=token)
         if not taken:
             self._close_stale(KIND_SECRET, token)
         return taken

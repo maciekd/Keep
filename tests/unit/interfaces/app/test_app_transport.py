@@ -250,6 +250,21 @@ class TestSecrets:
         assert "4111" not in "".join(path.read_text() for path in transcript._path.parent.glob("*.json"))
         assert hub.transcript == []
 
+    def test_a_value_typed_into_an_expired_prompt_is_not_handed_to_the_one_open_now(self, hub, transport, transcript):
+        seen, result = [], {}
+        stale = transport.send_secret_prompt(CONVERSATION, "expired-token", "Router password", "")
+        thread = threading.Thread(target=lambda: result.update(
+            d=hub.request_secret("Card number", "", lambda v: seen.append(v) or "Stored", timeout=FAILURE_BOUND)), daemon=True)
+        thread.start()
+        assert wait_until(lambda: kinds(transcript) == ["secret", "secret"])
+        assert transport.answer_secret("expired-token", "hunter2") is False
+        assert seen == [] and transcript.item(stale)["outcome"]
+        open_now = transcript.items()[1]
+        assert not open_now["outcome"]
+        assert transport.answer_secret(open_now["token"], None)
+        thread.join(timeout=FAILURE_BOUND)
+        assert result["d"] == "cancel"
+
     def test_a_dismissed_prompt_cancels_the_request(self, hub, transport, transcript):
         result = {}
         thread = threading.Thread(target=lambda: result.update(
