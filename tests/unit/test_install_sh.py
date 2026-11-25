@@ -41,12 +41,14 @@ DOUBLES = Path(__file__).parent / 'data' / 'install_sh'
 REPO = INSTALL_SH.parent
 # `python_steps` as install.sh has it, but for the Python and the tree: this suite's own, on the
 # harness's KEEP_DIR. In a session of its own, so that it has no terminal to ask on whatever pytest
-# was started from.
+# was started from. The steps run here reach no network: `requests` is the refusal in NO_NETWORK,
+# where the real package's import was most of the process's time.
+NO_NETWORK = DOUBLES / 'no_network'
 REAL_PYTHON_STEPS = (
     'python_steps() {\n'
     '  KEEP_DIR="$KEEP_DIR" KEEP_INSTALL_BRANCH="$BRANCH" KEEP_INSTALL_ROLE="$ROLE" KEEP_INSTALL_LOG="$LOG" \\\n'
     '    KEEP_INSTALL_TELEMETRY_ID="$TELEMETRY_ID" KEEP_INSTALL_STEP="$STEP" KEEP_INSTALL_STEPS="$TOTAL_STEPS" \\\n'
-    f'    PYTHONPATH="{REPO}/src" "{sys.executable}" -P -c \'import os, runpy; os.setsid(); '
+    f'    PYTHONPATH="{NO_NETWORK}:{REPO}/src" "{sys.executable}" -P -c \'import os, runpy; os.setsid(); '
     'runpy.run_module("common.install", run_name="__main__")\' </dev/null\n'
     '}\n')
 BAR_RE = re.compile(r'^([█░]*) +(\d+)%(?: · [^·]* left)? · (.*)$')
@@ -516,7 +518,9 @@ class TestWhetherThereIsATerminal:
         assert result.stdout.endswith('TTY=[/dev/tty]'), result.stdout + result.stderr
 
     def test_a_satellite_installs_without_a_terminal_and_answers_this_mac_only(self, harness):
-        main_on_the_real_terminal_check = MAIN.replace('init_ui() { real_init_ui; TTY=""; }\n', '')
+        """The summary asks nobody anything and has its tests in TestSatelliteInstall: left out here,
+        where a session of its own makes the run a fork of the worker and the dearest of the file."""
+        main_on_the_real_terminal_check = MAIN.replace('init_ui() { real_init_ui; TTY=""; }\n', 'summary() { :; }\n')
         result = harness.run(main_on_the_real_terminal_check, no_terminal=True, KEEP_ROLE=SATELLITE, KEEP_NO_TELEMETRY='1')
         assert result.returncode == 0, result.stdout
         config = yaml.safe_load((harness.keep_dir / 'config.yaml').read_text())
@@ -751,8 +755,11 @@ class TestTelemetry:
 # the role, the telemetry, the step counter and the summary are the real ones. The terminal is
 # taken away, so nothing here can wait on a prompt. The steps Python does are the real package for
 # a satellite, whose config asks nobody anything; for a server, whose key step would ask Anthropic,
-# they are a stand-in that prints the two step headers and leaves a config.yaml.
+# they are a stand-in that prints the two step headers and leaves a config.yaml. What main() asks
+# the machine for its install report is answered here too — the Mac's version and chip, and git about
+# a checkout no step made: three processes a run, and the ones that put a satellite's run over 100 ms.
 MAIN = (
+    'sw_vers() { echo 15.1; }; sysctl() { echo "Apple M4"; }; git() { return 1; }\n'
     'for step in check_mac ensure_clt ensure_browser ensure_python ensure_repo ensure_venv install_requirements launch; do\n'
     '  eval "$step() { echo \\"ran:$step\\"; }"\n'
     'done\n'
