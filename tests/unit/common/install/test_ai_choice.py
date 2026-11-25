@@ -143,6 +143,15 @@ class TestTheVariable:
         assert asking.choose() == CLOUD
         assert asking.terminal.prompts == [] and not asking.explicit
 
+    @pytest.mark.parametrize("env", [{'KEEP_AI': 'cloud'}, A_KEY], ids=["cloud by name", "a key in the environment"])
+    def test_an_omlx_whose_settings_cannot_be_read_does_not_stop_an_install_on_claude(self, machine, monkeypatch, env):
+        def unreadable(self):
+            raise InstallFailed("settings.json cannot be read (JSONDecodeError).")
+        monkeypatch.setattr(AiChoice, 'runner', lambda self: type('Runner', (), {'downloaded_gb': unreadable})())
+        asking = choice(['2'], **env)
+        assert asking.choose() == CLOUD
+        assert asking.terminal.prompts == []
+
     def test_any_other_value_stops_the_install_naming_it(self, machine):
         with pytest.raises(InstallFailed) as failure:
             choice(['2'], KEEP_AI='ollama').choose()

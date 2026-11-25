@@ -69,7 +69,7 @@ class AiChoice:
             self.lacks = "apple_silicon"
             return "this Mac has an Intel chip, and the model needs Apple Silicon"
         version, memory, free = Platform.macos_version(), Platform.memory_gb(), self.free_gb()
-        have = min(self.runner().downloaded_gb(), LocalRunner.DOWNLOAD_GB)
+        have = min(self.downloaded_gb(), LocalRunner.DOWNLOAD_GB)
         if version < MIN_MACOS:
             self.lacks = "macos"
             return f"this Mac runs macOS {version or '?'}, and local AI needs macOS {MIN_MACOS}"
@@ -80,6 +80,15 @@ class AiChoice:
             self.lacks = "disk"
             return f"the disk has {free} GB free, and local AI needs {MIN_FREE_GB - have} GB"
         return ""
+
+    def downloaded_gb(self) -> int:
+        """What is here of the model already. An oMLX whose settings cannot be read counts as
+        none: that is the local setup's failure to report, not one of an install on Claude."""
+        try:
+            return self.runner().downloaded_gb()
+        except InstallFailed as e:
+            self.terminal.log(f"AI choice: what is downloaded of the model is unknown ({e}), counting none")
+            return 0
 
     def runner(self) -> "LocalRunner.LocalRunner":
         return LocalRunner.LocalRunner(self.terminal, self.env)
