@@ -135,7 +135,7 @@ class AppTransport(ChatTransport):
     def stop(self) -> None:
         self._hub = None
         self.transcript.set_working(None)
-        self.transcript.flush()
+        self.transcript.flush(closed=True)
 
     def _settle(self) -> None:
         """What the last run of the server left unfinished is closed, so no app shows a reply

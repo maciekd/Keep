@@ -206,12 +206,33 @@ class TestFile:
         transcript.upsert("b", "assistant", html="Hello", final=True)
         cursor = replay(transcript)[-1]["seq"]
         transcript.remove("a")
-        transcript.flush()
+        transcript.flush(closed=True)
         again = Transcript(tmp_path, autosave=False, clock=clock)
         assert again.log == transcript.log
         assert ids(replay(again, after=cursor)) == [("removed", "a")]
         again.upsert("c", "user", text="more")
         assert [line["seq"] for line in replay(again, after=cursor)] == [cursor + 1, cursor + 2]
+
+    def test_a_run_that_was_killed_after_its_last_save_is_not_continued_under_its_numbers(self, transcript, tmp_path, clock):
+        transcript.upsert("a", "user", text="hi")
+        transcript.flush()
+        transcript.upsert("b", "assistant", html="Hello", final=True)     # never saved: the run is killed
+        cursor, log = replay(transcript)[-1]["seq"], transcript.log
+        again = Transcript(tmp_path, autosave=False, clock=clock)
+        again.upsert("c", "user", text="more")
+        lines = replay(again, after=cursor, log=log)
+        assert lines[0] == {"reset": True} and ids(lines[1:]) == ["a", "c"]
+
+    def test_a_run_killed_before_its_first_save_does_not_pass_for_the_closed_one_before_it(self, transcript, tmp_path, clock):
+        transcript.upsert("a", "user", text="hi")
+        transcript.flush(closed=True)
+        killed = Transcript(tmp_path, autosave=False, clock=clock)
+        killed.upsert("b", "user", text="seen by a phone, never saved")
+        cursor = replay(killed)[-1]["seq"]
+        again = Transcript(tmp_path, autosave=False, clock=clock)
+        again.upsert("c", "user", text="more")
+        lines = replay(again, after=cursor, log=killed.log)
+        assert lines[0] == {"reset": True} and ids(lines[1:]) == ["a", "c"]
 
     def test_an_unreadable_file_starts_an_empty_log(self, tmp_path, clock):
         (tmp_path / transcript_module.FILE_NAME).write_text("{not json")
