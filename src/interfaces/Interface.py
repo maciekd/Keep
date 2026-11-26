@@ -8,7 +8,7 @@ register routes on), then console, voice, telegram, app, imessage. `stop()` runs
 from abc import ABC, abstractmethod
 
 from common import Platform
-from common.logging import info, note
+from common.logging import error, info, note, trace
 
 # Whether the sockets answer the network or only this Mac: an install starts loopback-only and
 # the assistant may open it (`config_set`), read at startup like the enabled flags.
@@ -28,6 +28,25 @@ def bind_host(config, what: str) -> str:
     info(f"{what} answers {here} only ({LAN_ACCESS_KEY} is off); phones and a TUI on another "
          f"machine need the key on.")
     return LOOPBACK
+
+
+SHUTDOWN_HOOKS = "keep_shutdown_hooks"
+
+
+def on_shutdown(app, hook) -> None:
+    """Have *hook* called the moment the server is asked to stop, before the HTTP server waits
+    for its connections: what a response that never ends by itself needs to end."""
+    app.extensions.setdefault(SHUTDOWN_HOOKS, []).append(hook)
+
+
+def run_shutdown_hooks(app) -> None:
+    hooks = app.extensions.get(SHUTDOWN_HOOKS, [])
+    trace(f"Shutdown: {len(hooks)} hook(s) to tell")
+    for hook in hooks:
+        try:
+            hook()
+        except Exception as e:
+            error(f"Shutdown: a hook failed with {type(e).__name__}: {e}", e)
 
 
 class Interface(ABC):

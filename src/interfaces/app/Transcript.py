@@ -47,6 +47,11 @@ class Subscription:
         self._wake = wake
         self._pending: dict = {}
         self._lock = threading.Lock()
+        self.ended = False      # the server is stopping: the stream of this listener ends
+
+    def end(self) -> None:
+        self.ended = True
+        self._wake()
 
     def push(self, key, line: dict) -> None:
         with self._lock:
@@ -78,6 +83,8 @@ class Transcript:
         self._working: Optional[dict] = None
         self._subscriptions: list[Subscription] = []
         self._save_timer: Optional[threading.Timer] = None
+        self._closed = False        # the file says nothing follows, and nothing has since
+        self._ended = False
         self.log = new_id()
         self._load()
 
@@ -155,6 +162,7 @@ class Transcript:
         subscription the later ones arrive in."""
         with self._lock:
             subscription = Subscription(wake)
+            subscription.ended = self._ended
             self._subscriptions.append(subscription)
             lines = [{"log": self.log}] + self._replay(after, log)
             if self._working is not None:
@@ -169,6 +177,15 @@ class Transcript:
             if subscription in self._subscriptions:
                 self._subscriptions.remove(subscription)
             info(f"App transcript: a listener left ({len(self._subscriptions)} listening)")
+
+    def end_listeners(self) -> None:
+        """The server is stopping: every listener's stream ends, and one that joins from now
+        on gets what it missed and ends too."""
+        with self._lock:
+            self._ended = True
+            info(f"App transcript: ending the stream of {len(self._subscriptions)} listener(s)")
+            for subscription in self._subscriptions:
+                subscription.end()
 
     def listeners(self) -> int:
         with self._lock:
@@ -223,6 +240,14 @@ class Transcript:
     # --- the file -----------------------------------------------------------------------------
 
     def _changed(self) -> None:
+        if self._closed:
+            # A change after the closing save (a reply cancelled by the stop settles late): the
+            # file must not stay closed behind it, or the next run would continue this log
+            # below a number a phone already holds.
+            info("App transcript: changed after it was closed, saving it as open again")
+            self._closed = False
+            self.flush()
+            return
         if not self._autosave or self._save_timer is not None:
             return
         self._save_timer = threading.Timer(SAVE_DELAY_SECONDS, self.flush)
@@ -234,7 +259,13 @@ class Transcript:
         """Write the log to its file now. *closed* says nothing follows: only such a file is
         the whole log, so only it is continued under its name by the next run."""
         with self._lock:
-            self._save_timer = None
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+                self._save_timer = None
+            if self._closed and not closed:
+                trace("App transcript: a save due after the closing one, nothing has changed since")
+                return
+            self._closed = closed
             state = {"log": self.log, "closed": closed, "seq": self._seq, "floor": self._floor,
                      "removed": self._removed, "entries": list(self._entries.values())}
             try:

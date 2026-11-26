@@ -13,13 +13,17 @@ from common.ConfigManager import config
 from common.logging import error, info, note, trace
 from interfaces.http import CrossSiteGuard
 from interfaces.http.routes import HttpDeps, register as register_stream_route
-from interfaces.Interface import Interface, bind_host
+from interfaces.Interface import Interface, bind_host, run_shutdown_hooks
 
 # Seconds after serve() starts before freezing the startup heap: late enough that the
 # boot-time model loads (Whisper warm-up, SpeechBrain, Supertonic — all resident within
 # ~15s) are included, yet still inside the mics' 60s CAPTURE_DROP_STARTUP_GRACE so the
 # freeze's own final collect can't log a spurious AUDIO DROP.
 GC_FREEZE_DELAY = 30.0
+# How long hypercorn has to return once the shutdown is asked for. Its `wait_closed` waits
+# for every open connection (Python 3.12.1+), so one response that never ends would keep
+# serve() — and with it every stop step of the launcher — waiting until start.sh's SIGKILL.
+SHUTDOWN_GRACE_SECONDS = 3.0
 
 
 def freeze_startup_heap():
@@ -48,6 +52,7 @@ class HttpInterface(Interface):
         self.app = None
         self.deps: HttpDeps | None = None
         self._shutdown_event: asyncio.Event | None = None
+        self._hooks_told = False
 
     def start(self, assistant, app=None) -> None:
         from quart import Quart
@@ -100,11 +105,35 @@ class HttpInterface(Interface):
         info(f"Web server listening on {host}:{self.port}...")
         note("Ready to handle requests now.")
         trace("(various subsystems now starting in background)")
-        await serve(self.app, hypercorn_config, shutdown_trigger=self._shutdown_event.wait)
+        await self._serve_until_shutdown(serve(self.app, hypercorn_config, shutdown_trigger=self._shutdown_event.wait))
+
+    async def _serve_until_shutdown(self, serving) -> None:
+        """Await *serving* (hypercorn's serve), and no longer than `SHUTDOWN_GRACE_SECONDS`
+        past the shutdown request."""
+        serving = asyncio.ensure_future(serving)
+        asked = asyncio.ensure_future(self._shutdown_event.wait())
+        try:
+            await asyncio.wait({serving, asked}, return_when=asyncio.FIRST_COMPLETED)
+            if not serving.done():
+                await asyncio.wait({serving}, timeout=SHUTDOWN_GRACE_SECONDS)
+            if serving.done():
+                trace("HTTP server returned by itself")
+                serving.result()
+                return
+            note(f"HTTP server still waiting for a connection {SHUTDOWN_GRACE_SECONDS:.0f}s after the shutdown "
+                 f"was asked for — not waited for any longer")
+        finally:
+            asked.cancel()
+            if not serving.done():
+                serving.cancel()
+                await asyncio.gather(serving, return_exceptions=True)
 
     def request_shutdown(self) -> None:
         if self._shutdown_event is not None:
             self._shutdown_event.set()
+        if self.app is not None and not self._hooks_told:
+            self._hooks_told = True
+            run_shutdown_hooks(self.app)
 
     def _install_signal_handlers(self) -> None:
         # Own SIGTERM/SIGINT instead of hypercorn's default handlers (hypercorn only
