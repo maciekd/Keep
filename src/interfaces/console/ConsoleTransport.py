@@ -210,7 +210,7 @@ class ConsoleTransport(ChatTransport):
     def send_command_line(self, conversation, text: str) -> Any:
         return self.pane.add_notice(RichText.command_line(text))
 
-    def finish_command_line(self, conversation, ref, text: str, detail: str) -> None:
+    def finish_command_line(self, conversation, ref, text: str, detail: str, result=None) -> None:
         self.pane.set_detail(ref, detail)
 
     def set_status_line(self, conversation, html: Optional[str]) -> None:

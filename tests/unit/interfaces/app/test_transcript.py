@@ -149,6 +149,22 @@ class TestCap:
         transcript.upsert("new", "user", text="now", images=[])
         assert transcript.media(media_id) is None
 
+    def test_a_dropped_command_takes_the_file_of_its_result_along(self, transcript, clock):
+        url = transcript.add_media("Battery 78 %".encode(), "txt")
+        transcript.upsert("ran", "command", text="Checking the car", state="done", detail="done", result=url, images=[])
+        media_id = url.rsplit("/", 1)[1]
+        assert transcript.media(media_id)[0] == b"Battery 78 %"
+        clock.now += transcript_module.MAX_AGE_SECONDS + 1
+        transcript.upsert("new", "user", text="now")
+        assert transcript.media(media_id) is None
+
+    def test_a_command_without_a_result_drops_cleanly(self, transcript, clock):
+        transcript.upsert("ran", "command", text="Turning on the kitchen", state="done", detail="done", result="", images=[])
+        transcript.upsert("old", "command", text="Checking the car", state="running", detail="")
+        clock.now += transcript_module.MAX_AGE_SECONDS + 1
+        transcript.upsert("new", "user", text="now")
+        assert [item["id"] for item in transcript.items()] == ["new"]
+
 
 class TestMedia:
     @pytest.mark.parametrize("media_id", ["../app_chat.json", "..%2Fconfig.yaml", "", "abc.jpg", "/etc/passwd"])

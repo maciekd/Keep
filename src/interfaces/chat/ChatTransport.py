@@ -127,9 +127,10 @@ class ChatTransport(ABC):
         self.send_text(conversation, RichText.command_line(text), silent=True, preview=False)
         return None
 
-    def finish_command_line(self, conversation, ref, text: str, detail: str) -> None:
+    def finish_command_line(self, conversation, ref, text: str, detail: str, result=None) -> None:
         """The command echoed as `ref` finished: show *detail* ("done after 4s, received
-        345 chars") next to it. Optional."""
+        345 chars") next to it. *result* is what it handed back for the model — a text, a
+        block list of texts and images, or None — for a transport that shows it. Optional."""
 
     # --- the single-line ephemeral "• doing X" status; None clears it -----------------------
 

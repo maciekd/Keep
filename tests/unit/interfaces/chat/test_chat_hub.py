@@ -236,12 +236,17 @@ class TestCommandNotification:
 class AnnotatingTransport(FakeTransport):
     """A transport that can annotate a command line after posting it."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.results = []       # what each finished command handed back, as the hub passed it on
+
     def send_command_line(self, conversation, text):
         self.calls.append(("cmd", conversation, text))
         return 7
 
-    def finish_command_line(self, conversation, ref, text, detail):
+    def finish_command_line(self, conversation, ref, text, detail, result=None):
         self.calls.append(("cmd_done", conversation, ref, text, detail))
+        self.results.append(result)
 
 
 @pytest.mark.unit
@@ -257,6 +262,16 @@ class TestCommandEcho:
         assert console.calls == [("cmd", "tui", "Reading x")]
         hub.complete_command_notification(handle, "done after 4s, received 345 chars")
         assert console.calls[-1] == ("cmd_done", "tui", 7, "Reading x", "done after 4s, received 345 chars")
+        assert console.results == [None]
+
+    def test_the_result_is_handed_to_the_transport_and_not_kept(self, hub, console):
+        blocks = [{"type": "text", "text": "The gate is open."}]
+        handle = hub.send_command_notification("Reading x", source="Console", conversation="tui")
+        hub.complete_command_notification(handle, "done after 4s", blocks)
+        assert console.results == [blocks]
+        # A long result must not live on in the hub: nothing of the handle refers to it.
+        assert not any(value is blocks for value in vars(handle).values())
+        assert handle not in hub._running_commands
 
     def test_a_plain_transport_gets_a_silent_message_and_no_annotation(self, hub, transport):
         handle = hub.send_command_notification("Turning on kitchen…", ephemeral=False)

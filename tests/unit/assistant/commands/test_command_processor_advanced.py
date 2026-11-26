@@ -2024,7 +2024,8 @@ class TestCommandEchoLifecycle:
         processor.commands.run = lambda command, params: order.append("run")
         fake_bot = MagicMock()
         fake_bot.send_command_notification = lambda *a, **kw: (order.append("echo"), "handle")[1]
-        fake_bot.complete_command_notification = lambda handle, detail: order.append(("done", handle, detail))
+        fake_bot.complete_command_notification = \
+            lambda handle, detail, result=None: order.append(("done", handle, detail, result))
 
         with patch('assistant.Notifier._notifier', fake_bot):
             processor.invoke_command("turn_on", ["kitchen"], self._dialog_manager())
@@ -2034,6 +2035,7 @@ class TestCommandEchoLifecycle:
         assert order[:2] == ["echo", "run"]
         assert order[2][:2] == ("done", "handle") and order[2][2].startswith("done")
         assert "received" not in order[2][2]
+        assert order[2][3] is None      # an inline command that worked hands the model nothing
 
     def test_inline_command_error_completes_as_failed(self, monkeypatch):
         monkeypatch.setattr('assistant.commands.CommandProcessor.LOCAL_DEVELOPMENT_MODE', False)
@@ -2047,8 +2049,9 @@ class TestCommandEchoLifecycle:
             processor.command_queue.join()
         processor.kill()
 
-        handle, detail = fake_bot.complete_command_notification.call_args.args
+        handle, detail, result = fake_bot.complete_command_notification.call_args.args
         assert handle == "handle" and detail.startswith("failed")
+        assert result == "no such light"    # the reason is what the echo's chat can show
 
     def test_background_command_completes_its_echo_with_what_it_received(self, monkeypatch):
         monkeypatch.setattr('assistant.commands.CommandProcessor.LOCAL_DEVELOPMENT_MODE', False)
@@ -2067,8 +2070,9 @@ class TestCommandEchoLifecycle:
         processor.kill()
 
         fake_bot.complete_command_notification.assert_called_once()
-        handle, detail = fake_bot.complete_command_notification.call_args.args
+        handle, detail, result = fake_bot.complete_command_notification.call_args.args
         assert handle == "handle" and detail.endswith(", received 345 chars")
+        assert result == "x" * 345      # what the function returned travels with its echo
         # Handed to the background worker: the command worker must not complete it too.
         assert processor.commands._current_echo is None
 

@@ -55,7 +55,7 @@ appeared under, which a later change does not move), and by kind —
 | `user` | `text`, `images` (each `url`, `width`, `height`; the bytes under `/app/media/`) | `/app/send` (the id is the app's) |
 | `assistant` | `html`, `final` | a `Draft`: `update` / `finalize` / `discard` |
 | `thinking` | `text`, `done`, `seconds` | `Progress.thinking_text` |
-| `command` | `text`, `state` (`running` `done` `failed`), `detail` | `send_command_line` / `finish_command_line` |
+| `command` | `text`, `state` (`running` `done` `failed`), `detail`; once it has ended `result` (the route to the text it handed back, under `/app/media/`; `""` for none) and `images` (its pictures, as a `user` item's) | `send_command_line` / `finish_command_line` |
 | `notice` | `html` | `send_text` — `post_message`, the check's findings, apologies |
 | `media` | `media` (`photo` `video`), `url`, `poster`, `caption`, `width`, `height`, `album` | `send_photo` / `_album` / `send_video` |
 | `approval` | `token`, `title`, `details`, `outcome` | `send_approval_prompt` / `close_…` |
@@ -77,7 +77,7 @@ state wins). Whole, not appended: `RichText.repair_markdown` rewrites text that 
 | `POST /app/stop` | — `ChatSession.cancel()` |
 | `POST /app/approval` | `token`, `decision` |
 | `POST /app/secret` | `token`, `value` (null cancels) — goes to `hub.claim_secret`, never logged, never an item |
-| `GET /app/media/<id>` | the bytes of a `media` item, with byte ranges (a phone's video player asks for them) |
+| `GET /app/media/<id>` | the bytes of a `media` item, with byte ranges (a phone's video player asks for them); the text of a command's result |
 
 An answer to a question that is no longer open is a 410. A server without the routes answers
 404 on `/app/events`: the app then says the server needs an update.
@@ -182,8 +182,7 @@ look is worked on without a server.
 3. **Pictures in.** The plus button: the photo picker and the camera, paste and drop, staged
    thumbnails over the composer, one request per album as the console sends it.
 4. **Later, each its own plan.**
-   - The result behind a command row (tap to read it): `finish_command_line` carries no result
-     today, and one can be 200 KB — a fetch by item id, with a cap.
+   - The result behind a command row (tap to read it): `APP_COMMAND_RESULT_PLAN.md`.
    - Voice turns in the list: a voice request does not name its phone yet.
    - Push while the app is closed: APNs needs a relay, since an install cannot hold the app's key.
    - A person per phone, each with a conversation of their own, and a token: today whoever

@@ -37,9 +37,11 @@ class Notifier(Protocol):
         a handle for `complete_command_notification`, or None when nothing was shown."""
         ...
 
-    def complete_command_notification(self, handle: Any, detail: str) -> None:
+    def complete_command_notification(self, handle: Any, detail: str, result: Any = None) -> None:
         """The command behind `handle` finished: annotate its echo with *detail*
-        ("done after 4s, received 345 chars"). A None handle is ignored."""
+        ("done after 4s, received 345 chars"). *result* is what it handed back for the
+        model — a text, a block list of texts and images, None for nothing — for a chat
+        that shows it behind the echo. A None handle is ignored."""
         ...
 
     def send_photo(self, photo_bytes: bytes, caption: str = "",
@@ -126,7 +128,7 @@ class NullNotifier:
         info(f"no notifier configured — command notification dropped: {text[:120]!r}")
         return None
 
-    def complete_command_notification(self, handle: Any, detail: str) -> None:
+    def complete_command_notification(self, handle: Any, detail: str, result: Any = None) -> None:
         info(f"no notifier configured — command completion dropped: {detail!r}")
 
     def send_photo(self, photo_bytes: bytes, caption: str = "",

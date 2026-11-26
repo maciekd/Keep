@@ -1,5 +1,6 @@
 """AppTransport on a real ChatHub: what is typed in an app becomes an assistant request, and
 what the chat layer renders becomes the items the apps draw."""
+import base64
 import io
 import threading
 
@@ -8,6 +9,7 @@ from PIL import Image
 
 from assistant.AssistantEvents import Done, RoundEnd, Thinking, ThinkingDone, Token
 from interfaces.app import AppTransport as app_transport
+from interfaces.app import Transcript as transcript_module
 from interfaces.app.AppTransport import CONVERSATION, MAX_PICTURES, AppDraft, AppTransport, PicturesRefused
 from interfaces.app.Transcript import Transcript
 from interfaces.chat.ChatHub import ChatHub
@@ -46,6 +48,25 @@ def png(width: int, height: int) -> bytes:
     out = io.BytesIO()
     Image.new("RGB", (width, height), (40, 200, 40)).save(out, format="PNG")
     return out.getvalue()
+
+
+def image_block(data: bytes) -> dict:
+    """A picture as a command hands it to the model."""
+    return {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                        "data": base64.b64encode(data).decode()}}
+
+
+def run_command(hub, detail: str, result=None, text: str = "Checking the car") -> dict:
+    """A command echoed into the app and ended with *result*; its item as the apps get it."""
+    handle = hub.send_command_notification(text, source="App", conversation=CONVERSATION)
+    hub.complete_command_notification(handle, detail, result)
+    (ref,) = [ref for _, _, ref in handle.refs]
+    return hub.transports[0].transcript.item(ref)
+
+
+def kept(transcript, address: str):
+    """The file behind an address an item names: its bytes and content type, None when gone."""
+    return transcript.media(address.rsplit("/", 1)[1])
 
 
 def kinds(transcript) -> list[str]:
@@ -327,6 +348,102 @@ class TestSecrets:
         assert result["d"] == "cancel"
 
 
+class TestCommandResults:
+    """What a command handed back is kept beside the log: the item names it, an app asks for it."""
+
+    def test_the_text_a_command_handed_back_is_served_by_the_address_its_item_names(self, hub, transcript):
+        command = run_command(hub, "done after 4s, received 26 chars", "Battery 78 %, plugged in.\n")
+        data, content_type = kept(transcript, command["result"])
+        assert data.decode("utf-8") == "Battery 78 %, plugged in."
+        assert content_type.startswith("text/plain")
+        assert command["images"] == [] and command["state"] == "done"
+
+    def test_nothing_of_the_result_is_in_the_item_or_the_stream(self, hub, transcript):
+        _, subscription = transcript.subscribe(0, "", lambda: None)
+        run_command(hub, "done after 4s", "KEP 47L is parked at home, " + "locked " * 500)
+        sent = "".join(str(line) for line in subscription.drain())
+        assert "KEP 47L" not in sent and len(sent) < 1000
+
+    def test_a_failed_command_serves_its_reason(self, hub, transcript):
+        command = run_command(hub, "failed after 2s", "Command failed: the car did not answer")
+        assert command["state"] == "failed"
+        assert b"the car did not answer" in kept(transcript, command["result"])[0]
+
+    def test_a_block_list_is_its_texts_and_its_pictures_with_their_sizes(self, hub, transcript):
+        blocks = [{"type": "text", "text": "The driveway at 14:02."}, image_block(png(40, 30)),
+                  image_block(png(8, 6)), {"type": "text", "text": "Nobody in sight."}]
+        command = run_command(hub, "done after 3s", blocks, text="Looking at the driveway")
+        text = kept(transcript, command["result"])[0].decode("utf-8")
+        assert text.index("The driveway at 14:02.") < text.index("Nobody in sight.")
+        assert [(image["width"], image["height"]) for image in command["images"]] == [(40, 30), (8, 6)]
+        assert kept(transcript, command["images"][0]["url"])[0] == png(40, 30)
+
+    def test_pictures_alone_are_a_result_without_a_text(self, hub, transcript):
+        command = run_command(hub, "done after 3s", [image_block(png(40, 30))])
+        assert command["result"] == "" and len(command["images"]) == 1
+
+    def test_a_vault_value_is_its_placeholder_in_the_file(self, hub, transcript, monkeypatch):
+        monkeypatch.setattr(app_transport, "redact_for_storage",
+                            lambda text: text.replace("hunter2", "{{secret:gate-code}}"))
+        command = run_command(hub, "done after 1s", "The gate code is hunter2.")
+        text = kept(transcript, command["result"])[0].decode("utf-8")
+        assert "hunter2" not in text and "{{secret:gate-code}}" in text
+
+    def test_a_result_longer_than_an_app_is_shown_is_cut_and_says_its_whole_size(self, hub, transcript, monkeypatch):
+        monkeypatch.setattr(app_transport, "RESULT_CHARS", 50)
+        command = run_command(hub, "done after 1s", "å" * 12_345)
+        text = kept(transcript, command["result"])[0].decode("utf-8")
+        assert text.startswith("å" * 50) and text.count("å") == 50
+        assert "12,345" in text
+
+    def test_a_result_at_the_limit_is_kept_whole(self, hub, transcript, monkeypatch):
+        monkeypatch.setattr(app_transport, "RESULT_CHARS", 50)
+        command = run_command(hub, "done after 1s", "x" * 50)
+        assert kept(transcript, command["result"])[0] == b"x" * 50
+
+    @pytest.mark.parametrize("nothing", [None, "", "  \n", [], [{"type": "text", "text": " "}], 4711])
+    def test_a_command_that_handed_nothing_back_has_no_result(self, hub, transcript, tmp_path, nothing):
+        command = run_command(hub, "done", nothing)
+        assert (command["result"], command["images"], command["state"]) == ("", [], "done")
+        assert not list(tmp_path.glob("*/*"))       # and no file was written for it
+
+    def test_a_result_that_cannot_be_kept_still_ends_the_row(self, hub, transcript, monkeypatch):
+        def full(data, extension):
+            raise OSError("no space left on device")
+        monkeypatch.setattr(transcript, "add_media", full)
+        command = run_command(hub, "done after 4s, received 9 chars", "Battery 78 %")
+        assert (command["state"], command["detail"]) == ("done", "done after 4s, received 9 chars")
+        assert (command["result"], command["images"]) == ("", [])
+
+    def test_a_picture_without_bytes_is_left_out_and_the_text_is_kept(self, hub, transcript):
+        broken = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "%%%"}}
+        command = run_command(hub, "done after 4s", [{"type": "text", "text": "A look."}, broken])
+        assert command["state"] == "done"
+        assert command["images"] == []
+        assert kept(transcript, command["result"])[0] == b"A look."
+
+    def test_a_dropped_command_takes_its_result_and_its_pictures_along(self, hub, transport, transcript, monkeypatch):
+        command = run_command(hub, "done after 3s", [{"type": "text", "text": "The driveway."}, image_block(png(40, 30))])
+        text, picture = command["result"], command["images"][0]["url"]
+        assert kept(transcript, text) and kept(transcript, picture)
+        monkeypatch.setattr(transcript_module, "CAP_ITEMS", 1)
+        transport.send_text(CONVERSATION, "A notice")
+        assert transcript.item(command["id"]) is None
+        assert kept(transcript, text) is None and kept(transcript, picture) is None
+
+    def test_the_result_fields_of_a_command_item_a_contract_with_the_apps(self, hub, transcript):
+        command = run_command(hub, "done after 3s", [{"type": "text", "text": "The driveway."}, image_block(png(40, 30))])
+        assert set(command) == {"id", "kind", "at", "order", "text", "state", "detail", "result", "images"}
+        assert command["result"].startswith("/app/media/") and command["result"].endswith(".txt")
+        (image,) = command["images"]
+        assert set(image) == {"url", "width", "height"} and image["url"].startswith("/app/media/")
+
+    def test_a_running_command_names_no_result_yet(self, hub, transcript):
+        hub.send_command_notification("Checking the car", source="App", conversation=CONVERSATION)
+        (command,) = transcript.items()
+        assert command["state"] == "running" and not command.get("result") and not command.get("images")
+
+
 class TestAfterARestart:
     def test_what_the_last_run_left_unfinished_is_closed(self, tmp_path):
         before = AppTransport(Transcript(tmp_path, autosave=False))
@@ -345,6 +462,23 @@ class TestAfterARestart:
         assert command["state"] == "failed"
         assert approval["outcome"]
         assert notice["html"] == "A notice"
+
+    def test_a_finished_command_keeps_its_result_while_the_unfinished_are_closed(self, tmp_path):
+        before = AppTransport(Transcript(tmp_path, autosave=False))
+        done = before.send_command_line(CONVERSATION, "Looking at the driveway")
+        before.finish_command_line(CONVERSATION, done, "Looking at the driveway", "done after 3s",
+                                   [{"type": "text", "text": "The driveway."}, image_block(png(40, 30))])
+        before.send_command_line(CONVERSATION, "Checking the car")
+        before.transcript.flush()
+        finished = before.transcript.item(done)
+
+        after = AppTransport(Transcript(tmp_path, autosave=False))
+        after.start(ChatHub())
+        command, interrupted = after.transcript.items()
+        assert interrupted["state"] == "failed"
+        assert (command["state"], command["result"], command["images"]) == \
+            ("done", finished["result"], finished["images"])
+        assert kept(after.transcript, command["result"])[0] == b"The driveway."
 
 
 class TestWithoutAHub:

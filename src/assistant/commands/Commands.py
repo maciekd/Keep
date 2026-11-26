@@ -2420,7 +2420,8 @@ class Commands:
             result = f"Command failed: {e}"
         finally:
             if echo is not None:
-                self._complete_echo(echo, describe_completion(started, None if failed else result, failed=failed))
+                self._complete_echo(echo, describe_completion(started, None if failed else result, failed=failed),
+                                    result)
             self._finish_one(seq, result, failed, time.time() - started)
 
     def _finish_one(self, seq: int, result, failed: bool, elapsed: float):
@@ -2442,9 +2443,9 @@ class Commands:
             self._bg_idle.set()
 
     @staticmethod
-    def _complete_echo(echo, detail: str):
+    def _complete_echo(echo, detail: str, result=None):
         try:
-            notifier().complete_command_notification(echo, detail)
+            notifier().complete_command_notification(echo, detail, result)
         except Exception as e:
             error(f"Failed to complete command notification: {e}")
 

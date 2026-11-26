@@ -10,7 +10,7 @@ and never logged. A listener's stream opens with `{"log": …}`, then what it mi
 `{"live": true}`.
 
 The log is capped (`CAP_ITEMS`, `MAX_AGE_SECONDS`) and kept in `<directory>/app_chat.json`,
-the photos and videos beside it. `log` names this file's lifetime: an app whose cursor was
+the photos, the videos and the commands' results beside it. `log` names this file's lifetime: an app whose cursor was
 counted in another log, or is older than the log reaches, is told to start over."""
 import json
 import mimetypes
@@ -230,8 +230,10 @@ class Transcript:
         return path.read_bytes(), mimetypes.guess_type(media_id)[0] or "application/octet-stream"
 
     def _forget_media(self, item: dict) -> None:
-        """The files an item names: its own, a video's still, the pictures of a user's message."""
-        addresses = [item.get("url"), item.get("poster")] + [image.get("url") for image in item.get("images") or []]
+        """The files an item names: its own, a video's still, the pictures of a user's message,
+        a command's result and its pictures."""
+        addresses = ([item.get("url"), item.get("poster"), item.get("result")]
+                     + [image.get("url") for image in item.get("images") or []])
         for address in addresses:
             address = address or ""
             if address.startswith(MEDIA_ROUTE) and _MEDIA_ID.match(address[len(MEDIA_ROUTE):]):

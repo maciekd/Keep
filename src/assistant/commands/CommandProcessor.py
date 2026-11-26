@@ -291,6 +291,7 @@ class CommandProcessor:
     # Runs on: command worker thread. Echoes the command to the user's chat as it starts
     # and runs it; the echo is completed here for a command that ran inline, and by the
     # background worker for one that Commands handed to it (see Commands.background_command).
+    # An inline command hands the model nothing but an error, so that is all its echo is given.
     def _run_echoed(self, command_name: str, params, params_display: str, dialog_manager):
         echo = self._echo_command(command_name, params, params_display, dialog_manager)
         self.commands._current_echo = echo
@@ -303,13 +304,13 @@ class CommandProcessor:
         finally:
             if echo is not None and self.commands._current_echo is echo:
                 self.commands._current_echo = None
-                self._complete_echo(echo, describe_completion(started, failed=failed))
+                self._complete_echo(echo, describe_completion(started, failed=failed), result if failed else None)
         return result
 
     @staticmethod
-    def _complete_echo(echo, detail: str):
+    def _complete_echo(echo, detail: str, result=None):
         try:
-            notifier().complete_command_notification(echo, detail)
+            notifier().complete_command_notification(echo, detail, result)
         except Exception as e:
             error(f"Failed to complete command notification: {e}")
 

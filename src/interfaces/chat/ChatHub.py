@@ -353,8 +353,9 @@ class ChatHub(SingletonMixin):
             self._running_commands.append(echo)
         return echo
 
-    def complete_command_notification(self, handle: Any, detail: str) -> None:
-        """The command behind `handle` ended: annotate its echo and stop counting it."""
+    def complete_command_notification(self, handle: Any, detail: str, result: Any = None) -> None:
+        """The command behind `handle` ended: annotate its echo and stop counting it. *result*
+        (what the command handed back for the model) is passed on and not kept here."""
         if not isinstance(handle, _CommandEcho):
             if handle is not None:
                 trace(f"Ignoring an unknown command echo handle {handle!r}")
@@ -366,7 +367,7 @@ class ChatHub(SingletonMixin):
                 self._last_command_end[(id(transport), conv)] = time.time()
         for transport, conv, ref in handle.refs:
             try:
-                transport.finish_command_line(conv, ref, handle.text, detail)
+                transport.finish_command_line(conv, ref, handle.text, detail, result)
             except Exception as e:
                 error(f"{transport.name} [{conv}]: finish_command_line failed: {e}")
 

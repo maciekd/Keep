@@ -7,15 +7,21 @@ One conversation ("app"), always the owner's — as the console has "tui": whoev
 HTTP address is the owner, and every phone shows the same list. A secret typed into an app's
 masked field goes straight to `hub.claim_secret`: it is never an item and never logged.
 
+What a command handed back for the model is kept beside the log when the command ends and
+never sent with the chat: the item names the file, and an app asks for it when its row is
+tapped (`docs/plans/APP_COMMAND_RESULT_PLAN.md`).
+
 The item kinds and their fields are a contract with the apps (`docs/plans/APP_CHAT_PLAN.md`).
 """
+import base64
 import io
 import time
 from typing import Any, Optional
 
 from assistant.ChannelProfile import SOURCE_APP
 from common.ConfigManager import config
-from common.logging import info, trace
+from common.logging import error, info, trace
+from common.vault.Redactor import redact_for_storage
 from interfaces.app.Transcript import Transcript, new_id
 from interfaces.chat.ChatTransport import ChatTransport
 from interfaces.chat.ChatTypes import KIND_PHOTO, PHASE_THINKING, PHASE_WAITING, Attachment, IncomingMessage, Progress
@@ -36,6 +42,10 @@ KIND_SECRET = "secret"
 STATE_RUNNING = "running"
 STATE_DONE = "done"
 STATE_FAILED = "failed"
+
+# The most of a command's result an app is shown; what is cut says how long the whole was.
+RESULT_CHARS = 100_000
+RESULT_CUT = "\n\n[… cut here: the whole result is {chars:,} characters]"
 
 # What a restart leaves of an item nobody will finish any more.
 INTERRUPTED = "interrupted"
@@ -329,10 +339,63 @@ class AppTransport(ChatTransport):
     def send_command_line(self, conversation, text: str) -> Any:
         return self.transcript.upsert(new_id(), KIND_COMMAND, text=text, state=STATE_RUNNING, detail="")
 
-    def finish_command_line(self, conversation, ref, text: str, detail: str) -> None:
+    def finish_command_line(self, conversation, ref, text: str, detail: str, result=None) -> None:
         # The contract carries no verdict, only CommandEcho.describe_completion's words.
         state = STATE_FAILED if detail.startswith("failed") else STATE_DONE
-        self.transcript.upsert(ref, KIND_COMMAND, text=text, state=state, detail=detail)
+        self.transcript.upsert(ref, KIND_COMMAND, text=text, state=state, detail=detail,
+                               **self._keep_result(text, result))
+
+    def _keep_result(self, command: str, result) -> dict:
+        """What a command handed back for the model, as its item names it: `result`, the
+        address of the text kept beside the log ("" for none), and `images`, its pictures.
+        Nothing of it is in the item, so a long result costs the chat nothing until an app
+        asks for it. Keeping it never costs the row its ending."""
+        try:
+            text, pictures = self._result_parts(result)
+            images = [self._keep_picture(picture) for picture in pictures]
+            address = self.transcript.add_media(self._result_file(text), "txt") if text else ""
+        except Exception as e:
+            error(f"App chat: the result of '{command}' could not be kept ({e!r}), its row ends without one")
+            return {"result": "", "images": []}
+        if address or images:
+            info(f"App chat: kept the result of '{command}' ({len(text)} chars, {len(images)} picture(s))")
+        else:
+            trace(f"App chat: '{command}' handed nothing back, its row has no result")
+        return {"result": address, "images": images}
+
+    @staticmethod
+    def _result_parts(result) -> tuple[str, list[bytes]]:
+        """The text and the pictures of a result: a text as it is, a block list's texts with
+        a blank line between them and its images as their bytes."""
+        if isinstance(result, str):
+            return result.strip(), []
+        if not isinstance(result, list):
+            if result is not None:
+                trace(f"App chat: a result that is neither text nor blocks ({type(result).__name__}), not kept")
+            return "", []
+        texts, pictures = [], []
+        for block in result:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "image":
+                data = base64.b64decode(block.get("source", block).get("data", ""))
+                if data:
+                    pictures.append(data)
+                else:
+                    trace("App chat: an image of a result without bytes, left out")
+            elif block.get("text", "").strip():
+                texts.append(block["text"].strip())
+        return "\n\n".join(texts), pictures
+
+    @staticmethod
+    def _result_file(text: str) -> bytes:
+        """A result's text as its file holds it: every vault value as its placeholder, and
+        cut where it is longer than an app is shown."""
+        text = redact_for_storage(text)
+        if len(text) > RESULT_CHARS:
+            info(f"App chat: a result of {len(text)} chars is kept as its first {RESULT_CHARS}")
+            text = text[:RESULT_CHARS] + RESULT_CUT.format(chars=len(text))
+        return text.encode("utf-8")
 
     def set_status_line(self, conversation, html: Optional[str]) -> None:
         if html:

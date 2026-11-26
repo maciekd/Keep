@@ -1452,7 +1452,7 @@ class TelegramTransport(Integration, ChatTransport):
             return None
         return ref
 
-    def finish_command_line(self, conversation, ref, text: str, detail: str) -> None:
+    def finish_command_line(self, conversation, ref, text: str, detail: str, result=None) -> None:
         if ref is None:
             return
         self._schedule(self._finish_command_line_async(conversation, ref, detail), "command line detail")

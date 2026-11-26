@@ -489,7 +489,7 @@ class TestBackgroundLanes:
         echoes = []
         with patch("assistant.commands.Commands.notifier") as mock_notifier:
             mock_notifier.return_value.complete_command_notification.side_effect = \
-                lambda handle, detail: echoes.append((handle, detail))
+                lambda handle, detail, result=None: echoes.append((handle, detail, result))
             commands_instance._current_echo = "echo-1"
             commands_instance.background_command(first, None)
             commands_instance._current_echo = "echo-2"
@@ -497,8 +497,21 @@ class TestBackgroundLanes:
             second.release.set()
             first.release.set()
             assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
-        assert sorted(h for h, _ in echoes) == ["echo-1", "echo-2"]
-        assert all("done" in d for _, d in echoes)
+        assert sorted(h for h, _, _ in echoes) == ["echo-1", "echo-2"]
+        assert all("done" in d for _, d, _ in echoes)
+        # Each echo is completed with what its own function returned, whichever ended first.
+        assert {h: r for h, _, r in echoes} == {"echo-1": "first result", "echo-2": "second result"}
+
+    def test_a_command_that_raises_completes_its_echo_with_the_reason(self, commands_instance):
+        echoes = []
+        with patch("assistant.commands.Commands.notifier") as mock_notifier:
+            mock_notifier.return_value.complete_command_notification.side_effect = \
+                lambda handle, detail, result=None: echoes.append((detail, result))
+            commands_instance._current_echo = "echo-1"
+            commands_instance.background_command(Mock(side_effect=RuntimeError("the gate did not answer")), None)
+            assert commands_instance.wait_for_background(timeout=FAILURE_BOUND)
+        (detail, result), = echoes
+        assert detail.startswith("failed") and "the gate did not answer" in result
 
     def test_submit_after_publish_starts_a_new_batch_keeping_the_pending_reply(self, commands_instance):
         cp = commands_instance.command_processor

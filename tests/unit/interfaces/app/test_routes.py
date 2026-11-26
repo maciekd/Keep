@@ -330,6 +330,26 @@ class TestMedia:
             return response.status_code, response.headers.get("Content-Range"), await response.get_data()
         assert asyncio.run(run()) == (206, "bytes 8-23/64", data[8:24])
 
+    def test_a_commands_result_is_served_as_text_by_the_address_its_item_names(self, app, transport, hub):
+        handle = hub.send_command_notification("Checking the car", source="App", conversation=CONVERSATION)
+        hub.complete_command_notification(handle, "done after 4s", "Laddning 78 %, räckvidd 310 km")
+        (command,) = transport.transcript.items()
+
+        async def run():
+            response = await app.test_client().get(command["result"])
+            return response.status_code, response.mimetype, (await response.get_data()).decode("utf-8")
+        assert asyncio.run(run()) == (200, "text/plain", "Laddning 78 %, räckvidd 310 km")
+
+    def test_a_result_the_log_no_longer_keeps_is_not_found(self, app, transport, hub):
+        handle = hub.send_command_notification("Checking the car", source="App", conversation=CONVERSATION)
+        hub.complete_command_notification(handle, "done after 4s", "Battery 78 %")
+        (command,) = transport.transcript.items()
+        transport.transcript._forget_media(command)
+
+        async def run():
+            return (await app.test_client().get(command["result"])).status_code
+        assert asyncio.run(run()) == 404
+
     def test_an_unknown_id_is_not_found(self, app):
         async def run():
             return (await app.test_client().get("/app/media/" + "0" * 32 + ".jpg")).status_code
