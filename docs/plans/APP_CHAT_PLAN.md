@@ -184,7 +184,8 @@ look is worked on without a server.
 4. **Later, each its own plan.**
    - The result behind a command row (tap to read it): `APP_COMMAND_RESULT_PLAN.md`.
    - Voice turns in the list: a voice request does not name its phone yet.
-   - Push while the app is closed: APNs needs a relay, since an install cannot hold the app's key.
+   - Push while the app is closed: `APP_PUSH_PLAN.md` (APNs needs a relay, since an install
+     cannot hold the app's key).
    - A person per phone, each with a conversation of their own, and a token: today whoever
      reaches the address is the owner.
    - Android.
