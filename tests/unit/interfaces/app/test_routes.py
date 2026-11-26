@@ -120,6 +120,23 @@ class TestEvents:
         read_events(app, "/app/events", lambda line: "log" in line)
         assert wait_until(lambda: transport.transcript.listeners() == 0)
 
+    def test_a_stopping_server_ends_the_open_stream(self, app, transport):
+        async def run():
+            async with app.test_client().request("/app/events") as connection:
+                await connection.send_complete()
+                await asyncio.wait_for(connection.receive(), FAILURE_BOUND)
+                transport.transcript.end_listeners()
+                # Leaving the block waits for the response to end: bounded, it ends by itself.
+            return True
+        assert asyncio.run(asyncio.wait_for(run(), FAILURE_BOUND))
+        assert transport.transcript.listeners() == 0
+
+    def test_registering_tells_the_http_server_how_to_end_the_streams(self, app, transport):
+        from interfaces.Interface import run_shutdown_hooks
+        _, subscription = transport.transcript.subscribe(0, "", lambda: None)
+        run_shutdown_hooks(app)
+        assert subscription.ended
+
     def test_a_cursor_that_is_no_number_is_refused(self, app):
         async def run():
             return (await app.test_client().get("/app/events?after=soon")).status_code
@@ -196,6 +213,28 @@ class TestSend:
         assert wait_until(lambda: hub.assistant.requests)
         assert len(hub.assistant.images[0]) == 1
         assert wait_until(lambda: not hub.session_for(transport, CONVERSATION).busy)
+
+    def test_a_message_with_every_picture_it_may_carry_fits_the_upload_limit(self, app):
+        from interfaces.app.AppTransport import MAX_PICTURES
+        a_phone_photo = 12 * 1024 * 1024
+        assert app.config["MAX_CONTENT_LENGTH"] >= MAX_PICTURES * a_phone_photo
+
+    def test_registering_never_lowers_a_limit_another_route_set(self, transport, hub):
+        app = Quart(__name__)
+        app.config["MAX_CONTENT_LENGTH"] = 10 * routes.MAX_REQUEST_BYTES
+        routes.register(app, transport)
+        assert app.config["MAX_CONTENT_LENGTH"] == 10 * routes.MAX_REQUEST_BYTES
+
+    def test_a_form_over_the_limit_is_refused_as_json_and_is_no_turn(self, app, transport):
+        app.config["MAX_CONTENT_LENGTH"] = 2000
+        status, body = post_form(app, "/app/send", {"id": "m1", "text": "Look"}, [b"x" * 5000])
+        assert status == 413 and body["error"]
+        assert transport.transcript.item("m1") is None
+
+    def test_a_json_message_over_the_limit_is_refused_as_json(self, app, transport):
+        app.config["MAX_CONTENT_LENGTH"] = 2000
+        status, body = post(app, "/app/send", {"id": "m1", "text": "x" * 5000})
+        assert status == 413 and body["error"]
 
     def test_a_form_without_text_or_pictures_is_refused(self, app):
         assert post_form(app, "/app/send", {"id": "bubble-1", "text": ""}, [])[0] == 400

@@ -208,6 +208,20 @@ class TestListeners:
         assert transcript.listeners() == 0
 
 
+class TestStopping:
+    def test_a_stopping_server_ends_every_listener_and_wakes_it(self, transcript):
+        woken = []
+        _, subscription = transcript.subscribe(0, "", lambda: woken.append(1))
+        assert not subscription.ended
+        transcript.end_listeners()
+        assert subscription.ended and woken
+
+    def test_a_listener_that_joins_a_stopping_server_is_ended_at_once(self, transcript):
+        transcript.end_listeners()
+        _, subscription = transcript.subscribe(0, "", lambda: None)
+        assert subscription.ended
+
+
 class TestFile:
     def test_a_restarted_server_continues_the_same_log(self, transcript, tmp_path, clock):
         transcript.upsert("a", "user", text="hi")
@@ -242,6 +256,46 @@ class TestFile:
         lines = replay(again, after=cursor, log=killed.log)
         assert lines[0] == {"reset": True} and ids(lines[1:]) == ["a", "c"]
 
+    def test_a_change_after_the_closing_save_is_not_continued_under_its_numbers(self, transcript, tmp_path, clock):
+        transcript.upsert("a", "user", text="hi")
+        transcript.flush(closed=True)
+        transcript.upsert("b", "assistant", html="Stopped.", final=True)    # a cancelled reply settling late
+        transcript.upsert("c", "notice", text="seen by a phone, the process ends before any timer")
+        cursor, log = replay(transcript)[-1]["seq"], transcript.log
+        again = Transcript(tmp_path, autosave=False, clock=clock)
+        again.upsert("d", "user", text="more")
+        lines = replay(again, after=cursor, log=log)
+        assert lines[0] == {"reset": True} and "d" in ids(lines[1:])
+
+    def test_a_save_due_after_the_closing_one_leaves_the_file_closed(self, transcript, tmp_path, clock):
+        transcript.upsert("a", "user", text="hi")
+        cursor = replay(transcript)[-1]["seq"]
+        transcript.flush(closed=True)
+        transcript.flush()      # the timer that was already waiting for the lock
+        again = Transcript(tmp_path, autosave=False, clock=clock)
+        assert again.log == transcript.log and replay(again, after=cursor) == []
+
+    def test_a_save_cancels_the_one_that_was_pending(self, tmp_path, clock, monkeypatch):
+        timers = []
+
+        class Timer:
+            def __init__(self, delay, body):
+                self.cancelled = False
+                timers.append(self)
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                self.cancelled = True
+
+        monkeypatch.setattr(transcript_module, "threading",
+                            SimpleNamespace(Timer=Timer, RLock=threading.RLock, Lock=threading.Lock))
+        saving = Transcript(tmp_path, clock=clock)
+        saving.upsert("a", "user", text="hi")
+        saving.flush(closed=True)
+        assert [timer.cancelled for timer in timers] == [True]
+
     def test_an_unreadable_file_starts_an_empty_log(self, tmp_path, clock):
         (tmp_path / transcript_module.FILE_NAME).write_text("{not json")
         assert Transcript(tmp_path, autosave=False, clock=clock).items() == []
@@ -273,6 +327,9 @@ class TestFile:
                 timers.append(self)
 
             def start(self):
+                pass
+
+            def cancel(self):
                 pass
 
         monkeypatch.setattr(transcript_module, "threading",

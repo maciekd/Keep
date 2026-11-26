@@ -7,15 +7,21 @@ import asyncio
 import json
 
 from quart import Blueprint, Response, request
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from common.logging import info, trace
-from interfaces.app.AppTransport import AppTransport, PicturesRefused
+from interfaces.app.AppTransport import MAX_PICTURES, AppTransport, PicturesRefused
 from interfaces.chat.ChatTypes import DECISION_APPROVE, DECISION_DENY
+from interfaces.Interface import on_shutdown
 
 HEARTBEAT_SECONDS = 15.0
 # The least time between two batches of lines: a streaming reply reaches a phone as its
 # newest state at most this often.
 BATCH_SECONDS = 0.05
+# The most one POST may carry: a message with every picture it may have, each as a phone's
+# camera made it. Quart's own default (16 MB) is less than two such pictures.
+MAX_PICTURE_BYTES = 16 * 1024 * 1024
+MAX_REQUEST_BYTES = MAX_PICTURES * MAX_PICTURE_BYTES
 
 
 def _encode(line: dict) -> bytes:
@@ -41,7 +47,7 @@ def build_blueprint(transport: AppTransport) -> Blueprint:
             try:
                 for line in backlog:
                     yield _encode(line)
-                while True:
+                while not subscription.ended:
                     try:
                         await asyncio.wait_for(wake.wait(), HEARTBEAT_SECONDS)
                     except asyncio.TimeoutError:
@@ -51,6 +57,7 @@ def build_blueprint(transport: AppTransport) -> Blueprint:
                     for line in subscription.drain():
                         yield _encode(line)
                     await asyncio.sleep(BATCH_SECONDS)
+                trace("App chat: the server is stopping, an event stream ends")
             finally:
                 transcript.unsubscribe(subscription)
 
@@ -62,11 +69,16 @@ def build_blueprint(transport: AppTransport) -> Blueprint:
     async def send():
         # With pictures the message is a form: the same fields, and an `image` part per picture.
         pictures = []
-        if request.mimetype == 'multipart/form-data':
-            body = await request.form
-            pictures = [part.read() for part in (await request.files).getlist('image')]
-        else:
-            body = await request.get_json(silent=True) or {}
+        try:
+            if request.mimetype == 'multipart/form-data':
+                body = await request.form
+                pictures = [part.read() for part in (await request.files).getlist('image')]
+            else:
+                body = await request.get_json(silent=True) or {}
+        except RequestEntityTooLarge:
+            info(f"App chat: a message of {request.content_length} bytes is over the {MAX_REQUEST_BYTES} "
+                 f"one may have — refused")
+            return {"error": f"the message is larger than {MAX_REQUEST_BYTES // (1024 * 1024)} MB"}, 413
         try:
             # The pictures are re-encoded on the way in: off the event loop.
             taken = await asyncio.to_thread(transport.submit, str(body.get('id') or ''), str(body.get('text') or ''),
@@ -122,4 +134,7 @@ def build_blueprint(transport: AppTransport) -> Blueprint:
 
 def register(app, transport: AppTransport) -> None:
     app.register_blueprint(build_blueprint(transport))
+    # The limit is the app's, so every route's: never lowered under what another set.
+    app.config["MAX_CONTENT_LENGTH"] = max(app.config.get("MAX_CONTENT_LENGTH") or 0, MAX_REQUEST_BYTES)
+    on_shutdown(app, transport.transcript.end_listeners)
     info("App chat routes registered (/app/events, /app/send, /app/stop, /app/approval, /app/secret, /app/media).")
