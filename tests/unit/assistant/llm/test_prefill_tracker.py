@@ -1,7 +1,6 @@
 """PrefillTracker — the estimate behind the "Reading…" bar: what the log says, how far the
 clock says, and which request's bar it is; and LogSource, the file here or over ssh."""
 import re
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -87,72 +86,72 @@ class TestEstimate:
         tracker.end(token)
 
     @pytest.mark.parametrize("remaining, drawn", [(500, False), (5000, True)])   # at 1000 t/s: 0.5 s, 5 s
-    def test_only_a_prefill_long_enough_to_see_is_drawn(self, tracker, log_path, remaining, drawn):
+    def test_only_a_prefill_long_enough_to_see_is_drawn(self, tracker, log_path, remaining, drawn, prefill_clock):
         token = tracker.begin()
         _append(log_path, f"work 0 {remaining}\n")
         tracker.work(token, force=True)
-        tracker._find(token).work_ts = time.monotonic() - 0.3
+        tracker._find(token).work_ts = prefill_clock.monotonic() - 0.3
         with patch.object(PrefillTracker, "MIN_BAR_SECONDS", 2.0):
             assert (tracker.progress() > 0.0) == drawn
         tracker.end(token)
 
-    def test_the_clock_against_the_rate_estimates_the_rest(self, tracker, log_path):
+    def test_the_clock_against_the_rate_estimates_the_rest(self, tracker, log_path, prefill_clock):
         token = tracker.begin()
         _append(log_path, "work 0 1000\n")           # 1000 tokens at 1000 t/s: a 1 s eta
         tracker.work(token, force=True)
-        tracker._find(token).work_ts = time.monotonic() - 0.5
-        assert 40.0 < tracker.progress() < 60.0
+        tracker._find(token).work_ts = prefill_clock.monotonic() - 0.5
+        assert tracker.progress() == pytest.approx(50.0)
         tracker.end(token)
 
-    def test_the_clock_starts_at_the_workload_line_not_at_the_send(self, tracker, log_path):
+    def test_the_clock_starts_at_the_workload_line_not_at_the_send(self, tracker, log_path, prefill_clock):
         # A request sent while the server is busy waits before its prefill starts; counted as
         # prefill, that wait ran the bar up to 99 and the engine's first progress line then
         # pulled it back.
         token = tracker.begin()
-        tracker._find(token).start_ts = time.monotonic() - 9999   # a long wait behind another request
+        tracker._find(token).start_ts = prefill_clock.monotonic() - 9999   # a long wait behind another request
         _append(log_path, "work 0 1000\n")
         assert tracker.progress() < 10.0
         tracker.end(token)
 
-    def test_the_servers_progress_lines_win_over_the_clock(self, tracker, log_path):
+    def test_the_servers_progress_lines_win_over_the_clock(self, tracker, log_path, prefill_clock):
         token = tracker.begin()
         _append(log_path, "work 0 2000\nstep 500 2000\nstep 1000 2000\n")
         tracker.work(token, force=True)
-        tracker._find(token).work_ts = time.monotonic() - 9999   # the clock alone would say 99
+        tracker._find(token).work_ts = prefill_clock.monotonic() - 9999   # the clock alone would say 99
         assert tracker.progress() == pytest.approx(50.0)
         tracker.end(token)
 
-    def test_the_rate_is_measured_from_the_progress_lines_else_the_estimate(self, tracker, log_path):
+    def test_the_rate_is_measured_from_the_progress_lines_else_the_estimate(self, tracker, log_path, prefill_clock):
         assert PrefillTracker.current_rate() is None
         token = tracker.begin()
         _append(log_path, "work 0 2000\n")
         assert tracker.rate() == 1000.0                     # nothing measured yet: the rolling estimate
         _append(log_path, "step 500 2000\n")
-        tracker._find(token).work_ts = time.monotonic() - 2.0
+        tracker._find(token).work_ts = prefill_clock.monotonic() - 2.0
         tracker.work(token, force=True)                      # read the progress line now
-        assert 200.0 < tracker.rate() < 300.0               # 500 tokens in ~2 s, from the line's read time
+        assert tracker.rate() == pytest.approx(250.0)       # 500 tokens in 2 s, from the line's read time
         assert PrefillTracker.current_rate() == tracker.rate()
         tracker.end(token)
 
-    def test_an_estimate_that_ran_out_draws_no_bar_until_the_first_token(self, tracker, log_path):
+    def test_an_estimate_that_ran_out_draws_no_bar_until_the_first_token(self, tracker, log_path, prefill_clock):
         # The clock said the prefill is over and the server said nothing: a bar parked at its
         # end would claim what nobody knows.
         token = tracker.begin()
         _append(log_path, "work 0 1000\n")
         tracker.work(token, force=True)
-        tracker._find(token).work_ts = time.monotonic() - 9999
+        tracker._find(token).work_ts = prefill_clock.monotonic() - 9999
         assert tracker.progress() == 0.0
         tracker.first_token(token)
         assert tracker.progress() == 100.0
         tracker.end(token)
 
-    def test_the_log_saying_the_prompt_is_done_ends_the_prefill_without_a_token(self, tracker, log_path):
+    def test_the_log_saying_the_prompt_is_done_ends_the_prefill_without_a_token(self, tracker, log_path, prefill_clock):
         # A non-streamed request (the memory curation) sends nothing until its whole reply is
         # written, so the log is the only thing that can say its prefill is over.
         token = tracker.begin()
         _append(log_path, "work 0 1000\n")
         tracker.work(token, force=True)
-        tracker._find(token).work_ts = time.monotonic() - 9999
+        tracker._find(token).work_ts = prefill_clock.monotonic() - 9999
         assert tracker.progress() == 0.0
         _append(log_path, "finished\n")
         tracker._find(token).read_ts = 0.0
@@ -251,40 +250,40 @@ class TestRate:
         tracker.observe_rate(4000, 5.0)
         assert tracker.tps == pytest.approx(0.5 * 600.0 + 0.5 * 800.0)
 
-    def test_the_prefill_seconds_are_the_done_lines_else_the_clock_from_the_workload_line(self, tracker, log_path):
+    def test_the_prefill_seconds_are_the_done_lines_else_the_clock_from_the_workload_line(self, tracker, log_path, prefill_clock):
         # Never the time since the send: a request that waited behind another's reply taught
         # the estimate 1.5 t/s that way.
         token = tracker.begin()
-        tracker._find(token).start_ts = time.monotonic() - 9999
+        tracker._find(token).start_ts = prefill_clock.monotonic() - 9999
         _append(log_path, "work 0 1000\nfinished 2.5s\n")
         assert tracker.prefill_seconds(token) == 2.5
         tracker.end(token)
 
         token = tracker.begin()
-        tracker._find(token).start_ts = time.monotonic() - 9999
+        tracker._find(token).start_ts = prefill_clock.monotonic() - 9999
         _append(log_path, "work 0 1000\n")
         tracker.work(token, force=True)
-        tracker._find(token).work_ts = time.monotonic() - 3.0
+        tracker._find(token).work_ts = prefill_clock.monotonic() - 3.0
         tracker.first_token(token)
-        assert tracker.prefill_seconds(token) == pytest.approx(3.0, abs=0.2)
+        assert tracker.prefill_seconds(token) == pytest.approx(3.0)
         tracker.end(token)
 
-    def test_a_server_that_says_nothing_is_timed_from_the_send_unless_the_request_waited(self, tracker):
+    def test_a_server_that_says_nothing_is_timed_from_the_send_unless_the_request_waited(self, tracker, prefill_clock):
         token = tracker.begin()
-        tracker._find(token).head_ts = time.monotonic() - 4.0
+        tracker._find(token).head_ts = prefill_clock.monotonic() - 4.0
         tracker.first_token(token)
-        assert tracker.prefill_seconds(token) == pytest.approx(4.0, abs=0.2)
+        assert tracker.prefill_seconds(token) == pytest.approx(4.0)
 
         behind = tracker.begin()
         tracker.end(token)
-        tracker._find(behind).head_ts = time.monotonic() - 4.0
+        tracker._find(behind).head_ts = prefill_clock.monotonic() - 4.0
         tracker.first_token(behind)
         assert tracker.prefill_seconds(behind) is None, "its clock holds the wait behind the request ahead"
         tracker.end(behind)
 
         pre_heat = tracker.begin(interactive=False)
-        tracker._find(pre_heat).head_ts = time.monotonic() - 2.0
-        assert tracker.prefill_seconds(pre_heat) == pytest.approx(2.0, abs=0.2), "no first token: until now"
+        tracker._find(pre_heat).head_ts = prefill_clock.monotonic() - 2.0
+        assert tracker.prefill_seconds(pre_heat) == pytest.approx(2.0), "no first token: until now"
         tracker.end(pre_heat)
 
     def test_a_small_prefill_teaches_nothing_because_the_requests_fixed_start_is_most_of_it(self, tracker):
