@@ -86,6 +86,24 @@ class TestEnded:
         with logins(4200):
             assert session.ended() == ""
 
+    def test_a_login_that_cannot_be_written_down_is_still_told_when_it_ends(self, session):
+        """The file is autostart.sh's; the host's health asks the process, which knows its login without it."""
+        session.LOGIN_SESSION_FILE.parent.write_text("a file where the cache folder would be")
+        with logins(4100):
+            session.record()
+            assert session.ended() == ""
+        with logins(4200):
+            assert "4100" in session.ended()
+
+    def test_a_login_entry_without_an_audit_id_is_no_login_to_start_in(self, session):
+        entry = {"kCGSSessionUserIDKey": os.getuid(), "kCGSSessionOnConsoleKey": True}
+        answer = Mock(returncode=0, stdout=plistlib.dumps({"IOConsoleUsers": [entry]}))
+        with patch.object(LoginSession.subprocess, "run", return_value=answer):
+            session.record()
+        assert not session.LOGIN_SESSION_FILE.exists()
+        with logins(4200):
+            assert session.ended() == ""
+
     def test_nothing_is_recorded_on_linux(self, session, monkeypatch):
         monkeypatch.setattr(Platform, "current", lambda: Platform.LINUX)
         with logins(4100) as run:

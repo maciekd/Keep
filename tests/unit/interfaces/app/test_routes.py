@@ -178,6 +178,25 @@ class TestSend:
         assert status == 400 and answer["error"]
         assert transport.transcript.items() == []
 
+    def test_a_form_with_a_file_that_is_no_picture_is_refused_whole_and_nothing_of_it_is_kept(self, app, hub, transport, tmp_path):
+        hub.assistant = FakeAssistant([Done("unasked")])
+        fields = {"id": "bubble-1", "text": "what is this?"}
+        status, answer = post_form(app, "/app/send", fields, [jpeg(40, 30), b"%PDF-1.7 not a picture"])
+        assert status == 400 and answer["error"]
+        assert transport.transcript.items() == [] and hub.assistant.requests == []
+        kept = [path for path in tmp_path.rglob("*") if path.is_file() and path.suffix in (".jpg", ".png")]
+        assert kept == [], "the picture beside the unreadable one must not stay on disk without a bubble"
+
+    def test_a_refused_message_can_be_sent_again_under_the_same_id(self, app, hub, transport):
+        """The resend rule tells a message that arrived by its bubble: a refused one left none."""
+        hub.assistant = FakeAssistant([Token("A lawn"), RoundEnd("A lawn"), Done("A lawn")])
+        fields = {"id": "bubble-1", "text": "what is this?"}
+        assert post_form(app, "/app/send", fields, [b"not a picture"])[0] == 400
+        assert post_form(app, "/app/send", fields, [jpeg(40, 30)])[0] == 200
+        assert wait_until(lambda: hub.assistant.requests)
+        assert len(hub.assistant.images[0]) == 1
+        assert wait_until(lambda: not hub.session_for(transport, CONVERSATION).busy)
+
     def test_a_form_without_text_or_pictures_is_refused(self, app):
         assert post_form(app, "/app/send", {"id": "bubble-1", "text": ""}, [])[0] == 400
 

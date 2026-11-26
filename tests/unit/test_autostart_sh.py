@@ -132,6 +132,16 @@ class TestAutostart:
         assert 'start.sh ran' not in result.stdout
         assert 'already running' in harness.restart_log()[0]
 
+    def test_a_second_login_of_the_user_does_not_end_the_one_the_server_started_in(self, harness):
+        """As LoginSession.ended reads it: screen sharing gives the user a second login beside the first."""
+        harness.server(listening=True, process=True)
+        second = f'4200}},{{"kCGSSessionUserIDKey"={os.getuid()},"kCGSSessionAuditIDKey"=4100'
+        self.login(harness, '4100', second)
+        result = harness.run()
+        assert 'start.sh ran' not in result.stdout
+        assert 'already running' in harness.restart_log()[0]
+        assert (harness.root / 'cache' / 'login_session').exists()
+
     def test_a_server_of_an_ended_login_is_not_restarted_beside_a_start_sh_in_flight(self, harness):
         harness.server(listening=True, process=True)
         self.login(harness, '4100', '4200')

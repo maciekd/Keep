@@ -11,7 +11,7 @@ from assistant import Destinations
 from assistant.AssistantEvents import RoundEnd, Token
 from assistant.Notifier import NullNotifier, set_notifier
 from assistant.integration.Integration import HealthWarning
-from common.imessage.MessagesHost import (Attachment as HostAttachment, Count, GroupChat, HostHealth, NO_ACCESS,
+from common.imessage.MessagesHost import (Attachment as HostAttachment, Count, ENDED_LOGIN, GroupChat, HostHealth, NO_ACCESS,
                                           SendResult, TYPING_FAILED, TYPING_GATES, TYPING_NO_ACCESSIBILITY,
                                           TYPING_NO_ROW, TYPING_SCREEN_LOCKED, TYPING_UNAVAILABLE, TypingResult,
                                           UNREACHABLE)
@@ -1896,6 +1896,15 @@ class TestHealthAndConfiguration:
             chat.transport.check_health()
         head = str(problem.value)[:80]      # what the prompt shows of it: the grant, the quit, the restart
         assert "Terminal" in head and "quit" in head and "restart" in head
+
+    def test_a_server_that_outlives_its_login_is_to_be_restarted_and_no_grant_is_asked_for(self, chat):
+        chat.host.health_answer = HostHealth(False, ENDED_LOGIN, "started in login 4100, which has ended")
+        with pytest.raises(RuntimeError) as problem:
+            chat.transport.check_health()
+        said = str(problem.value)
+        assert not isinstance(problem.value, PermissionError)
+        assert "start.sh" in said and "4100" in said and "satellite" not in said
+        assert "Full Disk Access" not in said
 
     def test_a_satellite_that_does_not_answer_names_the_chats_own_keys(self, chat):
         chat.host.address = "http://studio.local:8898"
