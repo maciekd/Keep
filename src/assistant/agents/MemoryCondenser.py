@@ -56,6 +56,13 @@ still to go. {LEFT} more sections to go after this one. This section's fair shar
 # The most a section is asked to give, as a multiple of its proportional part of the whole cut.
 SHARE_CEILING = 1.5
 
+# The most a section may lose, as a multiple of the share it was told: past it the reply has not
+# condensed the section but dropped it, and the section is kept as it was. Fable 5.2 stays under
+# it (prod, October–November 2026: 180 sections, the largest 2.4 times its share, one over 2); a
+# local Qwen 27B does not (2026-11-26: sections cut 2.5 and 4.7 times their share, and 1,530 of
+# 1,769 words off one told that nothing was left to remove — 2,681 words gone of 1,117 asked).
+OVERCUT_LIMIT = 2
+
 # How long a section waits for its batch. A section is answered in 10 to 90 seconds and the
 # output cap ends the longest at about two and a half minutes, so a batch still running after
 # this is waiting in Anthropic's queue, not being written. That happens: of 46 nightly curation
@@ -100,8 +107,9 @@ class MemoryCondenser:
     def condense(self, bank: str, cut: int) -> tuple[str, dict]:
         """The bank with at least `cut` words asked off it, section by section, and what
         happened: the words before and after and the time. A section whose reply was cut off
-        at the output cap, holds no section, or is no shorter than the original is kept as it
-        was."""
+        at the output cap, holds no section, is no shorter than the original or lost more than
+        OVERCUT_LIMIT times its share is kept as it was, and so is every section after the one
+        that met the ask — those are not sent at all."""
         words = word_count(bank)
         system = PROMPT.replace("{WORD_LIMIT}", str(self.word_limit)).replace("{WORDS}", str(words)) \
             .replace("{CUT}", str(cut)).replace("{TARGET}", str(words - cut)) \
@@ -116,8 +124,13 @@ class MemoryCondenser:
         self.llm.set_prompt_cache(True)
         try:
             for index, section in enumerate(sections, 1):
+                if removed >= cut:
+                    info(f"Condenser: the ask is met ({removed} of {cut} words removed) — sections {index} to "
+                         f"{len(sections)} kept as they are, not sent")
+                    result.extend(sections[index - 1:])
+                    break
                 size = word_count(section)
-                remaining = max(0, cut - removed)
+                remaining = cut - removed
                 # The section's share of what is left, in proportion to its size among the
                 # sections still to come: a shortfall moves on to the next ones, but each hears
                 # a number sized to itself rather than the whole remainder.
@@ -148,6 +161,10 @@ class MemoryCondenser:
                     condensed = section
                 elif word_count(condensed) >= size:
                     trace(f"Condenser: section {index}/{len(sections)} {heading!r} came back no shorter — kept as it was")
+                    condensed = section
+                elif size - word_count(condensed) > OVERCUT_LIMIT * share:
+                    info(f"Condenser: section {index}/{len(sections)} {heading!r} came back {size} → "
+                         f"{word_count(condensed)} words, over {OVERCUT_LIMIT} times its share of {share} — kept as it was")
                     condensed = section
                 else:
                     info(f"Condenser: section {index}/{len(sections)} {heading!r} {size} → {word_count(condensed)} words")

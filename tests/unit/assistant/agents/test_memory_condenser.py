@@ -81,10 +81,29 @@ class TestCondense:
         assert outcome["to"] == word_count(BANK) - 3 and outcome['from'] == word_count(BANK)
         assert outcome['sections'] == 5
 
-    def test_the_remaining_ask_never_goes_negative(self):
-        llm = _llm(["<section># Only</section>"])
-        MemoryCondenser(llm, word_limit=100).condense("# Only\nten words here to be cut right away now ok", cut=3)
-        assert "about 3 are still to go" in llm.think.call_args.kwargs['user_message']
+    def test_the_sections_after_the_ask_is_met_are_not_sent_and_stay_as_they_were(self):
+        """A local Qwen 27B, 2026-11-26: told that nothing was left to remove, it cut the last
+        section from 1,769 words to 239."""
+        llm = _llm([PEOPLE])          # a second call would find no reply
+        new_bank, outcome = MemoryCondenser(llm, word_limit=100).condense(TWO, cut=2)
+        assert llm.think.call_count == 1
+        assert new_bank == "# People\n* coffee\n# House\n* two floors up\n"
+        assert outcome['sections'] == 2 and outcome['to'] == outcome['from'] - 2
+
+    def test_a_pass_asked_for_nothing_sends_nothing(self):
+        llm = _llm([])
+        new_bank, _ = MemoryCondenser(llm, word_limit=100).condense(TWO, cut=0)
+        llm.think.assert_not_called()
+        assert new_bank == TWO
+
+    def test_a_section_cut_far_past_its_share_is_kept_and_not_counted_as_removed(self):
+        notes, facts = "## Notes\n" + "note " * 98, "# Facts\n" + "fact " * 98
+        # 20 words asked of 200: each section's share is 10 to 15. The first drops 58, the second 10.
+        llm = _llm([f"<section>## Notes\n{'note ' * 40}</section>", f"<section># Facts\n{'fact ' * 88}</section>"])
+        new_bank, outcome = MemoryCondenser(llm, word_limit=150).condense(f"{notes}\n{facts}\n", cut=20)
+        assert new_bank.count("note") == 98 and new_bank.count("fact") == 88
+        assert "So far 0 words are removed" in llm.think.call_args_list[1].kwargs['user_message']
+        assert outcome['to'] == outcome['from'] - 10
 
     @pytest.mark.parametrize("reply", ["no tags at all", "<section>   </section>", "<section>\n</section>"])
     def test_a_reply_without_a_section_keeps_the_section(self, reply):
@@ -132,8 +151,8 @@ class TestWhatThePassUsed:
         assert f"${0.25 * len(sections):.2f}" in outcome['usage']
 
     def test_a_backend_that_reports_no_usage_still_condenses(self):
-        llm = _llm(["<section>short</section>"] * len(split_sections(BANK)))
-        _, outcome = MemoryCondenser(llm, word_limit=10).condense(BANK, cut=5)
+        llm = _llm([PEOPLE, HOUSE])
+        _, outcome = MemoryCondenser(llm, word_limit=10).condense(TWO, cut=4)
         assert outcome['to'] < outcome['from']
 
 
