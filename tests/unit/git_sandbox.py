@@ -104,6 +104,28 @@ def _tree(repo: Path, files: dict[str, str]) -> str:
                                          for _, mode, sha in sorted(entries)))
 
 
+def _load(repo: Path, name: str) -> bytes:
+    data = zlib.decompress((git_dir(repo) / 'objects' / name[:2] / name[2:]).read_bytes())
+    return data[data.index(b'\0') + 1:]
+
+
+def files_at(repo: Path, commit: str, tree: str = '', prefix: str = '') -> dict[str, str]:
+    """Every file of a commit with its text, read off the loose objects — what `git ls-tree -r`
+    and a `git show` per file would answer, without the processes. Only for objects no gc has
+    packed, which is every object of a repository made here."""
+    body = _load(repo, tree or _load(repo, commit).split(b'\n', 1)[0].split()[1].decode())
+    files = {}
+    while body:
+        entry, rest = body.split(b'\0', 1)
+        mode, name = entry.decode().split(' ', 1)
+        sha, body = rest[:20].hex(), rest[20:]
+        if mode == '40000':
+            files.update(files_at(repo, commit, sha, f'{prefix}{name}/'))
+        else:
+            files[prefix + name] = _load(repo, sha).decode()
+    return files
+
+
 @functools.cache
 def signing_key(name: str) -> tuple[Path, str]:
     """A throwaway ed25519 key that signs tags the way the maintainer's does (`gpg.format ssh`,
