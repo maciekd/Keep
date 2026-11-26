@@ -256,12 +256,12 @@ class Transcript:
             self._removed = {item_id: int(seq) for item_id, seq in state["removed"].items()}
             self._seq, self._floor, log = int(state["seq"]), int(state["floor"]), state["log"]
             closed = state.get("closed") is True
-        except (OSError, ValueError, KeyError, TypeError) as e:
-            error(f"App transcript: {self._path} is unreadable ({e}), starting an empty log")
+            with self._lock:
+                self._trim()    # reads every field a later use counts on, so a file of another shape fails here
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            error(f"App transcript: {self._path} is unreadable ({e!r}), starting an empty log")
             self._entries, self._removed, self._seq, self._floor = {}, {}, 0, 0
             return
-        with self._lock:
-            self._trim()
         if closed:
             self.log = log
             self.flush()    # open again: a run that is killed must not leave a file that says closed

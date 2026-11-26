@@ -246,9 +246,6 @@ class TestFile:
         (tmp_path / transcript_module.FILE_NAME).write_text("{not json")
         assert Transcript(tmp_path, autosave=False, clock=clock).items() == []
 
-    @pytest.mark.xfail(strict=True, reason="Transcript._load catches neither the AttributeError of a `removed` "
-                       "that is no object nor the KeyError its _trim raises for an item without `at`: the "
-                       "constructor raises, and with it AppInterface.start and the server's boot")
     @pytest.mark.parametrize("state", [
         {"log": "l", "seq": 2, "floor": 0, "removed": [], "entries": []},
         {"log": "l", "seq": 2, "floor": 0, "removed": {}, "entries": [{"seq": 1, "item": {"id": "a", "kind": "user"}}]},
