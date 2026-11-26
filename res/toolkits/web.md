@@ -8,8 +8,12 @@ toolkit clicks one of those.
 You can also Google things:
 `google(query: str)`
 
-This goes through Serper (`api_keys.serper`, 2,500 free queries on signup). Without the key it
-returns an error. But you can use Google through the browser instead: `open_url("https://www.google.com/search?q=...")` 
+And search Google News:
+`google_news(query: str, period: str = "")`
+`period` keeps it to the last `hour`, `day`, `week`, `month` or `year`.
+
+Both go through Serper (`api_keys.serper`, 2,500 free queries on signup). Without the key they
+return an error. But you can use Google through the browser instead: `open_url("https://www.google.com/search?q=...")` 
 as a fallback.
 
 After performing a Google search ALWAYS fetch the most relevant page. NEVER give a summary or list of the URLs in the
@@ -23,4 +27,4 @@ Use these commands if:
 If a page is missing the information because the site needs interaction first (a date picker, a "search" button, a login), load the `browser` toolkit.
 
 ### Stop-and-wait
-`open_url`, `google` return data: emit them and stop generating; the result arrives in the next round.
+`open_url`, `google`, `google_news` return data: emit them and stop generating; the result arrives in the next round.

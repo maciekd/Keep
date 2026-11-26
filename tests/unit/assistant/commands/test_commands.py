@@ -858,6 +858,39 @@ class TestCmdWebAccess:
             commands_instance.cmd_google("best pizza")
             mock_bg.assert_called_once_with(commands_instance.web_access.search, "best pizza")
 
+    def test_google_news_without_a_period(self, commands_instance):
+        with patch.object(commands_instance, 'background_command') as mock_bg, \
+                patch.object(commands_instance.web_access, 'search_news') as search_news:
+            commands_instance.cmd_google_news("ferry strike")
+            fn, query = mock_bg.call_args.args
+            fn(query)
+            search_news.assert_called_once_with("ferry strike", "")
+
+    def test_google_news_period_is_a_trailing_period_word(self, commands_instance):
+        """Run as the processor runs it: the period reaches the search apart from the query."""
+        with patch.object(commands_instance, 'background_command') as mock_bg, \
+                patch.object(commands_instance.web_access, 'search_news') as search_news:
+            commands_instance.run("google_news", ["ferry strike", "Week"])
+            fn, query = mock_bg.call_args.args
+            fn(query)
+            search_news.assert_called_once_with("ferry strike", "week")
+
+    def test_google_news_joins_a_comma_split_query_back(self, commands_instance):
+        # An unquoted query with a comma arrives split; only a trailing period word is the period.
+        assert Commands._query_and_period(("pizza", "Uppsala")) == ("pizza, Uppsala", "")
+        assert Commands._query_and_period(("pizza", "Uppsala", "month")) == ("pizza, Uppsala", "month")
+        assert Commands._query_and_period(("week",)) == ("week", "")
+
+    def test_a_google_query_keeps_its_commas_and_a_trailing_period_word(self, commands_instance):
+        """`google` has one argument: a query that ends in "week" is not a news search."""
+        with patch.object(commands_instance, 'background_command') as mock_bg:
+            commands_instance.run("google", ["what is on in Uppsala, week"])
+            mock_bg.assert_called_once_with(commands_instance.web_access.search, "what is on in Uppsala, week")
+
+    def test_describe_google_news_names_the_query_without_the_period(self, commands_instance):
+        text = commands_instance.describe("google_news", ["ferry strike", "day"])
+        assert "news" in text and "ferry strike" in text and "day" not in text
+
     def test_browse_eval_dispatches_to_web_access(self, commands_instance):
         with patch.object(commands_instance, 'background_command') as mock_bg:
             js = "return document.title"
