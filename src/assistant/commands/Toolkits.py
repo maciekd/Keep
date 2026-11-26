@@ -232,7 +232,7 @@ CORE_TOOLKITS: tuple[Toolkit, ...] = (
             ("play", "pause", "next", "volume_up", "volume_down", "search_music", "play_music"),
             sections=("music", "music_zones"), needs=MusicSystem),
     Toolkit("web", "read a web page or google something; anything that needs current information",
-            ("open_url", "google"), sections=("web",)),
+            ("open_url", "google", "google_news"), sections=("web",)),
     Toolkit("browser", "drive a real browser when a page needs clicking, typing or a date picker before it "
                        "shows the answer; send a screenshot of it",
             ("browse_open", "browse_act", "browse_key", "browse_eval", "browse_inspect", "browse_snapshot",

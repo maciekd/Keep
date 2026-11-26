@@ -657,6 +657,7 @@ class TestInitializeDriverContract:
             patch.object(WebAccess, '_launch_user_agent', return_value='Mozilla/5.0 test Chrome/154.0.0.0'),
             patch.object(WebAccess, '_async_install_stealth_script', new=AsyncMock()),
             patch.object(WebAccess, '_async_setup_network_monitor', new=AsyncMock()),
+            patch.object(WebAccess, '_async_seed_consent_cookies', new=AsyncMock()),
             patch.object(WebAccess, '_page_targets', return_value=page_targets),
             patch('assistant.tools.WebAccess.nodriver.start', new=start_mock),
         )
@@ -683,6 +684,7 @@ class TestInitializeDriverContract:
         start_mock = AsyncMock(return_value=browser)
         with self._patched(start_mock, [leftover]):
             run(wa._async_initialize_driver())
+            WebAccess._async_seed_consent_cookies.assert_awaited_once_with(base_tab)
 
         assert wa._browser is browser
         assert wa._tab is base_tab
@@ -945,3 +947,65 @@ class TestBrowseCloseLoopThreadFallback:
         assert wa._browse_fail_streak == 0
         assert wa._browser_hard_down is False
         assert wa._browser_closed_by_user is True
+
+
+class _CookieJar:
+    """A tab whose `send` answers the two CDP cookie calls from a jar of (name, domain)
+    pairs, each cookie with the fields Chrome sends today — no `sameParty`."""
+
+    def __init__(self, held=(), refuses=False, breaks=False):
+        self.cookies = [{'name': name, 'domain': domain, 'value': 'x', 'path': '/', 'size': 4,
+                         'httpOnly': False, 'secure': True, 'session': False, 'priority': 'Medium',
+                         'sourceScheme': 'Secure', 'sourcePort': 443, 'expires': 1900000000.0}
+                        for name, domain in held]
+        self.refuses, self.breaks = refuses, breaks
+        self.stored = []
+
+    async def send(self, command):
+        if self.breaks:
+            raise ConnectionError("the tab is gone")
+        request = next(command)
+        if request['method'] == 'Network.getCookies':
+            reply = {'cookies': self.cookies}
+        else:
+            assert request['method'] == 'Network.setCookie'
+            self.stored.append(request['params'])
+            reply = {'success': not self.refuses}
+        try:
+            command.send(reply)
+        except StopIteration as done:
+            return done.value
+
+
+@pytest.mark.unit
+class TestConsentCookie:
+    """Google and YouTube send a browser without a stored consent choice to a consent page
+    of its own; the profile is given the cookie that choice is stored in."""
+
+    def test_a_profile_without_the_cookie_gets_it_on_both_domains(self):
+        """A contract with Google: the cookie's name, and the domains whose pages redirect."""
+        tab = _CookieJar(held=[('NID', '.google.com')])
+        run(make_wa()._async_seed_consent_cookies(tab))
+
+        # The profile here holds a cookie already: the reading must survive what Chrome
+        # sends for one (nodriver's own parser does not — the call then never returns).
+        assert {(c['name'], c['domain']) for c in tab.stored} == {('SOCS', '.google.com'), ('SOCS', '.youtube.com')}
+        # A cookie without an expiry is gone with the session: the wall would be back at
+        # the next start until the cookie is set again, and a page opened in between hits it.
+        assert all(c['expires'] > time.time() and c['path'] == '/' for c in tab.stored)
+
+    def test_a_choice_the_site_stored_itself_is_kept(self):
+        tab = _CookieJar(held=[('SOCS', '.google.com'), ('NID', '.youtube.com')])
+        run(make_wa()._async_seed_consent_cookies(tab))
+
+        assert [c['domain'] for c in tab.stored] == ['.youtube.com']
+
+    def test_a_profile_holding_both_is_left_alone(self):
+        tab = _CookieJar(held=[('SOCS', '.google.com'), ('SOCS', '.youtube.com')])
+        run(make_wa()._async_seed_consent_cookies(tab))
+
+        assert tab.stored == []
+
+    @pytest.mark.parametrize("tab", [_CookieJar(refuses=True), _CookieJar(breaks=True)])
+    def test_a_cookie_chrome_will_not_take_does_not_stop_the_browser_start(self, tab):
+        run(make_wa()._async_seed_consent_cookies(tab))

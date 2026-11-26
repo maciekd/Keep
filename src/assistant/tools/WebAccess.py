@@ -923,6 +923,7 @@ class WebAccess(Integration):
             self._install_network_capture(self._tab)
             await self._async_install_stealth_script(self._tab)
             await self._async_setup_network_monitor(self._tab)
+            await self._async_seed_consent_cookies(self._tab)
             info(f"nodriver initialized (UA {ua})")
             self._last_init_failure_ts = 0.0
             self._mark_browser_up()
@@ -1054,6 +1055,50 @@ class WebAccess(Integration):
             await tab.send(cdp.page.add_script_to_evaluate_on_new_document(source=self._STEALTH_JS))
         except Exception as e:
             trace(f"stealth script registration failed: {e}")
+
+    # Google and YouTube answer a browser that has stored no consent choice with a redirect
+    # to consent.google.com — a page of its own, so a text fetch returns the wall in place
+    # of the content and the consent pass, which looks for a banner over a page, finds
+    # nothing it may click. SOCS is the cookie that choice is stored in.
+    _CONSENT_COOKIE = 'SOCS'
+    _CONSENT_COOKIE_VALUE = 'CAI'
+    _CONSENT_COOKIE_DOMAINS = ('.google.com', '.youtube.com')
+    _CONSENT_COOKIE_LIFETIME = 365 * 86400
+    _CONSENT_COOKIE_TIMEOUT = 5.0
+
+    @staticmethod
+    def _cdp_cookies(urls: list[str]):
+        """Network.getCookies answered as Chrome's own dicts. nodriver's `get_cookies` reads a
+        `sameParty` field Chrome no longer sends, and the reply it cannot parse is never
+        delivered: the call hangs in any profile that holds a cookie."""
+        reply = yield {'method': 'Network.getCookies', 'params': {'urls': urls}}
+        return reply['cookies']
+
+    async def _async_seed_consent_cookies(self, tab: 'nodriver.Tab'):
+        """Give the profile a consent cookie on each domain where it holds none; a choice
+        the site stored itself is left as it is."""
+        try:
+            held = await self._cdp_wait_for(
+                tab.send(self._cdp_cookies([f"https://www{domain}/" for domain in self._CONSENT_COOKIE_DOMAINS])),
+                self._CONSENT_COOKIE_TIMEOUT)
+            holding = {c['domain'] for c in held if c['name'] == self._CONSENT_COOKIE}
+            missing = [d for d in self._CONSENT_COOKIE_DOMAINS if d not in holding]
+            if not missing:
+                trace(f"consent cookie: the profile holds {self._CONSENT_COOKIE} for every domain — nothing to set")
+                return
+            expires = cdp.network.TimeSinceEpoch(time.time() + self._CONSENT_COOKIE_LIFETIME)
+            for domain in missing:
+                stored = await self._cdp_wait_for(
+                    tab.send(cdp.network.set_cookie(
+                        name=self._CONSENT_COOKIE, value=self._CONSENT_COOKIE_VALUE,
+                        domain=domain, path='/', secure=True, expires=expires)),
+                    self._CONSENT_COOKIE_TIMEOUT)
+                (info if stored else note)(
+                    f"consent cookie: {self._CONSENT_COOKIE} for {domain} "
+                    f"{'set — the profile held none' if stored else 'was refused by Chrome'}")
+        except Exception as e:
+            note(f"consent cookie: could not be set ({type(e).__name__}: {e}) — "
+                 f"Google pages may answer with their consent page")
 
     # DOM-quiet signal for _async_wait_for_page_ready: __domMon.last is the
     # timestamp of the newest DOM mutation. MutationObserver already batches
@@ -6051,9 +6096,24 @@ class WebAccess(Integration):
             note(e_)
             return e_
 
+    # How old a `google_news` item may be, and Google's `tbs` for it.
+    NEWS_PERIODS = {'hour': 'qdr:h', 'day': 'qdr:d', 'week': 'qdr:w', 'month': 'qdr:m', 'year': 'qdr:y'}
+
     def search(self, query: str) -> str:
         """Google via the Serper API — the only search backend, so a missing key is reported
         to the LLM as such (it can ask for the key through config_request)."""
+        return self._serper(query)
+
+    def search_news(self, query: str, period: str = "") -> str:
+        """Google News via the Serper API: what is no older than `period` (a key of
+        `NEWS_PERIODS`), of any age without one."""
+        period = (period or "").strip().lower()
+        if period and period not in self.NEWS_PERIODS:
+            info(f"News search refused: period '{period}' is not one of {', '.join(self.NEWS_PERIODS)}")
+            return f"ERROR: period is one of {', '.join(self.NEWS_PERIODS)}, not '{period}'."
+        return self._serper(query, news=True, period=period)
+
+    def _serper(self, query: str, news: bool = False, period: str = "") -> str:
         query = (query or "").strip()
         if not query:
             note("Empty search query received.")
@@ -6083,31 +6143,37 @@ class WebAccess(Integration):
             payload['gl'] = country_hint
         if interface_language:
             payload['hl'] = interface_language
+        if period:
+            payload['tbs'] = self.NEWS_PERIODS[period]
+        kind = 'news' if news else 'search'
 
-        info(f"Searching via Serper API for '{query}'")
+        info(f"Searching via Serper API ({kind}{', the last ' + period if period else ''}) for '{query}'")
 
         try:
             response = requests.post(
-                'https://google.serper.dev/search',
+                f'https://google.serper.dev/{kind}',
                 headers={'X-API-KEY': api_key, 'Content-Type': 'application/json'},
                 json=payload,
                 timeout=10
             )
             response.raise_for_status()
 
-            organic = response.json().get('organic', [])
-            if not organic:
-                info("No organic results from Serper API.")
+            results = response.json().get('news' if news else 'organic', [])
+            if not results:
+                info(f"No {kind} results from Serper API.")
+                if news:
+                    return f"No news found for: {query}" + (f" (the last {period})" if period else "")
                 return f"No search results found for: {query}"
 
-            formatted = "Google search results:\n\n"
-            for item in organic[:result_limit]:
-                title = item.get('title', 'No title')
-                link = item.get('link', '')
-                snippet = item.get('snippet', '')
-                formatted += f"{title}\n{link}\n{snippet}\n\n"
+            formatted = "Google News results:\n\n" if news else "Google search results:\n\n"
+            for item in results[:result_limit]:
+                lines = [item.get('title', 'No title'), item.get('link', '')]
+                if news:
+                    lines.append(", ".join(part for part in (item.get('source'), item.get('date')) if part))
+                lines.append(item.get('snippet', ''))
+                formatted += "\n".join(line for line in lines if line) + "\n\n"
 
-            info(f"Found {min(len(organic), result_limit)} results via Serper API.")
+            info(f"Found {min(len(results), result_limit)} results via Serper API.")
             trace(formatted)
             return formatted.strip()
 

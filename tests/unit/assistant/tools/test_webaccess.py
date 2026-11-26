@@ -406,6 +406,74 @@ class TestSearch:
         result = wa.search("test query")
         assert result.startswith("Error calling Serper API")
 
+    @staticmethod
+    def _configured(mock_cm_cls, mock_post, answer: dict):
+        mock_cm = Mock()
+        mock_cm.get_api_key.return_value = 'real-key'
+        mock_cm.get.side_effect = lambda k, d=None: d
+        mock_cm_cls.return_value = mock_cm
+        mock_post.return_value = Mock(json=Mock(return_value=answer), raise_for_status=Mock())
+
+    @patch('assistant.tools.WebAccess.requests.post')
+    @patch('assistant.tools.WebAccess.ConfigManager')
+    def test_news_goes_to_serpers_news_endpoint_with_the_period(self, mock_cm_cls, mock_post):
+        """A contract with Serper: the `/news` route, Google's `tbs` for the period, and the
+        answer's `news` list with `source` and `date` beside what a web result has."""
+        self._configured(mock_cm_cls, mock_post, {'news': [
+            {'title': 'Ferries stay in port', 'link': 'https://news.example/ferries',
+             'snippet': 'The strike enters its second day', 'date': '3 hours ago', 'source': 'Example Post'},
+        ]})
+
+        result = WebAccess.__new__(WebAccess).search_news("ferry strike", "week")
+
+        assert mock_post.call_args.args[0] == 'https://google.serper.dev/news'
+        assert mock_post.call_args.kwargs['json']['tbs'] == 'qdr:w'
+        for fact in ('Ferries stay in port', 'https://news.example/ferries', 'second day',
+                     '3 hours ago', 'Example Post'):
+            assert fact in result
+
+    @patch('assistant.tools.WebAccess.requests.post')
+    @patch('assistant.tools.WebAccess.ConfigManager')
+    def test_news_without_a_period_is_of_any_age(self, mock_cm_cls, mock_post):
+        self._configured(mock_cm_cls, mock_post, {'news': [{'title': 'Old news', 'link': 'https://news.example/old'}]})
+
+        result = WebAccess.__new__(WebAccess).search_news("ferry strike")
+
+        assert mock_post.call_args.args[0] == 'https://google.serper.dev/news'
+        assert 'tbs' not in mock_post.call_args.kwargs['json']
+        assert 'Old news' in result
+
+    @patch('assistant.tools.WebAccess.requests.post')
+    @patch('assistant.tools.WebAccess.ConfigManager')
+    def test_a_web_search_stays_on_the_search_endpoint(self, mock_cm_cls, mock_post):
+        self._configured(mock_cm_cls, mock_post, {'organic': [{'title': 'Result', 'link': 'https://r.example'}],
+                                                  'news': [{'title': 'Not asked for', 'link': 'https://n.example'}]})
+
+        result = WebAccess.__new__(WebAccess).search("ferry strike")
+
+        assert mock_post.call_args.args[0] == 'https://google.serper.dev/search'
+        assert 'tbs' not in mock_post.call_args.kwargs['json']
+        assert 'Result' in result and 'Not asked for' not in result
+
+    @patch('assistant.tools.WebAccess.requests.post')
+    @patch('assistant.tools.WebAccess.ConfigManager')
+    def test_an_unknown_period_is_refused_before_any_request(self, mock_cm_cls, mock_post):
+        self._configured(mock_cm_cls, mock_post, {'news': []})
+
+        result = WebAccess.__new__(WebAccess).search_news("ferry strike", "fortnight")
+
+        assert result.startswith("ERROR") and "fortnight" in result and "week" in result
+        mock_post.assert_not_called()
+
+    @patch('assistant.tools.WebAccess.requests.post')
+    @patch('assistant.tools.WebAccess.ConfigManager')
+    def test_no_news_says_so_with_the_query(self, mock_cm_cls, mock_post):
+        self._configured(mock_cm_cls, mock_post, {'news': []})
+
+        result = WebAccess.__new__(WebAccess).search_news("ferry strike", "hour")
+
+        assert result.startswith("No news") and "ferry strike" in result
+
 
 @pytest.mark.unit
 class TestIsBlockedResponse:

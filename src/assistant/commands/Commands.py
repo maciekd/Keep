@@ -156,7 +156,7 @@ class Commands:
         "send_email", "dim", "search_history", "show_history",
         "browse_inspect", "browse_click_at", "browse_wait", "move_email", "latest_email", "vault_add",
         "vault_request", "config_set", "load_toolkit", "pr_feedback", "server_logs",
-        "load_watch", "save_watch", "delete_watch", "open_url",
+        "load_watch", "save_watch", "delete_watch", "open_url", "google_news",
         "load_procedure", "save_procedure", "delete_procedure", "load_memo", "save_memo", "delete_memo",
         "post_message", "name_voice",
         "create_event", "delete_event", "move_event", "load_calendar", "fetch_camera_images", "car_navigate",
@@ -525,6 +525,20 @@ class Commands:
 
     def cmd_google(self, parameter_string: str):
         self.background_command(self.web_access.search, parameter_string)
+
+    def cmd_google_news(self, *args: str):
+        query, period = self._query_and_period(args)
+        self.background_command(lambda q: self.web_access.search_news(q, period), query)
+
+    @staticmethod
+    def _query_and_period(args: tuple[str, ...]) -> tuple[str, str]:
+        """`google_news(query)` or `google_news(query, period)`: only a trailing word that is
+        one of the periods is the period — an unquoted query with commas of its own arrives
+        split and is joined back."""
+        args = [a.strip() for a in args]
+        if len(args) >= 2 and args[-1].lower() in WebAccess.NEWS_PERIODS:
+            return ", ".join(args[:-1]), args[-1].lower()
+        return ", ".join(args), ""
 
     def cmd_browse_open(self, parameter_string: str):
         self.background_command(self.web_access.browse_open, parameter_string, lane=self.BROWSER_LANE)
@@ -2694,6 +2708,9 @@ class Commands:
         url, page = self._url_and_page(tuple(params) if params else (p,))
         return f"Reading {self._short_url(url)}" + (f", page {page}" if page > 1 else "")
     def describe_google(self, p):                 return f"Searching for {p.strip()}"
+    def describe_google_news(self, p, params=None):
+        query, _period = self._query_and_period(tuple(params) if params else (p,))
+        return f"Searching the news for {query}"
     def describe_browse_open(self, p):            return f"Browsing {self._short_url(p)}"
     def describe_browse_eval(self, p):            return "Inspecting the page"
     def describe_browse_snapshot(self, p):        return "Re-reading the page"
