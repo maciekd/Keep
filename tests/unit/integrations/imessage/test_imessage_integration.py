@@ -7,7 +7,7 @@ from unittest.mock import patch, Mock
 import pytest
 
 from assistant.integration.Feed import FeedSourceAway
-from common.imessage.MessagesHost import (GroupChat, HostHealth, MessageBatch, NO_ACCESS, NO_DATABASE, Recipient,
+from common.imessage.MessagesHost import (ENDED_LOGIN, GroupChat, HostHealth, MessageBatch, NO_ACCESS, NO_DATABASE, Recipient,
                                           SendResult)
 from integrations.imessage.IMessageIntegration import (
     IMessageIntegration,
@@ -880,6 +880,15 @@ class TestCheckHealth:
             integration.check_health()
         assert not isinstance(raised.value, PermissionError)
         assert "Full Disk Access" not in str(raised.value)
+
+    def test_a_server_that_outlives_its_login_is_to_be_restarted_and_no_grant_is_asked_for(self, integration):
+        integration.host.health_answer = HostHealth(False, ENDED_LOGIN, "started in login 4100, which has ended")
+        with pytest.raises(RuntimeError) as raised:
+            integration.check_health()
+        said = str(raised.value)
+        assert not isinstance(raised.value, PermissionError), "a permission problem opens the Full Disk Access pane"
+        assert "start.sh" in said and "4100" in said and "satellite" not in said
+        assert "Full Disk Access" not in said
 
 
 class TestReadsSmsCodes:

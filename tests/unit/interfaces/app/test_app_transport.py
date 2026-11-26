@@ -376,6 +376,20 @@ class TestWithoutAHub:
         assert kinds(transcript)[-2:] == ["user", "notice"]
 
 
+    def test_a_stopped_server_leaves_a_log_the_next_run_continues_for_a_phones_cursor(self, transport, transcript, tmp_path):
+        """Only a file the transport closed is the whole log: a phone then gets what is new, not the list again."""
+        transport.send_text(CONVERSATION, "The door is locked")
+        seen, subscription = transcript.subscribe(0, "", lambda: None)
+        transcript.unsubscribe(subscription)
+        cursor = max(line["seq"] for line in seen if "seq" in line)
+        transport.stop()
+        again = Transcript(tmp_path, autosave=False)
+        again.upsert("bubble-2", "user", text="and the garage?", images=[])
+        lines, _ = again.subscribe(cursor, transcript.log, lambda: None)
+        assert {"reset": True} not in lines
+        assert [line["item"]["id"] for line in lines if "item" in line] == ["bubble-2"]
+
+
 class TestWhatCannotBeShownAsAsked:
     def test_a_picture_that_cannot_be_read_is_sent_without_a_size(self, transport, transcript):
         assert transport.send_photo(CONVERSATION, b"not a picture at all", "From the porch")
