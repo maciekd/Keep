@@ -6,6 +6,7 @@
 The cube is found in the artwork (the dark and the green pixels; the shadow is neither) and a
 square is cut around it that leaves `MARGIN` of the icon's width on either side of it — the cube
 is taller than wide, so above and below it is less. The shadow stays and ends where the icon does.
+Every size is scaled from the artwork itself and sharpened at that size (`SHARPEN`).
 
 - `res/keep_icon.png`, `res/keep.icns` — the Mac's (`common/Applet`): the cut on the standard
   824-of-1024 rounded square with its drop shadow. macOS frames an icon that is not that shape.
@@ -24,6 +25,7 @@ RES = Path(__file__).resolve().parents[2] / "res"
 MARGIN = 0.18
 CANVAS, BODY, RADIUS = 1024, 824, 185
 SHADOW_OFFSET, SHADOW_BLUR, SHADOW_ALPHA = 9, 14, 0.7
+SHARPEN = (1.0, 150, 0)   # radius in pixels of the size it is made at, percent, threshold
 ICNS_SIZES = (16, 32, 128, 256, 512)
 
 
@@ -48,29 +50,44 @@ def cut(artwork: Image.Image) -> Image.Image:
     return square
 
 
-def mac_icon(square: Image.Image) -> Image.Image:
-    edge = (CANVAS - BODY) // 2
-    scale = 4
-    mask = Image.new("L", (CANVAS * scale, CANVAS * scale), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
+def sharpened(image: Image.Image) -> Image.Image:
+    """Unsharp mask on the luminance alone: sharpening each colour would fringe the green's edges."""
+    luminance, blue, red = image.convert("YCbCr").split()
+    return Image.merge("YCbCr", (luminance.filter(ImageFilter.UnsharpMask(*SHARPEN)), blue, red)).convert("RGB")
+
+
+def shape() -> tuple[Image.Image, Image.Image]:
+    """The Mac icon's body and its drop shadow, as masks of the full canvas."""
+    edge, scale = (CANVAS - BODY) // 2, 4
+    body = Image.new("L", (CANVAS * scale, CANVAS * scale), 0)
+    ImageDraw.Draw(body).rounded_rectangle(
         [edge * scale, edge * scale, (edge + BODY) * scale - 1, (edge + BODY) * scale - 1], RADIUS * scale, fill=255)
-    mask = mask.resize((CANVAS, CANVAS), Image.LANCZOS)
-    shadow = ImageChops.offset(mask, 0, SHADOW_OFFSET).filter(ImageFilter.GaussianBlur(SHADOW_BLUR))
-    icon = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    icon.putalpha(shadow.point(lambda value: round(value * SHADOW_ALPHA)))
-    body = Image.new("RGBA", (CANVAS, CANVAS), (255, 255, 255, 0))
-    body.paste(square.resize((BODY, BODY), Image.LANCZOS), (edge, edge))
-    body.putalpha(mask)
-    return Image.alpha_composite(icon, body)
+    body = body.resize((CANVAS, CANVAS), Image.LANCZOS)
+    shadow = ImageChops.offset(body, 0, SHADOW_OFFSET).filter(ImageFilter.GaussianBlur(SHADOW_BLUR))
+    return body, shadow.point(lambda value: round(value * SHADOW_ALPHA))
 
 
-def write_icns(icon: Image.Image, path: Path):
+def mac_icon(square: Image.Image, size: int = CANVAS) -> Image.Image:
+    """The Mac's icon at one size. The cut is scaled to that size and sharpened there, under a
+    shape that is not: sharpening a finished icon would ring its edge and its shadow."""
+    side = round(square.width * CANVAS / BODY)
+    canvas = Image.new("RGB", (side, side), "white")
+    canvas.paste(square, ((side - square.width) // 2, (side - square.height) // 2))
+    body, shadow = (mask.resize((size, size), Image.LANCZOS) for mask in shape())
+    icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    icon.putalpha(shadow)
+    art = sharpened(canvas.resize((size, size), Image.LANCZOS)).convert("RGBA")
+    art.putalpha(body)
+    return Image.alpha_composite(icon, art)
+
+
+def write_icns(square: Image.Image, path: Path):
     with tempfile.TemporaryDirectory() as folder:
         iconset = Path(folder) / "keep.iconset"
         iconset.mkdir()
         for size in ICNS_SIZES:
-            icon.resize((size, size), Image.LANCZOS).save(iconset / f"icon_{size}x{size}.png")
-            icon.resize((size * 2, size * 2), Image.LANCZOS).save(iconset / f"icon_{size}x{size}@2x.png")
+            mac_icon(square, size).save(iconset / f"icon_{size}x{size}.png")
+            mac_icon(square, size * 2).save(iconset / f"icon_{size}x{size}@2x.png")
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(path)], check=True)
 
 
@@ -79,12 +96,11 @@ def main():
     parser.add_argument("--app-icon", type=Path)
     args = parser.parse_args()
     square = cut(Image.open(ARTWORK).convert("RGB"))
-    icon = mac_icon(square)
-    icon.save(RES / "keep_icon.png", optimize=True)
-    write_icns(icon, RES / "keep.icns")
+    mac_icon(square).save(RES / "keep_icon.png", optimize=True)
+    write_icns(square, RES / "keep.icns")
     print(f"wrote {RES / 'keep_icon.png'} and {RES / 'keep.icns'}")
     if args.app_icon:
-        square.resize((CANVAS, CANVAS), Image.LANCZOS).save(args.app_icon, optimize=True)
+        sharpened(square.resize((CANVAS, CANVAS), Image.LANCZOS)).save(args.app_icon, optimize=True)
         print(f"wrote {args.app_icon}")
 
 
