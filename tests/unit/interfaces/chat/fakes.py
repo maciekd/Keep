@@ -55,10 +55,15 @@ class FakeTransport(ChatTransport):
     source = "TextChat"
     max_message_length = 0
 
-    def __init__(self, owners=(1,), name="Fake", source="TextChat", max_message_length=0):
+    def __init__(self, owners=(1,), name="Fake", source="TextChat", max_message_length=0,
+                 channel="", message_is_alert=False, alerts_now=False):
         self.name = name
         self.source = source
         self.max_message_length = max_message_length
+        self.channel = channel                      # what notify_channel calls this chat
+        self.message_is_alert = message_is_alert    # True: a Telegram-like chat, a message rings by itself
+        self.alerts_now = alerts_now                # whether a message here reaches the owner wherever they are
+        self.alerted = []                           # (conversation, text) per `alert`
         self.owners = list(owners)
         self.notify = None  # a subset of owners the proactive pushes go to; None = every owner
         self.calls = []
@@ -82,6 +87,12 @@ class FakeTransport(ChatTransport):
 
     def notification_conversations(self):
         return list(self.notify) if self.notify is not None else list(self.owners)
+
+    def alerts(self):
+        return self.alerts_now
+
+    def alert(self, conversation, text):
+        self.alerted.append((conversation, text))
 
     def send_text(self, conversation, html, *, silent=False, preview=True):
         self.calls.append(("text", conversation, html, silent, preview))
@@ -206,3 +217,17 @@ class FakeAssistant:
             raise AssistantBusy(self.busy)
         self.stream_obj = FakeStream(self.events)
         return self.stream_obj
+
+
+def set_notify_channel(monkeypatch, value):
+    """The `notify_channel` config key reads *value* for the test, whatever the config.yaml of
+    the run says; None: the key is not set, so the caller's default answers."""
+    from common.ConfigManager import config
+    real = config.get
+
+    def get(key, *args, **kwargs):
+        if key != "notify_channel":
+            return real(key, *args, **kwargs)
+        return value if value is not None else (args[0] if args else kwargs.get("default"))
+
+    monkeypatch.setattr(config, "get", get)

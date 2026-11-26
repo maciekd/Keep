@@ -205,6 +205,8 @@ class TelegramTransport(Integration, ChatTransport):
     Runs the bot: updates in, chat-layer rendering out."""
 
     source = SOURCE_TELEGRAM
+    channel = "telegram"
+    message_is_alert = True     # a message rings the phone: sent only while Telegram is the chat that alerts
     max_message_length = 4096
     # A paste longer than the limit reaches the bot as consecutive messages a few milliseconds
     # apart. The clients cut near the limit at a line or word, so the first part is seldom
@@ -588,6 +590,10 @@ class TelegramTransport(Integration, ChatTransport):
         if outside:
             info(f"telegram_bot.notify_chat_ids: {outside} not in allowed_chat_ids — notified, but cannot talk to the bot")
         return list(notify)
+
+    def alerts(self) -> bool:
+        """There is a chat to notify."""
+        return bool(self._notify_chat_ids or self.owner_conversations())
 
     @staticmethod
     def _parse_chat_ids(raw, key: str = 'telegram_bot.allowed_chat_ids') -> list[int]:

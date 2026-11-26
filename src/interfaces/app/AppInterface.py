@@ -20,10 +20,11 @@ class AppInterface(Interface):
         from assistant.Notifier import set_notifier
         from interfaces.app import routes
         from interfaces.app.AppTransport import AppTransport
+        from interfaces.app.Devices import Devices
         from interfaces.app.Transcript import Transcript
         from interfaces.chat.ChatHub import ChatHub
 
-        self.transport = AppTransport(Transcript(CACHE_DIR))
+        self.transport = AppTransport(Transcript(CACHE_DIR), Devices(CACHE_DIR))
         self.hub = ChatHub.get_instance()
         self.hub.attach(assistant)
         self.hub.register(self.transport)

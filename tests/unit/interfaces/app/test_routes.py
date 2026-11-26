@@ -1,9 +1,11 @@
 """The /app routes on a real Quart app, over a transport on a real ChatHub."""
 import asyncio
+import base64
 import io
 import json
 import logging
 import threading
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -246,6 +248,84 @@ class TestSend:
         assert wait_until(lambda: hub.assistant.stream_obj is not None)
         assert post(app, "/app/stop", {})[0] == 200
         assert wait_until(lambda: hub.assistant.stream_obj.killed)
+
+
+KEY = base64.b64encode(bytes(range(32))).decode()
+IPHONE, IPAD = "marcus-iphone-0001", "charlotte-ipad-0002"
+REGISTRATION = {"device": IPHONE, "token": "a1" * 32, "environment": "sandbox", "key": KEY, "name": "Marcus's iPhone"}
+
+
+class TestDevice:
+    """Where a phone says how its notifications reach it (docs/plans/APP_PUSH_PLAN.md)."""
+
+    def test_the_fields_of_a_registration_are_a_contract_with_the_app(self, app, transport):
+        assert post(app, "/app/device", REGISTRATION) == (200, {"ok": True})
+        (phone,) = transport.devices.all()
+        assert (phone.id, phone.token, phone.environment, phone.name) == (IPHONE, "a1" * 32, "sandbox", "Marcus's iPhone")
+        assert phone.key_bytes() == bytes(range(32))
+        assert transport.alerts()
+
+    def test_a_phone_registers_without_a_name(self, app, transport):
+        body = {field: value for field, value in REGISTRATION.items() if field != "name"}
+        assert post(app, "/app/device", body)[0] == 200
+        assert [phone.id for phone in transport.devices.all()] == [IPHONE]
+
+    @pytest.mark.parametrize("field, value", [("device", ""), ("token", "not a token"), ("environment", "staging"),
+                                              ("key", "c2hvcnQ="), ("key", None), ("device", None), ("environment", None)])
+    def test_a_field_that_is_not_what_the_wire_says_is_refused_with_the_reason(self, app, transport, field, value):
+        status, answer = post(app, "/app/device", {**REGISTRATION, field: value})
+        assert status == 400 and field in answer["error"]
+        assert transport.devices.all() == []
+
+    def test_a_null_token_forgets_the_phone(self, app, transport):
+        post(app, "/app/device", REGISTRATION)
+        assert post(app, "/app/device", {**REGISTRATION, "token": None})[0] == 200
+        assert transport.devices.all() == [] and not transport.alerts()
+
+    def test_a_registration_without_a_token_is_refused_and_forgets_nobody(self, app, transport):
+        post(app, "/app/device", REGISTRATION)
+        body = {field: value for field, value in REGISTRATION.items() if field != "token"}
+        assert post(app, "/app/device", body)[0] == 400
+        assert transport.alerts()
+
+    def test_a_null_token_of_a_phone_nobody_knows_is_taken_too(self, app, transport):
+        assert post(app, "/app/device", {"device": IPHONE, "token": None})[0] == 200
+
+    def test_registering_says_the_phone_has_been_looked_at(self, app, transport):
+        """Sent whenever the app comes to the front: the badge starts over."""
+        post(app, "/app/device", REGISTRATION)
+        transport.devices.pushed(IPHONE)
+        transport.devices.pushed(IPHONE)
+        post(app, "/app/device", REGISTRATION)
+        assert transport.devices.get(IPHONE).unseen == 0
+
+    def test_the_key_is_in_no_log_line(self, app, transport, caplog):
+        with caplog.at_level(logging.DEBUG):
+            post(app, "/app/device", REGISTRATION)
+            post(app, "/app/device", {**REGISTRATION, "environment": "staging"})
+        assert KEY not in caplog.text
+
+    def test_the_end_of_a_reply_rings_the_phone_its_message_named_a_contract_with_the_app(self, app, hub, transport):
+        """`device` of /app/send is the id the phone registered under."""
+        pushes = []
+        transport._sender = SimpleNamespace(push=lambda device, kind, body, title="": pushes.append((device.id, kind, body)),
+                                            stop=lambda: None)
+        post(app, "/app/device", REGISTRATION)
+        post(app, "/app/device", {**REGISTRATION, "device": IPAD, "token": "c3" * 32, "name": "Charlotte's iPad"})
+        hub.assistant = FakeAssistant([Token("Locked."), RoundEnd("Locked."), Done("Locked.")])
+        assert post(app, "/app/send", {"id": "bubble-1", "text": "Is the door locked?", "device": IPAD})[0] == 200
+        assert wait_until(lambda: pushes)
+        assert pushes == [(IPAD, "assistant", "Locked.")]
+
+    def test_a_form_names_its_phone_like_a_json_message(self, app, hub, transport):
+        pushes = []
+        transport._sender = SimpleNamespace(push=lambda device, kind, body, title="": pushes.append(device.id),
+                                            stop=lambda: None)
+        post(app, "/app/device", REGISTRATION)
+        hub.assistant = FakeAssistant([Token("A cat."), RoundEnd("A cat."), Done("A cat.")])
+        status, _ = post_form(app, "/app/send", {"id": "bubble-1", "text": "What is this?", "device": IPHONE}, [jpeg(8, 8)])
+        assert status == 200
+        assert wait_until(lambda: pushes == [IPHONE])
 
 
 class TestApproval:

@@ -1,6 +1,7 @@
 """The phone apps' side of the chat, under `/app`: one long response of events, a JSON
 object per line, and plain POSTs for what the app does — so each has a status the app
-can show. A message with pictures is the one POST that is a form and not JSON. No call names the phone: there is one conversation, and the cursor is the app's own.
+can show. A message with pictures is the one POST that is a form and not JSON. The chat names no phone: there is one conversation, and the cursor is the app's own. `/app/device` is
+where a phone says how its notifications reach it (`docs/plans/APP_PUSH_PLAN.md`).
 
 Whoever reaches the address is the owner, as for `/stream`."""
 import asyncio
@@ -11,6 +12,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from common.logging import info, trace
 from interfaces.app.AppTransport import MAX_PICTURES, AppTransport, PicturesRefused
+from interfaces.app.Devices import DeviceRefused
 from interfaces.chat.ChatTypes import DECISION_APPROVE, DECISION_DENY
 from interfaces.Interface import on_shutdown
 
@@ -82,7 +84,7 @@ def build_blueprint(transport: AppTransport) -> Blueprint:
         try:
             # The pictures are re-encoded on the way in: off the event loop.
             taken = await asyncio.to_thread(transport.submit, str(body.get('id') or ''), str(body.get('text') or ''),
-                                            str(body.get('user') or ''), pictures)
+                                            str(body.get('user') or ''), pictures, str(body.get('device') or ''))
         except PicturesRefused as e:
             return {"error": str(e)}, 400
         if not taken:
@@ -117,6 +119,22 @@ def build_blueprint(transport: AppTransport) -> Blueprint:
             return {"error": "no longer pending"}, 410
         return {"ok": True}, 200
 
+    @bp.route('/device', methods=['POST'])
+    async def device():
+        # The key is handed to the registry and nowhere else: never a log line.
+        body = await request.get_json(silent=True) or {}
+        if 'token' not in body:
+            # Left out by mistake it would read as "forget this phone".
+            return {"error": "token must be the device token, or null to forget the phone"}, 400
+        token = body['token']
+        try:
+            await asyncio.to_thread(transport.register_device, body.get('device'), token, body.get('environment'),
+                                    body.get('key'), body.get('name') or '')
+        except DeviceRefused as e:
+            info(f"App chat: a phone's registration for notifications was refused: {e}")
+            return {"error": str(e)}, 400
+        return {"ok": True}, 200
+
     @bp.route('/media/<media_id>')
     async def media(media_id: str):
         found = await asyncio.to_thread(transcript.media, media_id)
@@ -137,4 +155,4 @@ def register(app, transport: AppTransport) -> None:
     # The limit is the app's, so every route's: never lowered under what another set.
     app.config["MAX_CONTENT_LENGTH"] = max(app.config.get("MAX_CONTENT_LENGTH") or 0, MAX_REQUEST_BYTES)
     on_shutdown(app, transport.transcript.end_listeners)
-    info("App chat routes registered (/app/events, /app/send, /app/stop, /app/approval, /app/secret, /app/media).")
+    info("App chat routes registered (/app/events, /app/send, /app/stop, /app/approval, /app/secret, /app/device, /app/media).")

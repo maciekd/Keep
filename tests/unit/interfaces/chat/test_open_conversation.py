@@ -6,7 +6,7 @@ from assistant.AssistantEvents import Done, RoundEnd, Token
 from interfaces.chat.ChatHub import ChatHub
 from interfaces.chat.ChatTypes import IncomingMessage
 
-from .fakes import FakeAssistant, FakeTransport, wait_until
+from .fakes import FakeAssistant, FakeTransport, set_notify_channel, wait_until
 
 BRIEF = "The server has just started…"
 
@@ -69,6 +69,51 @@ class TestOpenConversation:
         hub.register(console)
         assert hub.open_conversation(BRIEF) is True
         assert wait_until(lambda: ("reply_finished", "pane") in console.calls)
+        hub.stop()
+
+    def test_with_nobody_at_any_chat_the_turn_opens_in_the_chat_that_alerts(self, monkeypatch):
+        """Its reply's end is a notification there: the first chat registered may be a pane nobody sees."""
+        set_notify_channel(monkeypatch, "app")
+        console = FakeTransport(owners=["pane"], name="Console", source="Console")
+        telegram = FakeTransport(owners=[1], name="Telegram", source="Telegram", channel="telegram",
+                                 message_is_alert=True, alerts_now=True)
+        app = FakeTransport(owners=["app"], name="App", source="App", channel="app", alerts_now=True)
+        hub = ChatHub(assistant=greeting())
+        for transport in (console, telegram, app):
+            transport.attended_now = False
+            hub.register(transport)
+        assert hub.open_conversation(BRIEF) is True
+        assert wait_until(lambda: ("reply_finished", "app") in app.calls)
+        assert len(hub.assistant.requests) == 1
+        assert console.calls == [] and telegram.calls == []
+        hub.stop()
+
+    def test_with_nobody_at_any_chat_notify_channel_says_which_one_opens(self, monkeypatch):
+        set_notify_channel(monkeypatch, "telegram")
+        console = FakeTransport(owners=["pane"], name="Console", source="Console")
+        app = FakeTransport(owners=["app"], name="App", source="App", channel="app", alerts_now=True)
+        telegram = FakeTransport(owners=[1], name="Telegram", source="Telegram", channel="telegram",
+                                 message_is_alert=True, alerts_now=True)
+        hub = ChatHub(assistant=greeting())
+        for transport in (console, app, telegram):
+            transport.attended_now = False
+            hub.register(transport)
+        assert hub.open_conversation(BRIEF) is True
+        assert wait_until(lambda: ("reply_finished", 1) in telegram.calls)
+        assert console.calls == [] and app.calls == []
+        hub.stop()
+
+    def test_a_chat_somebody_is_at_takes_the_turn_before_the_chat_that_alerts(self, monkeypatch):
+        set_notify_channel(monkeypatch, "app")
+        console = FakeTransport(owners=["pane"], name="Console", source="Console")
+        app = FakeTransport(owners=["app"], name="App", source="App", channel="app", alerts_now=True)
+        app.attended_now = False
+        hub = ChatHub(assistant=greeting())
+        hub.register(app)
+        hub.register(console)
+        assert hub.open_conversation(BRIEF) is True
+        assert wait_until(lambda: ("reply_finished", "pane") in console.calls)
+        assert app.calls == []
         hub.stop()
 
     def test_without_an_owner_conversation_nothing_is_opened(self):

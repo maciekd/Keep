@@ -55,6 +55,12 @@ class ChatTransport(ABC):
     # cannot take a bubble back would send half a sentence only because of the kill).
     keeps_partial_reply: bool = True
     lang: str = "en"
+    channel: str = ""         # what the `notify_channel` config key calls this chat ("app", "telegram")
+    # A message Keep sends on its own goes two ways (`ChatHub.alert_channel`). False: this chat is
+    # a list the owner reads when they look (the console's pane, the app's transcript) — it gets
+    # every such message, and `alert` is what makes the owner look. True: a message here is its
+    # own alert (Telegram), so it is sent only while this chat is the one that alerts.
+    message_is_alert: bool = False
 
     def start(self, hub) -> None:
         """Bring the platform up; keep `hub` to deliver incoming messages to."""
@@ -78,6 +84,17 @@ class ChatTransport(ABC):
         only while a TUI client is connected. A turn the server starts goes to an attended
         chat first."""
         return True
+
+    def alerts(self) -> bool:
+        """Whether a message sent here now reaches the owner wherever they are — a phone that
+        takes notifications, a Telegram chat to notify. The hub picks the one chat that alerts
+        among those that say yes."""
+        return False
+
+    def alert(self, conversation, text: str) -> None:
+        """A message Keep sent on its own was just put in *conversation*, and this chat is the
+        one that alerts: make the owner look. *text* is the message, or what stands for a
+        photo. Optional — where a message is its own alert there is nothing left to do."""
 
     # --- one-shot sends: True when the platform accepted the message for delivery -----------
     # A photo or an album is the one send a transport may wait on: False when the upload failed.

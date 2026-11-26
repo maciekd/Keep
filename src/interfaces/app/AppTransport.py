@@ -11,17 +11,29 @@ What a command handed back for the model is kept beside the log when the command
 never sent with the chat: the item names the file, and an app asks for it when its row is
 tapped (`docs/plans/APP_COMMAND_RESULT_PLAN.md`).
 
+Some items are also a notification on the phones registered in `Devices`, sent by `Push`
+(`docs/plans/APP_PUSH_PLAN.md`): a message Keep sends on its own and a question only the
+owner answers, on every phone, while the app is the chat that alerts
+(`ChatHub.alert_channel`); the end of a reply, on the phone that asked. Whether somebody is
+looking is not tracked: a phone with the app on screen shows no notification.
+
 The item kinds and their fields are a contract with the apps (`docs/plans/APP_CHAT_PLAN.md`).
 """
 import base64
 import io
+import threading
 import time
-from typing import Any, Optional
+from html import escape
+from typing import Any, Callable, Optional
 
 from assistant.ChannelProfile import SOURCE_APP
+from assistant.commands.DebugCommands import DebugCommands
+from assistant.Destinations import plain_text
 from common.ConfigManager import config
 from common.logging import error, info, trace
 from common.vault.Redactor import redact_for_storage
+from interfaces.app.Devices import Devices
+from interfaces.app.Push import Sender
 from interfaces.app.Transcript import Transcript, new_id
 from interfaces.chat.ChatTransport import ChatTransport
 from interfaces.chat.ChatTypes import KIND_PHOTO, PHASE_THINKING, PHASE_WAITING, Attachment, IncomingMessage, Progress
@@ -46,6 +58,13 @@ STATE_FAILED = "failed"
 # The most of a command's result an app is shown; what is cut says how long the whole was.
 RESULT_CHARS = 100_000
 RESULT_CUT = "\n\n[… cut here: the whole result is {chars:,} characters]"
+
+# What stands over a question's notification; its text is the question's title, never more.
+APPROVAL_NEEDED = "Approval needed"
+SECRET_NEEDED = "Keep needs something from you"
+# Said once in the app's chat when a phone's registration moves the alerts away from another chat.
+ALERTS_MOVED = ("Messages Keep sends on its own now arrive as notifications of this app, and no longer in {chat}. "
+                "To keep them in {chat}, ask Keep to set <code>notify_channel</code> to <code>{channel}</code>.")
 
 # What a restart leaves of an item nobody will finish any more.
 INTERRUPTED = "interrupted"
@@ -72,8 +91,9 @@ class PicturesRefused(Exception):
 class AppDraft:
     """One reply bubble as an `assistant` item, its thinking as an item of its own before it."""
 
-    def __init__(self, transcript: Transcript):
+    def __init__(self, transcript: Transcript, on_final: Optional[Callable[[str], None]] = None):
         self._transcript = transcript
+        self._on_final = on_final
         self._id: Optional[str] = None
         self._thinking_id: Optional[str] = None
         self._thinking_shown: Optional[tuple] = None
@@ -98,6 +118,8 @@ class AppDraft:
     def finalize(self, html: str) -> bool:
         self._closed = True
         self._show(html, final=True)
+        if self._on_final is not None:
+            self._on_final(html)
         return True
 
     def discard(self) -> None:
@@ -139,10 +161,20 @@ class AppTransport(ChatTransport):
     max_message_length = 0
     keeps_partial_reply = True
     lang = "en"
+    channel = "app"
 
-    def __init__(self, transcript: Transcript):
+    def __init__(self, transcript: Transcript, devices: Optional[Devices] = None, sender: Optional[Sender] = None):
         self.transcript = transcript
+        self.devices = devices if devices is not None else Devices()
+        self._sender = sender if sender is not None else Sender(self.devices)
         self._hub = None
+        # Whose reply is being written, for the notification at its end; guarded by _turns.
+        self._turns = threading.Lock()
+        self._replying = 0                      # replies in flight: a superseded one winds down beside its successor
+        self._asked_by: Optional[str] = None    # the phone of the message no reply has started for yet
+        self._answers: Optional[str] = None     # the phone the newest reply answers; None: the server started the turn
+        self._turn = 0                          # counts the replies started: a bubble belongs to the one it was begun in
+        self._final: Optional[str] = None       # the last bubble the newest reply finished
 
     def start(self, hub) -> None:
         self._hub = hub
@@ -151,6 +183,7 @@ class AppTransport(ChatTransport):
 
     def stop(self) -> None:
         self._hub = None
+        self._sender.stop()
         self.transcript.set_working(None)
         self.transcript.flush(closed=True)
 
@@ -188,12 +221,68 @@ class AppTransport(ChatTransport):
             trace("App chat: no phone is connected — the app is not attended")
         return attended
 
+    # --- notifications ------------------------------------------------------------------------
+
+    def alerts(self) -> bool:
+        """A phone takes notifications: "the user has the app"."""
+        return bool(self.devices.all())
+
+    def alert(self, conversation, text: str) -> None:
+        self._push(KIND_NOTICE, plain_text(text))
+
+    def register_device(self, device_id: str, token: Optional[str], environment: str, key: str, name: str) -> None:
+        """A phone says where its notifications go — *token* None: nowhere any more — and
+        that it has just been looked at. `DeviceRefused` for fields the wire does not know."""
+        if token is None:
+            self.devices.forget(device_id)
+            return
+        before = self._alert_channel()
+        self.devices.register(device_id, token, environment, key, name)
+        if before is not None and before is not self and self._alert_channel() is self:
+            # The other chat going quiet must not be a riddle.
+            info(f"App chat: with this phone the app is the chat that alerts, no longer {before.name} — said in the chat")
+            self.send_text(CONVERSATION, ALERTS_MOVED.format(chat=escape(before.name), channel=escape(before.channel)))
+
+    def _alert_channel(self):
+        return self._hub.alert_channel() if self._hub is not None else None
+
+    def _push(self, kind: str, body: str, title: str = "", only: Optional[str] = None) -> None:
+        """A notification to every registered phone, or to the phone *only* names."""
+        devices = self.devices.all()
+        if only is not None:
+            devices = [device for device in devices if device.id == only]
+        if not devices or not body.strip():
+            trace(f"App chat: no notification for a {kind} — "
+                  f"{'it has no text' if devices else 'no phone to send it to'}")
+            return
+        info(f"App chat: a {kind} goes to {len(devices)} phone(s) as a notification")
+        for device in devices:
+            self._sender.push(device, kind, body, title)
+
+    def _push_question(self, kind: str, heading: str, title: str) -> None:
+        """A question only the owner answers rings the phones while the app is the chat that
+        alerts, and during a turn of the app's own: then it is asked nowhere else."""
+        with self._turns:
+            own_turn = self._replying > 0
+        if own_turn or self._alert_channel() is self:
+            self._push(kind, plain_text(title), heading)
+        else:
+            trace(f"App chat: the {kind} is not pushed — another chat alerts, and no turn of the app's is running")
+
+    def _reply_final(self, turn: int, html: str) -> None:
+        with self._turns:
+            if turn == self._turn:
+                self._final = html
+            else:
+                trace("App chat: a bubble of a superseded reply, not what the reply's end announces")
+
     # --- from the apps ------------------------------------------------------------------------
 
-    def submit(self, item_id: str, text: str, user: str = "", pictures: list = ()) -> bool:
+    def submit(self, item_id: str, text: str, user: str = "", pictures: list = (), device: str = "") -> bool:
         """A message typed in an app, under the id the app gave its bubble, with the pictures
         staged beside it (their bytes): a text message, or a photo message carrying every
-        picture with the text as its caption, as the console sends one. False for an empty
+        picture with the text as its caption, as the console sends one. *device* is the phone
+        it was typed on, where the end of its reply is a notification. False for an empty
         message; `PicturesRefused` for pictures that cannot be taken. An id the list already
         holds is an app sending again what did arrive: taken, and no second turn."""
         text = (text or "").strip()
@@ -217,7 +306,13 @@ class AppTransport(ChatTransport):
         if jpegs:
             message.kind = KIND_PHOTO
             message.attachments = [Attachment(jpeg, "image/jpeg", "photo") for jpeg in jpegs]
-        self._hub.receive(self, message)
+        # A debug command is answered without a reply: it must not pass for the next turn's asker.
+        if jpegs or not DebugCommands.is_command(text):
+            with self._turns:
+                self._asked_by = device or ""
+        if self._hub.receive(self, message) is False:
+            with self._turns:
+                self._asked_by = None       # dropped on the spot: no reply will start for it
         return True
 
     @staticmethod
@@ -328,13 +423,35 @@ class AppTransport(ChatTransport):
             return "jpg", 0, 0
 
     def begin_draft(self, conversation) -> AppDraft:
-        return AppDraft(self.transcript)
+        with self._turns:
+            turn = self._turn
+        return AppDraft(self.transcript, on_final=lambda html: self._reply_final(turn, html))
 
     def reply_started(self, conversation) -> None:
+        with self._turns:
+            self._replying += 1
+            self._turn += 1
+            self._final = None
+            self._answers, self._asked_by = self._asked_by, None
         self.transcript.set_working(working_facts(Progress(phase=PHASE_WAITING)))
 
     def reply_finished(self, conversation) -> None:
         self.transcript.set_working(None)
+        with self._turns:
+            self._replying = max(0, self._replying - 1)
+            if self._replying:
+                trace("App chat: a superseded reply is over, its successor's end is the one announced")
+                return
+            final, self._final = self._final, None
+            answers = self._answers
+        if final is None:
+            trace("App chat: the reply ended without a bubble, nothing to announce")
+        elif answers == "":
+            trace("App chat: the reply's end is not pushed — its message named no phone")
+        else:
+            # The asking phone alone, so a reply read on one device does not ring the others;
+            # every phone for a turn the server started.
+            self._push(KIND_ASSISTANT, plain_text(final), only=answers)
 
     def send_command_line(self, conversation, text: str) -> Any:
         return self.transcript.upsert(new_id(), KIND_COMMAND, text=text, state=STATE_RUNNING, detail="")
@@ -403,6 +520,7 @@ class AppTransport(ChatTransport):
 
     def send_approval_prompt(self, conversation, token: str, title: str, details: str) -> Any:
         info(f"App chat: showing approval prompt [{token[:8]}]: {title}")
+        self._push_question(KIND_APPROVAL, APPROVAL_NEEDED, title)
         return self.transcript.upsert(self._prompt_id(KIND_APPROVAL, token), KIND_APPROVAL,
                                       token=token, title=title, details=details, outcome="")
 
@@ -411,6 +529,7 @@ class AppTransport(ChatTransport):
 
     def send_secret_prompt(self, conversation, token: str, title: str, details: str) -> Any:
         info(f"App chat: showing secret prompt [{token[:8]}]: {title}")
+        self._push_question(KIND_SECRET, SECRET_NEEDED, title)
         return self.transcript.upsert(self._prompt_id(KIND_SECRET, token), KIND_SECRET,
                                       token=token, title=title, details=details, outcome="")
 

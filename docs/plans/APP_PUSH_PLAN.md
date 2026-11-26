@@ -1,6 +1,10 @@
 # Push: what Keep says reaches a phone whose app is closed
 
-Status: a plan, nothing built. Phase 4 of `APP_CHAT_PLAN.md` ("Push while the app is closed").
+Status, 2026-11-26: steps 1 and 2 are proven on a phone running a build from Xcode (sandbox) —
+a `post_message` to `owner` was a banner with its text, sent by the server through the relay at
+`push.keep-ai.dev` and decrypted by the extension. Step 3 is built and has unit tests; of it the
+reply's end, an approval and the badge have not been looked at on a phone yet, and neither has
+`notify_channel: telegram` (the development server has no Telegram). Step 4 is not done.
 
 ## Why
 
@@ -63,13 +67,16 @@ That is "the user has the app".
 In code:
 
 - `ChatTransport.alerts() -> bool` — whether a message sent here reaches the owner wherever they
-  are. Telegram: it has a notification conversation. App: a device is registered. Default false.
+  are. Telegram: it has a chat to notify. App: a device is registered. Default false.
+- `ChatTransport.channel` — what `notify_channel` calls the transport (`app`, `telegram`).
 - `ChatHub.alert_channel()` — the transport `notify_channel` names when it alerts, else the
   first other one that does, else none. Read at every send.
-- `ChatHub._targets(notifications=True)` leaves out a transport for which sending *is* alerting
-  (Telegram) when it is not the alert channel. This is the one route `send_message` and the
-  unasked media already share.
-- `AppTransport` pushes a proactive item only while it is the alert channel.
+- `ChatTransport.message_is_alert` — true where sending *is* alerting (Telegram). `ChatHub._route()`,
+  the one route `send_message` and the unasked media share, leaves such a transport out while it
+  is not the alert channel.
+- `ChatTransport.alert(conversation, text)` — the hub's call to the alert channel after a message
+  Keep sent on its own was put in its list, unless the send was `silent`. The hub knows which
+  sends are Keep's own; the app transport only pushes. Telegram has nothing left to do there.
 - `owner_channels()` follows the route (the reactivation telemetry reads it).
 - `open_conversation` — a turn the server starts — keeps going to an attended chat first; with
   none attended it opens in the alert channel instead of "the first there is".
@@ -84,22 +91,26 @@ otherwise. Telegram going quiet must not be a riddle.
 |---|---|---|
 | `notice`, `media` — the Notifier's unasked sends | every registered phone | the app is the alert channel, and the send is not `silent` |
 | `approval`, `secret` | every registered phone | the app is the alert channel, or a turn of the app's own is running (then the question is asked nowhere else) |
-| `assistant`, when it becomes `final` | the phone that sent the turn's last message; every phone for a turn the server started | always |
+| `assistant` — the last bubble of a reply, when the reply is over | the phone that sent the turn's last message; every phone for a turn the server started; none for a message that named no phone (the Mac) | always |
 
 No presence is tracked. A push to a phone with the app on screen shows nothing — iOS leaves
 that to the app, and the app declines — so "is somebody watching" is answered on the phone,
 where it is known. The reply's end goes to the asking phone alone so that a reply read on one
 device does not ring the others; for that `/app/send` names its phone.
 
+A reply of several bubbles is one notification, at its end; a reply superseded by a newer
+message is none — its successor's end is the one announced.
+
 The notification's text is the item's as plain text, cut to what fits (about 2,000 bytes; the
-chat has the rest). An approval's is its title. A secret prompt's is its title, never a value.
-A photo is its caption or "Photo" — the picture itself is a later step.
+chat has the rest). An approval's is its title, under "Approval needed". A secret prompt's is
+its title, never a value. A photo is its caption or "Photo" — the picture itself is a later step.
 
 ## The wire
 
 Two additions to the contract with the apps (`APP_CHAT_PLAN.md`):
 
-**`POST /app/device`** — sent at every launch and whenever the app comes to the front.
+**`POST /app/device`** — sent each time the app's chat goes live (the app is on screen and the
+server answers) and each time the app leaves the screen.
 
 | Field | |
 |---|---|
@@ -110,7 +121,8 @@ Two additions to the contract with the apps (`APP_CHAT_PLAN.md`):
 | `name` | "iPhone", "iPad" — for the log |
 
 It also says "this phone has been looked at": the phone's count of unseen pushes, which becomes
-the badge, goes back to zero.
+the badge, goes back to zero. Sent on leaving too, so that what was pushed while the app was on
+screen — and shown by no notification — is not counted.
 
 **`POST /app/send`** gains an optional `device`, the same id.
 
@@ -125,8 +137,9 @@ devices, the oldest registration leaving first. A lost file heals at each phone'
 - The box is ChaCha20-Poly1305: a fresh 12-byte nonce, the ciphertext, the 16-byte tag, in that
   order, base64. `cryptography` (already pinned) on the server, CryptoKit's `ChaChaPoly` combined
   form on the phone — the same layout.
-- The plaintext is JSON: `title`, `body`, `badge`, `kind`. A contract with the app, pinned by a
-  test named so.
+- The plaintext is JSON: `title` (empty: iOS shows the app's name), `body`, `badge`, `kind`
+  (`notice` — a message Keep sent on its own, a photo's caption included —, `assistant`,
+  `approval`, `secret`). A contract with the app, pinned by a test named so.
 - A phone that cannot decrypt (before the first unlock after a reboot, a key the server no
   longer has right) shows what the relay wrote: "Keep — New message".
 
@@ -159,8 +172,9 @@ In `src/interfaces/app/`:
 - `Push.py` — the box, the cut to fit, and the sender: a queue and one thread, so no transport
   call waits on the network. A failed send is logged and not retried; the item is in the list.
   Log lines carry the kind, the outcome and a token's first characters — never the text.
-- `AppTransport` — decides per the table above at `send_text`, the media sends, the prompts and
-  `AppDraft.finalize`; remembers the phone of the last `/app/send`; `alerts()`.
+- `AppTransport` — `alerts()`, `alert()`; decides per the table above at the prompts and at
+  `reply_finished`; remembers the phone of the last `/app/send`; says the first-registration
+  notice.
 - `routes.py` — `/app/device`, and `device` on `/app/send`.
 
 `ChatHub` gets the route. `config.example.yaml` gets the key. Telemetry: `app_push` with kind
@@ -173,15 +187,18 @@ Plain text from an item's HTML: `Destinations.plain_text` or the iMessage transp
 
 - **Capabilities**: Push Notifications on the app; a keychain access group the app and the
   extension share (no App Group — the badge count is the server's, so the two share nothing but
-  the key). An entitlements file for iOS: today only the Mac build has one.
+  the key). An entitlements file for iOS: before, only the Mac build had one.
 - **`Push.swift`**: asks for permission once the chat has been live for the first time;
-  registers with APNs; posts `/app/device` at launch, at every return to the front, when the
-  token changes and when the server address changes; on coming to the front clears the delivered
-  notifications and the badge; declines to present while on screen. The settings panel gets a
-  row saying whether notifications are on, leading to the system's switch when they are off.
-- **`KeepPush`**, a Notification Service Extension target: reads the key (keychain item readable
-  after the first unlock), opens the box, sets title, body and badge. Anything short of a clean
-  decrypt delivers the notification as it came.
+  registers with APNs each time the chat goes live and posts `/app/device` with the answer —
+  so a new server address, a new token and a server that was out of reach are all covered — and
+  posts again on leaving the screen; on coming to the front clears the delivered notifications
+  and the badge. It presents nothing while on screen: that is what iOS does for an app that
+  does not ask otherwise. The settings panel has a row saying whether notifications are on,
+  leading to the system's switch when they are off.
+- **`KeepPush/`**, a Notification Service Extension target: reads the key (`PushKey.swift`,
+  built into both targets; the keychain item is readable after the first unlock), opens the
+  box, sets title, body and badge. Anything short of a clean decrypt delivers the notification
+  as it came.
 - `ChatConnection.send` adds `device`.
 - **iPhone and iPad only.** The Mac build registers nothing; the extension is left out of it.
 
@@ -230,9 +247,6 @@ The relay and the extension have no unit tests: step 1 and step 2 are their proo
 
 ## Not yet verified
 
-- A Worker's `fetch` reaching APNs, which requires HTTP/2. A published client for exactly this
-  exists (`@fivesheepco/cloudflare-apns2`); step 1 is the proof. If it fails, the relay is the
-  same 100 lines on a small host instead.
 - One provider token per Worker isolate: APNs refuses tokens renewed too often
   (`TooManyProviderTokenUpdates`). If it shows, the token moves to Workers KV.
 - Automatic signing from the command line (`scripts/testflight.sh`) enabling Push on the App ID

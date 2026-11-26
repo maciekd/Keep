@@ -2097,6 +2097,25 @@ class TestAllowedChatIds:
         t.config_values['telegram_bot.notify_chat_ids'] = [-5001]
         assert t.notification_conversations() == [-5001]
 
+    def test_telegram_alerts_the_owner_while_it_has_a_chat_to_notify(self):
+        """What makes it the chat a message Keep sends on its own is announced in (ChatHub.alert_channel)."""
+        assert _make_transport(allowed=(111,), running=False).alerts()
+        assert _make_transport(allowed=(), notify=(111,), running=False).alerts()
+        assert not _make_transport(allowed=(), running=False).alerts(), "a bot anyone may talk to notifies nobody"
+        assert not _make_transport(allowed=(-5001,), running=False).alerts(), "a group is not somebody to notify"
+        assert _make_transport(allowed=(-5001,), notify=(-5001,), running=False).alerts()
+
+    def test_whether_it_alerts_follows_the_config_without_a_restart(self):
+        t = _make_transport(allowed=(), running=False)
+        assert not t.alerts()
+        t.config_values['telegram_bot.allowed_chat_ids'] = [111]
+        assert t.alerts()
+
+    def test_the_name_notify_channel_knows_it_by_is_a_contract_with_config_yaml(self):
+        t = _make_transport(allowed=(111,), running=False)
+        assert t.channel == "telegram"
+        assert t.message_is_alert, "a Telegram message rings by itself: it is sent only while Telegram is the chat that alerts"
+
     def test_notify_chat_ids_narrow_the_pushes_but_not_who_may_talk(self):
         t = _make_transport(allowed=(111, 222), notify=("111",), running=False)
         assert t.notification_conversations() == [111]

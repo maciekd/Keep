@@ -1,0 +1,24 @@
+# Keep's push relay (worker.js). Deploy: README.md.
+name = "keep-push-relay"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+workers_dev = false
+routes = [{ pattern = "push.keep-ai.dev", custom_domain = true }]
+
+# One phone gets at most this many pushes a minute, whoever asks.
+[[ratelimits]]
+name = "PER_TOKEN"
+namespace_id = "4701"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+# One address — a household's server — sends at most this many a minute.
+[[ratelimits]]
+name = "PER_SOURCE"
+namespace_id = "4702"
+
+  [ratelimits.simple]
+  limit = 120
+  period = 60

@@ -3,7 +3,9 @@ process-wide `Notifier` the assistant core pushes messages, photos, the command 
 and approval requests through.
 
 One hub per process (`ChatHub.get_instance()`); each chat interface registers its transport
-on it, so a notification fans out to every chat the owner is reachable in. The command
+on it. A message Keep sends on its own goes to every chat that is a list the owner reads when
+they look, and is announced by exactly one chat — the one the `notify_channel` config key
+names while it reaches somebody (`alert_channel`; `docs/plans/APP_PUSH_PLAN.md`). The command
 echo, the approval prompt and the secret prompt are the exceptions: they go back to the
 chat whose request ran the command, so only the person who asked sees and answers the
 question; a request from outside the chat layer (voice) is asked in every owner chat and
@@ -53,6 +55,7 @@ class ChatHub(SingletonMixin):
     DEFAULT_SECRET_TIMEOUT_SECONDS = 3600.0   # the user often has to set something up before answering
     SECRET_ATTEMPTS = 3
     MAX_TRANSCRIPT = 500
+    DEFAULT_NOTIFY_CHANNEL = "app"
 
     def __init__(self, assistant=None):
         self.assistant = assistant
@@ -161,16 +164,20 @@ class ChatHub(SingletonMixin):
         not one per chat, so the history gets a single exchange — and the reply is rendered
         there like any other. The first attended chat takes it (the console counts only with
         a TUI client connected: after the grant the terminal is gone and the user is on
-        Telegram), else the first there is. Never blocks. False when no owner chat is
-        reachable."""
+        their phone), else the chat that alerts, else the first there is. Never blocks. False
+        when no owner chat is reachable."""
         targets = self._targets()
         if not targets:
             info("No owner conversation to open, the assistant waits to be spoken to.")
             return False
         attended = [t for t in targets if t[0].attended()]
-        if not attended:
-            info(f"No attended owner conversation — opening the first one ({targets[0][0].name})")
-        transport, conversation = (attended or targets)[0]
+        if attended:
+            transport, conversation = attended[0]
+        else:
+            alert = self.alert_channel()
+            transport, conversation = next((t for t in targets if t[0] is alert), targets[0])
+            info(f"No attended owner conversation — opening in {transport.name}, "
+                 f"{'the chat that alerts' if transport is alert else 'the first there is'}")
         info(f"Opening the conversation in {transport.name} [{conversation}]")
         self.session_for(transport, conversation).open(query)
         return True
@@ -193,9 +200,8 @@ class ChatHub(SingletonMixin):
         Destinations.unregister(self.OWNER_DESTINATION)
 
     # The destination `post_message("owner", ...)` reaches: the proactive route, exactly what
-    # `send_message` pushes to (each transport's notification_conversations — Telegram's
-    # notify_chat_ids), not every owner chat. Registered with the first transport, dropped
-    # with the last.
+    # `send_message` pushes to (`_route`), not every owner chat. Registered with the first
+    # transport, dropped with the last.
     OWNER_DESTINATION = "owner"
 
     def _register_owner_destination(self):
@@ -217,30 +223,74 @@ class ChatHub(SingletonMixin):
 
     # --- Notifier -------------------------------------------------------------------------
 
-    def _targets(self, notifications: bool = False) -> list[tuple[ChatTransport, Any]]:
-        """Every owner conversation on every transport, or with *notifications* the ones
-        each transport routes its proactive pushes to."""
+    def _targets(self) -> list[tuple[ChatTransport, Any]]:
+        """Every owner conversation on every transport."""
         targets = []
         for transport in self.transports:
             try:
-                convs = transport.notification_conversations() if notifications else transport.owner_conversations()
-                targets.extend((transport, conv) for conv in convs)
+                targets.extend((transport, conv) for conv in transport.owner_conversations())
             except Exception as e:
-                error(f"{transport.name}: {'notification' if notifications else 'owner'}_conversations failed: {e}")
+                error(f"{transport.name}: owner_conversations failed: {e}")
         return targets
+
+    def alert_channel(self) -> Optional[ChatTransport]:
+        """The one chat that makes the owner look at a message Keep sends on its own: the one
+        the `notify_channel` config key names while it reaches somebody (a phone that takes
+        notifications, a Telegram chat to notify), else the first other one that does. None
+        when no chat does. Read at every send."""
+        preferred = str(config.get('notify_channel', self.DEFAULT_NOTIFY_CHANNEL) or '').strip().lower()
+        alerting = []
+        for transport in self.transports:
+            try:
+                if transport.alerts():
+                    alerting.append(transport)
+            except Exception as e:
+                error(f"{transport.name}: could not say whether it alerts the owner: {e}")
+        if not alerting:
+            trace("No chat alerts the owner now: a message Keep sends on its own is in the lists alone")
+            return None
+        chosen = next((t for t in alerting if t.channel == preferred), None)
+        if chosen is None:
+            chosen = alerting[0]
+            trace(f"notify_channel is '{preferred}', which reaches nobody now — {chosen.name} alerts instead")
+        return chosen
+
+    def _route(self) -> tuple[list[tuple[ChatTransport, Any]], Optional[ChatTransport]]:
+        """Where a message Keep sends on its own goes — each transport's
+        notification_conversations, without the chats where a message would be an alert of
+        its own while another chat is the one that alerts — and which chat alerts."""
+        alert = self.alert_channel()
+        targets = []
+        for transport in self.transports:
+            if transport.message_is_alert and transport is not alert:
+                trace(f"{transport.name} is not the chat that alerts now"
+                      f"{f' ({alert.name} is)' if alert else ''}, the message is not sent there")
+                continue
+            try:
+                targets.extend((transport, conv) for conv in transport.notification_conversations())
+            except Exception as e:
+                error(f"{transport.name}: notification_conversations failed: {e}")
+        return targets, alert
+
+    def _alert(self, targets: list[tuple[ChatTransport, Any]], alert: Optional[ChatTransport], text: str) -> None:
+        """A message was just put in *targets*: the chat that alerts makes the owner look."""
+        for transport, conv in targets:
+            if transport is not alert:
+                continue
+            try:
+                transport.alert(conv, text)
+            except Exception as e:
+                error(f"{transport.name} [{conv}]: alert failed: {e}")
 
     def owner_channels(self) -> list[tuple[str, bool]]:
         """Each transport a proactive push reaches, by its name, and whether somebody can see
         it now — what `post_message` to `owner` amounts to at the moment."""
         channels = []
-        for transport in self.transports:
+        for transport in dict.fromkeys(transport for transport, _ in self._route()[0]):
             try:
-                if transport.notification_conversations():
-                    channels.append((transport.name, bool(transport.attended())))
-                else:
-                    trace(f"{transport.name}: no notification conversation, not one of the owner's channels")
+                channels.append((transport.name, bool(transport.attended())))
             except Exception as e:
-                error(f"{transport.name}: could not say whether it reaches the owner: {e}")
+                error(f"{transport.name}: could not say whether somebody sees it: {e}")
         return channels
 
     def send_message(self, text: str, disable_notification: bool = False,
@@ -248,7 +298,7 @@ class ChatHub(SingletonMixin):
         if not text or not text.strip():
             trace("Empty message text, skipping chat send.")
             return False
-        targets = self._targets(notifications=True)
+        targets, alert = self._route()
         skipped = []
         if in_history:
             skipped = [t.name for t, _ in targets if t.shows_history]
@@ -262,6 +312,8 @@ class ChatHub(SingletonMixin):
             trace("No chat conversation to send to, message dropped.")
             return False
         accepted = self._send_text(targets, text, silent=disable_notification, preview=not disable_web_page_preview)
+        if accepted and not disable_notification:
+            self._alert(targets, alert, text)
         if accepted:
             Telemetry.get_instance().assistant_turn(text, "notifier", proactive=True)
         return accepted
@@ -391,28 +443,31 @@ class ChatHub(SingletonMixin):
 
     def send_photo(self, photo_bytes: bytes, caption: str = "",
                    source: Optional[str] = None, conversation: Any = None) -> bool:
-        return self._fan_out("send_photo", lambda t, c: t.send_photo(c, photo_bytes, caption), source, conversation)
+        return self._fan_out("send_photo", lambda t, c: t.send_photo(c, photo_bytes, caption), source, conversation,
+                             stands_for=caption or "Photo")
 
     def send_photo_album(self, photos: list[tuple[bytes, str]],
                          source: Optional[str] = None, conversation: Any = None) -> bool:
-        return self._fan_out("send_photo_album", lambda t, c: t.send_photo_album(c, photos), source, conversation)
+        captions = [caption for _, caption in photos if caption]
+        return self._fan_out("send_photo_album", lambda t, c: t.send_photo_album(c, photos), source, conversation,
+                             stands_for=captions[0] if captions else f"{len(photos)} photos")
 
     def send_video(self, video_bytes: bytes, caption: str = "", thumbnail: Optional[bytes] = None,
                    source: Optional[str] = None, conversation: Any = None) -> bool:
         return self._fan_out("send_video", lambda t, c: t.send_video(c, video_bytes, caption, thumbnail),
-                             source, conversation)
+                             source, conversation, stands_for=caption or "Video")
 
-    def _media_targets(self, source: Optional[str], conversation: Any) -> list[tuple[ChatTransport, Any]]:
+    def _fan_out(self, what: str, send, source: Optional[str] = None, conversation: Any = None,
+                 stands_for: str = "") -> bool:
         """Media answering a request goes back to the chat it came from, or to every owner
         chat when no transport carries its source (a voice request has no chat of its own);
-        media with no request behind it (the autonomous check) is a proactive push and takes
-        the transports' notification route, telegram_bot.notify_chat_ids."""
+        media with no request behind it (the autonomous check) is a message Keep sends on its
+        own: it takes that route (`_route`) and is alerted as *stands_for*."""
+        alert = None
         if source is None:
-            return self._targets(notifications=True)
-        return self._origin(source, conversation) or self._targets()
-
-    def _fan_out(self, what: str, send, source: Optional[str] = None, conversation: Any = None) -> bool:
-        targets = self._media_targets(source, conversation)
+            targets, alert = self._route()
+        else:
+            targets = self._origin(source, conversation) or self._targets()
         if not targets:
             trace(f"No chat conversation for {what}, dropped.")
             return False
@@ -422,6 +477,8 @@ class ChatHub(SingletonMixin):
                 accepted = bool(send(transport, conv)) or accepted
             except Exception as e:
                 error(f"{transport.name} [{conv}]: {what} failed: {e}")
+        if accepted and source is None:
+            self._alert(targets, alert, stands_for)
         return accepted
 
     @staticmethod

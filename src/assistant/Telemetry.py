@@ -293,6 +293,14 @@ class Telemetry:
                                              "owner_channels": list(owner_channels),
                                              "inactive_hours": round(inactive_hours, 1)})
 
+    def app_push(self, kind: str, outcome: str):
+        """A notification for a phone's app left for the relay (`interfaces/app/Push.py`): the
+        kind of the chat item it announces and how it went — sent, gone (Apple no longer knows
+        the phone), refused, failed (the relay was not reached). No text, no device."""
+        if not self._on():
+            return
+        self._enqueue("app_push", {"kind": kind, "outcome": outcome})
+
     def reactivation_return(self, inactive_hours: float, nudges_sent: int, last_step: Optional[int],
                             hours_since_nudge: Optional[float], source: Optional[str]):
         """The owner's first turn after a silence of a day or more: how long it was, how many

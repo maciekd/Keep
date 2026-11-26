@@ -73,10 +73,11 @@ state wins). Whole, not appended: `RichText.repair_markdown` rewrites text that 
 
 | Route | Body |
 |---|---|
-| `POST /app/send` | `id`, `text`, `user` as JSON; with pictures a multipart form of the same fields and an `image` part per picture (10 at most) |
+| `POST /app/send` | `id`, `text`, `user`, `device` (the phone's id, as `/app/device` has it — where the reply's end is a notification) as JSON; with pictures a multipart form of the same fields and an `image` part per picture (10 at most) |
 | `POST /app/stop` | — `ChatSession.cancel()` |
 | `POST /app/approval` | `token`, `decision` |
 | `POST /app/secret` | `token`, `value` (null cancels) — goes to `hub.claim_secret`, never logged, never an item |
+| `POST /app/device` | where the phone's notifications go, and "this phone has been looked at" — `APP_PUSH_PLAN.md` |
 | `GET /app/media/<id>` | the bytes of a `media` item, with byte ranges (a phone's video player asks for them); the text of a command's result |
 
 An answer to a question that is no longer open is a 410. A server without the routes answers

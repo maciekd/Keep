@@ -361,6 +361,24 @@ def isolated_local_ai(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def isolated_push_relay():
+    """No unit test reaches the push relay (push.keep-ai.dev), which would hand Apple a
+    notification for whatever token the test made up: `interfaces.app.Push.post` is refused
+    while `requests.post` is the real thing. A test of the sender puts its own `post` in its
+    place; one that puts its own `requests.post` there is let through to the function under test."""
+    import requests
+    from interfaces.app import Push
+    real_post, to_relay = requests.post, Push.post
+
+    def post(body):
+        if requests.post is real_post:
+            raise RuntimeError("a unit test tried to reach the push relay")
+        return to_relay(body)
+
+    Push.post = post
+
+
+@pytest.fixture(autouse=True, scope="session")
 def isolated_launch_agent(tmp_path_factory):
     """No unit test writes or removes the watchdog's plist in ~/Library/LaunchAgents — launchd
     loads whatever lies there at the next login, whoever wrote it: a `Watchdog.sync` that names

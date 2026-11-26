@@ -363,6 +363,16 @@ vault:                      # secrets the LLM never sees — the console's Vault
 # sender identity of their own (TUI chat, Telegram messages without a sender name).
 owner_name: YOUR_NAME
 
+# Where the messages Keep sends on its own are announced (post_message to the owner, what the check
+# found, the photos it sends unasked). app: a notification on the phones that have the Keep app and
+# allow it notifications; the message is in the app's chat and Telegram gets nothing. telegram: a
+# Telegram message; the app's chat has it too, without a notification. The other one is used while
+# this one reaches nobody (no phone with the app, no Telegram chat to notify). The notification's text
+# is encrypted for the phone: it passes Keep's relay (push.keep-ai.dev) and Apple unread. What
+# answers a request goes back to where it was asked, whatever this says. Read at each message, no
+# restart needed.
+notify_channel: app
+
 # Whether a message the assistant sends on the user's behalf — send_imessage, send_whatsapp and any
 # channel that discloses it — ends with the "[Sent with the help of AI 🤖]" footer. false: the body
 # goes out as written. Emails never carry it. Read at each send, no restart needed; the assistant

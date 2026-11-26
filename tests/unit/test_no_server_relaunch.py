@@ -278,3 +278,28 @@ def test_a_local_ai_runner_that_names_no_home_is_not_given_this_macs_omlx_folder
 def test_the_local_ai_runner_reaches_nothing_outside_the_process(tmp_path, call, what):
     with pytest.raises(RuntimeError, match=what):
         call(_a_runner(tmp_path))
+
+
+# The app's notifications (interfaces/app/Push). Should the guard let one through: the token is
+# of no phone, and Apple refuses it.
+def _a_registered_phone():
+    import base64
+    from interfaces.app.Devices import Devices
+    devices = Devices()
+    devices.register("no-such-phone-0001", "00" * 32, "sandbox", base64.b64encode(bytes(32)).decode(), "nobody's phone")
+    return devices
+
+
+@pytest.mark.unit
+def test_the_push_relay_cannot_be_reached():
+    from interfaces.app import Push
+    with pytest.raises(RuntimeError, match="push relay"):
+        Push.post({"token": "00" * 32, "environment": "sandbox", "box": "AAAA"})
+
+
+@pytest.mark.unit
+def test_a_sender_nobody_faked_hands_the_relay_nothing():
+    from interfaces.app.Push import Sender
+    devices = _a_registered_phone()
+    with pytest.raises(RuntimeError, match="push relay"):
+        Sender(devices).deliver(devices.all()[0], "notice", "", "The laundry is done.")
