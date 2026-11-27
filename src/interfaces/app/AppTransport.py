@@ -187,6 +187,12 @@ class AppTransport(ChatTransport):
         self.transcript.set_working(None)
         self.transcript.flush(closed=True)
 
+    def wiped(self) -> None:
+        """`//wipe` deleted the chat's files: the phones and the log are kept nowhere from now
+        on, or the stop would write the old user's back for the next one."""
+        self.devices.wiped()
+        self.transcript.wiped()
+
     def _settle(self) -> None:
         """What the last run of the server left unfinished is closed, so no app shows a reply
         still streaming, a command still running or a question still open after a restart."""

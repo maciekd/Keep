@@ -102,6 +102,32 @@ class TestCachedVoiceSynthesizer:
         file2 = synth._get_cache_filename("hello world")
         assert file1 == file2
 
+    def test_a_reply_just_under_the_cached_length_gets_a_name_the_file_system_takes(self, synth, mock_impl):
+        """A 199-char reply plus the engine, a long voice id and the model made a name of over
+        255 chars: Errno 63 after the reply had played, and the turn was dropped."""
+        mock_impl.voice_id.return_value = "v" * 40
+        mock_impl.cache_variant.return_value = "eleven_v4_turbo"
+        filename = synth._get_cache_filename("Hey, the voice is coming through fine. " * 5 + "ok!!")
+        assert len(os.path.basename(filename).encode()) <= 255
+        synth._save_to_cache(filename, b"\x00" * 8)
+        assert os.path.exists(filename)
+
+    def test_long_replies_that_differ_only_at_the_end_or_in_punctuation_do_not_share_a_file(self, synth):
+        start = "the kitchen lights are now dimmed to thirty percent and " * 3
+        names = {synth._get_cache_filename(start + end) for end in ("the door is locked", "the door is open",
+                                                                    "the door is open?")}
+        assert len(names) == 3
+
+    def test_a_short_reply_keeps_the_readable_name_its_recording_is_already_under(self, synth):
+        assert os.path.basename(synth._get_cache_filename("Good night!")) == "mock_good_night__test_voice_id.wav"
+
+    def test_a_cache_that_cannot_be_written_does_not_fail_the_reply(self, synth, mock_impl):
+        """The save runs inside the audio generator: its OSError ended the request as a failure."""
+        mock_impl.start.side_effect = lambda text: (list(text), iter([b"a1", b"a2"]))[1]
+        synth._save_to_cache = Mock(side_effect=OSError(63, "File name too long"))
+        assert list(synth.start(iter(["Good ", "night"]))) == [b"a1", b"a2"]
+        synth._save_to_cache.assert_called_once()
+
     # ===== _save_to_cache() and _read_cache() tests =====
 
     def test_save_and_read_cache_roundtrip(self, synth, temp_cache_dir):

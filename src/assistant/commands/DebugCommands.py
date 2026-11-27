@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable
 
 from assistant import FirstRun, Reactivation
+from assistant import Backups
 from assistant.Backups import STATE as WIPE_TARGETS, integration_targets
 from assistant.prompt.PromptManager import CURRENT_PROMPT_FILE
 from common import Backup
@@ -627,6 +628,7 @@ class DebugCommands:
                 failed.append(f"  - {self._display(path)}: {desc}{note} — {problem}")
             else:
                 deleted.append(f"  - {self._display(path)}: {desc}{note}")
+        Backups.wiped()
 
         threading.Timer(STOP_DELAY_SECONDS, _finish_wipe, args=(wipe_only,)).start()
         info(f"//wipe: done, {len(deleted)} item(s) wiped, {len(failed)} failed, "

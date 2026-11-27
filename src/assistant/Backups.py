@@ -18,7 +18,7 @@ such a tool brought back, as it takes a zip.
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from assistant import FirstRun
 from assistant.integration.music.SpotifyAuth import TOKEN_PATH as SPOTIFY_TOKEN_PATH
@@ -50,9 +50,38 @@ STATE = [
     (CACHE_DIR / "tui_state.json", "TUI state"),
     (CACHE_DIR / "audio_restarts.json", "audio recovery state"),
     (CACHE_DIR / "last_autonomous_check.json", "when the last periodic check ran"),
+    # The names are interfaces/app's (Devices.FILE_NAME, Transcript.FILE_NAME and MEDIA_FOLDER),
+    # which the assistant does not import; tests/unit/interfaces/app/test_app_wipe.py holds them together.
+    (CACHE_DIR / "app_devices.json", "the phones the app's notifications go to (push tokens and keys)"),
+    (CACHE_DIR / "app_chat.json", "the app's chat transcript"),
+    (CACHE_DIR / "app_chat_media", "the pictures, videos and command results of the app's chat"),
 ]
 # Held by a backup beside STATE; `//wipe` leaves them alone.
 BACKUP_ONLY = [VOICE_ID_DIR, CACHE_DIR / "oauth"]
+
+
+# Whoever holds a part of STATE in memory and would write it back (at the stop, at its next
+# change) registers how to let go of it; `//wipe` calls them once the files are gone.
+_wipe_listeners: list[Callable[[], None]] = []
+
+
+def on_wipe(let_go: Callable[[], None]) -> None:
+    _wipe_listeners.append(let_go)
+
+
+def off_wipe(let_go: Callable[[], None]) -> None:
+    if let_go in _wipe_listeners:
+        _wipe_listeners.remove(let_go)
+
+
+def wiped() -> None:
+    """The state's files have just been deleted: nothing in memory may bring one back."""
+    info(f"Backups: telling {len(_wipe_listeners)} holder(s) of state in memory that it was wiped")
+    for let_go in list(_wipe_listeners):
+        try:
+            let_go()
+        except Exception as e:
+            error(f"Backups: a holder of wiped state failed to let go of it: {type(e).__name__}: {e}")
 
 
 def integration_targets() -> list[tuple[Path, str]]:
