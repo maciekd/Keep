@@ -397,3 +397,30 @@ class TestTheAlertsMoved:
         with pytest.raises(DeviceRefused):
             transport.register_device(IPHONE, "not a token", "sandbox", KEY, "Marcus's iPhone")
         assert notices(transcript) == [] and transport.alerts() is False
+
+
+def a_picture() -> bytes:
+    import io
+
+    from PIL import Image
+    data = io.BytesIO()
+    Image.new("RGB", (8, 6), "white").save(data, "JPEG")
+    return data.getvalue()
+
+
+@pytest.mark.unit
+class TestAMessageNoReplyStartedFor:
+    @pytest.mark.xfail(strict=True, reason="AppTransport keeps _asked_by of a picture message whose album was "
+                                           "cancelled before its turn: the next server-started turn's end is "
+                                           "pushed to that phone alone instead of every phone")
+    def test_a_picture_message_stopped_before_its_turn_is_not_the_next_turns_asker(self, hub, transport, sender):
+        """A picture waits a moment for the rest of its album; stopped in that moment it never
+        becomes a turn, and the turn the server starts next is everybody's."""
+        both_phones(transport)
+        hub.assistant = answering("Good morning — the heating is back on.")
+        transport.submit("bubble-1", "Whose coat is this?", "Charlotte", pictures=[a_picture()], device=IPAD)
+        transport.interrupt()
+        assert hub.open_conversation("The server has just started…")
+        assert wait_until(lambda: idle(hub, transport) and sender.pushes)
+        assert len(hub.assistant.requests) == 1
+        assert sender.to("assistant") == [IPHONE, IPAD]
