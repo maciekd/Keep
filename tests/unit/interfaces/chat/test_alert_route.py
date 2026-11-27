@@ -126,6 +126,25 @@ class TestTheAlert:
         assert house.got()["App"] == [MESSAGE] and house.app.alerted == []
         assert [call[3] for call in house.app.calls if call[0] == "text"] == [True]
 
+    def test_a_note_the_console_draws_from_the_history_still_rings_the_phone(self, monkeypatch):
+        """A system note (`SystemNote`) is a history row: the console is skipped, the alert is not."""
+        set_notify_channel(monkeypatch, "app")
+        house = House(phone=True, telegram=True)
+        house.console.shows_history = True
+        assert house.hub.send_message(MESSAGE, in_history=True)
+        assert house.got() == {"Console": [], "App": [MESSAGE], "Telegram": []}
+        assert house.alerted() == {"Console": [], "App": [MESSAGE], "Telegram": []}
+
+    def test_a_history_row_no_other_chat_takes_counts_as_delivered_and_rings_nobody(self, monkeypatch):
+        """With Telegram alerting, the app's list still gets the note; with the console alone,
+        the row it draws itself is the delivery."""
+        set_notify_channel(monkeypatch, "telegram")
+        house = House(phone=False, telegram=True)
+        house.console.shows_history = True
+        assert house.hub.send_message(MESSAGE, in_history=True)
+        assert house.got() == {"Console": [], "App": [MESSAGE], "Telegram": [MESSAGE]}
+        assert house.alerted()["App"] == []
+
     def test_a_message_no_chat_took_alerts_nobody(self, monkeypatch):
         set_notify_channel(monkeypatch, "app")
         house = House(phone=True, telegram=True)
