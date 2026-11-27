@@ -1,3 +1,4 @@
+import hashlib
 import os
 import queue
 import re
@@ -10,6 +11,11 @@ from assistant.integration.Integration import Integration
 from common.logging import note, info, fine, error
 from common.RequestKilledException import RequestKilledException
 from common.ConfigManager import config
+
+# A file name may be 255 bytes; the engine, the voice and the variant take ~70 of them, so a
+# reply near the 200 chars that are cached made a name the file system refuses (Errno 63).
+MAX_TEXT_IN_NAME = 120
+
 
 class CachedVoiceSynthesizer(VoiceSynthesizer):
     """Serves repeated phrases from a WAV cache and delegates misses to the wrapped VoiceSynthesizer."""
@@ -50,6 +56,11 @@ class CachedVoiceSynthesizer(VoiceSynthesizer):
     def _get_cache_filename(self, text: str) -> str:
         clean_text = text.lower()
         clean_text = re.sub(r'[^a-z0-9]', '_', clean_text)
+        if len(clean_text) > MAX_TEXT_IN_NAME:
+            # The digest is of the text itself: two long replies that differ only past the cut,
+            # or only in what the cleaning replaced, must not share a file.
+            digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+            clean_text = f"{clean_text[:MAX_TEXT_IN_NAME]}_{digest}"
         impl_name = type(self.impl).__name__.lower()
         voice_id = self.impl.voice_id()
         clean_voice_id = re.sub(r'[^a-z0-9]', '_', voice_id.lower())
@@ -167,9 +178,14 @@ class CachedVoiceSynthesizer(VoiceSynthesizer):
                 self.debug("Saving to cache")
                 cache_file = self._get_cache_filename(full_text)
                 audio_data = b''.join(audio_chunks)
-                self._save_to_cache(cache_file, audio_data)
-                # Cleanup old cache files if needed
-                self._cleanup_cache_if_needed()
+                # The reply has played by now: a cache that cannot be written must never
+                # end the request as a failure and drop the turn from the history.
+                try:
+                    self._save_to_cache(cache_file, audio_data)
+                    self._cleanup_cache_if_needed()
+                except OSError as e:
+                    error(f"Voice cache: could not save {os.path.basename(cache_file)}: {e!r} "
+                          f"— the reply was spoken, only its cache entry is missing")
 
     @staticmethod
     def _read_cache(filename: str) -> Iterator[bytes]:
