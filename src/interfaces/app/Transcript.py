@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -85,6 +86,7 @@ class Transcript:
         self._save_timer: Optional[threading.Timer] = None
         self._closed = False        # the file says nothing follows, and nothing has since
         self._ended = False
+        self._wiped = False         # `//wipe` took the files: nothing is written for the rest of this run
         self.log = new_id()
         self._load()
 
@@ -264,6 +266,9 @@ class Transcript:
             if self._save_timer is not None:
                 self._save_timer.cancel()
                 self._save_timer = None
+            if self._wiped:
+                self._erase()
+                return
             if self._closed and not closed:
                 trace("App transcript: a save due after the closing one, nothing has changed since")
                 return
@@ -278,6 +283,21 @@ class Transcript:
                 trace(f"App transcript: saved {len(self._entries)} item(s) at {self._seq}")
             except OSError as e:
                 error(f"App transcript: could not save {self._path}: {e}")
+
+    def wiped(self) -> None:
+        """`//wipe`: the log stays in memory for whoever is listening, and no save puts it or
+        its media back on disk — the stop's closing save removes what arrived in between."""
+        with self._lock:
+            self._wiped = True
+            self._erase()
+        info("App transcript: wiped, nothing of it is kept on disk until the next start")
+
+    def _erase(self) -> None:
+        # Caller holds _lock.
+        self._path.unlink(missing_ok=True)
+        self._path.with_suffix(".tmp").unlink(missing_ok=True)
+        shutil.rmtree(self._media, ignore_errors=True)
+        trace("App transcript: wiped, nothing saved")
 
     def _load(self) -> None:
         if not self._path.is_file():
