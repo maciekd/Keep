@@ -72,6 +72,9 @@ class ServerPlayback:
         # drain wait watches this for progress instead of queue size (which the TTS
         # producer can still be growing) so a worker wedged inside CoreAudio is detected.
         self._chunks_played = 0
+        # When the write the worker is in (or was last in) has played out: a worker told to
+        # stop is slow, not stuck, until then.
+        self._writing_until = 0.0
 
         self.sample_rate = 24000
         self.channels = 1
@@ -151,8 +154,7 @@ class ServerPlayback:
             observers().on_speaker_output_started(0.05)
 
             # Write first chunk
-            audio_array = np.frombuffer(first_chunk, dtype=np.int16).reshape(-1, self.channels)
-            self.audio_stream.write(audio_array)
+            self._write(first_chunk)
             self._chunks_played += 1
 
             # Continue writing chunks
@@ -161,8 +163,7 @@ class ServerPlayback:
                     chunk = self.audio_queue.get(timeout=0.1)
                     if chunk is None:
                         break
-                    audio_array = np.frombuffer(chunk, dtype=np.int16).reshape(-1, self.channels)
-                    self.audio_stream.write(audio_array)
+                    self._write(chunk)
                     self._chunks_played += 1
                 except queue.Empty:
                     continue
@@ -171,6 +172,11 @@ class ServerPlayback:
             error(f"Failed to initialize audio stream: {e!r}")
         finally:
             self._close_audio_stream()
+
+    def _write(self, chunk: bytes):
+        audio_array = np.frombuffer(chunk, dtype=np.int16).reshape(-1, self.channels)
+        self._writing_until = time.time() + len(audio_array) / self.sample_rate
+        self.audio_stream.write(audio_array)
 
     def _close_audio_stream(self):
         """Close the current audio stream exactly once."""
@@ -208,11 +214,35 @@ class ServerPlayback:
                 error("Audio playback worker did not exit within 1s (wedged in CoreAudio?) "
                       "— skipping stream close so this thread doesn't hang too.")
                 self.audio_thread = None
+                self._watch_abandoned(thread)
                 return
 
         # Ensure residual stream resources are released once.
         self._close_audio_stream()
         self.audio_thread = None
+
+    def _watch_abandoned(self, thread):
+        """Look at a worker that outlived stop() once more, when it can no longer be merely
+        slow: the write it was in has played out and PLAYBACK_STALL_TIMEOUT has passed on top.
+        A barge-in's worker has exited long before; one still alive then is stuck in CoreAudio
+        and holds PortAudio, so the next reply over the speakers would stall unheard
+        (2026-11-26: abandoned at 18:31, found by a reply at 21:00). Recovering here clears the
+        wedge while nobody is waiting."""
+        wait = max(0.0, self._writing_until - time.time()) + ServerPlayback.PLAYBACK_STALL_TIMEOUT
+        info(f"Audio playback worker abandoned — checking in {wait:.0f}s whether it is stuck or was only slow.")
+        timer = threading.Timer(wait, self._check_abandoned, args=(thread,))
+        timer.name = "PlaybackWedgeCheck"
+        timer.daemon = True
+        timer.start()
+
+    @staticmethod
+    def _check_abandoned(thread):
+        if not thread.is_alive():
+            info("Abandoned audio playback worker has exited by itself — it was slow, not stuck.")
+            return
+        error("Abandoned audio playback worker is still alive long after it was told to stop — "
+              "stuck in CoreAudio. Capturing forensics; a confirmed in-process wedge restarts the server.")
+        ServerPlayback._capture_playback_stall_forensics()
 
     # ------------------------------------------------------------------ end of reply
 
