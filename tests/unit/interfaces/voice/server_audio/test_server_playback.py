@@ -118,6 +118,28 @@ class TestAbandonedWorker:
             fire()
         forensics.assert_not_called()
 
+    def test_a_worker_still_playing_its_backlog_is_looked_at_again_not_recovered(self, playback):
+        """A stop() that was no kill queues its end marker behind the audio already queued:
+        the worker plays on past the check, and the recovery would restart the server mid-speech."""
+        playing = Mock()
+        playing.is_alive.return_value = True
+        _, fire = self._watch(playback, playing)
+        playback._chunks_played += 3
+        with patch.object(ServerPlayback, "_capture_playback_stall_forensics") as forensics:
+            _, fire_again = self._watch_from(playback, fire)
+            forensics.assert_not_called()
+            with patch(f"{MOD}.error"):
+                fire_again()
+        forensics.assert_called_once()
+
+    @staticmethod
+    def _watch_from(playback, fire):
+        """The timer a fired check starts in its turn, held instead of run."""
+        with patch(f"{MOD}.threading.Timer") as timer:
+            fire()
+        (delay, check), kwargs = timer.call_args
+        return delay, lambda: check(*kwargs["args"])
+
     def test_the_check_waits_out_the_audio_the_worker_is_still_writing(self, playback):
         """A blocking write lasts as long as its chunk sounds: until then the worker is busy."""
         playback.audio_stream = Mock()

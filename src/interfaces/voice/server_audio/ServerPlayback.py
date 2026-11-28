@@ -224,24 +224,33 @@ class ServerPlayback:
     def _watch_abandoned(self, thread):
         """Look at a worker that outlived stop() once more, when it can no longer be merely
         slow: the write it was in has played out and PLAYBACK_STALL_TIMEOUT has passed on top.
-        A barge-in's worker has exited long before; one still alive then is stuck in CoreAudio
-        and holds PortAudio, so the next reply over the speakers would stall unheard
-        (2026-11-26: abandoned at 18:31, found by a reply at 21:00). Recovering here clears the
-        wedge while nobody is waiting."""
+        A barge-in's worker has exited long before; one still alive then that has written
+        nothing since is stuck in CoreAudio and holds PortAudio, so the next reply over the
+        speakers would stall unheard (2026-11-26: abandoned at 18:31, found by a reply at
+        21:00). Recovering here clears the wedge while nobody is waiting."""
         wait = max(0.0, self._writing_until - time.time()) + ServerPlayback.PLAYBACK_STALL_TIMEOUT
         info(f"Audio playback worker abandoned — checking in {wait:.0f}s whether it is stuck or was only slow.")
-        timer = threading.Timer(wait, self._check_abandoned, args=(thread,))
+        timer = threading.Timer(wait, self._check_abandoned, args=(thread, self._chunks_played))
         timer.name = "PlaybackWedgeCheck"
         timer.daemon = True
         timer.start()
 
-    @staticmethod
-    def _check_abandoned(thread):
+    def _check_abandoned(self, thread, played_before: int):
+        """A stop() that was no kill leaves the worker the audio queued ahead of its end
+        marker: it is healthy for as long as it keeps writing, however long that backlog is —
+        the recovery of a wedge restarts the server, and must not do so mid-speech."""
         if not thread.is_alive():
             info("Abandoned audio playback worker has exited by itself — it was slow, not stuck.")
             return
-        error("Abandoned audio playback worker is still alive long after it was told to stop — "
-              "stuck in CoreAudio. Capturing forensics; a confirmed in-process wedge restarts the server.")
+        played = self._chunks_played - played_before
+        if played > 0:
+            info(f"Abandoned audio playback worker is still playing its backlog ({played} chunks since the "
+                 f"last look, {self.audio_queue.qsize()} queued) — not stuck, looking again.")
+            self._watch_abandoned(thread)
+            return
+        error("Abandoned audio playback worker is still alive long after it was told to stop and has "
+              "played nothing since — stuck in CoreAudio. Capturing forensics; a confirmed in-process "
+              "wedge restarts the server.")
         ServerPlayback._capture_playback_stall_forensics()
 
     # ------------------------------------------------------------------ end of reply
