@@ -47,6 +47,9 @@ WAKEUP_LATE_NOTE_THRESHOLD_SECONDS = 5 * 60
 # How often the due watcher reads the watch list for a due time or a short cadence that has
 # arrived — the one minute a due time is given to.
 DUE_POLL_SECONDS = 60
+# How often the due watcher fires a check for one moment whose check raised (the LLM out of
+# reach, a refused call) before the moment is left to the periodic checks.
+DUE_CHECK_ATTEMPTS = 3
 
 # How often the background thread performs an autonomous activity check. The LLM
 # is told about this cadence (see AUTONOMOUS_ACTION_PROMPT) so it can reason about
@@ -233,6 +236,7 @@ class AutonomousActionManager:
         # The (item, moment) pairs the due watcher has fired for: once each, whatever the LLM
         # then does with the item. In memory only — a restart fires a reached moment again.
         self._fired_due: set[tuple[str, datetime]] = set()
+        self._due_failures: dict[tuple[str, datetime], int] = {}   # the checks that raised, per moment
         self._next_due_logged: Optional[datetime] = None   # the watcher logs the next moment when it changes
         # The cadence polls held for the morning, said once each while Night mode lasts
         self._held_at_night: set[tuple[str, datetime]] = set()
@@ -936,7 +940,8 @@ class AutonomousActionManager:
 
     def _poll_due(self, now: datetime = None) -> bool:
         """One read of the watch list: fires a check for the reached moments not fired yet and
-        says so; False when it fired nothing. A moment is fired once (`_fired_due`) — an item
+        says so; False when it fired nothing. A moment is fired once (`_fired_due`; again only
+        when its check raised, `_unfire_failed`) — an item
         the LLM leaves unlooked-at after that is the periodic checks' business, which carry it
         as a due item until a look. A due time is a clock time the user asked for, so it fires
         in Night mode too (issue #119: a 06:15 check was held until the owner got up and asked);
@@ -956,7 +961,9 @@ class AutonomousActionManager:
         pending = WatchList.pending(now, within=timedelta(seconds=PERIODIC_CHECK_INTERVAL_SECONDS))
         # An item earns several moments at once (its due time and its cadence's next poll), each
         # fired once; a moment no longer pending was looked at and cannot come back.
-        self._fired_due &= {(item.name, moment) for item, moment in pending}
+        live = {(item.name, moment) for item, moment in pending}
+        self._fired_due &= live
+        self._due_failures = {key: count for key, count in self._due_failures.items() if key in live}
         reached = [(item, moment) for item, moment in pending
                    if moment <= now and (item.name, moment) not in self._fired_due]
         night = self.prompt_manager.is_night_mode_active()
@@ -982,8 +989,27 @@ class AutonomousActionManager:
         self._fired_due.update((item.name, moment) for item, moment in reached)
         started = time.time()
         info(f"Due watcher: firing a check for {names}")
-        self.activity_check(due=reached, started=started)
+        try:
+            self.activity_check(due=reached, started=started)
+        except Exception:
+            self._unfire_failed(reached)
+            raise
         return True
+
+    def _unfire_failed(self, reached: list[tuple[WatchList.Item, datetime]]):
+        """A check that raised looked at nothing (2026-11-27: the LLM refused the 07:00 check of
+        a defrost and the moment stayed fired), so its moments fire again at the next read —
+        DUE_CHECK_ATTEMPTS times at most, then they are the periodic checks' to carry."""
+        for item, moment in reached:
+            key = (item.name, moment)
+            self._due_failures[key] = attempts = self._due_failures.get(key, 0) + 1
+            if attempts < DUE_CHECK_ATTEMPTS:
+                self._fired_due.discard(key)
+                info(f"Due watcher: the check for {item.name} failed (attempt {attempts} of "
+                     f"{DUE_CHECK_ATTEMPTS}) — firing it again at the next read")
+            else:
+                error(f"Due watcher: the check for {item.name} failed {attempts} times — giving up on "
+                      f"its {moment:%H:%M} moment, the next periodic check carries the item as due")
 
     def _log_held_at_night(self, held: list[tuple[WatchList.Item, datetime]]):
         """Says once per moment which cadence polls wait for the morning — the watcher reads the

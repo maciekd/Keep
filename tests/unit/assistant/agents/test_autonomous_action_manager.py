@@ -14,6 +14,7 @@ from assistant.agents.LongTermMemoryCurator import LongTermMemoryCurator
 
 from assistant.agents.AutonomousActionManager import (
     AutonomousActionManager,
+    DUE_CHECK_ATTEMPTS,
     AUTONOMOUS_ACTION_PROMPT,
     MISSED_WAKEUP_STARTUP_GRACE_SECONDS,
     PERIODIC_CHECK_INTERVAL_MINUTES,
@@ -1409,6 +1410,29 @@ class TestDueWatcher:
         assert mgr._poll_due(datetime(2026, 10, 11, 17, 1)) is False
         (call,) = mgr.activity_check.call_args_list
         assert [(item.name, moment) for item, moment in call.kwargs["due"]] == [("water-meter", datetime(2026, 10, 11, 17, 0))]
+
+    def test_a_due_time_whose_check_raised_fires_again_at_the_next_read(self):
+        """2026-11-27: the LLM refused the 07:00 check of a defrost and the moment stayed fired."""
+        self.watch("water-meter", "2026-10-11 17:00")
+        mgr = self.manager()
+        mgr.activity_check.side_effect = [ConnectionError("LLM out of reach"), "NO"]
+        with pytest.raises(ConnectionError):
+            mgr._poll_due(datetime(2026, 10, 11, 17, 0))
+        assert mgr._poll_due(datetime(2026, 10, 11, 17, 1)) is True
+        assert mgr._poll_due(datetime(2026, 10, 11, 17, 2)) is False
+        assert mgr.activity_check.call_count == 2
+
+    def test_a_due_time_whose_check_keeps_raising_is_given_up(self):
+        self.watch("water-meter", "2026-10-11 17:00")
+        mgr = self.manager()
+        mgr.activity_check.side_effect = ConnectionError("LLM out of reach")
+        fired = 0
+        for minute in range(DUE_CHECK_ATTEMPTS + 3):
+            try:
+                mgr._poll_due(datetime(2026, 10, 11, 17, minute))
+            except ConnectionError:
+                fired += 1
+        assert fired == mgr.activity_check.call_count == DUE_CHECK_ATTEMPTS
 
     def test_an_item_with_a_due_time_and_a_short_cadence_fires_each_moment_once(self):
         # Both moments are reached at once; remembering one per item made the other fire again
