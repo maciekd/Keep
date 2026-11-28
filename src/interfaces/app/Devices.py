@@ -116,6 +116,16 @@ class Devices:
         info(f"App push: {device} forgotten, its notifications were turned off")
         return True
 
+    def wiped(self) -> None:
+        """`//wipe`: no phone is registered and nothing is kept on disk for the rest of this run."""
+        with self._lock:
+            count, path = len(self._devices), self._path
+            self._devices = {}
+            self._path = None
+            if path is not None:
+                path.unlink(missing_ok=True)
+        info(f"App push: wiped, {count} device(s) forgotten and no registry kept until the next start")
+
     def drop_token(self, token: str, why: str) -> None:
         """Apple no longer knows *token*: its phone registers again at its next launch."""
         with self._lock:

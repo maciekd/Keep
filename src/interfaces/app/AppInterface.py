@@ -17,6 +17,7 @@ class AppInterface(Interface):
         self.hub = None
 
     def start(self, assistant, app) -> None:
+        from assistant import Backups
         from assistant.Notifier import set_notifier
         from interfaces.app import routes
         from interfaces.app.AppTransport import AppTransport
@@ -30,10 +31,13 @@ class AppInterface(Interface):
         self.hub.register(self.transport)
         set_notifier(self.hub)
         self.transport.start(self.hub)
+        Backups.on_wipe(self.transport.wiped)
         routes.register(app, self.transport)
         info("App interface started (chat transport on the hub, routes under /app).")
 
     def stop(self) -> None:
         if self.transport is not None and self.hub is not None:
+            from assistant import Backups
+            Backups.off_wipe(self.transport.wiped)
             self.hub.unregister(self.transport)
             self.transport.stop()

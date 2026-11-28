@@ -252,6 +252,19 @@ def test_restart_on_a_branch_of_the_installs_own_does_not_claim_a_pull(monkeypat
     assert "release" not in text
 
 
+def test_wipe_tells_the_holders_of_state_in_memory_only_once_it_is_confirmed(wipe_env, monkeypatch):
+    """The app chat keeps its transcript and phones in memory and saves them at the stop: told
+    after the files went, it lets go of them; a wipe that was only planned tells nobody."""
+    from assistant import Backups
+    root, _ = wipe_env
+    seen = []
+    monkeypatch.setattr(Backups, "_wipe_listeners", [lambda: seen.append((root / "vault.bin").exists())])
+    DebugCommands().handle("//wipe")
+    assert seen == []
+    DebugCommands().handle("//wipe confirm")
+    assert seen == [False]
+
+
 def test_wipe_without_confirm_only_shows_the_plan(wipe_env):
     root, stops = wipe_env
     text = DebugCommands().handle("//wipe")

@@ -69,12 +69,86 @@ class TestStop:
         playback.audio_thread = wedged
 
         with patch.object(playback, "_close_audio_stream") as mock_close, \
+             patch.object(playback, "_watch_abandoned") as watch, \
              patch(f"{MOD}.error"):
             playback.stop()
 
         wedged.join.assert_called_once_with(timeout=1.0)
         mock_close.assert_not_called()
         assert playback.audio_thread is None
+        watch.assert_called_once_with(wedged)
+
+    def test_a_worker_that_exits_in_time_is_not_watched(self, playback):
+        exiting = Mock()
+        exiting.is_alive.side_effect = [True, False]
+        playback.audio_thread = exiting
+        with patch.object(playback, "_watch_abandoned") as watch:
+            playback.stop()
+        watch.assert_not_called()
+
+
+class TestAbandonedWorker:
+    """2026-11-26: a worker stuck in stream.stop() was abandoned with an error line at 18:31;
+    the next reply over the speakers, at 21:00, stalled unheard before the recovery ran."""
+
+    @staticmethod
+    def _watch(playback, thread):
+        """The timer `_watch_abandoned` starts, held instead of run."""
+        with patch(f"{MOD}.threading.Timer") as timer:
+            playback._watch_abandoned(thread)
+        (delay, check), kwargs = timer.call_args
+        timer.return_value.start.assert_called_once()
+        return delay, lambda: check(*kwargs["args"])
+
+    def test_a_worker_still_alive_at_the_check_gets_the_stall_forensics(self, playback):
+        stuck = Mock()
+        stuck.is_alive.return_value = True
+        _, fire = self._watch(playback, stuck)
+        with patch.object(ServerPlayback, "_capture_playback_stall_forensics") as forensics, patch(f"{MOD}.error"):
+            forensics.assert_not_called()
+            fire()
+        forensics.assert_called_once()
+
+    def test_a_worker_that_has_exited_by_the_check_was_only_slow(self, playback):
+        """A barge-in's worker: recovering on it restarted the server (99284f2, reverted)."""
+        slow = Mock()
+        slow.is_alive.return_value = False
+        _, fire = self._watch(playback, slow)
+        with patch.object(ServerPlayback, "_capture_playback_stall_forensics") as forensics:
+            fire()
+        forensics.assert_not_called()
+
+    def test_a_worker_still_playing_its_backlog_is_looked_at_again_not_recovered(self, playback):
+        """A stop() that was no kill queues its end marker behind the audio already queued:
+        the worker plays on past the check, and the recovery would restart the server mid-speech."""
+        playing = Mock()
+        playing.is_alive.return_value = True
+        _, fire = self._watch(playback, playing)
+        playback._chunks_played += 3
+        with patch.object(ServerPlayback, "_capture_playback_stall_forensics") as forensics:
+            _, fire_again = self._watch_from(playback, fire)
+            forensics.assert_not_called()
+            with patch(f"{MOD}.error"):
+                fire_again()
+        forensics.assert_called_once()
+
+    @staticmethod
+    def _watch_from(playback, fire):
+        """The timer a fired check starts in its turn, held instead of run."""
+        with patch(f"{MOD}.threading.Timer") as timer:
+            fire()
+        (delay, check), kwargs = timer.call_args
+        return delay, lambda: check(*kwargs["args"])
+
+    def test_the_check_waits_out_the_audio_the_worker_is_still_writing(self, playback):
+        """A blocking write lasts as long as its chunk sounds: until then the worker is busy."""
+        playback.audio_stream = Mock()
+        idle, _ = self._watch(playback, Mock())
+        with patch(f"{MOD}.time.time", return_value=1000.0):
+            playback._write(b"\x00\x00" * playback.sample_rate * 20)
+            writing, _ = self._watch(playback, Mock())
+        assert idle == ServerPlayback.PLAYBACK_STALL_TIMEOUT
+        assert writing == idle + 20
 
 
 # ---------------------------------------------------------------------------
