@@ -2845,20 +2845,25 @@ class Commands:
     def describe_name_voice(self, p):             return f"Naming voice {self._first_argument(p)}" if p.strip() else "Naming a voice"
     def describe_checked_watch(self, p):          return f"Checked: {self._first_argument(p)}" if p.strip() else "Marking a watch item checked"
     def describe_delete_watch(self, p):           return f"No longer watching: {self._first_argument(p)}" if p.strip() else "Deleting a watch item"
-    def describe_load_procedure(self, p):         return f"Loading the {self._first_argument(p)} procedure" if p.strip() else "Loading a procedure"
+    def describe_load_procedure(self, p):         return self._describe_loading(p, "procedure")
     def describe_save_procedure(self, p):         return f"Saving the {self._first_argument(p)} procedure" if p.strip() else "Saving a procedure"
     def describe_delete_procedure(self, p):       return f"Deleting the {self._first_argument(p)} procedure" if p.strip() else "Deleting a procedure"
-    def describe_load_memo(self, p):              return f"Loading the {self._first_argument(p)} memo" if p.strip() else "Loading a memo"
+    def describe_load_memo(self, p):              return self._describe_loading(p, "memo")
     def describe_save_memo(self, p):              return f"Saving the {self._first_argument(p)} memo" if p.strip() else "Saving a memo"
     def describe_delete_memo(self, p):            return f"Deleting the {self._first_argument(p)} memo" if p.strip() else "Deleting a memo"
     def describe_false_positive(self, p):         return None  # noisy / dev-only — suppress
-    def describe_load_toolkit(self, p):
+    def describe_load_toolkit(self, p):           return self._describe_loading(p, "toolkit")
+
+    @staticmethod
+    def _describe_loading(p: str, noun: str) -> str:
+        """"Loading the a, b and c <noun>s" — every name a load command was given, not only the first."""
         names = [n.strip().strip("\"'`") for n in p.split(",") if n.strip()]
         if not names:
-            return "Loading a toolkit"
+            return f"Loading a {noun}"
         if len(names) == 1:
-            return f"Loading the {names[0]} toolkit"
-        return f"Loading the {', '.join(names[:-1])} and {names[-1]} toolkits"
+            return f"Loading the {names[0]} {noun}"
+        return f"Loading the {', '.join(names[:-1])} and {names[-1]} {noun}s"
+
     def describe_turn_on(self, p):                return f"Turning on {p.strip()}"
     def describe_turn_off(self, p):               return f"Turning off {p.strip()}"
     def describe_stop(self, p):                   return f"Stopping {p.strip()}"

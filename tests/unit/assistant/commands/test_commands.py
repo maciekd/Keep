@@ -2743,6 +2743,13 @@ class TestLoadToolkitEcho:
 
     def test_without_a_name_the_echo_is_generic(self, commands_instance):
         assert commands_instance.describe("load_toolkit", []) == "Loading a toolkit"
+
+    def test_a_procedure_or_memo_load_names_every_one_loaded(self, commands_instance):
+        """A load of two procedures was shown as the first one alone, while its result held both."""
+        echo = commands_instance.describe("load_procedure", ['"pool-reading"', '"online-purchases"'])
+        assert "pool-reading" in echo and "online-purchases" in echo
+        echo = commands_instance.describe("load_memo", ["trip", "wine"])
+        assert "trip" in echo and "wine" in echo
         assert commands_instance.describe("load_toolkit", " , ") == "Loading a toolkit"
 
 
